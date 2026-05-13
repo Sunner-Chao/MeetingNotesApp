@@ -1,0 +1,80 @@
+# OS / editor
+**/.DS_Store
+**/Thumbs.db
+**/.vscode/
+**/.idea/
+
+# Python
+**/__pycache__/
+**/*.py[cod]
+**/*.pyo
+**/*.pyd
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.venv/
+**/venv/
+**/env/
+
+# Node
+**/node_modules/
+**/dist/
+**/.vite/
+**/npm-debug.log*
+**/yarn-debug.log*
+**/yarn-error.log*
+**/pnpm-debug.log*
+
+# Local databases / runtime data
+**/*.db
+**/*.sqlite
+**/*.sqlite3
+**/*.log
+
+# Model and cache files
+**/models/
+**/*.safetensors
+**/*.bin
+**/*.onnx
+
+# Generated OCR / document artifacts
+**/*_ocr*.pdf
+**/*_ocr*.txt
+**/*.poppler.txt
+
+# Docker / local volumes
+**/data/
+**/logs/
+
+# 忽略 .env 文件及常见变体
+**/.env
+**/.env.*
+
+# Rust 编译产物
+/target/
+**/target/
+/target/debug/
+**/target/debug/
+
+# 大型库文件
+**/.a
+**/*.lib
+**/*.so
+**/*.dylib
+**/*.dll
+**/*.cache
+**/build
+**/*.gradle
+**/*.lock
+
+**/~/
+
+# others
+auto_oa_demo/whl/
+free_download_pdf/docs/
+*.whl
+*.zip
+
+
+**/android-sdk/
+**/%SystemDrive%
