@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$UserName,
     [string]$Email,
     [switch]$Global

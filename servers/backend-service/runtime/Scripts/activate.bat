@@ -8,7 +8,7 @@ if defined _OLD_CODEPAGE (
     "%SystemRoot%\System32\chcp.com" 65001 > nul
 )
 
-set VIRTUAL_ENV=D:\pro_sunner\demo_vscode\MeetingNotesApp\servers\backend-service\runtime
+set VIRTUAL_ENV=D:\Server\MeetingNotesApp\servers\backend-service\runtime
 
 if not defined PROMPT set PROMPT=$P$G
 

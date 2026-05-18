@@ -1,0 +1,2 @@
+2026-05-18T04:01:44.675004Z  INFO bore_cli::client: connected to server remote_port=39486
+2026-05-18T04:01:44.675312Z  INFO bore_cli::client: listening at bore.pub:39486

@@ -1,4 +1,4 @@
-function Get-GitConfigValue {
+﻿function Get-GitConfigValue {
     param(
         [string[]]$Args
     )

@@ -25,10 +25,12 @@ if not exist "runtime" (
     python -m venv runtime
 )
 
+echo [BACKEND] Python runtime ready. Installing dependencies...
 call runtime\Scripts\activate.bat
+pip install --upgrade pip
+pip install -r requirements.txt
 set "HOME=%USERPROFILE%"
 set "USERPROFILE=%USERPROFILE%"
-echo [BACKEND] Python runtime ready. Skipping dependency install on restart.
 
 echo [BACKEND] Stopping any existing backend process on port %WEB_BACKEND_PORT%...
 for /f "tokens=5" %%a in ('netstat -ano ^| findstr :%WEB_BACKEND_PORT% ^| findstr LISTENING') do (

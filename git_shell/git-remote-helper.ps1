@@ -1,4 +1,4 @@
-# git-remote-helper.ps1 - Git 远程配置共享模块
+﻿# git-remote-helper.ps1 - Git 远程配置共享模块
 # 提供 SSH Host 别名询问、URL 解析、远程设置等公共逻辑
 
 $ErrorActionPreference = 'Stop'

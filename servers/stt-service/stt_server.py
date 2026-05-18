@@ -5,7 +5,29 @@ Supports both file-based transcription and WebSocket streaming preview.
 """
 
 import os
+import shutil
+
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+
+# Ensure ffmpeg is discoverable (required by SenseVoice/FunASR to load audio)
+_ffmpeg = shutil.which("ffmpeg")
+if _ffmpeg is None:
+    for _d in (
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "WinGet", "Links"),
+        os.path.join(os.environ.get("SystemDrive", "C:"), os.sep, "ffmpeg"),
+        os.path.join(os.environ.get("ProgramFiles", "C:\\Program Files"), "ffmpeg"),
+    ):
+        _ffmpeg_candidate = os.path.join(_d, "ffmpeg.exe")
+        if os.path.isfile(_ffmpeg_candidate):
+            os.environ["PATH"] = _d + os.pathsep + os.environ.get("PATH", "")
+            _ffmpeg = _ffmpeg_candidate
+            break
+    if _ffmpeg is None:
+        print("[STT] WARNING: ffmpeg not found - SenseVoice transcription will fail", flush=True)
+    else:
+        print(f"[STT] ffmpeg added to PATH: {_ffmpeg}", flush=True)
+else:
+    print(f"[STT] ffmpeg found on PATH: {_ffmpeg}", flush=True)
 
 import argparse
 import asyncio
@@ -616,13 +638,26 @@ async def transcribe_stream(websocket: WebSocket):
             max_snapshot_bytes = int(sample_rate * channels * 2 * STREAM_MAX_SNAPSHOT_SEC)
             snapshot = bytes(pcm_buffer[-max_snapshot_bytes:])
             last_processed_size = current_total_bytes
-            result = await loop.run_in_executor(
-                executor,
-                transcribe_stream_snapshot,
-                snapshot,
-                sample_rate,
-                channels
-            )
+            try:
+                result = await loop.run_in_executor(
+                    executor,
+                    transcribe_stream_snapshot,
+                    snapshot,
+                    sample_rate,
+                    channels
+                )
+            except Exception as exc:
+                push_debug_event(
+                    "transcribe_error",
+                    session_id=session_id,
+                    audio_bytes=current_total_bytes,
+                    buffered_bytes=current_size,
+                    snapshot_bytes=len(snapshot),
+                    error=str(exc),
+                )
+                print(f"[WS] Transcription error for session {session_id}: {exc}", flush=True)
+                # Recreate executor if it was broken by a thread crash
+                continue
             raw_text = normalize_preview_text(result["text"])
             if stt_engine == "sensevoice":
                 current_text = raw_text

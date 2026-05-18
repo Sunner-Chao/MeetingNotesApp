@@ -41,6 +41,31 @@ def main() -> int:
     env["STT_ENGINE"] = args.engine
     env["STT_MODEL"] = args.model
 
+    # Ensure ffmpeg is on PATH (required by SenseVoice/FunASR for audio loading)
+    found_ffmpeg = False
+    for ffmpeg_dir in [
+        os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~\\AppData\\Local")),
+                     "Microsoft", "WinGet", "Links"),
+        os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~\\AppData\\Local")),
+                     "Microsoft", "WinGet", "Packages",
+                     "Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe", "ffmpeg-8.1.1-full_build", "bin"),
+        os.path.join(os.environ.get("ProgramFiles", "C:\\Program Files"), "ffmpeg", "bin"),
+        os.path.join(os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)"), "ffmpeg", "bin"),
+        "D:\\ffmpeg\\bin",
+    ]:
+        import glob as _glob
+        candidates = _glob.glob(ffmpeg_dir) if "*" in ffmpeg_dir else ([ffmpeg_dir] if os.path.isdir(ffmpeg_dir) else [])
+        for candidate in candidates:
+            if os.path.isdir(candidate) and os.path.isfile(os.path.join(candidate, "ffmpeg.exe")):
+                env["PATH"] = candidate + os.pathsep + env.get("PATH", "")
+                print(f"[restart_stt] Added ffmpeg to PATH from: {candidate}", flush=True)
+                found_ffmpeg = True
+                break
+        if found_ffmpeg:
+            break
+    if not found_ffmpeg:
+        print("[restart_stt] WARNING: ffmpeg not found - SenseVoice may fail to load audio!", flush=True)
+
     stdout_file = open(args.stdout_log, "ab", buffering=0)
     stderr_file = open(args.stderr_log, "ab", buffering=0)
     subprocess.Popen(

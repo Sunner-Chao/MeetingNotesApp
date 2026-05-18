@@ -35,10 +35,27 @@ if not exist "runtime" (
     python -m venv runtime
 )
 
+echo [STT] Python runtime ready. Installing dependencies...
 call runtime\Scripts\activate.bat
+pip install --upgrade pip
+pip install -r requirements.txt
 set "HOME=%USERPROFILE%"
 set "USERPROFILE=%USERPROFILE%"
-echo [STT] Python runtime ready. Skipping dependency install on restart.
+
+:: Ensure ffmpeg is on PATH (required by SenseVoice/FunASR)
+set "FFMPEG_DIR="
+for /f "tokens=*" %%d in ('where ffmpeg 2^>nul') do (
+    if "!FFMPEG_DIR!"=="" (
+        set "FFMPEG_PATH=%%d"
+        set "FFMPEG_DIR=%%~dpd"
+    )
+)
+if not "!FFMPEG_DIR!"=="" (
+    echo [STT] Found ffmpeg at !FFMPEG_PATH!
+    set "PATH=!FFMPEG_DIR!;!PATH!"
+) else (
+    echo [STT] WARNING: ffmpeg not found on PATH - SenseVoice may fail to load audio files!
+)
 
 echo [STT] Stopping any existing STT process on port %STT_PORT%...
 for /f "tokens=5" %%a in ('netstat -ano ^| findstr :%STT_PORT% ^| findstr LISTENING') do (
@@ -54,7 +71,7 @@ set "STT_ERR_LOG=%~dp0logs\stt_%LOG_SUFFIX%.err.log"
 echo [STT] Starting STT server in background on port %STT_PORT%...
 echo [STT] Output log: %STT_LOG%
 echo [STT] Error log: %STT_ERR_LOG%
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:STT_MODEL_ROOT='%STT_MODEL_ROOT%'; $env:STT_ENGINE='%STT_ENGINE%'; $env:STT_MODEL='%STT_MODEL%'; $env:HOME='%HOME%'; $env:USERPROFILE='%USERPROFILE%'; Start-Process -FilePath '%~dp0runtime\Scripts\python.exe' -ArgumentList @('-u','stt_server.py','--host','0.0.0.0','--port','%STT_PORT%','--engine','%STT_ENGINE%','--model','%STT_MODEL%') -WorkingDirectory '%~dp0' -WindowStyle Hidden -RedirectStandardOutput '%STT_LOG%' -RedirectStandardError '%STT_ERR_LOG%'"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:STT_MODEL_ROOT='%STT_MODEL_ROOT%'; $env:STT_ENGINE='%STT_ENGINE%'; $env:STT_MODEL='%STT_MODEL%'; $env:HOME='%HOME%'; $env:USERPROFILE='%USERPROFILE%'; $env:PATH='!PATH!'; Start-Process -FilePath '%~dp0runtime\Scripts\python.exe' -ArgumentList @('-u','stt_server.py','--host','0.0.0.0','--port','%STT_PORT%','--engine','%STT_ENGINE%','--model','%STT_MODEL%') -WorkingDirectory '%~dp0' -WindowStyle Hidden -RedirectStandardOutput '%STT_LOG%' -RedirectStandardError '%STT_ERR_LOG%'"
 
 timeout /t 5 /nobreak >nul
 powershell -NoProfile -Command "try { $h=Invoke-RestMethod -Uri http://127.0.0.1:%STT_PORT%/health -TimeoutSec 5; Write-Host '[STT] Health OK:' ($h | ConvertTo-Json -Compress) } catch { Write-Host '[STT] Not ready yet, check the log files printed above.' }"

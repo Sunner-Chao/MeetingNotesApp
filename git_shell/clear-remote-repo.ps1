@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$Message,
     [switch]$NoPush,
     [switch]$KeepTemp

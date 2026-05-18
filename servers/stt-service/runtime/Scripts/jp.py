@@ -1,4 +1,4 @@
-#!D:\pro_sunner\demo_vscode\MeetingNotesApp\servers\stt-service\runtime\Scripts\python.exe
+#!D:\Server\MeetingNotesApp\servers\stt-service\runtime\Scripts\python.exe
 
 import sys
 import json
