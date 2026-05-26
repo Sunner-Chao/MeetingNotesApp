@@ -65,7 +65,7 @@ stt_engine = "faster-whisper"
 model_size = "small"
 model_source = "small"
 model_load_error = ""
-model_root = Path(os.getenv("STT_MODEL_ROOT", "./models")).resolve()
+model_root = Path(os.getenv("STT_MODEL_ROOT", str(Path(__file__).resolve().parent.parent.parent / "models"))).resolve()
 executor = ThreadPoolExecutor(max_workers=2)
 
 # Streaming transcription parameters (can be overridden per-session via WebSocket start event)

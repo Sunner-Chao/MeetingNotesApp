@@ -374,7 +374,7 @@ def index() -> str:
       <div class="card">
         <p class="title">服务链路</p>
         <div class="list">
-          <div class="item"><strong>手机端 STT URL</strong><div class="muted">https://1154083nrki65.vicp.fun</div></div>
+          <div class="item"><strong>手机端 STT URL</strong><div class="muted">http://ecobim.cn:38270</div></div>
           <div class="item"><strong>PC STT 监听</strong><div class="muted">0.0.0.0:8888</div></div>
           <div class="item"><strong>Web 调试台</strong><div class="muted">http://127.0.0.1:{PORT}/web</div></div>
         </div>

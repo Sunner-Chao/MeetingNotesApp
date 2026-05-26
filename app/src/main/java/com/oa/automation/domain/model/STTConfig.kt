@@ -36,7 +36,7 @@ data class STTConfig(
     val cloudApiKey: String? = null
 ) {
     companion object {
-        const val DEFAULT_LOCAL_ENDPOINT = "https://1154083nrki65.vicp.fun"
+        const val DEFAULT_LOCAL_ENDPOINT = "http://ecobim.cn:38270"
         const val LEGACY_LOCAL_ENDPOINT = "http://localhost:8888"
         val DEFAULT = STTConfig()
 

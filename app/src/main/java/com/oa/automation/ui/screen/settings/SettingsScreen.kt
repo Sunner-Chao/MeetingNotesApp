@@ -440,7 +440,7 @@ private fun STTConfigSection(
                                 onLocalEndpointChange(it)
                             },
                             label = { Text("服务地址") },
-                            placeholder = { Text("https://1154083nrki65.vicp.fun") },
+                            placeholder = { Text("http://ecobim.cn:38270") },
                             leadingIcon = {
                                 Icon(
                                     imageVector = Icons.Default.Dns,
