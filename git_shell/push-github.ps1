@@ -5,6 +5,12 @@
 
 $ErrorActionPreference = 'Stop'
 
+$NativeCommandPreference = Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue
+if ($NativeCommandPreference) {
+    $OriginalNativeCommandErrorPreference = $NativeCommandPreference.Value
+    $PSNativeCommandUseErrorActionPreference = $false
+}
+
 $ScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $OriginalLocation = Get-Location
 $ProjectRoot = $OriginalLocation.Path
@@ -17,6 +23,8 @@ try {
 
     . (Join-Path $ScriptRoot 'git-script-profile.ps1')
     $ProfileDefaults = Get-GitScriptProfile
+    $remoteName = $ProfileDefaults.RemoteName
+    Ensure-GitHubOriginInteractive -RemoteName $remoteName | Out-Null
 
     function Get-CurrentBranch {
         $branchOutput = & git branch --show-current 2>$null
@@ -69,7 +77,7 @@ try {
 
     function Get-RemoteVersionTags {
         return @(
-            & git ls-remote --tags origin 2>$null | ForEach-Object {
+            & git ls-remote --tags $remoteName 2>$null | ForEach-Object {
                 $line = $_.Trim()
                 if (-not $line) { return }
                 $parts = $line -split '\s+'
@@ -207,19 +215,25 @@ try {
     function Invoke-Push {
         param(
             [string]$Branch,
-            [bool]$Force
+            [bool]$Force,
+            [string]$RemoteName
         )
 
         if ($Force) {
             Write-Host "[push-github] 使用 --force-with-lease 推送当前分支..." -ForegroundColor Yellow
-            & git push --force-with-lease -u origin $Branch
-            if ($LASTEXITCODE -ne 0) {
+            & git push --force-with-lease -u $RemoteName $Branch | Out-Host
+            $pushExitCode = $LASTEXITCODE
+            if ($pushExitCode -ne 0) {
                 Write-Host "[push-github] --force-with-lease 失败，尝试使用 --force..." -ForegroundColor Yellow
-                & git push --force -u origin $Branch
+                & git push --force -u $RemoteName $Branch | Out-Host
+                $pushExitCode = $LASTEXITCODE
             }
         } else {
-            & git push -u origin $Branch
+            & git push -u $RemoteName $Branch | Out-Host
+            $pushExitCode = $LASTEXITCODE
         }
+
+        return $pushExitCode
     }
 
 
@@ -235,11 +249,19 @@ try {
 
     Write-Host "[push-github] 当前分支: $branch" -ForegroundColor Yellow
     Write-Host "[push-github] 获取远端当前分支信息..." -ForegroundColor Cyan
-    & git ls-remote --exit-code --heads origin $branch 1>$null 2>$null
-    $remoteBranchExists = ($LASTEXITCODE -eq 0)
+    $remoteBranchOutput = @(& git ls-remote --exit-code --heads $remoteName "refs/heads/$branch" 2>&1)
+    $remoteBranchExitCode = $LASTEXITCODE
+    if ($remoteBranchExitCode -eq 0) {
+        $remoteBranchExists = $true
+    } elseif ($remoteBranchExitCode -eq 2) {
+        $remoteBranchExists = $false
+    } else {
+        $remoteBranchError = ($remoteBranchOutput | ForEach-Object { $_.ToString() }) -join [Environment]::NewLine
+        throw "查询远端分支失败（git ls-remote 退出码 $remoteBranchExitCode）。请检查远端仓库地址、SSH 配置或网络。$([Environment]::NewLine)$remoteBranchError"
+    }
 
     if ($remoteBranchExists) {
-        & git fetch origin ("refs/heads/${branch}:refs/remotes/origin/${branch}")
+        & git fetch $remoteName ("+refs/heads/${branch}:refs/remotes/${remoteName}/${branch}")
         if ($LASTEXITCODE -ne 0) {
             throw "git fetch 当前分支失败。请先检查远端仓库地址、SSH 配置或网络。"
         }
@@ -252,7 +274,7 @@ try {
         $localHasCommits = ($LASTEXITCODE -eq 0)
         $ErrorActionPreference = $prevErrorPref
         if ($localHasCommits) {
-            $aheadBehindOutput = (& git rev-list --left-right --count "$branch...origin/$branch" 2>$null)
+            $aheadBehindOutput = (& git rev-list --left-right --count "$branch...refs/remotes/$remoteName/$branch" 2>$null)
             $localAhead = 0
             $remoteAhead = 0
             if ($aheadBehindOutput -and $LASTEXITCODE -eq 0) {
@@ -327,8 +349,8 @@ try {
     }
 
     Write-Host "[push-github] 推送到 GitHub..." -ForegroundColor Cyan
-    Invoke-Push -Branch $branch -Force:$forcePush
-    if ($LASTEXITCODE -ne 0) {
+    $pushExitCode = Invoke-Push -Branch $branch -Force:$forcePush -RemoteName $remoteName
+    if ($pushExitCode -ne 0) {
         if ($pushMode -eq 'full_override') {
             throw "git push 失败。当前已按全量推模式执行。常见原因：远端分支受保护、权限不足、SSH 配置错误。"
         }
@@ -338,7 +360,7 @@ try {
     if ($versionTag) {
         Write-Host "[push-github] 推送版本标签: $versionTag" -ForegroundColor Cyan
         Write-Host "[push-github] 若远端已存在同名标签，将按当前本地版本覆盖..." -ForegroundColor DarkGray
-        & git push --force origin "refs/tags/${versionTag}:refs/tags/${versionTag}"
+        & git push --force $remoteName "refs/tags/${versionTag}:refs/tags/${versionTag}"
         if ($LASTEXITCODE -ne 0) {
             throw "git push tag 失败。"
         }
@@ -351,4 +373,7 @@ try {
 }
 finally {
     Set-Location $OriginalLocation
+    if ($NativeCommandPreference) {
+        $PSNativeCommandUseErrorActionPreference = $OriginalNativeCommandErrorPreference
+    }
 }

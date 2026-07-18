@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "id": "meeting-minutes.team-table",
+  "version": "1.1.0",
+  "locale": "zh-CN",
+  "name": "孔爵团队版表格会议纪要",
+  "file": "team-table-v1.docx",
+  "sha256": "3d09dac200c66654fc8adb8a5df43c9d2b2a1c47c412a1f160b4bef097075433",
+  "privacy": "user-provided-layout-template",
+  "layout": {
+    "page": "Letter",
+    "orientation": "portrait",
+    "margin_inches": 0.87,
+    "paragraph_slots": 37,
+    "table_patterns": 5,
+    "supports_images": true
+  },
+  "rag": {
+    "index_binary": false,
+    "index_manifest": true
+  },
+  "slots": [
+    "meeting_title",
+    "meeting_topic",
+    "core_summary",
+    "topic_1_details",
+    "topic_2_details",
+    "topic_3_details",
+    "topic_4_details",
+    "topic_5_details",
+    "consensus",
+    "unresolved_issues",
+    "actions",
+    "pending_confirmation",
+    "backlog",
+    "risks",
+    "meeting_conclusion",
+    "meeting_images"
+  ]
+}

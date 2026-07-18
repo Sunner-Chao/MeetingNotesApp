@@ -1,0 +1,456 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MeetingNotesApp | 运维控制台</title>
+  <style>
+    :root {
+      --navy: #172b4d;
+      --navy-2: #243b63;
+      --ink: #172b4d;
+      --muted: #67748e;
+      --line: #e5e9f0;
+      --workspace: #f6f8fb;
+      --card: #ffffff;
+      --blue: #2f6fed;
+      --blue-soft: #eaf1ff;
+      --green: #159570;
+      --green-soft: #e9f8f1;
+      --amber: #c98212;
+      --amber-soft: #fff5df;
+      --red: #d14343;
+      --red-soft: #fff0f0;
+      --shadow: 0 4px 18px rgba(23, 43, 77, .06);
+    }
+    * { box-sizing: border-box; }
+    html, body { min-height: 100%; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--workspace);
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      font-size: 14px;
+    }
+    button, input { font: inherit; }
+    button { cursor: pointer; }
+    button:disabled { cursor: not-allowed; opacity: .55; }
+    .app-shell { display: flex; min-height: 100vh; }
+    .sidebar {
+      position: fixed;
+      inset: 0 auto 0 0;
+      z-index: 10;
+      display: flex;
+      width: 248px;
+      flex-direction: column;
+      padding: 24px 16px;
+      color: #dce6f8;
+      background: var(--navy);
+    }
+    .brand { display: flex; align-items: center; gap: 11px; padding: 0 10px 34px; color: #fff; }
+    .brand-mark { display: grid; width: 34px; height: 34px; place-items: center; border-radius: 8px; color: #fff; background: var(--blue); font-weight: 800; }
+    .brand strong { font-size: 15px; letter-spacing: 0; }
+    .brand small { display: block; margin-top: 3px; color: #9fb1cf; font-size: 11px; }
+    .nav-label { padding: 0 12px 9px; color: #8397ba; font-size: 11px; font-weight: 700; text-transform: uppercase; }
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      width: 100%;
+      margin: 3px 0;
+      padding: 11px 12px;
+      border: 0;
+      border-radius: 6px;
+      color: #c9d6ec;
+      background: transparent;
+      text-align: left;
+    }
+    .nav-item:hover, .nav-item.active { color: #fff; background: var(--navy-2); }
+    .nav-icon { width: 18px; color: #93b8ff; text-align: center; font-weight: 800; }
+    .sidebar-footer { margin-top: auto; padding: 16px 12px 4px; border-top: 1px solid rgba(255,255,255,.1); color: #9fb1cf; font-size: 12px; line-height: 1.7; }
+    .main { width: calc(100% - 248px); margin-left: 248px; }
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      display: flex;
+      min-height: 72px;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 0 32px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255,255,255,.96);
+    }
+    .topbar-title { margin: 0; font-size: 18px; font-weight: 700; }
+    .topbar-subtitle { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+    .topbar-actions { display: flex; align-items: center; gap: 10px; }
+    .live { display: inline-flex; align-items: center; gap: 7px; color: var(--green); font-size: 12px; font-weight: 700; }
+    .live-dot, .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--amber); }
+    .live-dot { background: var(--green); }
+    .icon-button, .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      min-height: 36px;
+      padding: 8px 13px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .icon-button { width: 36px; padding: 0; color: var(--muted); border-color: var(--line); background: #fff; }
+    .icon-button:hover, .button.ghost:hover { color: var(--blue); border-color: #bdd0f8; background: var(--blue-soft); }
+    .button.primary { color: #fff; background: var(--blue); }
+    .button.primary:hover { background: #245fda; }
+    .button.secondary { color: var(--ink); border-color: var(--line); background: #fff; }
+    .button.danger { color: var(--red); border-color: #f4c8c8; background: var(--red-soft); }
+    .button.ghost { color: var(--muted); border-color: var(--line); background: #fff; }
+    .content { max-width: 1500px; margin: 0 auto; padding: 28px 32px 48px; }
+    .section-head { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin: 26px 0 12px; }
+    .section-head h2 { margin: 0; font-size: 16px; }
+    .section-head p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+    .stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+    .card { min-width: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--card); box-shadow: var(--shadow); }
+    .stat-card { position: relative; padding: 18px 20px; overflow: hidden; }
+    .stat-card::before { position: absolute; inset: 0 auto 0 0; width: 4px; content: ""; background: var(--blue); }
+    .stat-card.green::before { background: var(--green); }
+    .stat-card.amber::before { background: var(--amber); }
+    .stat-card.slate::before { background: #718096; }
+    .stat-label { color: var(--muted); font-size: 12px; font-weight: 700; }
+    .stat-value { display: block; margin-top: 9px; font-size: 24px; line-height: 1.15; }
+    .stat-detail { display: block; min-height: 18px; margin-top: 7px; color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .layout-wide { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(310px, .65fr); gap: 16px; }
+    .layout-equal { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+    .panel { padding: 20px; }
+    .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+    .panel-head h3 { margin: 0; font-size: 14px; }
+    .panel-head span { color: var(--muted); font-size: 11px; }
+    .health-row { display: flex; align-items: center; gap: 10px; padding: 13px 0; border-bottom: 1px solid var(--line); }
+    .health-row:last-child { border-bottom: 0; }
+    .health-row .status-dot { flex: 0 0 auto; }
+    .health-row.ok .status-dot { background: var(--green); }
+    .health-row.error .status-dot { background: var(--red); }
+    .health-main { min-width: 0; flex: 1; }
+    .health-title { display: block; font-weight: 700; }
+    .health-detail { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .status-text { color: var(--muted); font-size: 12px; }
+    .status-text.ok { color: var(--green); }
+    .status-text.error { color: var(--red); }
+    .config-list { display: grid; gap: 11px; }
+    .config-item { display: grid; grid-template-columns: 116px minmax(0, 1fr); gap: 12px; padding-bottom: 11px; border-bottom: 1px solid var(--line); }
+    .config-item:last-child { padding-bottom: 0; border-bottom: 0; }
+    .config-item dt { color: var(--muted); font-size: 12px; }
+    .config-item dd { margin: 0; overflow: hidden; color: var(--ink); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+    .engine-bar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; padding: 13px 14px; border: 1px solid var(--line); border-radius: 6px; background: #fbfcfe; }
+    .engine-name { font-weight: 700; }
+    .engine-model { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; }
+    .engine-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .switch-note { min-height: 20px; margin: 12px 0 0; color: var(--muted); font-size: 12px; }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; }
+    th { padding: 11px 12px; color: var(--muted); font-size: 11px; font-weight: 700; text-align: left; white-space: nowrap; }
+    td { padding: 13px 12px; border-top: 1px solid var(--line); font-size: 12px; vertical-align: top; }
+    td strong { display: block; font-size: 13px; }
+    .table-muted { display: block; max-width: 300px; margin-top: 4px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .empty { padding: 28px 12px; color: var(--muted); text-align: center; }
+    .code-panel { min-height: 240px; max-height: 390px; overflow: auto; padding: 14px; border-radius: 6px; color: #dbe7ff; background: #101b2f; font-family: Consolas, "SFMono-Regular", monospace; font-size: 11px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+    .summary-list { display: grid; gap: 10px; }
+    .summary-item { padding: 11px 12px; border-left: 3px solid var(--blue); background: #f7f9fd; }
+    .summary-item strong { display: block; margin-bottom: 5px; font-size: 11px; }
+    .summary-item span { display: block; color: var(--muted); font-size: 12px; line-height: 1.55; word-break: break-word; }
+    .footer { margin-top: 30px; color: var(--muted); font-size: 11px; text-align: right; }
+    #toast { position: fixed; right: 24px; bottom: 24px; z-index: 30; max-width: 360px; padding: 12px 15px; border: 1px solid #cfe0fb; border-radius: 6px; color: var(--ink); background: #fff; box-shadow: 0 8px 30px rgba(23,43,77,.14); opacity: 0; transform: translateY(12px); pointer-events: none; transition: opacity .18s ease, transform .18s ease; }
+    #toast.show { opacity: 1; transform: translateY(0); }
+    #toast.error { border-color: #f2c3c3; color: var(--red); }
+    @media (max-width: 1120px) { .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } .layout-wide { grid-template-columns: 1fr; } }
+    @media (max-width: 820px) {
+      .sidebar { position: static; width: 100%; min-height: auto; padding: 14px 16px; }
+      .app-shell { display: block; }
+      .brand { padding: 0 4px 12px; }
+      .nav-label, .sidebar-footer { display: none; }
+      .nav-item { display: inline-flex; width: auto; margin-right: 4px; padding: 8px 10px; }
+      .main { width: auto; margin-left: 0; }
+      .topbar { position: static; min-height: 64px; padding: 0 18px; }
+      .content { padding: 20px 18px 36px; }
+      .layout-equal { grid-template-columns: 1fr; }
+      .topbar-subtitle { display: none; }
+      .live { display: none; }
+    }
+    @media (max-width: 520px) {
+      .stats { grid-template-columns: 1fr; }
+      .topbar-actions .button { padding: 8px 10px; }
+      .panel { padding: 16px; }
+      .engine-bar { display: block; }
+      .engine-actions { margin-top: 12px; }
+      .config-item { grid-template-columns: 1fr; gap: 3px; }
+      .section-head { display: block; }
+      #toast { right: 16px; bottom: 16px; left: 16px; max-width: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">M</div>
+        <div><strong>MeetingNotesApp</strong><small>运维控制台</small></div>
+      </div>
+      <div class="nav-label">Workspace</div>
+      <button class="nav-item active" type="button" onclick="scrollToSection('overview')"><span class="nav-icon">◈</span>总览</button>
+      <button class="nav-item" type="button" onclick="scrollToSection('services')"><span class="nav-icon">◎</span>服务状态</button>
+      <button class="nav-item" type="button" onclick="scrollToSection('meetings')"><span class="nav-icon">▤</span>会议记录</button>
+      <button class="nav-item" type="button" onclick="scrollToSection('debug')"><span class="nav-icon">⌁</span>调试信息</button>
+      <div class="sidebar-footer">Version __VERSION__<br>Release __RELEASE__</div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h1 class="topbar-title">系统总览</h1>
+          <p class="topbar-subtitle">查看 STT 服务、会议数据和实时调试状态</p>
+        </div>
+        <div class="topbar-actions">
+          <span class="live"><span class="live-dot"></span>自动刷新中</span>
+          <button class="button primary" type="button" onclick="refreshAll()"><span>↻</span>刷新全部</button>
+          <button class="icon-button" type="button" title="刷新全部" aria-label="刷新全部" onclick="refreshAll()">↻</button>
+        </div>
+      </header>
+
+      <div class="content">
+        <section id="overview">
+          <div class="section-head"><div><h2>运行概况</h2><p>后端和语音服务的当前可用性</p></div></div>
+          <div class="stats">
+            <article class="card stat-card green"><span class="stat-label">Backend 服务</span><strong id="backend-status" class="stat-value">检查中...</strong><span id="backend-detail" class="stat-detail">正在读取健康状态</span></article>
+            <article class="card stat-card green"><span class="stat-label">STT 服务</span><strong id="stt-status" class="stat-value">检查中...</strong><span id="stt-detail" class="stat-detail">正在读取模型状态</span></article>
+            <article class="card stat-card"><span class="stat-label">已保存会议</span><strong id="meeting-count" class="stat-value">0</strong><span class="stat-detail">当前数据库中的会议条目</span></article>
+            <article class="card stat-card amber"><span class="stat-label">队列 / 活跃推理</span><strong id="queue-status" class="stat-value">-</strong><span id="queue-detail" class="stat-detail">等待 STT 返回运行指标</span></article>
+          </div>
+        </section>
+
+        <section id="services">
+          <div class="section-head"><div><h2>服务状态</h2><p>生产服务链路与运行配置</p></div></div>
+          <div class="layout-wide">
+            <article class="card panel">
+              <div class="panel-head"><h3>健康检查</h3><span id="last-refresh">尚未刷新</span></div>
+              <div id="health-list">
+                <div id="backend-health-row" class="health-row"><span class="status-dot"></span><div class="health-main"><span class="health-title">Backend</span><span id="backend-health-detail" class="health-detail">检查中...</span></div><span id="backend-health-text" class="status-text">检查中</span></div>
+                <div id="stt-health-row" class="health-row"><span class="status-dot"></span><div class="health-main"><span class="health-title">STT</span><span id="stt-health-detail" class="health-detail">检查中...</span></div><span id="stt-health-text" class="status-text">检查中</span></div>
+                <div id="agent-health-row" class="health-row"><span class="status-dot"></span><div class="health-main"><span class="health-title">Agent Gateway</span><span id="agent-health-detail" class="health-detail">检查中...</span></div><span id="agent-health-text" class="status-text">检查中</span></div>
+              </div>
+            </article>
+            <article class="card panel">
+              <div class="panel-head"><h3>当前配置</h3><span>只读</span></div>
+              <dl class="config-list">
+                <div class="config-item"><dt>Backend 地址</dt><dd>http://127.0.0.1:__BACKEND_PORT__</dd></div>
+                <div class="config-item"><dt>STT 内部地址</dt><dd>__STT_BASE_URL__</dd></div>
+                <div class="config-item"><dt>手机端 STT</dt><dd>__PUBLIC_STT_URL__</dd></div>
+                <div class="config-item"><dt>数据库</dt><dd>__DB_PATH__</dd></div>
+                <div class="config-item"><dt>日志文件</dt><dd>__STT_LOG_PATH__</dd></div>
+              </dl>
+            </article>
+          </div>
+          <div class="layout-equal" style="margin-top:16px">
+            <article class="card panel">
+              <div class="panel-head"><h3>STT 引擎</h3><span id="stt-model">模型：-</span></div>
+              <div class="engine-bar"><div><span id="stt-engine" class="engine-name">检查中...</span><span class="engine-model">两个引擎共用 8888 端口，切换会排空当前队列</span></div><span id="engine-state" class="status-text">待检查</span></div>
+              <div class="engine-actions"><button class="button primary" type="button" onclick="switchStt('faster-whisper','small')">切换 Faster-Whisper</button><button class="button secondary" type="button" onclick="switchStt('sensevoice','SenseVoiceSmall')">切换 SenseVoice</button></div>
+              <p id="switch-result" class="switch-note">可以从这里切换当前语音识别引擎。</p>
+            </article>
+            <article class="card panel">
+              <div class="panel-head"><h3>服务操作</h3><span>调试功能</span></div>
+              <div class="config-list">
+                <div class="config-item"><dt>日志维护</dt><dd><button class="button ghost" type="button" onclick="clearLogs()">清空 STT 日志</button></dd></div>
+                <div class="config-item"><dt>事件维护</dt><dd><button class="button danger" type="button" onclick="clearEvents()">清空流式事件</button></dd></div>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section id="meetings">
+          <div class="section-head"><div><h2>最近会议</h2><p>Backend SQLite 中最近写入的会议记录</p></div><button class="button ghost" type="button" onclick="refreshMeetings()">刷新列表</button></div>
+          <article class="card panel"><div class="table-wrap"><table><thead><tr><th>会议</th><th>创建时间</th><th>时长</th><th>音频路径</th></tr></thead><tbody id="meeting-list"><tr><td colspan="4" class="empty">正在加载...</td></tr></tbody></table></div></article>
+        </section>
+
+        <section id="debug">
+          <div class="section-head"><div><h2>调试信息</h2><p>流式识别最近事件和 STT 服务日志</p></div></div>
+          <div class="layout-equal">
+            <article class="card panel"><div class="panel-head"><h3>最近 partial 摘要</h3><span>自动更新</span></div><div id="stream-summary" class="summary-list"><div class="empty">正在加载...</div></div></article>
+            <article class="card panel"><div class="panel-head"><h3>流式事件</h3><button class="icon-button" type="button" title="仅刷新流式事件" aria-label="仅刷新流式事件" onclick="refreshStreamEvents()">↻</button></div><pre id="stt-events" class="code-panel">正在加载...</pre></article>
+          </div>
+          <article class="card panel" style="margin-top:16px"><div class="panel-head"><h3>STT 最近日志</h3><div><button class="button ghost" type="button" onclick="refreshLogs()">刷新日志</button></div></div><pre id="stt-log" class="code-panel">正在加载...</pre></article>
+        </section>
+        <p class="footer">MeetingNotesApp Server __VERSION__ · Release __RELEASE__</p>
+      </div>
+    </main>
+  </div>
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <script>
+    const toast = document.getElementById('toast');
+    let toastTimer;
+    function showToast(message, isError = false) {
+      window.clearTimeout(toastTimer);
+      toast.textContent = String(message);
+      toast.className = isError ? 'show error' : 'show';
+      toastTimer = window.setTimeout(() => { toast.className = ''; }, 3500);
+    }
+    async function getJson(url, options) {
+      const response = await fetch(url, options);
+      let payload = {};
+      try { payload = await response.json(); } catch (_) { /* empty response */ }
+      if (!response.ok) throw new Error(payload.detail || `HTTP ${response.status}`);
+      return payload;
+    }
+    function scrollToSection(id) { document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+    function setServiceState(prefix, ok, title, detail) {
+      const status = document.getElementById(`${prefix}-status`);
+      const detailNode = document.getElementById(`${prefix}-detail`);
+      const row = document.getElementById(`${prefix}-health-row`);
+      const rowDetail = document.getElementById(`${prefix}-health-detail`);
+      const rowText = document.getElementById(`${prefix}-health-text`);
+      status.textContent = title;
+      detailNode.textContent = detail || '';
+      row.className = `health-row ${ok ? 'ok' : 'error'}`;
+      rowDetail.textContent = detail || '';
+      rowText.textContent = ok ? '正常' : '异常';
+      rowText.className = `status-text ${ok ? 'ok' : 'error'}`;
+    }
+    async function refreshBackendHealth() {
+      try {
+        const health = await getJson('/health');
+        setServiceState('backend', true, '正常', `端口 ${health.port} · ${health.version}`);
+      } catch (error) {
+        setServiceState('backend', false, '异常', error.message);
+      }
+    }
+    async function refreshSttHealth() {
+      try {
+        const health = await getJson('/api/debug/stt-health');
+        const engine = health.engine || 'unknown';
+        const model = health.model || 'unknown';
+        const metrics = health.inference || {};
+        const queue = Number(metrics.queued || 0);
+        const active = Number(metrics.active || 0);
+        setServiceState('stt', true, '正常', `${engine} · ${model}`);
+        document.getElementById('stt-engine').textContent = engine;
+        document.getElementById('stt-model').textContent = `模型：${model}`;
+        document.getElementById('engine-state').textContent = '运行中';
+        document.getElementById('engine-state').className = 'status-text ok';
+        document.getElementById('queue-status').textContent = `${queue} / ${active}`;
+        document.getElementById('queue-detail').textContent = `排队 ${queue} · 活跃 ${active} · 峰值 ${metrics.peak_active || 0}`;
+      } catch (error) {
+        setServiceState('stt', false, '异常', error.message);
+        document.getElementById('stt-engine').textContent = '离线';
+        document.getElementById('stt-model').textContent = '模型：-';
+        document.getElementById('engine-state').textContent = '不可用';
+        document.getElementById('engine-state').className = 'status-text error';
+        document.getElementById('queue-status').textContent = '-';
+        document.getElementById('queue-detail').textContent = '无法读取 STT 运行指标';
+      }
+    }
+    async function refreshAgentHealth() {
+      const row = document.getElementById('agent-health-row');
+      const detail = document.getElementById('agent-health-detail');
+      const status = document.getElementById('agent-health-text');
+      try {
+        const payload = await getJson('/api/admin/agent/status');
+        const providers = Object.entries(payload.providers || {});
+        const ready = providers.filter(([, value]) => value.authenticated).map(([name]) => name);
+        const queue = payload.queue || {};
+        const tokens = payload.tokens || {};
+        row.className = `health-row ${payload.enabled ? 'ok' : 'error'}`;
+        status.textContent = ready.length ? `可用 ${ready.length}` : '待登录';
+        status.className = `status-text ${ready.length ? 'ok' : 'error'}`;
+        detail.textContent = `提供方 ${ready.join(', ') || '无'} · 活跃/排队 ${queue.inflight || 0}/${queue.max_queue || 0} · Token ${tokens.token_count || 0} · 已用 ${tokens.requests_used || 0}`;
+      } catch (error) {
+        row.className = 'health-row error';
+        status.textContent = '异常';
+        status.className = 'status-text error';
+        detail.textContent = error.message;
+      }
+    }
+    async function switchStt(engine, model) {
+      const result = document.getElementById('switch-result');
+      result.textContent = `正在切换到 ${engine}，STT 服务会短暂重启...`;
+      try {
+        const payload = await getJson('/api/admin/stt/switch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ engine, model }) });
+        result.textContent = `已发起切换：${payload.target_engine || engine} / ${payload.target_model || model}`;
+        showToast('STT 引擎切换请求已提交');
+        window.setTimeout(refreshSttHealth, 3500);
+        window.setTimeout(refreshLogs, 4500);
+      } catch (error) { result.textContent = `切换失败：${error.message}`; showToast(error.message, true); }
+    }
+    function formatDate(value) { const date = new Date(value); return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString(); }
+    function formatDuration(value) { const seconds = Math.round(Number(value || 0) / 1000); return seconds < 60 ? `${seconds} 秒` : `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`; }
+    async function refreshMeetings() {
+      const host = document.getElementById('meeting-list');
+      try {
+        const meetings = await getJson('/api/meetings');
+        document.getElementById('meeting-count').textContent = meetings.length;
+        host.innerHTML = '';
+        if (!meetings.length) { host.innerHTML = '<tr><td colspan="4" class="empty">暂无会议记录</td></tr>'; return; }
+        meetings.forEach(meeting => {
+          const row = document.createElement('tr');
+          row.innerHTML = `<td><strong></strong><span class="table-muted"></span></td><td></td><td></td><td><span class="table-muted"></span></td>`;
+          row.cells[0].querySelector('strong').textContent = meeting.title;
+          row.cells[0].querySelector('.table-muted').textContent = `ID: ${meeting.id}`;
+          row.cells[1].textContent = formatDate(meeting.created_at);
+          row.cells[2].textContent = formatDuration(meeting.duration_ms);
+          row.cells[3].querySelector('.table-muted').textContent = meeting.audio_file_path || '未记录';
+          host.appendChild(row);
+        });
+      } catch (error) { host.innerHTML = `<tr><td colspan="4" class="empty">加载失败：${error.message}</td></tr>`; }
+    }
+    async function refreshLogs() {
+      const host = document.getElementById('stt-log');
+      try { const payload = await getJson('/api/debug/stt-log'); host.textContent = (payload.lines || []).join('\n') || '暂无日志'; }
+      catch (error) { host.textContent = `读取日志失败：${error.message}`; }
+    }
+    function addSummaryItem(host, label, value) {
+      const item = document.createElement('div'); item.className = 'summary-item';
+      const heading = document.createElement('strong'); heading.textContent = label;
+      const content = document.createElement('span'); content.textContent = value || '空';
+      item.append(heading, content); host.appendChild(item);
+    }
+    async function refreshStreamEvents() {
+      const eventHost = document.getElementById('stt-events');
+      const summaryHost = document.getElementById('stream-summary');
+      try {
+        const payload = await getJson('/api/debug/stt-events?limit=24');
+        const events = payload.events || [];
+        eventHost.textContent = events.map(event => JSON.stringify(event, null, 2)).join('\n\n') || '暂无流式事件';
+        summaryHost.innerHTML = '';
+        const partials = events.filter(event => event.type === 'partial');
+        const latest = partials.length ? partials[partials.length - 1] : null;
+        if (!latest) { summaryHost.innerHTML = '<div class="empty">还没有收到 partial 事件</div>'; return; }
+        addSummaryItem(summaryHost, '会话', latest.session_id);
+        addSummaryItem(summaryHost, '稳定段', latest.committed_text);
+        addSummaryItem(summaryHost, '波动尾段', latest.preview_text);
+        addSummaryItem(summaryHost, '完整文本', latest.text);
+        addSummaryItem(summaryHost, '音频字节数 / 时间', `${latest.audio_bytes || 0} / ${latest.time || '-'}`);
+      } catch (error) { eventHost.textContent = `读取流式事件失败：${error.message}`; summaryHost.innerHTML = `<div class="empty">读取失败：${error.message}</div>`; }
+    }
+    async function clearLogs() {
+      if (!window.confirm('确定要清空 STT 日志吗？')) return;
+      try { const payload = await getJson('/api/debug/stt-log', { method: 'DELETE' }); showToast(payload.message || '日志已清空'); await refreshLogs(); }
+      catch (error) { showToast(`清空日志失败：${error.message}`, true); }
+    }
+    async function clearEvents() {
+      if (!window.confirm('确定要清空流式事件吗？')) return;
+      try { const payload = await getJson('/api/debug/stt-events', { method: 'DELETE' }); showToast(payload.message || '事件已清空'); await refreshStreamEvents(); }
+      catch (error) { showToast(`清空事件失败：${error.message}`, true); }
+    }
+    async function refreshAll() {
+      await Promise.all([refreshBackendHealth(), refreshSttHealth(), refreshAgentHealth(), refreshMeetings(), refreshStreamEvents(), refreshLogs()]);
+      document.getElementById('last-refresh').textContent = `最近刷新：${new Date().toLocaleTimeString()}`;
+    }
+    refreshAll();
+    window.setInterval(refreshLogs, 4000);
+    window.setInterval(refreshStreamEvents, 2500);
+    window.setInterval(refreshSttHealth, 8000);
+    window.setInterval(refreshAgentHealth, 8000);
+  </script>
+</body>
+</html>

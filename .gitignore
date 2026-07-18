@@ -43,12 +43,23 @@
 **/*.poppler.txt
 
 # Docker / local volumes
-**/data/
+/server/data/
 **/logs/
 
 # 忽略 .env 文件及常见变体
 **/.env
 **/.env.*
+!**/.env.example
+/server/.env.remote
+/server/.deployment-state.json
+/server/.venv-native-validation/
+/android/local.defaults.env
+!/android/local.defaults.env.example
+/android/local.properties
+/server/**/runtime/
+/server/**/pip/
+/server/**/.switch_pending
+/server/shared/data/
 
 # Rust 编译产物
 /target/
@@ -78,3 +89,12 @@ free_download_pdf/docs/
 
 **/android-sdk/
 **/%SystemDrive%
+
+# Generated promotional media and intermediate artifacts
+/projects/promo_video/**/raw/
+/projects/promo_video/**/work/
+/projects/promo_video/**/qa/
+/projects/promo_video/**/exports/
+
+# Generated brochure exports
+/projects/brochure/**/exports/

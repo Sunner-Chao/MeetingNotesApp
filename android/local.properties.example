@@ -1,0 +1,2 @@
+# Use an absolute path to the Android SDK on the build machine.
+sdk.dir=D:/path/to/android-sdk

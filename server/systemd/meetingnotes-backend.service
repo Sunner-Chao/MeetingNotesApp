@@ -1,0 +1,47 @@
+[Unit]
+Description=MeetingNotesApp Optional Backend Service
+After=network-online.target meetingnotes-stt.service
+Wants=network-online.target
+Requires=meetingnotes-stt.service
+
+[Service]
+Type=simple
+User=meetingnotes
+Group=meetingnotes
+WorkingDirectory=/opt/meetingnotes-stt/current/backend-service
+EnvironmentFile=/etc/meetingnotes-stt/stt.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONUNBUFFERED=1
+Environment=HOME=/var/lib/meetingnotes-stt
+Environment=CODEX_HOME=/var/lib/meetingnotes-stt/.codex
+Environment=CLAUDE_CONFIG_DIR=/var/lib/meetingnotes-stt/.claude
+Environment=WEB_BACKEND_DB_PATH=/var/lib/meetingnotes-stt/backend/meeting_notes.db
+Environment=STT_SERVICE_BASE_URL=http://127.0.0.1:8888
+ExecStart=/opt/meetingnotes-stt/current-venv/bin/python -u web_backend.py
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+UMask=0027
+
+MemoryMax=768M
+CPUQuota=100%
+TasksMax=96
+LimitNOFILE=4096
+
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/meetingnotes-stt
+
+[Install]
+WantedBy=multi-user.target

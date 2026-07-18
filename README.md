@@ -1,122 +1,63 @@
-# OA助手 - 智能会议纪要
+# MeetingNotesApp
 
-基于 Android 的智能会议纪要应用，支持语音转文本和 AI 报告生成。
+智能会议录音、语音转写和 AI 纪要生成项目。仓库已经拆分为两个可独立处理的工程：
 
-## 功能特性
+| 工程 | 目录 | 用途 | 独立入口 |
+|---|---|---|---|
+| Android 客户端 | [`android/`](android/) | 录音、实时预览、最终转写、报告生成、导出和本地数据管理 | [`android/README.md`](android/README.md) |
+| Server 服务端 | [`server/`](server/) | Faster-Whisper STT、并发调度、可选调试 Backend、Ubuntu systemd 部署 | [`server/README.md`](server/README.md) |
 
-- 🎙️ **语音录制** - 会议录音
-- 📝 **实时转录** - 语音实时转为文字 (Faster-Whisper / SenseVoice)
-- 🤖 **智能纪要** - AI 自动生成会议纪要 (Ollama / 云端大模型)
-- 📤 **导出分享** - 支持 Markdown/TXT 格式导出
+两个目录不再共享源码、Gradle 配置、Python 环境、模型目录或运行数据。`server/` 可以单独复制到 Ubuntu/Windows 服务器；`android/` 可以单独用 Android Studio 打开。
 
-## 技术架构
+## 当前调用关系
 
-```
-┌─────────────────────────────────────────────────┐
-│                  Android App                      │
-│  ┌─────────┐  ┌──────────┐  ┌───────────────┐   │
-│  │  UI    │  │ UseCases │  │ Repository    │   │
-│  │ (Compose)│  │          │  │ (in-memory)   │   │
-│  └─────────┘  └──────────┘  └───────────────┘   │
-│       │              │               │          │
-│  ┌────────────────────────────────────────┐     │
-│  │         Infrastructure Layer           │     │
-│  │  STT Engines │ LLM Engines │ Exporter │     │
-│  └────────────────────────────────────────┘     │
-└─────────────────────────────────────────────────┘
-        │                  │
-        ▼                  ▼
-┌──────────────┐   ┌──────────────────┐
-│ STT Server   │   │ Ollama / Cloud  │
-│ (Python)     │   │ LLM API         │
-└──────────────┘   └──────────────────┘
+```text
+Android App
+  |-- HTTPS/WSS --> STT Service (/transcribe, /ws/transcribe-stream)
+  |-- HTTP/HTTPS -> Ollama 或云端 LLM API
+  `-- Room ------> Android 本地会议、转写和报告数据库
+
+Server
+  |-- STT Service ----> Faster-Whisper / SenseVoice 模型
+  `-- Backend Service -> 独立 SQLite + Web 调试台
 ```
 
-## STT 引擎支持
+重要边界：
 
-| 引擎 | 类型 | 说明 |
-|------|------|------|
-| Faster-Whisper | 本地 (P0) | 推荐，中文效果好 |
-| SenseVoice | 本地 (P1) | 阿里开源，中文优化 |
-| 云端 ASR | 云端 (P2) | 硅基流动等 |
-
-## LLM 引擎支持
-
-| 引擎 | 类型 | 说明 |
-|------|------|------|
-| Ollama | 本地 (P0) | qwen2.5:7b 等 |
-| 云端 API | 云端 (P1) | OpenAI 兼容接口 |
+- Android 已接入 `server/stt-service`，支持文件转写、WebSocket 实时预览和 Bearer Token。
+- Android 的 LLM 请求直接发送给 Ollama 或云端 API，不经过本仓库 Backend。
+- Android 尚未调用 `server/backend-service` 的会议/报告 API；两边数据库当前相互独立，不会自动同步。
+- 当前登录只保存本地用户名，不是服务端账号认证。
 
 ## 快速开始
 
-### 1. 部署 STT 服务
+### Android
+
+```powershell
+cd android
+.\gradlew.bat lintDebug assembleDebug
+```
+
+APK 输出：`android/app/build/outputs/apk/debug/app-debug.apk`。
+
+### Ubuntu Server
 
 ```bash
 cd server
-pip install -r requirements.txt
-python stt_server.py --port 8001
+bash deploy-ubuntu.sh
 ```
 
-### 2. 部署 Ollama (本地 LLM)
+生产冻结版为 4 核 4 GB、无 GPU 的 CPU `int8` 配置，不使用 Docker。Windows 到 Ubuntu 的 SSH 同步发布、端口、Token、备份和回滚参见 [`server/DEPLOY_UBUNTU.md`](server/DEPLOY_UBUNTU.md)。
 
-```bash
-# 安装 Ollama
-curl -fsSL https://ollama.com/install.sh | sh
+## 根目录内容
 
-# 下载模型
-ollama pull qwen2.5:7b
-
-# 启动服务
-ollama serve
-```
-
-### 3. 配置 OA助手
-
-在 App 设置中配置:
-- STT 服务地址: `http://localhost:8001`
-- Ollama 地址: `http://localhost:11434`
-
-### 4. 编译安装
-
-```bash
-# 设置 SDK
-export ANDROID_HOME=/path/to/android-sdk
-
-# 编译
-./gradlew assembleDebug
-
-# APK 位于
-# app/build/outputs/apk/debug/app-debug.apk
-```
-
-## 项目结构
-
-```
+```text
 MeetingNotesApp/
-├── app/
-│   └── src/main/
-│       └── java/com/oa/automation/
-│           ├── application/usecase/   # 用例
-│           ├── data/local/           # DataStore
-│           ├── domain/model/         # 数据模型
-│           ├── infrastructure/       # 引擎实现
-│           │   ├── stt/             # 语音识别
-│           │   ├── llm/             # 大模型
-│           │   └── export/          # 导出
-│           └── ui/                  # 界面
-├── server/
-│   ├── stt_server.py                # STT 服务
-│   └── requirements.txt
-└── OLLAMA_DEPLOY.md                # Ollama 部署指南
+|-- android/          # 独立 Android Gradle 工程
+|-- server/           # 独立 Python/systemd 服务端工程，包含 models/
+|-- git_shell/        # Windows Git 辅助脚本
+|-- git_shell_linux/  # Linux Git 辅助脚本
+`-- README.md         # 双端边界与入口
 ```
 
-## 环境要求
-
-- Android SDK 34+
-- Kotlin 1.9+
-- Python 3.10+ (STT 服务)
-- Ollama 0.1+ (本地 LLM，可选)
-
-## 许可证
-
-MIT License
+`build/`、`data/`、`dist/` 和 `.gradle/` 是历史或本机生成目录，不属于两个工程的源码边界。
