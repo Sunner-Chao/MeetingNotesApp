@@ -14,9 +14,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         MeetingAttachmentEntity::class,
         ScheduledMeetingEntity::class,
         JourneyEntity::class,
-        JourneyStageEntity::class
+        JourneyStageEntity::class,
+        StageDraftVersionEntity::class
     ],
-    version = 7,
+    version = 8,
     exportSchema = false
 )
 @TypeConverters(DbConverters::class)
@@ -25,6 +26,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun reportDao(): ReportDao
     abstract fun scheduledMeetingDao(): ScheduledMeetingDao
     abstract fun journeyDao(): JourneyDao
+    abstract fun stageDraftDao(): StageDraftDao
 
     companion object {
         val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -153,6 +155,42 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL(
                     "CREATE INDEX IF NOT EXISTS index_meeting_attachments_journeyStageId " +
                         "ON meeting_attachments(journeyStageId)"
+                )
+            }
+        }
+
+        val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS stage_draft_versions (
+                        id TEXT NOT NULL,
+                        stageId TEXT NOT NULL,
+                        versionNumber INTEGER NOT NULL,
+                        content TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        evidenceTranscriptCount INTEGER NOT NULL,
+                        evidenceAttachmentCount INTEGER NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        updatedAt INTEGER NOT NULL,
+                        confirmedAt INTEGER,
+                        PRIMARY KEY(id),
+                        FOREIGN KEY(stageId) REFERENCES journey_stages(id)
+                            ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_stage_draft_versions_stageId " +
+                        "ON stage_draft_versions(stageId)"
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS index_stage_draft_versions_stageId_versionNumber " +
+                        "ON stage_draft_versions(stageId, versionNumber)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_stage_draft_versions_stageId_status " +
+                        "ON stage_draft_versions(stageId, status)"
                 )
             }
         }

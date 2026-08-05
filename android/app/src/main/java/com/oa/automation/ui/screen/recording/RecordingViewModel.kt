@@ -14,10 +14,14 @@ import com.oa.automation.domain.model.Journey
 import com.oa.automation.domain.model.JourneyStage
 import com.oa.automation.domain.model.JourneyStageStatus
 import com.oa.automation.domain.model.JourneyStatus
+import com.oa.automation.domain.model.StageDraftStatus
+import com.oa.automation.domain.model.StageDraftVersion
 import com.oa.automation.domain.model.ReportTemplateConfig
 import com.oa.automation.domain.repository.JourneyRepository
 import com.oa.automation.domain.repository.MeetingRepository
 import com.oa.automation.domain.repository.ReportRepository
+import com.oa.automation.domain.repository.StageDraftRepository
+import com.oa.automation.application.usecase.GenerateStageDraftUseCase
 import com.oa.automation.domain.model.Transcript
 import com.oa.automation.domain.model.MeetingAttachment
 import com.oa.automation.domain.model.STTConfig
@@ -85,6 +89,11 @@ data class RecordingUiState(
     val reportTemplate: ReportTemplateConfig = ReportTemplateConfig(),
     val journey: Journey? = null,
     val currentJourneyStage: JourneyStage? = null,
+    val latestSavedJourneyStage: JourneyStage? = null,
+    val latestStageDraft: StageDraftVersion? = null,
+    val isGeneratingStageDraft: Boolean = false,
+    val isSavingStageDraft: Boolean = false,
+    val stageDraftEditorVisible: Boolean = false,
     val journeyStageCount: Int = 0,
     val isJourneyActionPending: Boolean = false,
     val journeyStatusMessage: String = "",
@@ -148,6 +157,11 @@ internal fun RecordingUiState.resetForMeetingChange(): RecordingUiState = copy(
     transcriptPreviewMode = "流式预览",
     journey = null,
     currentJourneyStage = null,
+    latestSavedJourneyStage = null,
+    latestStageDraft = null,
+    isGeneratingStageDraft = false,
+    isSavingStageDraft = false,
+    stageDraftEditorVisible = false,
     journeyStageCount = 0,
     isJourneyActionPending = false,
     journeyStatusMessage = "",
@@ -190,6 +204,7 @@ class RecordingViewModel(
     private val configDataStore: ConfigDataStore,
     private val meetingRepository: MeetingRepository,
     private val journeyRepository: JourneyRepository,
+    private val stageDraftRepository: StageDraftRepository,
     private val reportRepository: ReportRepository,
     private val attachmentStore: MeetingAttachmentStore,
     private val recordingController: RecordingSessionController,
@@ -198,6 +213,7 @@ class RecordingViewModel(
     private val externalTextSourceLauncher: ExternalTextSourceLauncher,
     private val audioArchiveService: MeetingAudioArchiveService,
     private val importedAudioStore: ImportedAudioStore,
+    private val generateStageDraftUseCase: GenerateStageDraftUseCase,
     context: Context
 ) : ViewModel() {
 
@@ -216,6 +232,7 @@ class RecordingViewModel(
     private var attachmentCollectionJob: Job? = null
     private var journeyCollectionJob: Job? = null
     private var journeyStageCollectionJob: Job? = null
+    private var stageDraftCollectionJob: Job? = null
     private var transcriptionCollectionJob: Job? = null
     private var reportCollectionJob: Job? = null
     private var pendingRecordingStartJob: Job? = null
@@ -362,6 +379,8 @@ class RecordingViewModel(
             journeyCollectionJob = null
             journeyStageCollectionJob?.cancel()
             journeyStageCollectionJob = null
+            stageDraftCollectionJob?.cancel()
+            stageDraftCollectionJob = null
             resetStreamingPreviewState()
             _uiState.value = _uiState.value.resetForMeetingChange()
         }
@@ -439,6 +458,8 @@ class RecordingViewModel(
         journeyCollectionJob?.cancel()
         journeyStageCollectionJob?.cancel()
         journeyStageCollectionJob = null
+        stageDraftCollectionJob?.cancel()
+        stageDraftCollectionJob = null
         journeyCollectionJob = viewModelScope.launch {
             journeyRepository.observeByMeetingId(meetingId).collect journeyUpdate@ { journey ->
                 if (!isCurrentMeeting(meetingId)) return@journeyUpdate
@@ -446,6 +467,9 @@ class RecordingViewModel(
                     state.copy(
                         journey = journey,
                         currentJourneyStage = null,
+                        latestSavedJourneyStage = null,
+                        latestStageDraft = null,
+                        stageDraftEditorVisible = false,
                         journeyStageCount = if (journey == null) 0 else state.journeyStageCount
                     )
                 }
@@ -457,6 +481,12 @@ class RecordingViewModel(
                 journeyStageCollectionJob = viewModelScope.launch {
                     journeyRepository.observeStages(journeyId).collect stageUpdate@ { stages ->
                         if (!isCurrentMeeting(meetingId)) return@stageUpdate
+                        val latestSavedStage = stages
+                            .asSequence()
+                            .filter { it.status == JourneyStageStatus.SAVED }
+                            .maxByOrNull { it.sequenceNumber }
+                        val observedStageId = latestSavedStage?.id
+                        val previousSavedStageId = _uiState.value.latestSavedJourneyStage?.id
                         _uiState.update { state ->
                             if (state.journey?.id != journeyId) {
                                 state
@@ -465,8 +495,29 @@ class RecordingViewModel(
                                     currentJourneyStage = stages.firstOrNull {
                                         it.id == journey.currentStageId
                                     },
+                                    latestSavedJourneyStage = latestSavedStage,
+                                    latestStageDraft = if (previousSavedStageId == observedStageId) {
+                                        state.latestStageDraft
+                                    } else {
+                                        null
+                                    },
                                     journeyStageCount = stages.size
                                 )
+                            }
+                        }
+                        if (observedStageId == null) {
+                            stageDraftCollectionJob?.cancel()
+                            stageDraftCollectionJob = null
+                        } else if (previousSavedStageId != observedStageId) {
+                            stageDraftCollectionJob?.cancel()
+                            stageDraftCollectionJob = viewModelScope.launch {
+                                stageDraftRepository.observeLatest(observedStageId).collect { draft ->
+                                    if (isCurrentMeeting(meetingId) &&
+                                        _uiState.value.latestSavedJourneyStage?.id == observedStageId
+                                    ) {
+                                        _uiState.update { it.copy(latestStageDraft = draft) }
+                                    }
+                                }
                             }
                         }
                     }
@@ -700,7 +751,12 @@ class RecordingViewModel(
             _uiState.update { it.copy(error = "会议标识缺失") }
             return
         }
-        if (_uiState.value.isRecordingActionPending || _uiState.value.isJourneyActionPending) return
+        val state = _uiState.value
+        if (isStudyJourneyAwaitingNextStage(state)) {
+            _uiState.update { it.copy(error = "请先开始下一段旅程，再录音或导入本段素材") }
+            return
+        }
+        if (state.isRecordingActionPending || state.isJourneyActionPending) return
         val active = recordingController.state.value
         if (active.isStopping) {
             if (pendingRecordingStartJob?.isActive == true) return
@@ -729,6 +785,10 @@ class RecordingViewModel(
 
     private fun startRecordingNow(meetingId: String) {
         if (!isCurrentMeeting(meetingId)) return
+        if (isStudyJourneyAwaitingNextStage(_uiState.value)) {
+            _uiState.update { it.copy(error = "请先开始下一段旅程，再录音或导入本段素材") }
+            return
+        }
         val currentTranscript = SimplifiedChineseText.normalize(_uiState.value.liveTranscript)
         existingTranscriptText = currentTranscript
         latestStreamingText = ""
@@ -964,6 +1024,151 @@ class RecordingViewModel(
         }
     }
 
+    fun generateLatestStageDraft() {
+        val state = _uiState.value
+        val stage = state.latestSavedJourneyStage
+        when {
+            state.reportTemplate.selectedName != STUDY_JOURNEY_TEMPLATE_NAME -> {
+                _uiState.update { it.copy(error = "请先选择研学考察模板") }
+            }
+            stage == null -> {
+                _uiState.update { it.copy(error = "请先暂存一个旅程段") }
+            }
+            state.currentJourneyStage != null -> {
+                _uiState.update { it.copy(error = "请先暂存当前旅程段，再生成阶段笔记") }
+            }
+            state.isGeneratingStageDraft || state.isSavingStageDraft -> Unit
+            state.latestStageDraft?.status == StageDraftStatus.DRAFT -> {
+                _uiState.update { it.copy(stageDraftEditorVisible = true, error = null) }
+            }
+            else -> {
+                val meetingId = currentMeetingId
+                _uiState.update {
+                    it.copy(
+                        isGeneratingStageDraft = true,
+                        journeyStatusMessage = "正在生成${stage.title}阶段笔记",
+                        error = null
+                    )
+                }
+                viewModelScope.launch {
+                    generateStageDraftUseCase(stage).fold(
+                        onSuccess = { draft ->
+                            if (isCurrentMeeting(meetingId)) {
+                                _uiState.update {
+                                    it.copy(
+                                        isGeneratingStageDraft = false,
+                                        latestStageDraft = draft,
+                                        stageDraftEditorVisible = true,
+                                        journeyStatusMessage = "${stage.title}阶段笔记已生成"
+                                    )
+                                }
+                            }
+                        },
+                        onFailure = { error ->
+                            if (isCurrentMeeting(meetingId)) {
+                                _uiState.update {
+                                    it.copy(
+                                        isGeneratingStageDraft = false,
+                                        error = "生成阶段笔记失败: ${error.message ?: "未知错误"}"
+                                    )
+                                }
+                            }
+                        }
+                    )
+                }
+            }
+        }
+    }
+
+    fun openLatestStageDraft() {
+        if (_uiState.value.latestStageDraft == null) {
+            _uiState.update { it.copy(error = "当前还没有阶段笔记") }
+            return
+        }
+        _uiState.update { it.copy(stageDraftEditorVisible = true, error = null) }
+    }
+
+    fun dismissStageDraftEditor() {
+        _uiState.update { it.copy(stageDraftEditorVisible = false) }
+    }
+
+    fun saveStageDraftContent(content: String) {
+        val draft = _uiState.value.latestStageDraft ?: return
+        if (draft.status != StageDraftStatus.DRAFT) {
+            _uiState.update { it.copy(error = "已确认的阶段笔记不可修改") }
+            return
+        }
+        if (_uiState.value.isSavingStageDraft) return
+        val meetingId = currentMeetingId
+        _uiState.update { it.copy(isSavingStageDraft = true, error = null) }
+        viewModelScope.launch {
+            stageDraftRepository.saveDraft(draft.id, content).fold(
+                onSuccess = { saved ->
+                    if (isCurrentMeeting(meetingId)) {
+                        _uiState.update {
+                            it.copy(
+                                isSavingStageDraft = false,
+                                latestStageDraft = saved,
+                                journeyStatusMessage = "阶段笔记修改已保存"
+                            )
+                        }
+                    }
+                },
+                onFailure = { error ->
+                    if (isCurrentMeeting(meetingId)) {
+                        _uiState.update {
+                            it.copy(
+                                isSavingStageDraft = false,
+                                error = "保存阶段笔记失败: ${error.message ?: "未知错误"}"
+                            )
+                        }
+                    }
+                }
+            )
+        }
+    }
+
+    fun confirmStageDraft(content: String) {
+        val draft = _uiState.value.latestStageDraft ?: return
+        if (draft.status != StageDraftStatus.DRAFT) {
+            _uiState.update { it.copy(error = "阶段笔记已经确认") }
+            return
+        }
+        if (_uiState.value.isSavingStageDraft) return
+        val meetingId = currentMeetingId
+        _uiState.update { it.copy(isSavingStageDraft = true, error = null) }
+        viewModelScope.launch {
+            val result = stageDraftRepository.saveDraft(draft.id, content).fold(
+                onSuccess = { saved -> stageDraftRepository.confirmDraft(saved.id) },
+                onFailure = { error -> Result.failure(error) }
+            )
+            result.fold(
+                    onSuccess = { confirmed ->
+                        if (isCurrentMeeting(meetingId)) {
+                            _uiState.update {
+                                it.copy(
+                                    isSavingStageDraft = false,
+                                    latestStageDraft = confirmed,
+                                    stageDraftEditorVisible = false,
+                                    journeyStatusMessage = "阶段笔记已确认"
+                                )
+                            }
+                        }
+                    },
+                    onFailure = { error ->
+                        if (isCurrentMeeting(meetingId)) {
+                            _uiState.update {
+                                it.copy(
+                                    isSavingStageDraft = false,
+                                    error = "确认阶段笔记失败: ${error.message ?: "未知错误"}"
+                                )
+                            }
+                        }
+                    }
+                )
+        }
+    }
+
     private fun saveJourneyLifecycle(journey: Journey, statusMessage: String) {
         _uiState.update { it.copy(isJourneyActionPending = true, error = null) }
         viewModelScope.launch {
@@ -996,6 +1201,11 @@ class RecordingViewModel(
             !state.isRecordingActionPending &&
             !state.isTranscribing &&
             !state.isGeneratingReport
+
+    private fun isStudyJourneyAwaitingNextStage(state: RecordingUiState): Boolean =
+        state.reportTemplate.selectedName == STUDY_JOURNEY_TEMPLATE_NAME &&
+            state.journey != null &&
+            state.currentJourneyStage == null
 
     private fun requestRecordingStop(showNoRecordingError: Boolean) {
         val meetingId = currentMeetingId
@@ -1126,6 +1336,10 @@ class RecordingViewModel(
     private fun saveSelectedTranscript(source: TranscriptSource) {
         val meetingId = currentMeetingId
         if (meetingId.isBlank()) return
+        if (isStudyJourneyAwaitingNextStage(_uiState.value)) {
+            _uiState.update { it.copy(error = "请先开始下一段旅程，再保存本段转写") }
+            return
+        }
         val journeyStageId = _uiState.value.currentJourneyStage?.id
         val selectedText = when (source) {
             TranscriptSource.STREAMING -> _uiState.value.pendingStreamingText
@@ -1386,6 +1600,10 @@ class RecordingViewModel(
             return
         }
         val state = _uiState.value
+        if (isStudyJourneyAwaitingNextStage(state)) {
+            _uiState.update { it.copy(error = "请先开始下一段旅程，再导入本段音频") }
+            return
+        }
         val journeyStageId = state.currentJourneyStage?.id
         if (state.isImportingAudio || state.isRecording || state.isTranscribing) return
         val importToken = java.util.UUID.randomUUID().toString()
@@ -1504,6 +1722,10 @@ class RecordingViewModel(
     fun saveTextAndGenerateReport() {
         val text = _uiState.value.manualTextInput.trim()
         val meetingId = currentMeetingId
+        if (isStudyJourneyAwaitingNextStage(_uiState.value)) {
+            _uiState.update { it.copy(error = "请先开始下一段旅程，再保存人工文本") }
+            return
+        }
         val journeyStageId = _uiState.value.currentJourneyStage?.id
         if (text.isBlank() || meetingId.isBlank()) return
 
@@ -1560,6 +1782,10 @@ class RecordingViewModel(
     fun importImages(uris: List<Uri>, captureLocation: Boolean = false) {
         val meetingId = currentMeetingId
         if (meetingId.isBlank() || uris.isEmpty()) return
+        if (isStudyJourneyAwaitingNextStage(_uiState.value)) {
+            _uiState.update { it.copy(error = "请先开始下一段旅程，再导入本段图片") }
+            return
+        }
         val journeyStageId = _uiState.value.currentJourneyStage?.id
         viewModelScope.launch {
             attachmentStore.importImages(
@@ -1589,6 +1815,9 @@ class RecordingViewModel(
 
     override fun onCleared() {
         attachmentCollectionJob?.cancel()
+        journeyCollectionJob?.cancel()
+        journeyStageCollectionJob?.cancel()
+        stageDraftCollectionJob?.cancel()
         transcriptionCollectionJob?.cancel()
         reportCollectionJob?.cancel()
         audioRefreshJob?.cancel()

@@ -132,6 +132,8 @@ import com.oa.automation.BuildConfig
 import com.oa.automation.R
 import com.oa.automation.domain.model.MeetingAttachment
 import com.oa.automation.domain.model.PresetReportTemplate
+import com.oa.automation.domain.model.StageDraftStatus
+import com.oa.automation.domain.model.StageDraftVersion
 import com.oa.automation.domain.model.STTEngineType
 import com.oa.automation.domain.model.STTLanguage
 import com.oa.automation.infrastructure.audio.ArchivedMeetingAudio
@@ -291,6 +293,11 @@ internal fun RecordingReferenceScaffold(
     onSaveCurrentJourneyStage: () -> Unit,
     onPauseJourney: () -> Unit,
     onContinueJourney: () -> Unit,
+    onGenerateStageDraft: () -> Unit,
+    onOpenStageDraft: () -> Unit,
+    onSaveStageDraftContent: (String) -> Unit,
+    onConfirmStageDraft: (String) -> Unit,
+    onDismissStageDraftEditor: () -> Unit,
     onAbandonRecording: () -> Unit,
     onGenerateReport: () -> Unit,
     onCancelTranscription: () -> Unit,
@@ -429,6 +436,19 @@ internal fun RecordingReferenceScaffold(
             onSelectStreaming = onSelectStreamingTranscript,
             onSelectBackend = onSelectBackendTranscript,
             onDismiss = onDismissTranscriptPicker
+        )
+    }
+
+    val stageDraft = uiState.latestStageDraft
+    val savedStage = uiState.latestSavedJourneyStage
+    if (uiState.stageDraftEditorVisible && stageDraft != null && savedStage != null) {
+        StageDraftEditorDialog(
+            stage = savedStage,
+            draft = stageDraft,
+            isSaving = uiState.isSavingStageDraft,
+            onSave = onSaveStageDraftContent,
+            onConfirm = onConfirmStageDraft,
+            onDismiss = onDismissStageDraftEditor
         )
     }
 
@@ -578,6 +598,8 @@ internal fun RecordingReferenceScaffold(
                     onSaveCurrentJourneyStage = onSaveCurrentJourneyStage,
                     onPauseJourney = onPauseJourney,
                     onContinueJourney = onContinueJourney,
+                    onGenerateStageDraft = onGenerateStageDraft,
+                    onOpenStageDraft = onOpenStageDraft,
                     onGenerateReport = onGenerateReport,
                     onCancelTranscription = onCancelTranscription,
                     onCancelReport = onCancelReport,
@@ -605,7 +627,87 @@ internal fun RecordingReferenceScaffold(
         }
     }
     }
+    }
 }
+
+@Composable
+private fun StageDraftEditorDialog(
+    stage: com.oa.automation.domain.model.JourneyStage,
+    draft: StageDraftVersion,
+    isSaving: Boolean,
+    onSave: (String) -> Unit,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val editable = draft.status == StageDraftStatus.DRAFT
+    var content by remember(draft.id, draft.updatedAt) { mutableStateOf(draft.content) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text("${stage.title}阶段笔记")
+                Text(
+                    text = "版本 ${draft.versionNumber} · 转写 ${draft.evidenceTranscriptCount} 条 · 图片 ${draft.evidenceAttachmentCount} 张",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier.heightIn(max = 460.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (!editable) {
+                    Text(
+                        text = "已确认版本，仅供查看。重新生成会创建新版本。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                OutlinedTextField(
+                    value = content,
+                    onValueChange = { content = it },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 220.dp, max = 380.dp),
+                    readOnly = !editable,
+                    enabled = !isSaving,
+                    label = { Text("Markdown 阶段笔记") },
+                    minLines = 9,
+                    maxLines = 15
+                )
+            }
+        },
+        confirmButton = {
+            if (editable) {
+                Button(
+                    onClick = { onConfirm(content) },
+                    enabled = content.isNotBlank() && !isSaving
+                ) {
+                    if (isSaving) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    Text("确认阶段")
+                }
+            } else {
+                TextButton(onClick = onDismiss) { Text("关闭") }
+            }
+        },
+        dismissButton = {
+            if (editable) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = onDismiss, enabled = !isSaving) { Text("取消") }
+                    TextButton(
+                        onClick = { onSave(content) },
+                        enabled = content.isNotBlank() && !isSaving
+                    ) { Text("保存修改") }
+                }
+            }
+        },
+        shape = RoundedCornerShape(18.dp)
+    )
 }
 
 @Composable
