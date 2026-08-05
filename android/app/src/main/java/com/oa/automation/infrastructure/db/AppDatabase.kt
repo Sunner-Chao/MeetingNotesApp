@@ -16,7 +16,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         JourneyEntity::class,
         JourneyStageEntity::class
     ],
-    version = 6,
+    version = 7,
     exportSchema = false
 )
 @TypeConverters(DbConverters::class)
@@ -138,6 +138,21 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL(
                     "CREATE INDEX IF NOT EXISTS index_journey_stages_status " +
                         "ON journey_stages(status)"
+                )
+            }
+        }
+
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE transcripts ADD COLUMN journeyStageId TEXT")
+                db.execSQL("ALTER TABLE meeting_attachments ADD COLUMN journeyStageId TEXT")
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_transcripts_journeyStageId " +
+                        "ON transcripts(journeyStageId)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_meeting_attachments_journeyStageId " +
+                        "ON meeting_attachments(journeyStageId)"
                 )
             }
         }

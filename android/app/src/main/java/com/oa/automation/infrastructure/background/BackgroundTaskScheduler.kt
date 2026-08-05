@@ -37,14 +37,20 @@ class BackgroundTaskScheduler(context: Context) {
         .setRequiredNetworkType(NetworkType.CONNECTED)
         .build()
 
-    fun enqueueTranscription(meetingId: String, audioFile: File, streamSessionId: String? = null): UUID {
+    fun enqueueTranscription(
+        meetingId: String,
+        audioFile: File,
+        streamSessionId: String? = null,
+        journeyStageId: String? = null
+    ): UUID {
         val request = OneTimeWorkRequestBuilder<TranscriptionWorker>()
             .setInputData(
                 workDataOf(
                     TranscriptionWorker.KEY_MEETING_ID to meetingId,
                     TranscriptionWorker.KEY_AUDIO_PATH to audioFile.absolutePath,
                     TranscriptionWorker.KEY_TRANSCRIPT_ID to UUID.randomUUID().toString(),
-                    TranscriptionWorker.KEY_STREAM_SESSION_ID to streamSessionId.orEmpty()
+                    TranscriptionWorker.KEY_STREAM_SESSION_ID to streamSessionId.orEmpty(),
+                    TranscriptionWorker.KEY_JOURNEY_STAGE_ID to journeyStageId.orEmpty()
                 )
             )
             .setConstraints(networkConstraint)

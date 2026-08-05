@@ -29,6 +29,7 @@ class StopRecordingUseCase(
         audioFile: File? = null,
         transcriptId: String = UUID.randomUUID().toString(),
         streamSessionId: String? = null,
+        journeyStageId: String? = null,
         onProgress: (ProcessingProgress) -> Unit = {}
     ): Result<Transcript> = withContext(Dispatchers.IO) {
         try {
@@ -66,6 +67,7 @@ class StopRecordingUseCase(
             val transcript = Transcript(
                 id = transcriptId,
                 meetingId = meetingId,
+                journeyStageId = journeyStageId,
                 content = transcriptText
             )
             onProgress(ProcessingProgress(96, "保存最终转录"))

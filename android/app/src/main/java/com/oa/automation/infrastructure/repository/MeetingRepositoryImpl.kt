@@ -70,6 +70,12 @@ class MeetingRepositoryImpl(
         }
     }
 
+    override suspend fun findTranscriptsByJourneyStageId(
+        journeyStageId: String
+    ): Result<List<Transcript>> = runCatching {
+        meetingDao.findTranscriptsByJourneyStageId(journeyStageId).map { it.toDomain() }
+    }
+
     override suspend fun saveAttachment(attachment: MeetingAttachment): Result<MeetingAttachment> = runCatching {
         meetingDao.upsertAttachment(attachment.toEntity())
         attachment
@@ -77,6 +83,10 @@ class MeetingRepositoryImpl(
 
     override fun observeAttachments(meetingId: String) =
         meetingDao.observeAttachmentsByMeetingId(meetingId).map { list -> list.map { it.toDomain() } }
+
+    override fun observeAttachmentsByJourneyStageId(journeyStageId: String) =
+        meetingDao.observeAttachmentsByJourneyStageId(journeyStageId)
+            .map { list -> list.map { it.toDomain() } }
 
     override suspend fun deleteAttachment(id: String): Result<Unit> = runCatching {
         meetingDao.deleteAttachment(id)

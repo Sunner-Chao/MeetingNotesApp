@@ -47,11 +47,17 @@ interface MeetingDao {
     @Query("SELECT * FROM transcripts WHERE meetingId = :meetingId ORDER BY createdAt ASC")
     suspend fun findTranscriptsByMeetingId(meetingId: String): List<TranscriptEntity>
 
+    @Query("SELECT * FROM transcripts WHERE journeyStageId = :journeyStageId ORDER BY createdAt ASC")
+    suspend fun findTranscriptsByJourneyStageId(journeyStageId: String): List<TranscriptEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAttachment(entity: MeetingAttachmentEntity)
 
     @Query("SELECT * FROM meeting_attachments WHERE meetingId = :meetingId ORDER BY createdAt ASC")
     fun observeAttachmentsByMeetingId(meetingId: String): Flow<List<MeetingAttachmentEntity>>
+
+    @Query("SELECT * FROM meeting_attachments WHERE journeyStageId = :journeyStageId ORDER BY createdAt ASC")
+    fun observeAttachmentsByJourneyStageId(journeyStageId: String): Flow<List<MeetingAttachmentEntity>>
 
     @Query("DELETE FROM meeting_attachments WHERE id = :id")
     suspend fun deleteAttachment(id: String)

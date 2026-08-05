@@ -123,7 +123,9 @@ internal fun recordingActionPending(session: RecordingSessionState): Boolean = w
 }
 
 internal fun isRecordingActionEnabled(state: RecordingUiState): Boolean =
-    !state.isRecordingActionPending && !state.isGeneratingReport
+    !state.isRecordingActionPending &&
+        !state.isJourneyActionPending &&
+        !state.isGeneratingReport
 
 internal fun RecordingUiState.resetForMeetingChange(): RecordingUiState = copy(
     meetingTitle = "",
@@ -698,7 +700,7 @@ class RecordingViewModel(
             _uiState.update { it.copy(error = "会议标识缺失") }
             return
         }
-        if (_uiState.value.isRecordingActionPending) return
+        if (_uiState.value.isRecordingActionPending || _uiState.value.isJourneyActionPending) return
         val active = recordingController.state.value
         if (active.isStopping) {
             if (pendingRecordingStartJob?.isActive == true) return
@@ -734,7 +736,7 @@ class RecordingViewModel(
         previewStreamingText = ""
         preservedStreamingText = ""
         currentStreamingSessionId = ""
-        startForegroundService(meetingId)
+        startForegroundService(meetingId, _uiState.value.currentJourneyStage?.id)
         _uiState.update {
             it.copy(
                 isRecording = false,
@@ -1124,6 +1126,7 @@ class RecordingViewModel(
     private fun saveSelectedTranscript(source: TranscriptSource) {
         val meetingId = currentMeetingId
         if (meetingId.isBlank()) return
+        val journeyStageId = _uiState.value.currentJourneyStage?.id
         val selectedText = when (source) {
             TranscriptSource.STREAMING -> _uiState.value.pendingStreamingText
             TranscriptSource.BACKEND -> _uiState.value.pendingBackendText
@@ -1139,6 +1142,7 @@ class RecordingViewModel(
                 Transcript(
                     id = java.util.UUID.randomUUID().toString(),
                     meetingId = meetingId,
+                    journeyStageId = journeyStageId,
                     content = finalText
                 )
             ).onSuccess {
@@ -1382,6 +1386,7 @@ class RecordingViewModel(
             return
         }
         val state = _uiState.value
+        val journeyStageId = state.currentJourneyStage?.id
         if (state.isImportingAudio || state.isRecording || state.isTranscribing) return
         val importToken = java.util.UUID.randomUUID().toString()
         audioImportToken = importToken
@@ -1408,7 +1413,11 @@ class RecordingViewModel(
                                 ?: error("会议不存在")
                             meetingRepository.save(meeting.copy(audioFilePath = imported.file.absolutePath))
                                 .getOrThrow()
-                            taskScheduler.enqueueTranscription(meetingId, imported.file)
+                            taskScheduler.enqueueTranscription(
+                                meetingId = meetingId,
+                                audioFile = imported.file,
+                                journeyStageId = journeyStageId
+                            )
                         }.onSuccess {
                             if (isCurrentMeeting(meetingId)) {
                                 _uiState.update {
@@ -1495,12 +1504,14 @@ class RecordingViewModel(
     fun saveTextAndGenerateReport() {
         val text = _uiState.value.manualTextInput.trim()
         val meetingId = currentMeetingId
+        val journeyStageId = _uiState.value.currentJourneyStage?.id
         if (text.isBlank() || meetingId.isBlank()) return
 
         viewModelScope.launch {
             val transcript = Transcript(
                 id = java.util.UUID.randomUUID().toString(),
                 meetingId = meetingId,
+                journeyStageId = journeyStageId,
                 content = text
             )
             meetingRepository.saveTranscript(transcript)
@@ -1549,8 +1560,14 @@ class RecordingViewModel(
     fun importImages(uris: List<Uri>, captureLocation: Boolean = false) {
         val meetingId = currentMeetingId
         if (meetingId.isBlank() || uris.isEmpty()) return
+        val journeyStageId = _uiState.value.currentJourneyStage?.id
         viewModelScope.launch {
-            attachmentStore.importImages(meetingId, uris, captureLocation).forEach { result ->
+            attachmentStore.importImages(
+                meetingId = meetingId,
+                sources = uris,
+                captureLocation = captureLocation,
+                journeyStageId = journeyStageId
+            ).forEach { result ->
                 result.onFailure { error ->
                     if (isCurrentMeeting(meetingId)) {
                         _uiState.update { it.copy(error = "图片导入失败: ${error.message}") }
@@ -1866,11 +1883,12 @@ class RecordingViewModel(
         }
     }
 
-    private fun startForegroundService(meetingId: String) {
+    private fun startForegroundService(meetingId: String, journeyStageId: String?) {
         val intent = Intent(appContext, RecordingService::class.java).apply {
             action = RecordingService.ACTION_START
             putExtra(RecordingService.EXTRA_MEETING_ID, meetingId)
             putExtra(RecordingService.EXTRA_MEETING_TITLE, _uiState.value.meetingTitle)
+            putExtra(RecordingService.EXTRA_JOURNEY_STAGE_ID, journeyStageId)
         }
         appContext.startForegroundService(intent)
     }

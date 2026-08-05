@@ -22,29 +22,36 @@ class MeetingAttachmentStore(
 ) {
     fun observe(meetingId: String): Flow<List<MeetingAttachment>> = meetingRepository.observeAttachments(meetingId)
 
+    fun observeJourneyStage(journeyStageId: String): Flow<List<MeetingAttachment>> =
+        meetingRepository.observeAttachmentsByJourneyStageId(journeyStageId)
+
     suspend fun importImage(
         meetingId: String,
         source: Uri,
-        captureLocation: Boolean = false
+        captureLocation: Boolean = false,
+        journeyStageId: String? = null
     ): Result<MeetingAttachment> = importImages(
         meetingId = meetingId,
         sources = listOf(source),
-        captureLocation = captureLocation
+        captureLocation = captureLocation,
+        journeyStageId = journeyStageId
     ).single()
 
     suspend fun importImages(
         meetingId: String,
         sources: List<Uri>,
-        captureLocation: Boolean = false
+        captureLocation: Boolean = false,
+        journeyStageId: String? = null
     ): List<Result<MeetingAttachment>> = withContext(Dispatchers.IO) {
         val deviceLocation = if (captureLocation) locationProvider.capture() else null
-        sources.map { source -> importImage(meetingId, source, deviceLocation) }
+        sources.map { source -> importImage(meetingId, source, deviceLocation, journeyStageId) }
     }
 
     private suspend fun importImage(
         meetingId: String,
         source: Uri,
-        deviceLocation: LocationSnapshot?
+        deviceLocation: LocationSnapshot?,
+        journeyStageId: String?
     ): Result<MeetingAttachment> =
         runCatching {
             val createdAt = System.currentTimeMillis()
@@ -68,6 +75,7 @@ class MeetingAttachmentStore(
             val attachment = MeetingAttachment(
                 id = attachmentId,
                 meetingId = meetingId,
+                journeyStageId = journeyStageId,
                 displayName = originalName,
                 localPath = target.absolutePath,
                 mimeType = mimeType,

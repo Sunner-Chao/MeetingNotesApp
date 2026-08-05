@@ -18,10 +18,14 @@ data class MeetingEntity(
     val audioFilePath: String?
 )
 
-@Entity(tableName = "transcripts")
+@Entity(
+    tableName = "transcripts",
+    indices = [Index(value = ["journeyStageId"])]
+)
 data class TranscriptEntity(
     @PrimaryKey val id: String,
     val meetingId: String,
+    val journeyStageId: String?,
     val speakerName: String?,
     val content: String,
     val startTimeMs: Long,
@@ -45,11 +49,15 @@ data class ReportEntity(
 
 @Entity(
     tableName = "meeting_attachments",
-    indices = [Index(value = ["meetingId"])]
+    indices = [
+        Index(value = ["meetingId"]),
+        Index(value = ["journeyStageId"])
+    ]
 )
 data class MeetingAttachmentEntity(
     @PrimaryKey val id: String,
     val meetingId: String,
+    val journeyStageId: String?,
     val displayName: String,
     val localPath: String,
     val mimeType: String,
@@ -93,6 +101,7 @@ fun Meeting.toEntity() = MeetingEntity(
 fun TranscriptEntity.toDomain() = Transcript(
     id = id,
     meetingId = meetingId,
+    journeyStageId = journeyStageId,
     speakerName = speakerName,
     content = content,
     startTimeMs = startTimeMs,
@@ -103,6 +112,7 @@ fun TranscriptEntity.toDomain() = Transcript(
 fun Transcript.toEntity() = TranscriptEntity(
     id = id,
     meetingId = meetingId,
+    journeyStageId = journeyStageId,
     speakerName = speakerName,
     content = content,
     startTimeMs = startTimeMs,
@@ -139,6 +149,7 @@ fun Report.toEntity() = ReportEntity(
 fun MeetingAttachmentEntity.toDomain() = MeetingAttachment(
     id = id,
     meetingId = meetingId,
+    journeyStageId = journeyStageId,
     displayName = displayName,
     localPath = localPath,
     mimeType = mimeType,
@@ -153,6 +164,7 @@ fun MeetingAttachmentEntity.toDomain() = MeetingAttachment(
 fun MeetingAttachment.toEntity() = MeetingAttachmentEntity(
     id = id,
     meetingId = meetingId,
+    journeyStageId = journeyStageId,
     displayName = displayName,
     localPath = localPath,
     mimeType = mimeType,

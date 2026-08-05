@@ -33,6 +33,7 @@ class RecordingService : Service() {
     private var cancelJob: Job? = null
     private var controlJob: Job? = null
     @Volatile private var activeMeetingId: String? = null
+    @Volatile private var activeJourneyStageId: String? = null
     private var pendingStart: PendingStart? = null
 
     override fun onCreate() {
@@ -45,6 +46,8 @@ class RecordingService : Service() {
             ACTION_START -> {
                 val meetingId = intent.getStringExtra(EXTRA_MEETING_ID).orEmpty()
                 val meetingTitle = intent.getStringExtra(EXTRA_MEETING_TITLE) ?: "会议录音"
+                val journeyStageId = intent.getStringExtra(EXTRA_JOURNEY_STAGE_ID)
+                    ?.takeIf { it.isNotBlank() }
                 if (meetingId.isBlank()) {
                     Log.w(TAG, "Ignoring start without meeting id")
                     return START_NOT_STICKY
@@ -58,13 +61,14 @@ class RecordingService : Service() {
                         // ACTION_STOP releases the microphone before this service
                         // finishes its cleanup. Queue a fast second tap instead of
                         // dropping it during that transition window.
-                        pendingStart = PendingStart(meetingId, meetingTitle)
+                        pendingStart = PendingStart(meetingId, meetingTitle, journeyStageId)
                     } else if (currentMeetingId != meetingId) {
                         Log.w(TAG, "Ignoring start for $meetingId while $currentMeetingId is active")
                     }
                     return START_NOT_STICKY
                 }
                 activeMeetingId = meetingId
+                activeJourneyStageId = journeyStageId
                 // The floating ball is reserved for an idle app in the background.
                 FloatingStatusService.hide(this)
                 startForegroundWithNotification(meetingTitle)
@@ -85,9 +89,10 @@ class RecordingService : Service() {
                     recordingController.stop(meetingId)
                         .onSuccess { stopped ->
                             taskScheduler.enqueueTranscription(
-                                stopped.meetingId,
-                                stopped.audioFile,
-                                stopped.streamSessionId
+                                meetingId = stopped.meetingId,
+                                audioFile = stopped.audioFile,
+                                streamSessionId = stopped.streamSessionId,
+                                journeyStageId = activeJourneyStageId
                             )
                         }
                         .onFailure { error -> Log.i(TAG, "Recording session did not produce audio", error) }
@@ -162,6 +167,7 @@ class RecordingService : Service() {
     private fun finishSessionIfCurrent(meetingId: String, startId: Int) {
         if (activeMeetingId != meetingId) return
         activeMeetingId = null
+        activeJourneyStageId = null
         startJob = null
         stopJob = null
         cancelJob = null
@@ -170,6 +176,7 @@ class RecordingService : Service() {
         pendingStart = null
         if (next != null) {
             activeMeetingId = next.meetingId
+            activeJourneyStageId = next.journeyStageId
             FloatingStatusService.hide(this)
             startForegroundWithNotification(next.title)
             launchRecording(next.meetingId, next.title, startId)
@@ -188,7 +195,11 @@ class RecordingService : Service() {
         }
     }
 
-    private data class PendingStart(val meetingId: String, val title: String)
+    private data class PendingStart(
+        val meetingId: String,
+        val title: String,
+        val journeyStageId: String?
+    )
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -284,5 +295,6 @@ class RecordingService : Service() {
         const val ACTION_RESUME = "com.oa.automation.action.RESUME_RECORDING"
         const val EXTRA_MEETING_ID = "meeting_id"
         const val EXTRA_MEETING_TITLE = "meeting_title"
+        const val EXTRA_JOURNEY_STAGE_ID = "journey_stage_id"
     }
 }

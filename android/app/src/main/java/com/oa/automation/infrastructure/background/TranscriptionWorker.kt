@@ -22,6 +22,7 @@ class TranscriptionWorker(
         val audioPath = inputData.getString(KEY_AUDIO_PATH).orEmpty()
         val transcriptId = inputData.getString(KEY_TRANSCRIPT_ID).orEmpty()
         val streamSessionId = inputData.getString(KEY_STREAM_SESSION_ID)
+        val journeyStageId = inputData.getString(KEY_JOURNEY_STAGE_ID)?.takeIf { it.isNotBlank() }
         if (meetingId.isBlank() || audioPath.isBlank() || transcriptId.isBlank()) {
             return failure("后台转写参数不完整")
         }
@@ -45,11 +46,12 @@ class TranscriptionWorker(
             Log.w(TAG, "Could not promote transcription work; continuing as scheduled work", error)
         }
         val result = stopRecordingUseCase(
-            meetingId,
-            audioFile,
-            transcriptId,
-            streamSessionId,
-            ::publishProgress
+            meetingId = meetingId,
+            audioFile = audioFile,
+            transcriptId = transcriptId,
+            streamSessionId = streamSessionId,
+            journeyStageId = journeyStageId,
+            onProgress = ::publishProgress
         )
         if (result.isSuccess) return Result.success()
 
@@ -75,6 +77,7 @@ class TranscriptionWorker(
         const val KEY_AUDIO_PATH = "audio_path"
         const val KEY_TRANSCRIPT_ID = "transcript_id"
         const val KEY_STREAM_SESSION_ID = "stream_session_id"
+        const val KEY_JOURNEY_STAGE_ID = "journey_stage_id"
         private const val MAX_RETRIES = 2
         private const val NOTIFICATION_ID = 2101
         private const val TAG = "TranscriptionWorker"
