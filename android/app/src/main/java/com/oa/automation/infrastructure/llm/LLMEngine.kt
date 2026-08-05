@@ -3,6 +3,7 @@ package com.oa.automation.infrastructure.llm
 import com.oa.automation.data.local.ConfigDataStore
 import com.oa.automation.domain.model.LLMConfig
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 
 /**
@@ -31,6 +32,7 @@ class LLMEngine(
         val engine = LLMReportEngine.fromConfig(config)
 
         return engine.generateReport(transcript, appConfig.reportTemplateConfig, attachments).getOrElse { error ->
+            if (error is CancellationException) throw error
             // Return a default error report
             ReportData(
                 summary = "生成报告失败: ${error.message}",

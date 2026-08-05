@@ -53,6 +53,24 @@ data class MeetingAttachmentEntity(
     val displayName: String,
     val localPath: String,
     val mimeType: String,
+    val createdAt: Long,
+    val latitude: Double?,
+    val longitude: Double?,
+    val accuracyMeters: Float?,
+    val locationCapturedAt: Long?,
+    val locationSource: String?
+)
+
+@Entity(
+    tableName = "scheduled_meetings",
+    indices = [Index(value = ["scheduledAt"])]
+)
+data class ScheduledMeetingEntity(
+    @PrimaryKey val id: String,
+    val title: String,
+    val scheduledAt: Long,
+    val reminderMinutes: Int,
+    val templateName: String?,
     val createdAt: Long
 )
 
@@ -124,7 +142,12 @@ fun MeetingAttachmentEntity.toDomain() = MeetingAttachment(
     displayName = displayName,
     localPath = localPath,
     mimeType = mimeType,
-    createdAt = createdAt
+    createdAt = createdAt,
+    latitude = latitude,
+    longitude = longitude,
+    accuracyMeters = accuracyMeters,
+    locationCapturedAt = locationCapturedAt,
+    locationSource = locationSource
 )
 
 fun MeetingAttachment.toEntity() = MeetingAttachmentEntity(
@@ -133,5 +156,10 @@ fun MeetingAttachment.toEntity() = MeetingAttachmentEntity(
     displayName = displayName,
     localPath = localPath,
     mimeType = mimeType,
-    createdAt = createdAt
+    createdAt = createdAt,
+    latitude = latitude,
+    longitude = longitude,
+    accuracyMeters = accuracyMeters,
+    locationCapturedAt = locationCapturedAt,
+    locationSource = locationSource
 )

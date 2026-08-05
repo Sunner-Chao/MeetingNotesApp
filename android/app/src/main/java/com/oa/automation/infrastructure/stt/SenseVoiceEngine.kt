@@ -3,6 +3,9 @@ package com.oa.automation.infrastructure.stt
 import com.google.gson.Gson
 import com.oa.automation.domain.model.STTConfig
 import com.oa.automation.domain.model.STTEngineType
+import com.oa.automation.domain.model.ProcessingProgress
+import com.oa.automation.infrastructure.network.awaitResponse
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -33,10 +36,17 @@ class SenseVoiceEngine(
 
     private val gson = Gson()
 
-    override suspend fun transcribe(audioFile: File): Result<String> = withContext(Dispatchers.IO) {
+    override suspend fun transcribe(
+        audioFile: File,
+        onProgress: (ProcessingProgress) -> Unit,
+        meetingId: String?,
+        archiveKey: String?
+    ): Result<String> = withContext(Dispatchers.IO) {
         try {
+            onProgress(ProcessingProgress(20, "上传录音并请求智悟灵听模型", isIndeterminate = true))
             val requestBody = MultipartBody.Builder()
                 .setType(MultipartBody.FORM)
+                .addFormDataPart("language", config.language.requestValue)
                 .addFormDataPart(
                     "file",
                     audioFile.name,
@@ -50,23 +60,33 @@ class SenseVoiceEngine(
             config.apiToken?.takeIf { it.isNotBlank() }?.let {
                 requestBuilder.addHeader("Authorization", "Bearer $it")
             }
+        meetingId?.takeIf { it.isNotBlank() }?.let {
+            requestBuilder.addHeader("X-Meeting-Id", it)
+        }
+        archiveKey?.takeIf { it.isNotBlank() }?.let {
+            requestBuilder.addHeader("X-Archive-Key", it)
+        }
             val request = requestBuilder.build()
 
-            client.newCall(request).execute().use { response ->
+            client.newCall(request).awaitResponse().use { response ->
+                onProgress(ProcessingProgress(80, "接收最终识别结果"))
                 if (!response.isSuccessful) {
                     return@withContext Result.failure(
-                        Exception("SenseVoice STT request failed: ${response.code}")
+                        Exception("智悟灵听模型请求失败: ${response.code}")
                     )
                 }
 
                 val responseBody = response.body?.string() ?: return@withContext Result.failure(
-                    Exception("Empty response from SenseVoice service")
+                    Exception("智悟灵听模型返回空响应")
                 )
 
+                onProgress(ProcessingProgress(84, "解析最终识别结果"))
                 val result = gson.fromJson(responseBody, SenseVoiceResponse::class.java)
                 Result.success(result.text ?: "")
             }
 
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -74,7 +94,7 @@ class SenseVoiceEngine(
 
     override fun getEngineType(): STTEngineType = STTEngineType.SENSE_VOICE
 
-    override fun getDisplayName(): String = "SenseVoice (中文优化)"
+    override fun getDisplayName(): String = "智悟灵听模型"
 
     override fun isAvailable(): Boolean {
         return config.localEndpoint.isNotBlank()

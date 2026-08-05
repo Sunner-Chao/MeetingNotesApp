@@ -24,9 +24,14 @@ import androidx.navigation.compose.navigation
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import com.oa.automation.data.local.ConfigDataStore
-import com.oa.automation.ui.screen.home.HomeScreen
+import com.oa.automation.ui.screen.account.AccountProfileScreen
+import com.oa.automation.ui.screen.account.AccountQuotaDetailsScreen
+import com.oa.automation.ui.screen.account.AccountUserManagementScreen
 import com.oa.automation.ui.screen.login.LoginScreen
 import com.oa.automation.ui.screen.login.LoginViewModel
+import com.oa.automation.ui.screen.login.RegisterScreen
+import com.oa.automation.ui.screen.main.MainWorkspaceScreen
+import com.oa.automation.ui.screen.notifications.NotificationCenterScreen
 import com.oa.automation.ui.screen.recording.RecordingScreen
 import com.oa.automation.ui.screen.report.ReportScreen
 import com.oa.automation.ui.screen.settings.SettingsScreen
@@ -42,7 +47,7 @@ private const val TRANSITION_DURATION = 400
  *
  *  - [Splash]     → Entrance animation (always shown first)
  *  - [AuthGraph]  → Login / Register / ForgotPassword
- *  - [MainGraph]  → Home / Settings / Vip / Recording / Report
+ *  - [MainGraph]  → Home workspace tabs / Settings / Recording / Report
  */
 @Composable
 fun OAAutomationNavHost(
@@ -50,7 +55,7 @@ fun OAAutomationNavHost(
     navController: NavHostController = rememberNavController(),
     configDataStore: ConfigDataStore = koinInject()
 ) {
-    val savedUsername by configDataStore.usernameFlow.collectAsStateWithLifecycle(initialValue = null)
+    val savedSession by configDataStore.authSessionFlow.collectAsStateWithLifecycle(initialValue = null)
 
     NavHost(
         navController = navController,
@@ -73,7 +78,9 @@ fun OAAutomationNavHost(
         composable<Splash> {
             SplashScreen(
                 onSplashFinished = {
-                    val isLoggedIn = !savedUsername.isNullOrBlank()
+                    val isLoggedIn = savedSession?.expiresAt?.let {
+                        it > System.currentTimeMillis() / 1000
+                    } == true
                     if (isLoggedIn) {
                         navController.navigate(MainGraph) {
                             popUpTo<Splash> { inclusive = true }
@@ -113,10 +120,15 @@ fun OAAutomationNavHost(
             }
 
             composable<Register> {
-                // TODO: Replace with real RegisterScreen
-                PlaceholderScreen(title = "注册") {
-                    navController.popBackStack()
-                }
+                RegisterScreen(
+                    onNavigateBack = { navController.popBackStack() },
+                    onRegisterSuccess = {
+                        navController.navigate(MainGraph) {
+                            popUpTo<AuthGraph> { inclusive = true }
+                            launchSingleTop = true
+                        }
+                    }
+                )
             }
 
             composable<ForgotPassword> {
@@ -131,9 +143,9 @@ fun OAAutomationNavHost(
         navigation<MainGraph>(startDestination = Home) {
 
             composable<Home> {
-                HomeScreen(
-                    onNavigateToRecording = { meetingId ->
-                        navController.navigate(Recording(meetingId))
+                MainWorkspaceScreen(
+                    onNavigateToRecording = { meetingId, action ->
+                        navController.navigate(Recording(meetingId, action.name))
                     },
                     onNavigateToReport = { meetingId ->
                         navController.navigate(Report(meetingId))
@@ -141,16 +153,18 @@ fun OAAutomationNavHost(
                     onNavigateToSettings = {
                         navController.navigate(Settings)
                     },
-                    onNavigateToVip = {
-                        navController.navigate(Vip)
-                    }
-                )
-            }
-
-            composable<Settings> {
-                SettingsScreen(
-                    viewModel = koinViewModel(),
-                    onNavigateBack = { navController.popBackStack() },
+                    onNavigateToNotifications = {
+                        navController.navigate(Notifications)
+                    },
+                    onNavigateToAccountProfile = {
+                        navController.navigate(AccountProfile)
+                    },
+                    onNavigateToAccountQuota = {
+                        navController.navigate(AccountQuota)
+                    },
+                    onNavigateToAccountUsers = {
+                        navController.navigate(AccountUsers)
+                    },
                     onLogout = {
                         navController.navigate(AuthGraph) {
                             popUpTo<MainGraph> { inclusive = true }
@@ -160,7 +174,47 @@ fun OAAutomationNavHost(
                 )
             }
 
-            composable<Vip> {
+            composable<Settings> {
+                SettingsScreen(
+                    viewModel = koinViewModel(),
+                    onNavigateBack = { navController.popBackStack() }
+                )
+            }
+
+            composable<Notifications> {
+                NotificationCenterScreen(
+                    onNavigateBack = { navController.popBackStack() },
+                    onOpenMeeting = { meetingId, hasReport ->
+                        if (hasReport) {
+                            navController.navigate(Report(meetingId))
+                        } else {
+                            navController.navigate(Recording(meetingId))
+                        }
+                    }
+                )
+            }
+
+            composable<AccountProfile> {
+                AccountProfileScreen(
+                    onNavigateBack = { navController.popBackStack() },
+                    onNavigateToVip = { navController.navigate(AccountVip) }
+                )
+            }
+
+            composable<AccountQuota> {
+                AccountQuotaDetailsScreen(
+                    onNavigateBack = { navController.popBackStack() },
+                    onNavigateToSettings = { navController.navigate(Settings) }
+                )
+            }
+
+            composable<AccountUsers> {
+                AccountUserManagementScreen(
+                    onNavigateBack = { navController.popBackStack() }
+                )
+            }
+
+            composable<AccountVip> {
                 VipScreen(
                     onNavigateBack = { navController.popBackStack() },
                     onNavigateToRecording = { meetingId ->
@@ -173,6 +227,9 @@ fun OAAutomationNavHost(
                 val route: Recording = backStackEntry.toRoute()
                 RecordingScreen(
                     meetingId = route.meetingId,
+                    launchAction = com.oa.automation.ui.screen.recording.RecordingLaunchAction.from(
+                        route.launchAction
+                    ),
                     onNavigateBack = { navController.popBackStack() },
                     onNavigateToReport = { id ->
                         navController.navigate(Report(id))

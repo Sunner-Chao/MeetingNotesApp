@@ -9,14 +9,17 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.work.ForegroundInfo
+import androidx.work.WorkManager
 import com.oa.automation.ui.MainActivity
+import java.util.UUID
 
 private const val CHANNEL_ID = "MeetingBackgroundTasks"
 
 internal fun Context.backgroundTaskForegroundInfo(
     notificationId: Int,
     title: String,
-    content: String
+    content: String,
+    workId: UUID
 ): ForegroundInfo {
     val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -41,6 +44,11 @@ internal fun Context.backgroundTaskForegroundInfo(
         .setOngoing(true)
         .setOnlyAlertOnce(true)
         .setPriority(NotificationCompat.PRIORITY_LOW)
+        .addAction(
+            android.R.drawable.ic_menu_close_clear_cancel,
+            "终止",
+            WorkManager.getInstance(this).createCancelPendingIntent(workId)
+        )
         .build()
     return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
         ForegroundInfo(notificationId, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)

@@ -5,19 +5,36 @@ import com.oa.automation.application.usecase.GenerateReportUseCase
 import com.oa.automation.application.usecase.StartRecordingUseCase
 import com.oa.automation.application.usecase.StopRecordingUseCase
 import com.oa.automation.data.local.ConfigDataStore
+import com.oa.automation.domain.repository.JourneyRepository
 import com.oa.automation.domain.repository.MeetingRepository
 import com.oa.automation.domain.repository.ReportRepository
+import com.oa.automation.domain.repository.ScheduledMeetingRepository
 import com.oa.automation.infrastructure.audio.AudioRecorder
+import com.oa.automation.infrastructure.audio.MeetingAudioArchiveService
+import com.oa.automation.infrastructure.audio.ImportedAudioStore
+import com.oa.automation.infrastructure.account.AccountApiService
+import com.oa.automation.infrastructure.account.AccountSessionSynchronizer
+import com.oa.automation.infrastructure.account.ProfileAvatarCodec
 import com.oa.automation.infrastructure.attachment.MeetingAttachmentStore
 import com.oa.automation.infrastructure.background.BackgroundTaskScheduler
 import com.oa.automation.infrastructure.db.AppDatabase
 import com.oa.automation.infrastructure.llm.LLMEngine
+import com.oa.automation.infrastructure.llm.AgentQuotaService
+import com.oa.automation.infrastructure.location.DeviceLocationProvider
+import com.oa.automation.infrastructure.notification.ScheduledMeetingNotificationScheduler
 import com.oa.automation.infrastructure.repository.MeetingRepositoryImpl
+import com.oa.automation.infrastructure.repository.JourneyRepositoryImpl
 import com.oa.automation.infrastructure.repository.ReportRepositoryImpl
+import com.oa.automation.infrastructure.repository.ScheduledMeetingRepositoryImpl
 import com.oa.automation.infrastructure.service.RecordingSessionController
 import com.oa.automation.infrastructure.stt.StreamingSttClient
+import com.oa.automation.infrastructure.textimport.SharedTextImportCoordinator
+import com.oa.automation.infrastructure.textimport.ExternalTextSourceLauncher
+import com.oa.automation.infrastructure.update.AppUpdateService
 import com.oa.automation.ui.screen.home.HomeViewModel
+import com.oa.automation.ui.screen.account.AccountViewModel
 import com.oa.automation.ui.screen.login.LoginViewModel
+import com.oa.automation.ui.screen.login.RegisterViewModel
 import com.oa.automation.ui.screen.recording.RecordingViewModel
 import com.oa.automation.ui.screen.report.ReportViewModel
 import com.oa.automation.ui.screen.settings.SettingsViewModel
@@ -36,21 +53,38 @@ val appModule = module {
             "meeting_notes.db"
         )
             .addMigrations(AppDatabase.MIGRATION_1_2, AppDatabase.MIGRATION_2_3)
-            .fallbackToDestructiveMigration()
+            .addMigrations(AppDatabase.MIGRATION_3_4)
+            .addMigrations(AppDatabase.MIGRATION_4_5)
+            .addMigrations(AppDatabase.MIGRATION_5_6)
             .build()
     }
     single { get<AppDatabase>().meetingDao() }
     single { get<AppDatabase>().reportDao() }
+    single { get<AppDatabase>().scheduledMeetingDao() }
+    single { get<AppDatabase>().journeyDao() }
 
     // Infrastructure
     single<MeetingRepository> { MeetingRepositoryImpl(get()) }
-    single { MeetingAttachmentStore(androidContext(), get()) }
+    single<JourneyRepository> { JourneyRepositoryImpl(get()) }
+    single { DeviceLocationProvider(androidContext()) }
+    single { MeetingAttachmentStore(androidContext(), get(), get()) }
     single<ReportRepository> { ReportRepositoryImpl(get()) }
+    single<ScheduledMeetingRepository> { ScheduledMeetingRepositoryImpl(get()) }
     single { AudioRecorder(androidContext()) }
+    single { MeetingAudioArchiveService(androidContext(), get(), get()) }
+    single { ImportedAudioStore(androidContext()) }
+    single { AppUpdateService(androidContext()) }
     single { StreamingSttClient() }
     single { BackgroundTaskScheduler(androidContext()) }
-    single { RecordingSessionController(get(), get(), get()) }
+    single { ScheduledMeetingNotificationScheduler(androidContext()) }
+    single { RecordingSessionController(get(), get(), get(), get()) }
+    single { SharedTextImportCoordinator(androidContext()) }
+    single { ExternalTextSourceLauncher(androidContext()) }
     single { LLMEngine(get()) }
+    single { AgentQuotaService() }
+    single { AccountApiService() }
+    single { AccountSessionSynchronizer(get(), get()) }
+    single { ProfileAvatarCodec(androidContext()) }
 
     // Use Cases
     factory { StartRecordingUseCase(get()) }
@@ -58,10 +92,12 @@ val appModule = module {
     factory { GenerateReportUseCase(get(), get(), get(), get()) }
 
     // ViewModels
-    viewModel { LoginViewModel(get()) }
-    viewModel { HomeViewModel(get(), get(), get(), get(), get()) }
-    viewModel { RecordingViewModel(get(), get(), get(), get(), get(), androidContext()) }
-    viewModel { ReportViewModel(get(), get(), get(), get(), get(), get()) }
-    viewModel { SettingsViewModel(get()) }
-    viewModel { VipViewModel(get(), get()) }
+    viewModel { LoginViewModel(get(), get()) }
+    viewModel { RegisterViewModel(get(), get()) }
+    viewModel { HomeViewModel(get(), get(), get(), get(), get(), get(), get(), get()) }
+    viewModel { AccountViewModel(get(), get(), get(), get(), get()) }
+    viewModel { RecordingViewModel(get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), androidContext()) }
+    viewModel { ReportViewModel(get(), get(), get(), get(), get(), get(), get()) }
+    viewModel { SettingsViewModel(get(), get(), get()) }
+    viewModel { VipViewModel(get(), get(), get(), get(), get()) }
 }

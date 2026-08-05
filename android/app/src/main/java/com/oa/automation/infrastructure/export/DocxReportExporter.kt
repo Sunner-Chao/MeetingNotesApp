@@ -1,10 +1,6 @@
 package com.oa.automation.infrastructure.export
 
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.Matrix
-import androidx.exifinterface.media.ExifInterface
 import com.oa.automation.domain.model.MeetingAttachment
 import com.oa.automation.domain.model.Report
 import java.io.ByteArrayInputStream
@@ -17,94 +13,43 @@ import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 import kotlin.math.roundToLong
 
+private fun String.usesProjectManagementDocxTemplate(): Boolean =
+    this == "项目管理" || (contains("孔爵") && contains("表格"))
+
 object DocxReportExporter {
     private const val KONGJUE_TEMPLATE_ASSET = "kongjue-team-table-v1.docx"
 
     fun export(
         context: Context,
         report: Report,
-        attachments: List<MeetingAttachment>
+        attachments: List<MeetingAttachment>,
+        meetingTitle: String = ""
     ): File {
         val images = attachments.map { attachment ->
-            prepareImage(attachment)
+            val image = MeetingImagePreparer.prepare(attachment)
                 ?: error("无法写入会议图片：${attachment.displayName}")
+            DocxImage(
+                bytes = image.bytes,
+                widthPx = image.widthPx,
+                heightPx = image.heightPx,
+                caption = image.caption
+            )
         }
         val templatePackage = report.templateName
-            .takeIf { it.contains("孔爵") && it.contains("表格") }
+            .takeIf { it.usesProjectManagementDocxTemplate() }
             ?.let {
                 runCatching {
                     context.assets.open(KONGJUE_TEMPLATE_ASSET).use { input -> input.readBytes() }
                 }.getOrNull()
             }
         val exportDir = File(context.cacheDir, "exports").apply { mkdirs() }
-        val output = File(exportDir, "meeting_report_${System.currentTimeMillis()}.docx")
+        val output = File(
+            exportDir,
+            ReportExportFileNaming.build(report, meetingTitle, "docx")
+        )
         DocxPackageWriter(report, images, templatePackage).write(output)
         return output
     }
-
-    private fun prepareImage(attachment: MeetingAttachment): DocxImage? = runCatching {
-        val source = File(attachment.localPath).takeIf { it.isFile } ?: return@runCatching null
-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeFile(source.absolutePath, bounds)
-        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@runCatching null
-
-        var sampleSize = 1
-        while (bounds.outWidth / sampleSize > 2400 || bounds.outHeight / sampleSize > 2400) {
-            sampleSize *= 2
-        }
-        val decoded = BitmapFactory.decodeFile(
-            source.absolutePath,
-            BitmapFactory.Options().apply { inSampleSize = sampleSize }
-        ) ?: return@runCatching null
-
-        val rotation = runCatching {
-            when (ExifInterface(source).getAttributeInt(
-                ExifInterface.TAG_ORIENTATION,
-                ExifInterface.ORIENTATION_NORMAL
-            )) {
-                ExifInterface.ORIENTATION_ROTATE_90 -> 90f
-                ExifInterface.ORIENTATION_ROTATE_180 -> 180f
-                ExifInterface.ORIENTATION_ROTATE_270 -> 270f
-                else -> 0f
-            }
-        }.getOrDefault(0f)
-        val oriented = if (rotation == 0f) {
-            decoded
-        } else {
-            Bitmap.createBitmap(
-                decoded,
-                0,
-                0,
-                decoded.width,
-                decoded.height,
-                Matrix().apply { postRotate(rotation) },
-                true
-            ).also { decoded.recycle() }
-        }
-
-        val scale = minOf(1f, 1800f / maxOf(oriented.width, oriented.height))
-        val resized = if (scale < 1f) {
-            Bitmap.createScaledBitmap(
-                oriented,
-                (oriented.width * scale).toInt(),
-                (oriented.height * scale).toInt(),
-                true
-            ).also { oriented.recycle() }
-        } else {
-            oriented
-        }
-
-        val bytes = ByteArrayOutputStream().use { output ->
-            check(resized.compress(Bitmap.CompressFormat.JPEG, 88, output))
-            output.toByteArray()
-        }
-        DocxImage(
-            bytes = bytes,
-            widthPx = resized.width,
-            heightPx = resized.height,
-            caption = attachment.displayName
-        ).also { resized.recycle() }
-    }.getOrNull()
 }
 
 internal data class DocxImage(
@@ -118,6 +63,7 @@ private sealed interface DocxBlock
 private data class ParagraphBlock(val text: String, val style: String = "Normal") : DocxBlock
 private data class TableBlock(val rows: List<List<String>>) : DocxBlock
 private data class ImageBlock(val index: Int, val image: DocxImage) : DocxBlock
+private object PageBreakBlock : DocxBlock
 private data class ParsedMarkdownSection(
     val heading: String,
     val level: Int,
@@ -189,12 +135,14 @@ internal class DocxPackageWriter(
     }
 
     private fun documentXml(): String {
-        val blocks = parseReport() + images.flatMapIndexed { index, image ->
-            listOf(
-                if (index == 0) ParagraphBlock("会议影像资料", "Heading1") else ParagraphBlock("", "Spacer"),
-                ImageBlock(index, image),
-                ParagraphBlock("图 ${index + 1}  ${image.caption}", "Caption")
-            )
+        val blocks = buildList {
+            addAll(parseReport())
+            if (images.isNotEmpty()) add(PageBreakBlock)
+            images.forEachIndexed { index, image ->
+                add(if (index == 0) ParagraphBlock("会议影像资料", "Heading1") else ParagraphBlock("", "Spacer"))
+                add(ImageBlock(index, image))
+                add(ParagraphBlock("图 ${index + 1}  ${image.caption}", "Caption"))
+            }
         }
 
         return buildString {
@@ -210,6 +158,7 @@ internal class DocxPackageWriter(
                     is ParagraphBlock -> append(paragraphXml(block))
                     is TableBlock -> append(tableXml(block.rows))
                     is ImageBlock -> append(imageXml(block.index, block.image))
+                    PageBreakBlock -> append(pageBreakXml())
                 }
             }
             append(sectionPropertiesXml())
@@ -218,9 +167,7 @@ internal class DocxPackageWriter(
     }
 
     private fun parseReport(): List<DocxBlock> {
-        return if (templateEntries.isNotEmpty() ||
-            (report.templateName.contains("孔爵") && report.templateName.contains("表格"))
-        ) {
+        return if (templateEntries.isNotEmpty() || report.templateName.usesProjectManagementDocxTemplate()) {
             teamTableBlocks()
         } else {
             markdownBlocks()
@@ -230,7 +177,7 @@ internal class DocxPackageWriter(
     private fun markdownBlocks(): List<DocxBlock> {
         if (report.rawContent.isBlank()) return structuredBlocks()
 
-        val lines = report.rawContent.lines()
+        val lines = ReportDocumentFormatter.normalizeLists(report.rawContent).lines()
         val blocks = mutableListOf<DocxBlock>()
         var index = 0
         var hasTitle = false
@@ -261,11 +208,7 @@ internal class DocxPackageWriter(
                     hasTitle = true
                     index++
                 }
-                isBullet(line) -> {
-                    blocks += ParagraphBlock("• ${cleanMarkdown(line.replaceFirst(Regex("^[-*+]\\s+"), ""))}", "ListBullet")
-                    index++
-                }
-                line.matches(Regex("^\\d+[.)]\\s+.*")) -> {
+                ReportDocumentFormatter.isNumberedListItem(line) -> {
                     blocks += ParagraphBlock(cleanMarkdown(line), "ListNumber")
                     index++
                 }
@@ -274,7 +217,10 @@ internal class DocxPackageWriter(
                     index++
                     while (index < lines.size) {
                         val next = lines[index].trim()
-                        if (next.isBlank() || next.startsWith("#") || next.startsWith("|") || isBullet(next)) break
+                        if (
+                            next.isBlank() || next.startsWith("#") || next.startsWith("|") ||
+                            ReportDocumentFormatter.isNumberedListItem(next)
+                        ) break
                         paragraph += next
                         index++
                     }
@@ -297,11 +243,15 @@ internal class DocxPackageWriter(
         add(ParagraphBlock(report.summary.ifBlank { "暂无概述" }))
         if (report.keyPoints.isNotEmpty()) {
             add(ParagraphBlock("2. 关键要点", "Heading1"))
-            report.keyPoints.forEach { add(ParagraphBlock("• $it", "ListBullet")) }
+            report.keyPoints.forEachIndexed { index, value ->
+                add(ParagraphBlock(ReportDocumentFormatter.numbered(value, index), "ListNumber"))
+            }
         }
         if (report.decisions.isNotEmpty()) {
             add(ParagraphBlock("3. 决策事项", "Heading1"))
-            report.decisions.forEach { add(ParagraphBlock("• $it", "ListBullet")) }
+            report.decisions.forEachIndexed { index, value ->
+                add(ParagraphBlock(ReportDocumentFormatter.numbered(value, index), "ListNumber"))
+            }
         }
         if (report.tasks.isNotEmpty()) {
             add(ParagraphBlock("4. 行动项跟踪表", "Heading1"))
@@ -314,7 +264,9 @@ internal class DocxPackageWriter(
         }
         if (report.actionItems.isNotEmpty()) {
             add(ParagraphBlock("5. 后续行动", "Heading1"))
-            report.actionItems.forEach { add(ParagraphBlock("• $it", "ListBullet")) }
+            report.actionItems.forEachIndexed { index, value ->
+                add(ParagraphBlock(ReportDocumentFormatter.numbered(value, index), "ListNumber"))
+            }
         }
     }
 
@@ -385,12 +337,16 @@ internal class DocxPackageWriter(
             meetingTopic.forEach { add(ParagraphBlock(it)) }
 
             add(ParagraphBlock("2. 核心结论摘要", "Heading1"))
-            coreSummary.forEach { add(ParagraphBlock("• $it", "ListBullet")) }
+            coreSummary.forEachIndexed { index, value ->
+                add(ParagraphBlock(ReportDocumentFormatter.numbered(value, index), "ListNumber"))
+            }
 
             add(ParagraphBlock("3. 重点讨论议题", "Heading1"))
             if (discussionSections.isEmpty()) {
                 report.keyPoints.ifEmpty { listOf("未提及") }
-                    .forEach { add(ParagraphBlock("• $it", "ListBullet")) }
+                    .forEachIndexed { index, value ->
+                        add(ParagraphBlock(ReportDocumentFormatter.numbered(value, index), "ListNumber"))
+                    }
             } else {
                 discussionSections.forEach { section ->
                     if (!section.heading.contains("重点讨论")) {
@@ -423,7 +379,9 @@ internal class DocxPackageWriter(
 
             add(ParagraphBlock("7. 待确认项", "Heading1"))
             sectionParagraphs(markdown, "待确认项").ifEmpty { listOf("未提及") }
-                .forEach { add(ParagraphBlock("• $it", "ListBullet")) }
+                .forEachIndexed { index, value ->
+                    add(ParagraphBlock(ReportDocumentFormatter.numbered(value, index), "ListNumber"))
+                }
 
             add(ParagraphBlock("8. Backlog 候选（可沉淀）", "Heading1"))
             add(
@@ -450,7 +408,7 @@ internal class DocxPackageWriter(
         var title: String? = null
         val sections = mutableListOf<ParsedMarkdownSection>()
         var current = ParsedMarkdownSection("正文", 0).also(sections::add)
-        val lines = raw.lines()
+        val lines = ReportDocumentFormatter.normalizeLists(raw).lines()
         var index = 0
         while (index < lines.size) {
             val line = lines[index].trim()
@@ -479,7 +437,7 @@ internal class DocxPackageWriter(
                 }
                 else -> {
                     val text = cleanMarkdown(
-                        line.replaceFirst(Regex("^[-*+]\\s+"), "")
+                        line.replaceFirst(Regex("^（\\d+）\\s*"), "")
                     )
                     if (text.isNotBlank()) current.paragraphs += text
                     index++
@@ -609,6 +567,7 @@ internal class DocxPackageWriter(
         if (templateEntries.isNotEmpty()) return templateParagraphXml(block)
         return buildString {
             append("<w:p><w:pPr><w:pStyle w:val=\"").append(block.style).append("\"/>")
+            append("<w:widowControl/><w:keepLines/>")
             if (block.style == "ListBullet" || block.style == "ListNumber") {
                 append("<w:ind w:left=\"420\" w:hanging=\"210\"/>")
             }
@@ -619,13 +578,13 @@ internal class DocxPackageWriter(
 
     private fun templateParagraphXml(block: ParagraphBlock): String {
         val paragraphProperties = when (block.style) {
-            "Title" -> "<w:jc w:val=\"center\"/><w:spacing w:after=\"180\"/><w:keepNext/>"
-            "Metadata" -> "<w:jc w:val=\"right\"/><w:spacing w:after=\"180\"/>"
-            "Heading1" -> "<w:spacing w:before=\"220\" w:after=\"100\"/><w:keepNext/>"
-            "Heading2" -> "<w:spacing w:before=\"160\" w:after=\"80\"/><w:keepNext/>"
-            "ListBullet", "ListNumber" -> "<w:ind w:left=\"420\" w:hanging=\"210\"/><w:spacing w:after=\"60\"/>"
-            "Caption" -> "<w:jc w:val=\"center\"/><w:spacing w:before=\"60\" w:after=\"140\"/>"
-            else -> "<w:spacing w:after=\"120\" w:line=\"312\" w:lineRule=\"auto\"/>"
+            "Title" -> "<w:jc w:val=\"center\"/><w:spacing w:after=\"180\"/><w:keepNext/><w:keepLines/><w:widowControl/>"
+            "Metadata" -> "<w:jc w:val=\"right\"/><w:spacing w:after=\"180\"/><w:keepLines/><w:widowControl/>"
+            "Heading1" -> "<w:spacing w:before=\"220\" w:after=\"100\"/><w:keepNext/><w:keepLines/><w:widowControl/>"
+            "Heading2" -> "<w:spacing w:before=\"160\" w:after=\"80\"/><w:keepNext/><w:keepLines/><w:widowControl/>"
+            "ListBullet", "ListNumber" -> "<w:ind w:left=\"420\" w:hanging=\"210\"/><w:spacing w:after=\"60\"/><w:keepLines/><w:widowControl/>"
+            "Caption" -> "<w:jc w:val=\"center\"/><w:spacing w:before=\"60\" w:after=\"140\"/><w:keepLines/><w:widowControl/>"
+            else -> "<w:spacing w:after=\"120\" w:line=\"312\" w:lineRule=\"auto\"/><w:widowControl/>"
         }
         val runProperties = when (block.style) {
             "Title" -> "<w:b/><w:sz w:val=\"32\"/><w:szCs w:val=\"32\"/>"
@@ -671,7 +630,7 @@ internal class DocxPackageWriter(
                     val value = row.getOrNull(columnIndex).orEmpty()
                     append("<w:tc><w:tcPr><w:tcW w:w=\"").append(columnWidths[columnIndex]).append("\" w:type=\"dxa\"/>")
                     if (rowIndex == 0) append("<w:shd w:val=\"clear\" w:fill=\"D9EAF7\"/>")
-                    append("<w:vAlign w:val=\"center\"/></w:tcPr><w:p><w:pPr><w:spacing w:after=\"0\"/></w:pPr>")
+                    append("<w:vAlign w:val=\"center\"/></w:tcPr><w:p><w:pPr><w:spacing w:after=\"0\"/><w:keepLines/><w:widowControl/></w:pPr>")
                     append("<w:r><w:rPr><w:sz w:val=\"").append(fontSize).append("\"/><w:szCs w:val=\"").append(fontSize).append("\"/>")
                     if (rowIndex == 0) append("<w:b/>")
                     append("</w:rPr><w:t xml:space=\"preserve\">").append(cleanMarkdown(value).escapeXml())
@@ -716,6 +675,9 @@ internal class DocxPackageWriter(
             </w:drawing></w:r></w:p>
         """.trimIndent()
     }
+
+    private fun pageBreakXml(): String =
+        "<w:p><w:pPr><w:spacing w:after=\"0\"/></w:pPr><w:r><w:br w:type=\"page\"/></w:r></w:p>"
 
     private fun contentTypes(): String = buildString {
         append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>")
@@ -853,7 +815,7 @@ internal class DocxPackageWriter(
           <w:style w:type="paragraph" w:styleId="ListBullet"><w:name w:val="项目符号"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:after="60"/></w:pPr></w:style>
           <w:style w:type="paragraph" w:styleId="ListNumber"><w:name w:val="编号列表"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:after="60"/></w:pPr></w:style>
           <w:style w:type="paragraph" w:styleId="Caption"><w:name w:val="图注"/><w:basedOn w:val="Normal"/>
-            <w:pPr><w:jc w:val="center"/><w:spacing w:before="60" w:after="140"/><w:keepNext/></w:pPr><w:rPr><w:color w:val="687887"/><w:sz w:val="18"/></w:rPr></w:style>
+            <w:pPr><w:jc w:val="center"/><w:spacing w:before="60" w:after="140"/><w:keepLines/><w:widowControl/></w:pPr><w:rPr><w:color w:val="687887"/><w:sz w:val="18"/></w:rPr></w:style>
         </w:styles>
     """.trimIndent()
 
@@ -873,8 +835,6 @@ internal class DocxPackageWriter(
 
     private fun parseTableRow(line: String): List<String> =
         line.trim().trim('|').split('|').map { cleanMarkdown(it.trim()) }
-
-    private fun isBullet(line: String): Boolean = line.matches(Regex("^[-*+]\\s+.*"))
 
     private fun cleanMarkdown(text: String): String = text
         .replace(Regex("\\*\\*(.+?)\\*\\*"), "$1")

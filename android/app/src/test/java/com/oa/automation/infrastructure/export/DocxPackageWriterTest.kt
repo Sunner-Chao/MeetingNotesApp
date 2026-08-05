@@ -27,7 +27,7 @@ class DocxPackageWriterTest {
                     | --- | --- | --- |
                     | 完成方案 | 小孙 | 待执行 |
                 """.trimIndent(),
-                templateName = "孔爵团队版表格会议纪要",
+                templateName = "项目管理",
                 generatedAt = 1_700_000_000_000
             )
             val imageBytes = javaClass.classLoader
@@ -69,6 +69,12 @@ class DocxPackageWriterTest {
                 assertTrue(documentXml.contains("未解决问题"))
                 assertTrue(documentXml.contains("BacklogID"))
                 assertTrue(documentXml.contains("风险编号"))
+                assertTrue(documentXml.contains("（1）已确认第一项工作"))
+                assertTrue(documentXml.contains("<w:tblHeader/>"))
+                assertTrue(documentXml.contains("<w:cantSplit/>"))
+                assertTrue(documentXml.contains("<w:br w:type=\"page\"/>"))
+                assertTrue(documentXml.contains("<w:keepLines/>"))
+                assertTrue(!documentXml.contains("•"))
                 assertTrue(documentXml.indexOf("ACT-001") < documentXml.indexOf("完成方案"))
                 assertTrue(documentXml.indexOf("完成方案") < documentXml.indexOf("小孙"))
                 assertTrue(documentXml.indexOf("小孙") < documentXml.indexOf("待执行"))
@@ -77,7 +83,7 @@ class DocxPackageWriterTest {
                 assertTrue(documentXml.contains("rIdImage1"))
                 assertTrue(relationships.contains("media/image1.jpg"))
             }
-            assertEquals("孔爵团队版表格会议纪要", ReportTemplateConfig().selectedName)
+            assertEquals("通用会议", ReportTemplateConfig().selectedName)
         } finally {
             output.delete()
         }

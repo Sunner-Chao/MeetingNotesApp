@@ -26,6 +26,9 @@ class AudioRecorder(private val context: android.content.Context) {
     @Volatile
     private var isRecording = false
 
+    @Volatile
+    private var isPaused = false
+
     /**
      * Persisted recording flag to survive AudioRecord instance recreation.
      * Set to true when start() succeeds, set to false when stop()/cancel() is called.
@@ -123,6 +126,7 @@ class AudioRecorder(private val context: android.content.Context) {
                 chunkBuffer.reset()
             }
             totalAudioBytes = 0
+            isPaused = false
             isRecording = true
             prefs.edit().putBoolean(PREFS_RECORDING_KEY, true).apply()
             audioRecord?.startRecording()
@@ -157,6 +161,7 @@ class AudioRecorder(private val context: android.content.Context) {
         }
 
         isRecording = false
+        isPaused = false
         prefs.edit().putBoolean(PREFS_RECORDING_KEY, false).apply()
 
         try {
@@ -190,6 +195,30 @@ class AudioRecorder(private val context: android.content.Context) {
         return outputFile
     }
 
+    /** Temporarily suspends microphone capture while keeping the current WAV open. */
+    @Synchronized
+    fun pause(): Boolean {
+        if (!isRecording || isPaused) return false
+        val recorder = audioRecord ?: return false
+        return runCatching {
+            recorder.stop()
+            isPaused = true
+        }.isSuccess
+    }
+
+    /** Resumes capture into the same WAV file after a pause. */
+    @Synchronized
+    fun resume(): Boolean {
+        if (!isRecording || !isPaused) return false
+        return runCatching {
+            audioRecord?.startRecording()
+            check(audioRecord?.recordingState == AudioRecord.RECORDSTATE_RECORDING)
+            isPaused = false
+        }.isSuccess
+    }
+
+    fun isPaused(): Boolean = isPaused
+
     fun cancel(deleteFile: Boolean = true) {
         if (!isRecording && audioRecord == null && outputStream == null) {
             if (deleteFile) {
@@ -200,6 +229,7 @@ class AudioRecorder(private val context: android.content.Context) {
         }
 
         isRecording = false
+        isPaused = false
         prefs.edit().putBoolean(PREFS_RECORDING_KEY, false).apply()
 
         try {
@@ -264,6 +294,15 @@ class AudioRecorder(private val context: android.content.Context) {
         val chunkSizeBytes = SAMPLE_RATE * CHANNEL_COUNT * (BITS_PER_SAMPLE / 8) * CHUNK_DURATION_MS / 1000
 
         while (isRecording) {
+            if (isPaused) {
+                try {
+                    Thread.sleep(20)
+                } catch (interrupted: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    break
+                }
+                continue
+            }
             val readBytes = audioRecord?.read(buffer, 0, buffer.size) ?: AudioRecord.ERROR_INVALID_OPERATION
             if (readBytes <= 0) {
                 continue
@@ -328,6 +367,7 @@ class AudioRecorder(private val context: android.content.Context) {
 
     private fun releaseRecorder() {
         isRecording = false
+        isPaused = false
         prefs.edit().putBoolean(PREFS_RECORDING_KEY, false).apply()
         try {
             audioRecord?.release()

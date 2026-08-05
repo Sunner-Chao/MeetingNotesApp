@@ -1,8 +1,8 @@
 package com.oa.automation.ui.screen.report
 
 import android.content.Context
+import android.content.ClipData
 import android.content.Intent
-import android.graphics.BitmapFactory
 import android.net.Uri
 import androidx.core.content.FileProvider
 import android.widget.Toast
@@ -14,8 +14,10 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -24,6 +26,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -36,7 +39,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -49,10 +51,17 @@ import com.oa.automation.domain.model.ExportFormat
 import com.oa.automation.domain.model.MeetingAttachment
 import com.oa.automation.domain.model.PresetReportTemplate
 import com.oa.automation.domain.model.Report
+import com.oa.automation.domain.model.reportDocumentKind
 import com.oa.automation.infrastructure.export.ReportExporter
 import com.oa.automation.infrastructure.export.DocxReportExporter
+import com.oa.automation.infrastructure.export.ReportExportFileNaming
+import com.oa.automation.infrastructure.image.OrientedImageDecoder
+import com.oa.automation.infrastructure.audio.ArchivedMeetingAudio
+import com.oa.automation.ui.location.ImageLocationPermission
+import com.oa.automation.ui.component.ProcessingStatusRow
 import java.io.File
 import java.text.SimpleDateFormat
+import java.time.Instant
 import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
@@ -73,23 +82,41 @@ fun ReportScreen(
     val exportScope = rememberCoroutineScope()
     var showExportMenu by remember { mutableStateOf(false) }
     var showChatPanel by remember { mutableStateOf(false) }
-    var showAttachmentMenu by remember { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf(false) }
     var showTemplatePicker by remember { mutableStateOf(false) }
     val documentTitle = uiState.report?.documentTitle() ?: "会议纪要"
     val snackbarHostState = remember { SnackbarHostState() }
     var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
+    var pendingImageImportUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
+    val locationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        val uris = pendingImageImportUris
+        pendingImageImportUris = emptyList()
+        if (uris.isNotEmpty()) {
+            viewModel.importImages(meetingId, uris, captureLocation = permissions.values.any { it })
+        }
+    }
+
+    fun importImagesWithOptionalLocation(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        if (ImageLocationPermission.isGranted(context)) {
+            viewModel.importImages(meetingId, uris, captureLocation = true)
+        } else {
+            pendingImageImportUris = uris
+            locationPermissionLauncher.launch(ImageLocationPermission.requestedPermissions)
+        }
+    }
+
     val galleryLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetMultipleContents()
     ) { uris ->
-        viewModel.importImages(meetingId, uris)
+        importImagesWithOptionalLocation(uris)
     }
     val cameraLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.TakePicture()
     ) { saved ->
-        if (saved) {
-            pendingCameraUri?.let { uri -> viewModel.importImages(meetingId, listOf(uri)) }
-        }
+        if (saved) pendingCameraUri?.let { uri -> importImagesWithOptionalLocation(listOf(uri)) }
         pendingCameraUri = null
     }
 
@@ -117,6 +144,19 @@ fun ReportScreen(
         }
     }
 
+    LaunchedEffect(uiState.pendingAudioShare) {
+        uiState.pendingAudioShare?.let { prepared ->
+            val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                type = prepared.mimeType
+                putExtra(Intent.EXTRA_STREAM, prepared.uri)
+                clipData = ClipData.newRawUri(prepared.displayName, prepared.uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            context.startActivity(Intent.createChooser(shareIntent, "分享会议音频"))
+            viewModel.consumeAudioShare()
+        }
+    }
+
     // Delete dialog
     if (showDeleteDialog) {
         AlertDialog(
@@ -139,7 +179,7 @@ fun ReportScreen(
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.error
                     ),
-                    shape = RoundedCornerShape(12.dp)
+                    shape = RoundedCornerShape(8.dp)
                 ) {
                     Text("删除")
                 }
@@ -147,145 +187,157 @@ fun ReportScreen(
             dismissButton = {
                 OutlinedButton(
                     onClick = { showDeleteDialog = false },
-                    shape = RoundedCornerShape(12.dp)
+                    shape = RoundedCornerShape(8.dp)
                 ) {
                     Text("取消")
                 }
             },
-            shape = RoundedCornerShape(20.dp)
+            shape = MaterialTheme.shapes.large
         )
     }
 
+    ReportReferenceFrame {
     Scaffold(
+        containerColor = Color.Transparent,
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
-            TopAppBar(
-                title = {
-                    Text(
-                        documentTitle,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 18.sp
-                    )
-                },
-                navigationIcon = {
-                    IconButton(onClick = onNavigateBack) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "返回"
+            ReportReferenceTopBar(
+                title = documentTitle,
+                reportAvailable = uiState.report != null,
+                optimizeActive = showChatPanel,
+                onNavigateBack = onNavigateBack,
+                onSave = viewModel::saveReport,
+                onOptimize = { showChatPanel = !showChatPanel },
+                onShare = { showExportMenu = true },
+                shareMenu = {
+                    DropdownMenu(
+                        expanded = showExportMenu,
+                        onDismissRequest = { showExportMenu = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("保存纪要") },
+                            leadingIcon = { Icon(Icons.Default.Save, contentDescription = null) },
+                            enabled = uiState.report != null,
+                            onClick = {
+                                showExportMenu = false
+                                viewModel.saveReport()
+                            }
                         )
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface
-                ),
-                actions = {
-                    if (uiState.report != null) {
-                        IconButton(onClick = { viewModel.saveReport() }) {
-                            Icon(
-                                imageVector = Icons.Default.Save,
-                                contentDescription = "保存",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        IconButton(onClick = { showChatPanel = !showChatPanel }) {
-                            Icon(
-                                imageVector = if (showChatPanel) Icons.Default.KeyboardArrowDown else Icons.Default.AutoAwesome,
-                                contentDescription = if (showChatPanel) "收起润色" else "润色",
-                                tint = if (showChatPanel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        Box {
-                            IconButton(onClick = { showAttachmentMenu = true }) {
-                                Icon(
-                                    imageVector = Icons.Default.AddPhotoAlternate,
-                                    contentDescription = "添加会议图片",
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                        DropdownMenuItem(
+                            text = { Text(if (showChatPanel) "收起智能优化" else "智能优化") },
+                            leadingIcon = { Icon(Icons.Default.AutoAwesome, contentDescription = null) },
+                            enabled = uiState.report != null,
+                            onClick = {
+                                showExportMenu = false
+                                showChatPanel = !showChatPanel
                             }
-                            DropdownMenu(
-                                expanded = showAttachmentMenu,
-                                onDismissRequest = { showAttachmentMenu = false }
-                            ) {
-                                DropdownMenuItem(
-                                    text = { Text("拍照") },
-                                    leadingIcon = { Icon(Icons.Default.PhotoCamera, contentDescription = null) },
-                                    onClick = {
-                                        showAttachmentMenu = false
-                                        launchCamera()
-                                    }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("从相册添加") },
-                                    leadingIcon = { Icon(Icons.Default.Collections, contentDescription = null) },
-                                    onClick = {
-                                        showAttachmentMenu = false
-                                        galleryLauncher.launch("image/*")
-                                    }
-                                )
+                        )
+                        DropdownMenuItem(
+                            text = { Text("重新生成纪要") },
+                            leadingIcon = { Icon(Icons.Default.Refresh, contentDescription = null) },
+                            enabled = uiState.report != null,
+                            onClick = {
+                                showExportMenu = false
+                                viewModel.regenerateWithTemplate(meetingId)
                             }
-                        }
-                        IconButton(onClick = { showDeleteDialog = true }) {
-                            Icon(
-                                imageVector = Icons.Default.DeleteOutline,
-                                contentDescription = "删除",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        Box {
-                            IconButton(onClick = { showExportMenu = true }) {
-                                Icon(
-                                    imageVector = Icons.Default.IosShare,
-                                    contentDescription = "导出",
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            DropdownMenu(
-                                expanded = showExportMenu,
-                                onDismissRequest = { showExportMenu = false }
-                            ) {
-                                ExportFormat.entries.forEach { format ->
-                                    DropdownMenuItem(
-                                        text = {
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                Icon(
-                                                    imageVector = when (format) {
-                                                        ExportFormat.MARKDOWN -> Icons.Default.Code
-                                                        ExportFormat.TXT -> Icons.Default.TextSnippet
-                                                        ExportFormat.DOCX -> Icons.Default.Description
-                                                        ExportFormat.PDF -> Icons.Default.PictureAsPdf
-                                                    },
-                                                    contentDescription = null,
-                                                    modifier = Modifier.size(18.dp),
-                                                    tint = MaterialTheme.colorScheme.primary
-                                                )
-                                                Spacer(modifier = Modifier.width(10.dp))
-                                                Column {
-                                                    Text(
-                                                        format.name,
-                                                        style = MaterialTheme.typography.bodyMedium,
-                                                        fontWeight = FontWeight.Medium
-                                                    )
-                                                    Text(
-                                                        format.extension,
-                                                        style = MaterialTheme.typography.labelSmall,
-                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                    )
-                                                }
-                                            }
-                                        },
-                                        onClick = {
-                                            showExportMenu = false
-                                            uiState.report?.let { report ->
-                                                exportScope.launch {
-                                                    val attachments = viewModel.attachmentsForExport(meetingId)
-                                                    exportReport(context, report, attachments, format)
-                                                }
-                                            }
+                        )
+                        HorizontalDivider()
+                        ExportFormat.entries.forEach { format ->
+                            DropdownMenuItem(
+                                text = {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(
+                                            imageVector = when (format) {
+                                                ExportFormat.MARKDOWN -> Icons.Default.Code
+                                                ExportFormat.TXT -> Icons.Default.TextSnippet
+                                                ExportFormat.DOCX -> Icons.Default.Description
+                                                ExportFormat.PDF -> Icons.Default.PictureAsPdf
+                                            },
+                                            contentDescription = null,
+                                            modifier = Modifier.size(18.dp),
+                                            tint = MaterialTheme.colorScheme.primary
+                                        )
+                                        Spacer(modifier = Modifier.width(10.dp))
+                                        Column {
+                                            Text(
+                                                format.name,
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                fontWeight = FontWeight.Medium
+                                            )
+                                            Text(
+                                                format.extension,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
                                         }
-                                    )
+                                    }
+                                },
+                                onClick = {
+                                    showExportMenu = false
+                                    uiState.report?.let { report ->
+                                        exportScope.launch {
+                                            val attachments = viewModel.attachmentsForExport(meetingId)
+                                            exportReport(
+                                                context,
+                                                report,
+                                                uiState.meetingTitle,
+                                                attachments,
+                                                format
+                                            )
+                                        }
+                                    }
                                 }
-                            }
+                            )
                         }
+                        HorizontalDivider()
+                        DropdownMenuItem(
+                            text = { Text("拍摄会议图片") },
+                            leadingIcon = { Icon(Icons.Default.PhotoCamera, contentDescription = null) },
+                            onClick = {
+                                showExportMenu = false
+                                launchCamera()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("从相册添加图片") },
+                            leadingIcon = { Icon(Icons.Default.Collections, contentDescription = null) },
+                            onClick = {
+                                showExportMenu = false
+                                galleryLauncher.launch("image/*")
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("切换纪要模板") },
+                            leadingIcon = { Icon(Icons.Default.SwapHoriz, contentDescription = null) },
+                            enabled = uiState.presetTemplates.isNotEmpty(),
+                            onClick = {
+                                showExportMenu = false
+                                showTemplatePicker = true
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text(if (uiState.showTranscript) "收起转写原文" else "查看转写原文") },
+                            leadingIcon = { Icon(Icons.Default.TextSnippet, contentDescription = null) },
+                            enabled = uiState.transcriptText.isNotBlank(),
+                            onClick = {
+                                showExportMenu = false
+                                viewModel.toggleTranscript()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("删除纪要", color = MaterialTheme.colorScheme.error) },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Default.DeleteOutline,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.error
+                                )
+                            },
+                            onClick = {
+                                showExportMenu = false
+                                showDeleteDialog = true
+                            }
+                        )
                     }
                 }
             )
@@ -303,15 +355,25 @@ fun ReportScreen(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(48.dp),
-                            strokeWidth = 4.dp
-                        )
-                        Text(
-                            text = "正在加载报告...",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        if (uiState.isGenerating) {
+                            ProcessingStatusRow(
+                                title = "生成会议纪要",
+                                stage = uiState.generationProgressStage.ifBlank { "会议纪要处理中" },
+                                actionLabel = "终止",
+                                onAction = { viewModel.cancelGeneration(meetingId) },
+                                modifier = Modifier.padding(horizontal = 24.dp)
+                            )
+                        } else {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(48.dp),
+                                strokeWidth = 4.dp
+                            )
+                            Text(
+                                text = "正在加载报告...",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 }
                 uiState.error != null -> {
@@ -349,7 +411,7 @@ fun ReportScreen(
                         )
                         Button(
                             onClick = { viewModel.loadReport(meetingId) },
-                            shape = RoundedCornerShape(12.dp)
+                            shape = RoundedCornerShape(8.dp)
                         ) {
                             Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(6.dp))
@@ -359,21 +421,21 @@ fun ReportScreen(
                 }
                 uiState.report != null -> {
                     Column(modifier = Modifier.fillMaxSize()) {
-                        // 报告内容
-                        ReportContent(
-                            report = uiState.report!!,
-                            onRegenerate = { viewModel.regenerateReport(meetingId) },
+                        ReportReferenceContent(
+                            uiState = uiState,
                             onContinueRecording = { onContinueRecording(meetingId) },
-                            transcriptText = uiState.transcriptText,
-                            showTranscript = uiState.showTranscript,
                             onToggleTranscript = viewModel::toggleTranscript,
-                            onExportTranscript = { text -> exportTranscript(context, text, documentTitle) },
-                            presetTemplates = uiState.presetTemplates,
-                            currentTemplateName = uiState.reportTemplate.selectedName,
+                            onExportTranscript = {
+                                exportTranscript(context, uiState.transcriptText, documentTitle)
+                            },
                             onSelectTemplate = { template -> viewModel.selectReportTemplate(template) },
                             onRegenerateWithTemplate = { viewModel.regenerateWithTemplate(meetingId) },
-                            attachments = uiState.attachments,
                             onDeleteAttachment = viewModel::deleteAttachment,
+                            onRefreshAudio = { viewModel.refreshArchivedAudio(meetingId) },
+                            onPrepareAudioPlayback = viewModel::prepareArchivedAudioPlayback,
+                            onShareAudio = viewModel::shareArchivedAudio,
+                            onDeleteAudio = viewModel::deleteArchivedAudio,
+                            onShare = { showExportMenu = true },
                             showTemplatePicker = showTemplatePicker,
                             onShowTemplatePicker = { showTemplatePicker = it },
                             modifier = Modifier
@@ -410,7 +472,11 @@ fun ReportScreen(
                         ) {
                             Box(contentAlignment = Alignment.Center) {
                                 Icon(
-                                    imageVector = Icons.Default.Description,
+                                    imageVector = if (uiState.generationCancelled) {
+                                        Icons.Default.Close
+                                    } else {
+                                        Icons.Default.Description
+                                    },
                                     contentDescription = null,
                                     modifier = Modifier.size(36.dp),
                                     tint = MaterialTheme.colorScheme.onSurfaceVariant
@@ -418,14 +484,26 @@ fun ReportScreen(
                             }
                         }
                         Text(
-                            text = "暂无${documentTitle}",
+                            text = if (uiState.generationCancelled) {
+                                "纪要生成已终止"
+                            } else {
+                                "暂无${documentTitle}"
+                            },
                             style = MaterialTheme.typography.titleMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        if (uiState.generationCancelled) {
+                            Button(onClick = { viewModel.regenerateReport(meetingId) }) {
+                                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("重新生成")
+                            }
+                        }
                     }
                 }
             }
         }
+    }
     }
 }
 
@@ -444,6 +522,11 @@ private fun ReportContent(
     onRegenerateWithTemplate: () -> Unit = {},
     attachments: List<MeetingAttachment> = emptyList(),
     onDeleteAttachment: (MeetingAttachment) -> Unit = {},
+    archivedAudio: List<ArchivedMeetingAudio> = emptyList(),
+    isLoadingAudio: Boolean = false,
+    preparingAudioShareId: String? = null,
+    onRefreshAudio: () -> Unit = {},
+    onShareAudio: (ArchivedMeetingAudio) -> Unit = {},
     showTemplatePicker: Boolean = false,
     onShowTemplatePicker: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier
@@ -484,6 +567,14 @@ private fun ReportContent(
             )
         }
 
+        MeetingAudioArchiveSection(
+            items = archivedAudio,
+            isLoading = isLoadingAudio,
+            preparingShareId = preparingAudioShareId,
+            onRefresh = onRefreshAudio,
+            onShare = onShareAudio
+        )
+
         if (report.rawContent.isNotBlank()) {
             MarkdownReportCard(content = report.rawContent)
         } else {
@@ -491,6 +582,92 @@ private fun ReportContent(
         }
 
         Spacer(modifier = Modifier.height(8.dp))
+    }
+}
+
+@Composable
+private fun MeetingAudioArchiveSection(
+    items: List<ArchivedMeetingAudio>,
+    isLoading: Boolean,
+    preparingShareId: String?,
+    onRefresh: () -> Unit,
+    onShare: (ArchivedMeetingAudio) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.AudioFile,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(20.dp)
+                )
+                Text("会议音频", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            }
+            IconButton(onClick = onRefresh, enabled = !isLoading, modifier = Modifier.size(36.dp)) {
+                if (isLoading) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                } else {
+                    Icon(Icons.Default.Refresh, contentDescription = "刷新会议音频", modifier = Modifier.size(18.dp))
+                }
+            }
+        }
+
+        if (items.isEmpty() && !isLoading) {
+            Text(
+                text = "暂无服务器归档音频",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        } else {
+            items.forEach { audio ->
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = MaterialTheme.shapes.small,
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = formatArchivedAudioTime(audio.createdAt),
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Text(
+                                text = listOfNotNull(
+                                    audio.durationSec?.let(::formatAudioDuration),
+                                    formatFileSize(audio.bytes)
+                                ).joinToString(" · "),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        IconButton(
+                            onClick = { onShare(audio) },
+                            enabled = preparingShareId == null,
+                            modifier = Modifier.size(40.dp)
+                        ) {
+                            if (preparingShareId == audio.id) {
+                                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                            } else {
+                                Icon(Icons.Default.Share, contentDescription = "分享会议音频")
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -527,7 +704,8 @@ private fun AttachmentThumbnail(
     onDelete: () -> Unit
 ) {
     val bitmap = remember(attachment.localPath) {
-        BitmapFactory.decodeFile(attachment.localPath)?.asImageBitmap()
+        OrientedImageDecoder.decode(File(attachment.localPath), maximumDimension = 512)
+            ?.asImageBitmap()
     }
     Column(modifier = Modifier.width(112.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Box(
@@ -587,28 +765,23 @@ private fun ReportHeaderCard(
     onShowTemplatePicker: (Boolean) -> Unit = {}
 ) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.Transparent)
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, MaterialTheme.shapes.medium),
+        shape = MaterialTheme.shapes.medium,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(
-                    brush = Brush.linearGradient(
-                        colors = listOf(
-                            MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
-                            MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f)
-                        )
-                    )
-                )
-                .padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             // Status badge
             Surface(
-                shape = RoundedCornerShape(20.dp),
-                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                shape = MaterialTheme.shapes.small,
+                color = MaterialTheme.colorScheme.primaryContainer
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
@@ -624,7 +797,7 @@ private fun ReportHeaderCard(
                     Text(
                         text = "已生成完成",
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
                         fontWeight = FontWeight.Medium
                     )
                 }
@@ -690,7 +863,7 @@ private fun ReportHeaderCard(
 
                 Surface(
                     onClick = { onShowTemplatePicker(true) },
-                    shape = RoundedCornerShape(10.dp),
+                    shape = RoundedCornerShape(8.dp),
                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
                 ) {
                     Row(
@@ -724,7 +897,7 @@ private fun ReportHeaderCard(
                 OutlinedButton(
                     onClick = onContinueRecording,
                     modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(12.dp)
+                    shape = RoundedCornerShape(8.dp)
                 ) {
                     Icon(Icons.Default.Mic, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(6.dp))
@@ -733,7 +906,7 @@ private fun ReportHeaderCard(
                 Button(
                     onClick = onRegenerateWithTemplate,
                     modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(12.dp)
+                    shape = RoundedCornerShape(8.dp)
                 ) {
                     Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(6.dp))
@@ -746,7 +919,7 @@ private fun ReportHeaderCard(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun TemplatePickerDialog(
+internal fun TemplatePickerDialog(
     templates: List<PresetReportTemplate>,
     selectedTemplateName: String,
     onSelect: (PresetReportTemplate) -> Unit,
@@ -772,7 +945,7 @@ private fun TemplatePickerDialog(
                                 onClick = { onSelect(template) },
                                 onLongClick = { onPreview(template) }
                             ),
-                        shape = RoundedCornerShape(12.dp),
+                        shape = RoundedCornerShape(8.dp),
                         color = if (isSelected)
                             MaterialTheme.colorScheme.primaryContainer
                         else
@@ -793,7 +966,7 @@ private fun TemplatePickerDialog(
                                         MaterialTheme.colorScheme.onSurface
                                 )
                                 Text(
-                                    text = "长按预览内容",
+                                    text = templateSelectionHint(template),
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -816,12 +989,19 @@ private fun TemplatePickerDialog(
                 Text("取消")
             }
         },
-        shape = RoundedCornerShape(20.dp)
+        shape = MaterialTheme.shapes.large
     )
 }
 
+private fun templateSelectionHint(template: PresetReportTemplate): String {
+    return template.subtitle
+        .takeIf { it.isNotBlank() }
+        ?.let { "$it · 长按预览" }
+        ?: "长按预览内容"
+}
+
 @Composable
-private fun TemplatePreviewDialog(
+internal fun TemplatePreviewDialog(
     template: PresetReportTemplate,
     onDismiss: () -> Unit
 ) {
@@ -835,7 +1015,7 @@ private fun TemplatePreviewDialog(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(max = 400.dp),
-                shape = RoundedCornerShape(12.dp),
+                shape = RoundedCornerShape(8.dp),
                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
             ) {
                 Text(
@@ -853,7 +1033,7 @@ private fun TemplatePreviewDialog(
                 Text("关闭")
             }
         },
-        shape = RoundedCornerShape(20.dp)
+        shape = MaterialTheme.shapes.large
     )
 }
 
@@ -861,11 +1041,12 @@ private fun TemplatePreviewDialog(
 private fun MarkdownReportCard(content: String) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
+        shape = MaterialTheme.shapes.medium,
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surface
         ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
         Column(
             modifier = Modifier.padding(20.dp),
@@ -988,7 +1169,7 @@ private fun StructuredReportContent(report: Report) {
         ReportSectionCard(
             icon = Icons.Default.Gavel,
             title = "决策事项",
-            iconTint = Color(0xFF8B5CF6)
+            iconTint = MaterialTheme.colorScheme.secondary
         ) {
             report.decisions.forEach { decision ->
                 Row(
@@ -999,7 +1180,7 @@ private fun StructuredReportContent(report: Report) {
                         imageVector = Icons.Default.CheckCircle,
                         contentDescription = null,
                         modifier = Modifier.size(20.dp),
-                        tint = Color(0xFF8B5CF6).copy(alpha = 0.7f)
+                        tint = MaterialTheme.colorScheme.secondary
                     )
                     Text(
                         text = decision,
@@ -1017,7 +1198,7 @@ private fun StructuredReportContent(report: Report) {
         ReportSectionCard(
             icon = Icons.Default.Assignment,
             title = "待办任务",
-            iconTint = Color(0xFF10B981)
+            iconTint = MaterialTheme.colorScheme.primary
         ) {
             report.tasks.forEach { task ->
                 Row(
@@ -1028,7 +1209,7 @@ private fun StructuredReportContent(report: Report) {
                         imageVector = if (task.completed) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
                         contentDescription = null,
                         modifier = Modifier.size(20.dp),
-                        tint = if (task.completed) Color(0xFF10B981) else MaterialTheme.colorScheme.outline
+                        tint = if (task.completed) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
                     )
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
@@ -1057,7 +1238,7 @@ private fun StructuredReportContent(report: Report) {
         ReportSectionCard(
             icon = Icons.Default.PlaylistAddCheck,
             title = "行动项",
-            iconTint = Color(0xFF3B82F6)
+            iconTint = MaterialTheme.colorScheme.tertiary
         ) {
             report.actionItems.forEach { item ->
                 Row(
@@ -1068,7 +1249,7 @@ private fun StructuredReportContent(report: Report) {
                         imageVector = Icons.Default.ArrowForward,
                         contentDescription = null,
                         modifier = Modifier.size(18.dp),
-                        tint = Color(0xFF3B82F6).copy(alpha = 0.7f)
+                        tint = MaterialTheme.colorScheme.tertiary
                     )
                     Text(
                         text = item,
@@ -1091,11 +1272,12 @@ private fun ReportSectionCard(
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
+        shape = MaterialTheme.shapes.medium,
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surface
         ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
         Column(
             modifier = Modifier.padding(20.dp),
@@ -1118,7 +1300,7 @@ private fun SectionHeader(
         horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Surface(
-            shape = RoundedCornerShape(10.dp),
+            shape = RoundedCornerShape(8.dp),
             color = color.copy(alpha = 0.12f),
             modifier = Modifier.size(36.dp)
         ) {
@@ -1149,11 +1331,12 @@ private fun TranscriptSectionCard(
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
+        shape = MaterialTheme.shapes.medium,
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surface
         ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
         Column(
             modifier = Modifier.padding(20.dp),
@@ -1200,17 +1383,19 @@ private fun TranscriptSectionCard(
                         .heightIn(max = 300.dp)
                         .background(
                             MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                            RoundedCornerShape(12.dp)
+                            RoundedCornerShape(8.dp)
                         )
                         .padding(14.dp)
                         .verticalScroll(rememberScrollState())
                 ) {
-                    Text(
-                        text = transcriptText,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        lineHeight = 20.sp
-                    )
+                    SelectionContainer {
+                        Text(
+                            text = transcriptText,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            lineHeight = 20.sp
+                        )
+                    }
                 }
             }
         }
@@ -1365,7 +1550,7 @@ private fun ChatPanel(
                     },
                     modifier = Modifier.weight(1f),
                     singleLine = true,
-                    shape = RoundedCornerShape(24.dp),
+                    shape = MaterialTheme.shapes.medium,
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedBorderColor = MaterialTheme.colorScheme.primary,
                         unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
@@ -1430,6 +1615,7 @@ private fun ChatMessageItem(message: ChatMessageUi) {
 private suspend fun exportReport(
     context: Context,
     report: Report,
+    meetingTitle: String,
     attachments: List<MeetingAttachment>,
     format: ExportFormat
 ) {
@@ -1442,15 +1628,24 @@ private suspend fun exportReport(
                         ExportFormat.TXT -> ReportExporter.exportToText(report)
                         else -> throw UnsupportedOperationException("不支持的格式")
                     }
-                    val fileName = "meeting_report_${System.currentTimeMillis()}.${format.extension}"
+                    val fileName = ReportExportFileNaming.build(
+                        report,
+                        meetingTitle,
+                        format.extension
+                    )
                     val exportDir = File(context.cacheDir, "exports").apply { mkdirs() }
                     File(exportDir, fileName).apply {
                         writeText(content, Charsets.UTF_8)
                     }
                 }
-                ExportFormat.DOCX -> DocxReportExporter.export(context, report, attachments)
+                ExportFormat.DOCX -> DocxReportExporter.export(
+                    context,
+                    report,
+                    attachments,
+                    meetingTitle
+                )
                 ExportFormat.PDF -> {
-                    ReportExporter.exportToPdf(context, report)
+                    ReportExporter.exportToPdf(context, report, attachments, meetingTitle)
                 }
             }
         }
@@ -1501,5 +1696,26 @@ private fun formatReportTime(timestamp: Long): String {
     return SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(timestamp))
 }
 
-private fun Report.documentTitle(): String =
-    if (templateName.contains("施工日志")) "施工日志" else "会议纪要"
+private fun formatArchivedAudioTime(value: String): String = runCatching {
+    SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date.from(Instant.parse(value)))
+}.getOrDefault(value)
+
+private fun formatAudioDuration(seconds: Double): String {
+    val total = seconds.toLong().coerceAtLeast(0)
+    val hours = total / 3600
+    val minutes = (total % 3600) / 60
+    val remainingSeconds = total % 60
+    return if (hours > 0) {
+        "%d:%02d:%02d".format(Locale.US, hours, minutes, remainingSeconds)
+    } else {
+        "%02d:%02d".format(Locale.US, minutes, remainingSeconds)
+    }
+}
+
+private fun formatFileSize(bytes: Long): String = when {
+    bytes >= 1024L * 1024L -> "%.1f MB".format(Locale.US, bytes / (1024.0 * 1024.0))
+    bytes >= 1024L -> "%.1f KB".format(Locale.US, bytes / 1024.0)
+    else -> "$bytes B"
+}
+
+private fun Report.documentTitle(): String = reportDocumentKind(templateName).documentTitle

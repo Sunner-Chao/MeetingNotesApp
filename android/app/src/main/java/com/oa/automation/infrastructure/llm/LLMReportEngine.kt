@@ -3,6 +3,7 @@ package com.oa.automation.infrastructure.llm
 import com.oa.automation.domain.model.LLMConfig
 import com.oa.automation.domain.model.LLMEngineType
 import com.oa.automation.domain.model.ReportTemplateConfig
+import com.oa.automation.domain.model.reportDocumentKind
 import java.io.File
 
 /**
@@ -69,7 +70,14 @@ data class ChatMessage(
 data class AgentAttachment(
     val file: File,
     val mimeType: String,
-    val displayName: String
+    val displayName: String,
+    /** Capture time from the local meeting attachment record, when available. */
+    val capturedAt: Long? = null,
+    val latitude: Double? = null,
+    val longitude: Double? = null,
+    val accuracyMeters: Float? = null,
+    val locationCapturedAt: Long? = null,
+    val locationSource: String? = null
 )
 
 /**
@@ -102,7 +110,9 @@ object ReportPromptTemplates {
 1. 严格按用户提供的模板生成文档
 2. 从原始记录中提取关键信息、事实、数据和结论
 3. 会议纪要场景下识别决策事项、行动项和参会人员
-4. 施工日志场景下整理日期、天气、施工人员、施工部位、完成工程量、质量、安全、材料机具、停工和加班等现场记录
+4. 工程/建筑日志场景下整理日期、天气、施工生产、设计工作、质量、安全、材料机具、验收、停工和加班等现场记录
+5. 监理例会场景下整理进度对比、上次整改闭合、监理工作、建设单位要求、责任单位和完成时限
+6. 参观考察场景下按实际行程顺序保留每个点位的时间、现场观察、讲解交流、可借鉴做法和后续启示
 
 输出格式要求：
 - 使用中文输出
@@ -157,8 +167,9 @@ object ReportPromptTemplates {
 
     fun buildUserPrompt(transcript: String, template: ReportTemplateConfig): String {
         val rawTemplate = template.content.ifBlank { USER_PROMPT_TEMPLATE_STANDARD }
-        val documentName = if (template.selectedName.contains("施工日志")) "施工日志" else "会议纪要"
-        val sourceName = if (template.selectedName.contains("施工日志")) "现场记录" else "会议记录"
+        val documentKind = reportDocumentKind(template.selectedName)
+        val documentName = documentKind.documentTitle
+        val sourceName = documentKind.sourceTitle
         return """请根据以下$sourceName，严格按给定模板生成一份完整的 Markdown $documentName。
 
 要求：

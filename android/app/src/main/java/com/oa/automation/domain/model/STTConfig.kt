@@ -6,14 +6,43 @@ import com.oa.automation.BuildConfig
  * STT (Speech-to-Text) Engine Types
  *
  * Priority:
- * - P0: Faster-Whisper (main local engine)
- * - P1: SenseVoice (Chinese-optimized, alternative local)
- * - P2: Cloud ASR (cloud backup)
+ * - P0: Zhiwu local model
+ * - P1: Zhiwu listening model
+ * - P2: Zhiwu enhanced cloud model
  */
 enum class STTEngineType(val displayName: String, val defaultModel: String) {
-    FASTER_WHISPER("Faster-Whisper 本地", "small"),
-    SENSE_VOICE("SenseVoice 中文优化", "SenseVoiceSmall"),
-    CLOUD_ASR("云端 ASR", "")
+    FASTER_WHISPER("智悟本地模型", "small"),
+    SENSE_VOICE("智悟灵听模型", "SenseVoiceSmall"),
+    TENCENT_HYBRID("智悟增强云模型", "tencent-standard")
+}
+
+enum class STTLanguage(
+    val displayName: String,
+    val compactLabel: String,
+    val requestValue: String
+) {
+    CHINESE("中文", "中", "zh"),
+    ENGLISH("English", "EN", "en")
+}
+
+enum class TencentAsrTier(
+    val displayName: String,
+    val cloudModel: String,
+    val streamProvider: String,
+    val isPaid: Boolean
+) {
+    STANDARD_FREE(
+        displayName = "智悟增强云模型 · 标准",
+        cloudModel = "tencent-standard",
+        streamProvider = "tencent-realtime-standard",
+        isPaid = false
+    ),
+    PRECISION_PAID(
+        displayName = "智悟增强云模型 · 臻享",
+        cloudModel = "tencent-precision",
+        streamProvider = "tencent-realtime-precision",
+        isPaid = true
+    )
 }
 
 /**
@@ -32,14 +61,21 @@ data class DiscoveredSTTServer(
  */
 data class STTConfig(
     val engineType: STTEngineType = STTEngineType.FASTER_WHISPER,
+    val language: STTLanguage = STTLanguage.CHINESE,
     val localEndpoint: String = DEFAULT_LOCAL_ENDPOINT,
     val localModel: String = BuildConfig.DEFAULT_STT_MODEL,
-    val apiToken: String? = BuildConfig.DEFAULT_STT_TRIAL_TOKEN.takeIf { it.isNotBlank() },
-    val cloudEndpoint: String? = null,
-    val cloudApiKey: String? = null
+    val apiToken: String? = null,
+    val cloudEndpoint: String? = DEFAULT_CLOUD_ENDPOINT,
+    val cloudApiKey: String? = null,
+    val cloudModel: String = DEFAULT_CLOUD_MODEL,
+    val tencentAsrTier: TencentAsrTier = TencentAsrTier.STANDARD_FREE
 ) {
     companion object {
         const val DEFAULT_LOCAL_ENDPOINT = BuildConfig.DEFAULT_STT_ENDPOINT
+        val DEFAULT_CLOUD_ENDPOINT = BuildConfig.DEFAULT_STT_CLOUD_ENDPOINT.takeIf { it.isNotBlank() }
+        val DEFAULT_CLOUD_MODEL = BuildConfig.DEFAULT_STT_CLOUD_MODEL.ifBlank {
+            TencentAsrTier.STANDARD_FREE.cloudModel
+        }
         const val PREVIOUS_PUBLIC_ENDPOINT = "http://ecobim.cn:57414"
         const val LEGACY_LOCAL_ENDPOINT = "http://localhost:8888"
         val DEFAULT = STTConfig()

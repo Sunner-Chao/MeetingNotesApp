@@ -6,6 +6,9 @@ import android.provider.OpenableColumns
 import com.oa.automation.domain.model.MeetingAttachment
 import com.oa.automation.domain.repository.MeetingRepository
 import com.oa.automation.infrastructure.llm.AgentAttachment
+import com.oa.automation.infrastructure.location.DeviceLocationProvider
+import com.oa.automation.infrastructure.location.ExifLocationReader
+import com.oa.automation.infrastructure.location.LocationSnapshot
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
@@ -14,12 +17,37 @@ import java.util.UUID
 
 class MeetingAttachmentStore(
     private val context: Context,
-    private val meetingRepository: MeetingRepository
+    private val meetingRepository: MeetingRepository,
+    private val locationProvider: DeviceLocationProvider
 ) {
     fun observe(meetingId: String): Flow<List<MeetingAttachment>> = meetingRepository.observeAttachments(meetingId)
 
-    suspend fun importImage(meetingId: String, source: Uri): Result<MeetingAttachment> = withContext(Dispatchers.IO) {
+    suspend fun importImage(
+        meetingId: String,
+        source: Uri,
+        captureLocation: Boolean = false
+    ): Result<MeetingAttachment> = importImages(
+        meetingId = meetingId,
+        sources = listOf(source),
+        captureLocation = captureLocation
+    ).single()
+
+    suspend fun importImages(
+        meetingId: String,
+        sources: List<Uri>,
+        captureLocation: Boolean = false
+    ): List<Result<MeetingAttachment>> = withContext(Dispatchers.IO) {
+        val deviceLocation = if (captureLocation) locationProvider.capture() else null
+        sources.map { source -> importImage(meetingId, source, deviceLocation) }
+    }
+
+    private suspend fun importImage(
+        meetingId: String,
+        source: Uri,
+        deviceLocation: LocationSnapshot?
+    ): Result<MeetingAttachment> =
         runCatching {
+            val createdAt = System.currentTimeMillis()
             val mimeType = context.contentResolver.getType(source)?.takeIf { it.startsWith("image/") }
                 ?: "image/jpeg"
             val originalName = queryDisplayName(source) ?: "photo.jpg"
@@ -33,20 +61,28 @@ class MeetingAttachmentStore(
                 target.outputStream().use { output -> input.copyTo(output) }
             } ?: error("无法读取所选图片")
 
+            // Prefer coordinates embedded in the image: the device may be elsewhere
+            // when a previously captured gallery photo is imported.
+            val location = ExifLocationReader.read(target, createdAt) ?: deviceLocation
+
             val attachment = MeetingAttachment(
                 id = attachmentId,
                 meetingId = meetingId,
                 displayName = originalName,
                 localPath = target.absolutePath,
                 mimeType = mimeType,
-                createdAt = System.currentTimeMillis()
+                createdAt = createdAt,
+                latitude = location?.latitude,
+                longitude = location?.longitude,
+                accuracyMeters = location?.accuracyMeters,
+                locationCapturedAt = location?.capturedAt,
+                locationSource = location?.source
             )
             meetingRepository.saveAttachment(attachment).getOrElse { error ->
                 target.delete()
                 throw error
             }
         }
-    }
 
     suspend fun delete(attachment: MeetingAttachment): Result<Unit> = withContext(Dispatchers.IO) {
         meetingRepository.deleteAttachment(attachment.id).onSuccess {
@@ -56,7 +92,17 @@ class MeetingAttachmentStore(
 
     fun toAgentAttachments(attachments: List<MeetingAttachment>): List<AgentAttachment> = attachments.mapNotNull { attachment ->
         File(attachment.localPath).takeIf { it.isFile }?.let { file ->
-            AgentAttachment(file, attachment.mimeType, attachment.displayName)
+            AgentAttachment(
+                file = file,
+                mimeType = attachment.mimeType,
+                displayName = attachment.displayName,
+                capturedAt = attachment.createdAt,
+                latitude = attachment.latitude,
+                longitude = attachment.longitude,
+                accuracyMeters = attachment.accuracyMeters,
+                locationCapturedAt = attachment.locationCapturedAt,
+                locationSource = attachment.locationSource
+            )
         }
     }
 

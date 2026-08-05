@@ -2,9 +2,12 @@ package com.oa.automation.infrastructure.llm
 
 import com.google.gson.Gson
 import com.google.gson.JsonParser
+import com.google.gson.annotations.SerializedName
 import com.oa.automation.domain.model.LLMConfig
 import com.oa.automation.domain.model.LLMEngineType
 import com.oa.automation.domain.model.ReportTemplateConfig
+import com.oa.automation.infrastructure.network.awaitResponse
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -40,9 +43,12 @@ class AgentGatewayEngine(
         val payload = AgentTaskRequest(
             provider = config.agentProvider.requestValue,
             operation = "generate_report",
+            codexReasoningEffort = config.codexReasoningEffort.requestValue,
+            claudeEffort = config.claudeReasoningEffort.requestValue,
             transcript = transcript,
             templateName = template.selectedName,
-            templateContent = template.content
+            templateContent = template.content,
+            attachmentManifest = buildAttachmentManifest(attachments)
         )
         execute(payload, attachments).map { response ->
             response.report?.copy(templateName = response.report.templateName.ifBlank { template.selectedName })
@@ -57,7 +63,10 @@ class AgentGatewayEngine(
         val payload = AgentTaskRequest(
             provider = config.agentProvider.requestValue,
             operation = "chat",
-            messages = messages
+            codexReasoningEffort = config.codexReasoningEffort.requestValue,
+            claudeEffort = config.claudeReasoningEffort.requestValue,
+            messages = messages,
+            attachmentManifest = buildAttachmentManifest(attachments)
         )
         execute(payload, attachments).map { it.text }
     }
@@ -69,44 +78,68 @@ class AgentGatewayEngine(
     override fun isAvailable(): Boolean =
         config.agentEndpoint.isNotBlank() && !config.agentAccessToken.isNullOrBlank()
 
-    private fun execute(
+    private suspend fun execute(
         payload: AgentTaskRequest,
         attachments: List<AgentAttachment>
-    ): Result<AgentTaskResponse> = runCatching {
-        val endpoint = config.agentEndpoint.trim().trimEnd('/')
-        require(endpoint.isNotBlank()) { "Agent 服务地址未配置" }
-        val token = config.agentAccessToken?.trim().orEmpty()
-        require(token.isNotBlank()) { "Agent 访问令牌未配置" }
+    ): Result<AgentTaskResponse> {
+        return try {
+            val endpoint = config.agentEndpoint.trim().trimEnd('/')
+            require(endpoint.isNotBlank()) { "Agent 服务地址未配置" }
+            val token = config.agentAccessToken?.trim().orEmpty()
+            require(token.isNotBlank()) { "Agent 访问令牌未配置" }
 
-        val body = MultipartBody.Builder()
-            .setType(MultipartBody.FORM)
-            .addFormDataPart(
-                "request",
-                null,
-                gson.toJson(payload).toRequestBody("application/json".toMediaType())
-            )
-        attachments.filter { it.file.isFile }.forEach { attachment ->
-            body.addFormDataPart(
-                "attachments",
-                attachment.displayName,
-                attachment.file.asRequestBody(attachment.mimeType.toMediaType())
-            )
-        }
-
-        val request = Request.Builder()
-            .url(endpoint)
-            .addHeader("Authorization", "Bearer $token")
-            .post(body.build())
-            .build()
-
-        client.newCall(request).execute().use { response ->
-            val responseBody = response.body?.string().orEmpty()
-            if (!response.isSuccessful) {
-                throw IOException(response.toAgentError(responseBody))
+            val body = MultipartBody.Builder()
+                .setType(MultipartBody.FORM)
+                .addFormDataPart(
+                    "request",
+                    null,
+                    gson.toJson(payload).toRequestBody("application/json".toMediaType())
+                )
+            attachments.filter { it.file.isFile }.forEach { attachment ->
+                body.addFormDataPart(
+                    "attachments",
+                    attachment.displayName,
+                    attachment.file.asRequestBody(attachment.mimeType.toMediaType())
+                )
             }
-            parseResponse(responseBody)
+
+            val request = Request.Builder()
+                .url(endpoint)
+                .addHeader("Authorization", "Bearer $token")
+                .post(body.build())
+                .build()
+
+            val parsed = client.newCall(request).awaitResponse().use { response ->
+                val responseBody = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    throw IOException(response.toAgentError(responseBody))
+                }
+                parseResponse(responseBody)
+            }
+            Result.success(parsed)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            Result.failure(error)
         }
     }
+
+    private fun buildAttachmentManifest(
+        attachments: List<AgentAttachment>
+    ): List<AgentAttachmentManifestEntry> = attachments
+        .filter { it.file.isFile }
+        .mapIndexed { index, attachment ->
+            AgentAttachmentManifestEntry(
+                index = index + 1,
+                displayName = attachment.displayName,
+                capturedAt = attachment.capturedAt,
+                latitude = attachment.latitude,
+                longitude = attachment.longitude,
+                accuracyMeters = attachment.accuracyMeters,
+                locationCapturedAt = attachment.locationCapturedAt,
+                locationSource = attachment.locationSource
+            )
+        }
 
     private fun parseResponse(body: String): AgentTaskResponse {
         val parsed = runCatching { gson.fromJson(body, AgentTaskResponse::class.java) }.getOrNull()
@@ -118,10 +151,26 @@ class AgentGatewayEngine(
     data class AgentTaskRequest(
         val provider: String,
         val operation: String,
+        @SerializedName("model_reasoning_effort")
+        val codexReasoningEffort: String,
+        @SerializedName("effort")
+        val claudeEffort: String,
         val transcript: String? = null,
         val templateName: String? = null,
         val templateContent: String? = null,
-        val messages: List<ChatMessage>? = null
+        val messages: List<ChatMessage>? = null,
+        val attachmentManifest: List<AgentAttachmentManifestEntry> = emptyList()
+    )
+
+    data class AgentAttachmentManifestEntry(
+        val index: Int,
+        val displayName: String,
+        val capturedAt: Long? = null,
+        val latitude: Double? = null,
+        val longitude: Double? = null,
+        val accuracyMeters: Float? = null,
+        val locationCapturedAt: Long? = null,
+        val locationSource: String? = null
     )
 
     data class AgentTaskResponse(

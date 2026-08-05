@@ -18,6 +18,21 @@ enum class AgentProvider(val displayName: String, val requestValue: String) {
     CLAUDE_CLI("Claude CLI", "claude-cli")
 }
 
+enum class CodexReasoningEffort(val displayName: String, val requestValue: String) {
+    MINIMAL("极简", "minimal"),
+    LOW("低", "low"),
+    MEDIUM("中", "medium"),
+    HIGH("高", "high"),
+    XHIGH("超高", "xhigh")
+}
+
+enum class ClaudeReasoningEffort(val displayName: String, val requestValue: String) {
+    LOW("低", "low"),
+    MEDIUM("中", "medium"),
+    HIGH("高", "high"),
+    MAX("最高", "max")
+}
+
 enum class CloudApiFormat(val displayName: String) {
     OPENAI_COMPAT("OpenAI Compatible"),
     CLAUDE_MESSAGES("Claude Messages")
@@ -31,14 +46,34 @@ enum class ReportTemplate(val displayName: String) {
 
 data class PresetReportTemplate(
     val name: String,
-    val content: String
+    val content: String,
+    val subtitle: String = ""
 )
 
 data class ReportTemplateConfig(
-    val selectedName: String = "孔爵团队版表格会议纪要",
+    val selectedName: String = "通用会议",
     val content: String = "",
     val isCustom: Boolean = false
 )
+
+enum class ReportDocumentKind(
+    val documentTitle: String,
+    val sourceTitle: String
+) {
+    MEETING_MINUTES("会议纪要", "会议记录"),
+    CONSTRUCTION_DESIGN_LOG("工程/建筑日志", "现场记录")
+}
+
+fun reportDocumentKind(templateName: String): ReportDocumentKind {
+    val isConstructionOrDesignLog = templateName.contains("施工日志") ||
+        templateName.contains("设计日志") ||
+        templateName.contains("施工/设计日志")
+    return if (isConstructionOrDesignLog) {
+        ReportDocumentKind.CONSTRUCTION_DESIGN_LOG
+    } else {
+        ReportDocumentKind.MEETING_MINUTES
+    }
+}
 
 /**
  * LLM Engine Configuration
@@ -48,6 +83,8 @@ data class LLMConfig(
     val agentEndpoint: String = BuildConfig.DEFAULT_AGENT_ENDPOINT,
     val agentAccessToken: String? = null,
     val agentProvider: AgentProvider = AgentProvider.CODEX_CLI,
+    val codexReasoningEffort: CodexReasoningEffort = CodexReasoningEffort.HIGH,
+    val claudeReasoningEffort: ClaudeReasoningEffort = ClaudeReasoningEffort.HIGH,
     val localEndpoint: String = "http://localhost:11434",
     val localModel: String = "qwen2.5:7b",
     val cloudEndpoint: String? = BuildConfig.DEFAULT_LLM_CLOUD_ENDPOINT.takeIf { it.isNotBlank() },

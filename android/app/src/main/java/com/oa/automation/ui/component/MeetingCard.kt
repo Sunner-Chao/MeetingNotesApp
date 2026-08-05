@@ -2,29 +2,32 @@ package com.oa.automation.ui.component
 
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.automirrored.filled.Article
+import androidx.compose.material.icons.filled.AccessTime
+import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -60,16 +63,7 @@ import java.util.Date
 import java.util.Locale
 import kotlin.math.roundToInt
 
-// ─── Design Tokens ────────────────────────────────────────────────────────────
-private val CardRadius = 16.dp
-private val CardPadding = 14.dp
-private val StatusGreen = Color(0xFF2E7D32)
-
-/**
- * MeetingCard - 精简版会议卡片
- * 设计原则：信息层次清晰，操作隐藏于菜单
- */
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MeetingCard(
     meeting: Meeting,
@@ -86,249 +80,313 @@ fun MeetingCard(
     var offsetX by remember { mutableFloatStateOf(0f) }
     var showDeleteDialog by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
-    val swipeThresholdPx = with(LocalDensity.current) { 48.dp.toPx() }
-
-    val deleteBgAlpha by animateFloatAsState(
-        targetValue = (-offsetX.coerceAtLeast(0f) / swipeThresholdPx).coerceIn(0f, 1f),
-        animationSpec = tween(durationMillis = 80),
-        label = "deleteBgAlpha"
+    val swipeThresholdPx = with(LocalDensity.current) { 72.dp.toPx() }
+    val deleteAlpha by animateFloatAsState(
+        targetValue = (-offsetX / swipeThresholdPx).coerceIn(0f, 1f),
+        animationSpec = tween(90),
+        label = "deleteAlpha"
     )
 
     if (showDeleteDialog) {
         AlertDialog(
             onDismissRequest = { showDeleteDialog = false },
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.DeleteOutline,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error
+                )
+            },
             title = { Text("删除会议", fontWeight = FontWeight.SemiBold) },
             text = {
-                Column {
-                    Text("确定要删除此会议吗？", style = MaterialTheme.typography.bodyMedium)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = meeting.title,
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
+                Text(
+                    text = "“${meeting.title}”及其录音、转写和纪要将被永久删除。",
+                    style = MaterialTheme.typography.bodyMedium
+                )
             },
             confirmButton = {
-                TextButton(onClick = { onDelete().also { showDeleteDialog = false } }) {
+                TextButton(
+                    onClick = {
+                        onDelete()
+                        showDeleteDialog = false
+                    }
+                ) {
                     Text("删除", color = MaterialTheme.colorScheme.error)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showDeleteDialog = false }) { Text("取消") }
-            }
+            },
+            shape = MaterialTheme.shapes.large
         )
     }
 
     Box(modifier = modifier.fillMaxWidth()) {
-        // 删除背景层
         Box(
             modifier = Modifier
                 .matchParentSize()
-                .clip(RoundedCornerShape(CardRadius))
-                .background(MaterialTheme.colorScheme.error.copy(alpha = deleteBgAlpha)),
+                .clip(MaterialTheme.shapes.medium)
+                .background(MaterialTheme.colorScheme.errorContainer),
             contentAlignment = Alignment.CenterEnd
         ) {
-            Icon(
-                imageVector = Icons.Default.Delete,
-                contentDescription = "删除",
-                tint = Color.White.copy(alpha = deleteBgAlpha),
-                modifier = Modifier
-                    .padding(end = 16.dp)
-                    .size(20.dp)
-            )
+            Row(
+                modifier = Modifier.padding(end = 18.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.DeleteOutline,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error.copy(alpha = deleteAlpha)
+                )
+                Text(
+                    text = "删除",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.error.copy(alpha = deleteAlpha)
+                )
+            }
         }
 
-        // 前景卡片
         Card(
+            onClick = onClick,
             modifier = Modifier
                 .fillMaxWidth()
                 .offset { IntOffset(offsetX.roundToInt(), 0) }
-                .pointerInput(Unit) {
+                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, MaterialTheme.shapes.medium)
+                .pointerInput(swipeThresholdPx) {
                     detectHorizontalDragGestures(
                         onDragEnd = {
-                            if (offsetX < -swipeThresholdPx) {
-                                showDeleteDialog = true
-                            }
+                            if (offsetX < -swipeThresholdPx) showDeleteDialog = true
                             offsetX = 0f
                         },
+                        onDragCancel = { offsetX = 0f },
                         onHorizontalDrag = { _, dragAmount ->
-                            val newOffset = offsetX + dragAmount
-                            offsetX = newOffset.coerceIn(-swipeThresholdPx * 1.5f, 0f)
+                            offsetX = (offsetX + dragAmount).coerceIn(-swipeThresholdPx * 1.7f, 0f)
                         }
                     )
                 },
-            shape = RoundedCornerShape(CardRadius),
-            colors = CardDefaults.cardColors(
-                containerColor = if (hasReport)
-                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
-                else
-                    MaterialTheme.colorScheme.surface
-            ),
-            onClick = if (hasReport) onReportClick else onClick
+            shape = MaterialTheme.shapes.medium,
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
         ) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(CardPadding),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    .height(IntrinsicSize.Min),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // 状态图标
-                Surface(
-                    modifier = Modifier.size(40.dp),
-                    shape = CircleShape,
-                    color = if (hasReport)
-                        StatusGreen.copy(alpha = 0.12f)
-                    else
-                        MaterialTheme.colorScheme.primary.copy(alpha = 0.1f)
+                Box(
+                    modifier = Modifier
+                        .width(4.dp)
+                        .fillMaxHeight()
+                        .background(
+                            if (hasReport) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.secondary
+                        )
+                )
+
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(start = 14.dp, top = 12.dp, bottom = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = if (hasReport)
-                                Icons.Default.CheckCircle
-                            else
-                                Icons.Outlined.Description,
-                            contentDescription = null,
-                            tint = if (hasReport)
-                                StatusGreen
-                            else
-                                MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                }
-
-                // 标题和日期
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = meeting.title,
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Text(
-                            text = formatDate(meeting.createdAt),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        if (hasReport) {
+                    Row(verticalAlignment = Alignment.Top) {
+                        Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "· 已完成",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = StatusGreen,
-                                fontWeight = FontWeight.Medium
+                                text = meeting.title,
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
                             )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            MeetingMetadata(meeting = meeting, hasReport = hasReport)
                         }
-                    }
-                }
 
-                // 操作区
-                if (hasReport) {
-                    // 更多菜单
-                    Box {
-                        IconButton(
-                            onClick = { showMenu = true },
-                            modifier = Modifier.size(32.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.MoreVert,
-                                contentDescription = "更多",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                        DropdownMenu(
-                            expanded = showMenu,
-                            onDismissRequest = { showMenu = false }
-                        ) {
-                            DropdownMenuItem(
-                                text = {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        if (isRegenerating) {
-                                            CircularProgressIndicator(
-                                                modifier = Modifier.size(14.dp),
-                                                strokeWidth = 2.dp
-                                            )
-                                        } else {
-                                            Icon(
-                                                imageVector = Icons.Default.Refresh,
-                                                contentDescription = null,
-                                                modifier = Modifier.size(16.dp)
-                                            )
-                                        }
-                                        Text(if (isRegenerating) "生成中..." else "重新生成", style = MaterialTheme.typography.bodySmall)
-                                    }
-                                },
-                                onClick = {
-                                    showMenu = false
-                                    onRegenerateReport()
-                                },
-                                enabled = !isRegenerating
-                            )
-                            onEdit?.let { editCallback ->
-                                DropdownMenuItem(
-                                    text = {
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                        ) {
-                                            Icon(Icons.Default.Edit, null, Modifier.size(16.dp))
-                                            Text("修改名称", style = MaterialTheme.typography.bodySmall)
-                                        }
-                                    },
-                                    onClick = {
-                                        showMenu = false
-                                        editCallback()
-                                    }
+                        Box {
+                            IconButton(
+                                onClick = { showMenu = true },
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.MoreVert,
+                                    contentDescription = "会议操作",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
-                            DropdownMenuItem(
-                                text = {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        Icon(
-                                            Icons.Default.Delete,
-                                            null,
-                                            Modifier.size(16.dp),
-                                            tint = MaterialTheme.colorScheme.error
-                                        )
-                                        Text("删除", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-                                    }
-                                },
-                                onClick = {
-                                    showMenu = false
-                                    showDeleteDialog = true
-                                }
+                            MeetingMenu(
+                                expanded = showMenu,
+                                hasReport = hasReport,
+                                isRegenerating = isRegenerating,
+                                onDismiss = { showMenu = false },
+                                onContinueRecording = onContinueRecording,
+                                onRegenerateReport = onRegenerateReport,
+                                onEdit = onEdit,
+                                onDelete = { showDeleteDialog = true }
                             )
                         }
                     }
-                } else {
-                    // 未完成的显示箭头
-                    Icon(
-                        imageVector = Icons.Default.KeyboardArrowRight,
-                        contentDescription = "继续",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(20.dp)
-                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        TextButton(
+                            onClick = if (hasReport) onReportClick else onContinueRecording,
+                            modifier = Modifier.height(36.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (hasReport) Icons.AutoMirrored.Filled.Article else Icons.Default.Mic,
+                                contentDescription = null,
+                                modifier = Modifier.size(17.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(if (hasReport) "查看纪要" else "继续记录")
+                            Spacer(modifier = Modifier.width(2.dp))
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
                 }
+
+                Spacer(modifier = Modifier.width(6.dp))
             }
         }
     }
 }
 
+@Composable
+private fun MeetingMetadata(meeting: Meeting, hasReport: Boolean) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        StatusLabel(hasReport = hasReport)
+        Icon(
+            imageVector = Icons.Default.AccessTime,
+            contentDescription = null,
+            modifier = Modifier.size(14.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+            text = formatDate(meeting.createdAt),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        if (meeting.durationMs > 0) {
+            Text(
+                text = formatDuration(meeting.durationMs),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+private fun StatusLabel(hasReport: Boolean) {
+    val container = if (hasReport) {
+        MaterialTheme.colorScheme.primaryContainer
+    } else {
+        MaterialTheme.colorScheme.secondaryContainer
+    }
+    val content = if (hasReport) {
+        MaterialTheme.colorScheme.onPrimaryContainer
+    } else {
+        MaterialTheme.colorScheme.onSecondaryContainer
+    }
+
+    Surface(shape = MaterialTheme.shapes.small, color = container) {
+        Text(
+            text = if (hasReport) "纪要完成" else "待完善",
+            style = MaterialTheme.typography.labelSmall,
+            color = content,
+            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+        )
+    }
+}
+
+@Composable
+private fun MeetingMenu(
+    expanded: Boolean,
+    hasReport: Boolean,
+    isRegenerating: Boolean,
+    onDismiss: () -> Unit,
+    onContinueRecording: () -> Unit,
+    onRegenerateReport: () -> Unit,
+    onEdit: (() -> Unit)?,
+    onDelete: () -> Unit
+) {
+    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
+        if (hasReport) {
+            DropdownMenuItem(
+                text = { Text("继续录音") },
+                leadingIcon = { Icon(Icons.Default.Mic, contentDescription = null) },
+                onClick = {
+                    onDismiss()
+                    onContinueRecording()
+                }
+            )
+            DropdownMenuItem(
+                text = { Text(if (isRegenerating) "纪要生成中" else "重新生成纪要") },
+                leadingIcon = {
+                    if (isRegenerating) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                    } else {
+                        Icon(Icons.Default.Refresh, contentDescription = null)
+                    }
+                },
+                enabled = !isRegenerating,
+                onClick = {
+                    onDismiss()
+                    onRegenerateReport()
+                }
+            )
+        }
+        onEdit?.let { edit ->
+            DropdownMenuItem(
+                text = { Text("修改名称") },
+                leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
+                onClick = {
+                    onDismiss()
+                    edit()
+                }
+            )
+        }
+        DropdownMenuItem(
+            text = { Text("删除", color = MaterialTheme.colorScheme.error) },
+            leadingIcon = {
+                Icon(
+                    imageVector = Icons.Default.DeleteOutline,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error
+                )
+            },
+            onClick = {
+                onDismiss()
+                onDelete()
+            }
+        )
+    }
+}
+
 private fun formatDate(timestamp: Long): String {
-    val formatter = SimpleDateFormat("MM/dd HH:mm", Locale.getDefault())
-    return formatter.format(Date(timestamp))
+    val now = System.currentTimeMillis()
+    val diff = (now - timestamp).coerceAtLeast(0)
+    return when {
+        diff < 60_000 -> "刚刚"
+        diff < 3_600_000 -> "${diff / 60_000} 分钟前"
+        diff < 86_400_000 -> SimpleDateFormat("今天 HH:mm", Locale.SIMPLIFIED_CHINESE).format(Date(timestamp))
+        diff < 172_800_000 -> SimpleDateFormat("昨天 HH:mm", Locale.SIMPLIFIED_CHINESE).format(Date(timestamp))
+        else -> SimpleDateFormat("MM月dd日 HH:mm", Locale.SIMPLIFIED_CHINESE).format(Date(timestamp))
+    }
+}
+
+private fun formatDuration(durationMs: Long): String {
+    val totalMinutes = durationMs / 60_000
+    return if (totalMinutes < 1) "< 1 分钟" else "${totalMinutes} 分钟"
 }

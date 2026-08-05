@@ -4,13 +4,21 @@ import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.google.gson.Gson
 import com.oa.automation.BuildConfig
 import com.oa.automation.domain.model.AppConfig
+import com.oa.automation.domain.model.AppThemeMode
 import com.oa.automation.domain.model.AgentProvider
+import com.oa.automation.domain.model.AccountProfile
+import com.oa.automation.domain.model.AccountSessionCredentials
+import com.oa.automation.domain.model.AuthSession
 import com.oa.automation.domain.model.CloudApiFormat
+import com.oa.automation.domain.model.ClaudeReasoningEffort
+import com.oa.automation.domain.model.CodexReasoningEffort
 import com.oa.automation.domain.model.LLMConfig
 import com.oa.automation.domain.model.LLMEngineType
 import com.oa.automation.domain.model.PresetReportTemplate
@@ -18,6 +26,8 @@ import com.oa.automation.domain.model.ReportTemplate
 import com.oa.automation.domain.model.ReportTemplateConfig
 import com.oa.automation.domain.model.STTConfig
 import com.oa.automation.domain.model.STTEngineType
+import com.oa.automation.domain.model.STTLanguage
+import com.oa.automation.domain.model.TencentAsrTier
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -29,6 +39,12 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "oa_automation_settings")
+
+private data class ReportTemplateAsset(
+    val name: String,
+    val fileName: String,
+    val subtitle: String
+)
 
 /**
  * DataStore wrapper for persisting app configuration
@@ -46,6 +62,7 @@ class ConfigDataStore(private val context: Context) {
     private val defaultLlmCloudEndpoint = BuildConfig.DEFAULT_LLM_CLOUD_ENDPOINT.takeIf { it.isNotBlank() }
     private val defaultLlmCloudApiKey = BuildConfig.DEFAULT_LLM_CLOUD_API_KEY.takeIf { it.isNotBlank() }
     private val defaultLlmCloudModel = BuildConfig.DEFAULT_LLM_CLOUD_MODEL.takeIf { it.isNotBlank() }
+    private val defaultRelayBaseUrl = BuildConfig.DEFAULT_RELAY_BASE_URL.takeIf { it.isNotBlank() }
     // 常见 STT 服务本地端口
     private val commonSttPorts = listOf(8888, 8000, 8001, 8002, 8889, 8890)
 
@@ -62,17 +79,22 @@ class ConfigDataStore(private val context: Context) {
         const val LOCAL_STT_ENDPOINT_FALLBACK = "http://localhost:8888"
         // STT Config Keys
         private val STT_ENGINE_TYPE = stringPreferencesKey("stt_engine_type")
+        private val STT_LANGUAGE = stringPreferencesKey("stt_language")
         private val STT_LOCAL_ENDPOINT = stringPreferencesKey("stt_local_endpoint")
         private val STT_LOCAL_MODEL = stringPreferencesKey("stt_local_model")
         private val STT_API_TOKEN = stringPreferencesKey("stt_api_token")
         private val STT_CLOUD_ENDPOINT = stringPreferencesKey("stt_cloud_endpoint")
         private val STT_CLOUD_API_KEY = stringPreferencesKey("stt_cloud_api_key")
+        private val STT_CLOUD_MODEL = stringPreferencesKey("stt_cloud_model")
+        private val STT_TENCENT_ASR_TIER = stringPreferencesKey("stt_tencent_asr_tier")
 
         // LLM Config Keys
         private val LLM_ENGINE_TYPE = stringPreferencesKey("llm_engine_type")
         private val LLM_AGENT_ENDPOINT = stringPreferencesKey("llm_agent_endpoint")
         private val LLM_AGENT_ACCESS_TOKEN = stringPreferencesKey("llm_agent_access_token")
         private val LLM_AGENT_PROVIDER = stringPreferencesKey("llm_agent_provider")
+        private val LLM_CODEX_REASONING_EFFORT = stringPreferencesKey("llm_codex_reasoning_effort")
+        private val LLM_CLAUDE_REASONING_EFFORT = stringPreferencesKey("llm_claude_reasoning_effort")
         private val LLM_LOCAL_ENDPOINT = stringPreferencesKey("llm_local_endpoint")
         private val LLM_LOCAL_MODEL = stringPreferencesKey("llm_local_model")
         private val LLM_CLOUD_ENDPOINT = stringPreferencesKey("llm_cloud_endpoint")
@@ -86,20 +108,62 @@ class ConfigDataStore(private val context: Context) {
         private val STT_DEFAULT_ENDPOINT_MIGRATED = stringPreferencesKey("stt_default_endpoint_migrated")
         private val DEFAULT_PROFILE_VERSION = stringPreferencesKey("default_profile_version")
         private val LOGGED_IN_USERNAME = stringPreferencesKey("logged_in_username")
+        private val ACCOUNT_SESSION_JSON = stringPreferencesKey("account_session_json")
+        private val ACCOUNT_ENDPOINT = stringPreferencesKey("account_endpoint")
+        private val ACCOUNT_STT_ACCESS_TOKEN = stringPreferencesKey("account_stt_access_token")
+        private val STT_USE_ACCOUNT_TOKEN = stringPreferencesKey("stt_use_account_token")
+        private val SEEN_NOTIFICATION_EVENTS = stringSetPreferencesKey("seen_notification_events")
+        private val APP_THEME_MODE = stringPreferencesKey("app_theme_mode")
+        private val FLOATING_BALL_ENABLED = booleanPreferencesKey("floating_ball_enabled")
 
-        private val PRESET_TEMPLATE_FILES = listOf(
-            "孔爵团队版表格会议纪要.md",
-            "项目管理纪要.md",
-            "讲座论坛纪要.md",
-            "政策解读纪要.md",
-            "技术交流纪要.md",
-            "学术报告纪要.md"
+        private val PRESET_TEMPLATE_ASSETS = listOf(
+            ReportTemplateAsset(
+                "通用会议",
+                "通用会议.md",
+                "议题、结论、观点与行动项"
+            ),
+            ReportTemplateAsset(
+                "项目管理",
+                "孔爵团队版表格会议纪要.md",
+                "推演节点、风险与行动项"
+            ),
+            ReportTemplateAsset(
+                "研学考察",
+                "参观考察游记.md",
+                "分段旅程、图文游记与阶段续写"
+            )
+        )
+        private val LEGACY_CORE_TEMPLATE_NAMES = mapOf(
+            "通用会议纪要" to "通用会议",
+            "行政会议" to "通用会议",
+            "头脑风暴" to "通用会议",
+            "孔爵团队版表格会议纪要" to "项目管理",
+            "项目管理纪要" to "项目管理",
+            "参观考察（游记）" to "研学考察",
+            "参观考察类会议" to "研学考察"
+        )
+        private val RETIRED_PRESET_NAMES = setOf(
+            "讲座论坛纪要",
+            "政策解读纪要",
+            "技术交流纪要",
+            "学术报告纪要"
         )
 
-        // VIP专用模板
-        private val VIP_TEMPLATE_FILES = listOf(
-            "工程行业施工日志.md",
-            "建筑专业设计日志.md"
+        private val VIP_TEMPLATE_ASSETS = listOf(
+            ReportTemplateAsset(
+                "工程/建筑 施工/设计日志",
+                "工程建筑施工设计日志.md",
+                "进度、质量与安全闭环"
+            ),
+            ReportTemplateAsset(
+                "监理会例会日志",
+                "监理会例会日志.md",
+                "旁站、验收与整改节点"
+            )
+        )
+        private val LEGACY_VIP_TEMPLATE_NAMES = mapOf(
+            "工程行业施工日志" to "工程/建筑 施工/设计日志",
+            "建筑专业设计日志" to "工程/建筑 施工/设计日志"
         )
     }
 
@@ -108,38 +172,96 @@ class ConfigDataStore(private val context: Context) {
      */
     val appConfigFlow: Flow<AppConfig> = context.dataStore.data.map { preferences ->
         val defaultTemplate = loadPresetTemplates().firstOrNull()
-        val savedTemplateName = preferences[REPORT_TEMPLATE_NAME]
+        val rawSavedTemplateName = preferences[REPORT_TEMPLATE_NAME]
+        val savedTemplateIsCustom = preferences[REPORT_TEMPLATE_IS_CUSTOM]
+            ?.toBooleanStrictOrNull() ?: false
+        val migratedCoreTemplate = if (savedTemplateIsCustom) {
+            null
+        } else {
+            LEGACY_CORE_TEMPLATE_NAMES[rawSavedTemplateName]?.let { migratedName ->
+                loadPresetTemplates().firstOrNull { it.name == migratedName }
+            }
+        }
+        val savedTemplateName = migratedCoreTemplate?.name ?: rawSavedTemplateName
 
-        // Check if saved template is a VIP template or a removed preset.
-        val vipTemplateNames = VIP_TEMPLATE_FILES.map { it.removeSuffix(".md") }
-        val isVipTemplate = savedTemplateName in vipTemplateNames
-        val isRemovedTemplate = savedTemplateName == "通用会议纪要"
+        val migratedVipTemplate = if (savedTemplateIsCustom) {
+            null
+        } else {
+            LEGACY_VIP_TEMPLATE_NAMES[savedTemplateName]?.let { migratedName ->
+                loadVipTemplates().firstOrNull { it.name == migratedName }
+            }
+        }
+        val isRetiredPreset = !savedTemplateIsCustom && savedTemplateName in RETIRED_PRESET_NAMES
+        val accountSttToken = preferences[ACCOUNT_STT_ACCESS_TOKEN]?.takeIf { it.isNotBlank() }
+        val useAccountSttToken = preferences[STT_USE_ACCOUNT_TOKEN]
+            ?.toBooleanStrictOrNull() ?: (accountSttToken != null)
+        val effectiveSttToken = if (useAccountSttToken) {
+            accountSttToken
+        } else {
+            preferences[STT_API_TOKEN]
+        }
 
         val templateName = when {
             savedTemplateName.isNullOrBlank() -> defaultTemplate?.name ?: ReportTemplateConfig().selectedName
-            isVipTemplate || isRemovedTemplate -> defaultTemplate?.name ?: ReportTemplateConfig().selectedName
+            migratedVipTemplate != null -> migratedVipTemplate.name
+            isRetiredPreset -> defaultTemplate?.name ?: ReportTemplateConfig().selectedName
             else -> savedTemplateName
         }
 
         val templateContent = when {
-            isVipTemplate || isRemovedTemplate -> defaultTemplate?.content ?: ""
+            migratedCoreTemplate != null -> migratedCoreTemplate.content
+            migratedVipTemplate != null -> migratedVipTemplate.content
+            isRetiredPreset -> defaultTemplate?.content ?: ""
             preferences[REPORT_TEMPLATE_CONTENT].isNullOrBlank() -> defaultTemplate?.content ?: ""
             else -> preferences[REPORT_TEMPLATE_CONTENT] ?: ""
+        }
+        val savedSttEngineName = preferences[STT_ENGINE_TYPE]
+        val savedSttEndpoint = preferences[STT_LOCAL_ENDPOINT]
+            ?.takeUnless { it == STTConfig.LEGACY_LOCAL_ENDPOINT || it == STTConfig.PREVIOUS_PUBLIC_ENDPOINT }
+            ?: STTConfig.DEFAULT_LOCAL_ENDPOINT
+        val savedCloudEndpoint = preferences[STT_CLOUD_ENDPOINT] ?: STTConfig.DEFAULT_CLOUD_ENDPOINT
+        val savedCloudModel = preferences[STT_CLOUD_MODEL] ?: STTConfig.DEFAULT_CLOUD_MODEL
+        val savedTencentTier = preferences[STT_TENCENT_ASR_TIER]?.let {
+            runCatching { TencentAsrTier.valueOf(it) }.getOrNull()
+        } ?: if (savedCloudModel == TencentAsrTier.PRECISION_PAID.cloudModel) {
+            TencentAsrTier.PRECISION_PAID
+        } else {
+            TencentAsrTier.STANDARD_FREE
+        }
+        val isManagedTencentCloud = preferences[STT_CLOUD_API_KEY].isNullOrBlank() &&
+            savedCloudModel in setOf(
+                "tencent-flash",
+                TencentAsrTier.STANDARD_FREE.cloudModel,
+                TencentAsrTier.PRECISION_PAID.cloudModel
+            ) &&
+            savedCloudEndpoint?.trimEnd('/') == "${savedSttEndpoint.trimEnd('/')}/cloud-asr"
+        val effectiveSttEngine = when {
+            savedSttEngineName == "CLOUD_ASR" && isManagedTencentCloud -> {
+                STTEngineType.TENCENT_HYBRID
+            }
+            savedSttEngineName == "CLOUD_ASR" -> STTEngineType.FASTER_WHISPER
+            else -> savedSttEngineName?.let {
+                runCatching { STTEngineType.valueOf(it) }.getOrNull()
+            } ?: STTEngineType.FASTER_WHISPER
         }
 
         AppConfig(
             sttConfig = STTConfig(
-                engineType = preferences[STT_ENGINE_TYPE]?.let {
-                    runCatching { STTEngineType.valueOf(it) }.getOrNull()
-                } ?: STTEngineType.FASTER_WHISPER,
-                localEndpoint = preferences[STT_LOCAL_ENDPOINT]
-                    ?.takeUnless { it == STTConfig.LEGACY_LOCAL_ENDPOINT || it == STTConfig.PREVIOUS_PUBLIC_ENDPOINT }
-                    ?: STTConfig.DEFAULT_LOCAL_ENDPOINT,
+                engineType = effectiveSttEngine,
+                language = preferences[STT_LANGUAGE]?.let {
+                    runCatching { STTLanguage.valueOf(it) }.getOrNull()
+                } ?: STTLanguage.CHINESE,
+                localEndpoint = savedSttEndpoint,
                 localModel = preferences[STT_LOCAL_MODEL] ?: BuildConfig.DEFAULT_STT_MODEL,
-                apiToken = preferences[STT_API_TOKEN]
-                    ?: BuildConfig.DEFAULT_STT_TRIAL_TOKEN.takeIf { it.isNotBlank() },
-                cloudEndpoint = preferences[STT_CLOUD_ENDPOINT],
-                cloudApiKey = preferences[STT_CLOUD_API_KEY]
+                apiToken = effectiveSttToken,
+                cloudEndpoint = savedCloudEndpoint,
+                cloudApiKey = preferences[STT_CLOUD_API_KEY],
+                cloudModel = if (effectiveSttEngine == STTEngineType.TENCENT_HYBRID) {
+                    savedTencentTier.cloudModel
+                } else {
+                    savedCloudModel
+                },
+                tencentAsrTier = savedTencentTier
             ),
             llmConfig = LLMConfig(
                 engineType = preferences[LLM_ENGINE_TYPE]?.let {
@@ -150,9 +272,18 @@ class ConfigDataStore(private val context: Context) {
                 agentProvider = preferences[LLM_AGENT_PROVIDER]?.let {
                     runCatching { AgentProvider.valueOf(it) }.getOrNull()
                 } ?: AgentProvider.CODEX_CLI,
+                codexReasoningEffort = preferences[LLM_CODEX_REASONING_EFFORT]?.let {
+                    runCatching { CodexReasoningEffort.valueOf(it) }.getOrNull()
+                } ?: CodexReasoningEffort.HIGH,
+                claudeReasoningEffort = preferences[LLM_CLAUDE_REASONING_EFFORT]?.let {
+                    runCatching { ClaudeReasoningEffort.valueOf(it) }.getOrNull()
+                } ?: ClaudeReasoningEffort.HIGH,
                 localEndpoint = preferences[LLM_LOCAL_ENDPOINT] ?: "http://localhost:11434",
                 localModel = preferences[LLM_LOCAL_MODEL] ?: "qwen2.5:7b",
-                cloudEndpoint = preferences[LLM_CLOUD_ENDPOINT] ?: defaultLlmCloudEndpoint ?: defaultClaudeEndpoint,
+                cloudEndpoint = preferences[LLM_CLOUD_ENDPOINT]
+                    ?: defaultRelayBaseUrl
+                    ?: defaultLlmCloudEndpoint
+                    ?: defaultClaudeEndpoint,
                 cloudApiKey = preferences[LLM_CLOUD_API_KEY] ?: defaultLlmCloudApiKey ?: defaultClaudeApiKey,
                 cloudModel = preferences[LLM_CLOUD_MODEL] ?: defaultLlmCloudModel ?: defaultClaudeModel,
                 cloudApiFormat = preferences[LLM_CLOUD_API_FORMAT]?.let {
@@ -165,18 +296,46 @@ class ConfigDataStore(private val context: Context) {
             reportTemplateConfig = ReportTemplateConfig(
                 selectedName = templateName,
                 content = templateContent,
-                isCustom = preferences[REPORT_TEMPLATE_IS_CUSTOM]?.toBooleanStrictOrNull() ?: false
+                isCustom = savedTemplateIsCustom
             )
         )
     }
 
+    val appThemeModeFlow: Flow<AppThemeMode> = context.dataStore.data.map { preferences ->
+        preferences[APP_THEME_MODE]?.let { saved ->
+            runCatching { AppThemeMode.valueOf(saved) }.getOrNull()
+        } ?: AppThemeMode.SYSTEM
+    }
+
+    val sttUsesAccountTokenFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
+        preferences[STT_USE_ACCOUNT_TOKEN]?.toBooleanStrictOrNull()
+            ?: !preferences[ACCOUNT_STT_ACCESS_TOKEN].isNullOrBlank()
+    }
+
+    val floatingBallEnabledFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
+        preferences[FLOATING_BALL_ENABLED] ?: false
+    }
+
+    suspend fun updateAppThemeMode(mode: AppThemeMode) {
+        context.dataStore.edit { preferences ->
+            preferences[APP_THEME_MODE] = mode.name
+        }
+    }
+
+    suspend fun updateFloatingBallEnabled(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[FLOATING_BALL_ENABLED] = enabled
+        }
+    }
+
     fun loadPresetTemplates(): List<PresetReportTemplate> {
-        return PRESET_TEMPLATE_FILES.mapNotNull { fileName ->
+        return PRESET_TEMPLATE_ASSETS.mapNotNull { asset ->
             runCatching {
-                context.assets.open(fileName).bufferedReader(Charsets.UTF_8).use { reader ->
+                context.assets.open(asset.fileName).bufferedReader(Charsets.UTF_8).use { reader ->
                     PresetReportTemplate(
-                        name = fileName.removeSuffix(".md"),
-                        content = reader.readText()
+                        name = asset.name,
+                        content = reader.readText(),
+                        subtitle = asset.subtitle
                     )
                 }
             }.getOrNull()
@@ -187,12 +346,13 @@ class ConfigDataStore(private val context: Context) {
      * 加载VIP专用模板
      */
     fun loadVipTemplates(): List<PresetReportTemplate> {
-        return VIP_TEMPLATE_FILES.mapNotNull { fileName ->
+        return VIP_TEMPLATE_ASSETS.mapNotNull { asset ->
             runCatching {
-                context.assets.open(fileName).bufferedReader(Charsets.UTF_8).use { reader ->
+                context.assets.open(asset.fileName).bufferedReader(Charsets.UTF_8).use { reader ->
                     PresetReportTemplate(
-                        name = fileName.removeSuffix(".md"),
-                        content = reader.readText()
+                        name = asset.name,
+                        content = reader.readText(),
+                        subtitle = asset.subtitle
                     )
                 }
             }.getOrNull()
@@ -330,6 +490,7 @@ class ConfigDataStore(private val context: Context) {
 
     private suspend fun migrateDefaultSttEndpoint() {
         val defaultReportTemplate = loadPresetTemplates().firstOrNull()
+        val vipTemplatesByName = loadVipTemplates().associateBy { it.name }
         context.dataStore.edit { preferences ->
             val profileVersion = preferences[DEFAULT_PROFILE_VERSION]?.toIntOrNull() ?: 0
             if (profileVersion < 2) {
@@ -341,9 +502,6 @@ class ConfigDataStore(private val context: Context) {
                     preferences[STT_LOCAL_ENDPOINT] = STTConfig.DEFAULT_LOCAL_ENDPOINT
                     preferences[STT_ENGINE_TYPE] = STTEngineType.FASTER_WHISPER.name
                     preferences[STT_LOCAL_MODEL] = BuildConfig.DEFAULT_STT_MODEL
-                    if (preferences[STT_API_TOKEN].isNullOrBlank()) {
-                        preferences[STT_API_TOKEN] = BuildConfig.DEFAULT_STT_TRIAL_TOKEN
-                    }
                 }
                 preferences[STT_DEFAULT_ENDPOINT_MIGRATED] = true.toString()
             }
@@ -371,7 +529,76 @@ class ConfigDataStore(private val context: Context) {
                 }
                 preferences[REPORT_TEMPLATE_IS_CUSTOM] = false.toString()
             }
-            preferences[DEFAULT_PROFILE_VERSION] = "4"
+            if (profileVersion < 5) {
+                preferences[LLM_AGENT_PROVIDER] = AgentProvider.CODEX_CLI.name
+            }
+            if (profileVersion < 6 && defaultReportTemplate != null) {
+                val savedTemplateName = preferences[REPORT_TEMPLATE_NAME]
+                val savedTemplateIsCustom = preferences[REPORT_TEMPLATE_IS_CUSTOM]
+                    ?.toBooleanStrictOrNull() ?: false
+                if (!savedTemplateIsCustom &&
+                    (savedTemplateName.isNullOrBlank() || savedTemplateName in RETIRED_PRESET_NAMES)
+                ) {
+                    preferences[REPORT_TEMPLATE_NAME] = defaultReportTemplate.name
+                    preferences[REPORT_TEMPLATE_CONTENT] = defaultReportTemplate.content
+                    preferences[REPORT_TEMPLATE_IS_CUSTOM] = false.toString()
+                }
+            }
+            if (profileVersion < 7) {
+                val savedTemplateName = preferences[REPORT_TEMPLATE_NAME]
+                val savedTemplateIsCustom = preferences[REPORT_TEMPLATE_IS_CUSTOM]
+                    ?.toBooleanStrictOrNull() ?: false
+                val migratedTemplate = if (savedTemplateIsCustom) {
+                    null
+                } else {
+                    LEGACY_VIP_TEMPLATE_NAMES[savedTemplateName]
+                        ?.let(vipTemplatesByName::get)
+                }
+                if (migratedTemplate != null) {
+                    preferences[REPORT_TEMPLATE_NAME] = migratedTemplate.name
+                    preferences[REPORT_TEMPLATE_CONTENT] = migratedTemplate.content
+                    preferences[REPORT_TEMPLATE_IS_CUSTOM] = false.toString()
+                }
+            }
+            if (profileVersion < 8) {
+                val savedModel = preferences[STT_CLOUD_MODEL]
+                val savedEngine = preferences[STT_ENGINE_TYPE]
+                if (
+                    savedEngine == STTEngineType.TENCENT_HYBRID.name ||
+                    savedEngine == "CLOUD_ASR" ||
+                    savedModel == "tencent-flash"
+                ) {
+                    preferences[STT_TENCENT_ASR_TIER] = TencentAsrTier.STANDARD_FREE.name
+                    preferences[STT_CLOUD_MODEL] = TencentAsrTier.STANDARD_FREE.cloudModel
+                }
+            }
+            if (profileVersion < 9) {
+                val savedCodexEffort = preferences[LLM_CODEX_REASONING_EFFORT]
+                if (savedCodexEffort.isNullOrBlank() || savedCodexEffort == CodexReasoningEffort.MEDIUM.name) {
+                    preferences[LLM_CODEX_REASONING_EFFORT] = CodexReasoningEffort.HIGH.name
+                }
+                val savedClaudeEffort = preferences[LLM_CLAUDE_REASONING_EFFORT]
+                if (savedClaudeEffort.isNullOrBlank() || savedClaudeEffort == ClaudeReasoningEffort.MEDIUM.name) {
+                    preferences[LLM_CLAUDE_REASONING_EFFORT] = ClaudeReasoningEffort.HIGH.name
+                }
+            }
+            if (profileVersion < 10) {
+                val savedTemplateName = preferences[REPORT_TEMPLATE_NAME]
+                val savedTemplateIsCustom = preferences[REPORT_TEMPLATE_IS_CUSTOM]
+                    ?.toBooleanStrictOrNull() ?: false
+                val targetName = if (savedTemplateIsCustom) {
+                    null
+                } else {
+                    LEGACY_CORE_TEMPLATE_NAMES[savedTemplateName]
+                }
+                val migratedTemplate = loadPresetTemplates().firstOrNull { it.name == targetName }
+                if (migratedTemplate != null) {
+                    preferences[REPORT_TEMPLATE_NAME] = migratedTemplate.name
+                    preferences[REPORT_TEMPLATE_CONTENT] = migratedTemplate.content
+                    preferences[REPORT_TEMPLATE_IS_CUSTOM] = false.toString()
+                }
+            }
+            preferences[DEFAULT_PROFILE_VERSION] = "10"
         }
     }
 
@@ -381,17 +608,35 @@ class ConfigDataStore(private val context: Context) {
     suspend fun updateSTTConfig(config: STTConfig) {
         context.dataStore.edit { preferences ->
             preferences[STT_ENGINE_TYPE] = config.engineType.name
+            preferences[STT_LANGUAGE] = config.language.name
             preferences[STT_LOCAL_ENDPOINT] = config.localEndpoint
             preferences[STT_LOCAL_MODEL] = config.localModel
-            config.apiToken?.takeIf { it.isNotBlank() }
-                ?.let { preferences[STT_API_TOKEN] = it }
-                ?: preferences.remove(STT_API_TOKEN)
+            val usesAccountToken = preferences[STT_USE_ACCOUNT_TOKEN]
+                ?.toBooleanStrictOrNull() == true
+            if (!usesAccountToken) {
+                config.apiToken?.takeIf { it.isNotBlank() }
+                    ?.let { preferences[STT_API_TOKEN] = it }
+                    ?: preferences.remove(STT_API_TOKEN)
+            }
             config.cloudEndpoint?.takeIf { it.isNotBlank() }
                 ?.let { preferences[STT_CLOUD_ENDPOINT] = it }
                 ?: preferences.remove(STT_CLOUD_ENDPOINT)
             config.cloudApiKey?.takeIf { it.isNotBlank() }
                 ?.let { preferences[STT_CLOUD_API_KEY] = it }
                 ?: preferences.remove(STT_CLOUD_API_KEY)
+            config.cloudModel.takeIf { it.isNotBlank() }
+                ?.let { preferences[STT_CLOUD_MODEL] = it }
+                ?: preferences.remove(STT_CLOUD_MODEL)
+            preferences[STT_TENCENT_ASR_TIER] = config.tencentAsrTier.name
+        }
+    }
+
+    suspend fun updateManualSttApiToken(apiToken: String?) {
+        context.dataStore.edit { preferences ->
+            apiToken?.takeIf { it.isNotBlank() }
+                ?.let { preferences[STT_API_TOKEN] = it }
+                ?: preferences.remove(STT_API_TOKEN)
+            preferences[STT_USE_ACCOUNT_TOKEN] = false.toString()
         }
     }
 
@@ -406,6 +651,8 @@ class ConfigDataStore(private val context: Context) {
                 ?.let { preferences[LLM_AGENT_ACCESS_TOKEN] = it }
                 ?: preferences.remove(LLM_AGENT_ACCESS_TOKEN)
             preferences[LLM_AGENT_PROVIDER] = config.agentProvider.name
+            preferences[LLM_CODEX_REASONING_EFFORT] = config.codexReasoningEffort.name
+            preferences[LLM_CLAUDE_REASONING_EFFORT] = config.claudeReasoningEffort.name
             preferences[LLM_LOCAL_ENDPOINT] = config.localEndpoint
             preferences[LLM_LOCAL_MODEL] = config.localModel
             config.cloudEndpoint?.takeIf { it.isNotBlank() }
@@ -458,11 +705,20 @@ class ConfigDataStore(private val context: Context) {
     suspend fun resetToDefault() {
         context.dataStore.edit { preferences ->
             val username = preferences[LOGGED_IN_USERNAME]
+            val accountSession = preferences[ACCOUNT_SESSION_JSON]
+            val accountEndpoint = preferences[ACCOUNT_ENDPOINT]
+            val accountAgentToken = preferences[LLM_AGENT_ACCESS_TOKEN]
+            val accountSttToken = preferences[ACCOUNT_STT_ACCESS_TOKEN]
+            val useAccountSttToken = preferences[STT_USE_ACCOUNT_TOKEN]
             preferences.clear()
-            // Preserve login state
             if (username != null) {
                 preferences[LOGGED_IN_USERNAME] = username
             }
+            if (accountSession != null) preferences[ACCOUNT_SESSION_JSON] = accountSession
+            if (accountEndpoint != null) preferences[ACCOUNT_ENDPOINT] = accountEndpoint
+            if (accountAgentToken != null) preferences[LLM_AGENT_ACCESS_TOKEN] = accountAgentToken
+            if (accountSttToken != null) preferences[ACCOUNT_STT_ACCESS_TOKEN] = accountSttToken
+            if (useAccountSttToken != null) preferences[STT_USE_ACCOUNT_TOKEN] = useAccountSttToken
         }
     }
 
@@ -482,12 +738,88 @@ class ConfigDataStore(private val context: Context) {
         preferences[LOGGED_IN_USERNAME]
     }
 
+    val authSessionFlow: Flow<AuthSession?> = context.dataStore.data.map { preferences ->
+        preferences[ACCOUNT_SESSION_JSON]?.let { json ->
+            runCatching { gson.fromJson(json, AuthSession::class.java) }.getOrNull()
+        }
+    }
+
+    val accountEndpointFlow: Flow<String> = context.dataStore.data.map { preferences ->
+        preferences[ACCOUNT_ENDPOINT]
+            ?.takeIf { it.isNotBlank() }
+            ?: BuildConfig.DEFAULT_ACCOUNT_ENDPOINT
+    }
+
+    val seenNotificationEventsFlow: Flow<Set<String>> = context.dataStore.data.map { preferences ->
+        preferences[SEEN_NOTIFICATION_EVENTS].orEmpty()
+    }
+
+    suspend fun saveSeenNotificationEvents(events: Set<String>) {
+        context.dataStore.edit { preferences ->
+            preferences[SEEN_NOTIFICATION_EVENTS] = events
+        }
+    }
+
+    suspend fun saveAuthSession(
+        session: AuthSession,
+        endpoint: String = BuildConfig.DEFAULT_ACCOUNT_ENDPOINT
+    ) {
+        context.dataStore.edit { preferences ->
+            preferences[ACCOUNT_SESSION_JSON] = gson.toJson(session)
+            preferences[ACCOUNT_ENDPOINT] = endpoint.trim().trimEnd('/')
+            preferences[LOGGED_IN_USERNAME] = session.user.username
+            preferences[LLM_AGENT_ACCESS_TOKEN] = session.agentAccessToken
+            val sttAccessToken = session.sttAccessToken?.takeIf { it.isNotBlank() }
+            if (sttAccessToken == null) {
+                preferences.remove(ACCOUNT_STT_ACCESS_TOKEN)
+                preferences.remove(STT_USE_ACCOUNT_TOKEN)
+            } else {
+                val token = sttAccessToken
+                preferences[ACCOUNT_STT_ACCESS_TOKEN] = token
+                preferences[STT_USE_ACCOUNT_TOKEN] = true.toString()
+            }
+        }
+    }
+
+    suspend fun updateAccountSession(credentials: AccountSessionCredentials) {
+        context.dataStore.edit { preferences ->
+            val session = preferences[ACCOUNT_SESSION_JSON]?.let { json ->
+                runCatching { gson.fromJson(json, AuthSession::class.java) }.getOrNull()
+            } ?: return@edit
+            val updatedSession = session.copy(
+                agentAccessToken = credentials.agentAccessToken,
+                sttAccessToken = credentials.sttAccessToken,
+                expiresAt = credentials.expiresAt,
+                user = credentials.user
+            )
+            preferences[ACCOUNT_SESSION_JSON] = gson.toJson(updatedSession)
+            preferences[LOGGED_IN_USERNAME] = credentials.user.username
+            preferences[LLM_AGENT_ACCESS_TOKEN] = credentials.agentAccessToken
+            preferences[ACCOUNT_STT_ACCESS_TOKEN] = credentials.sttAccessToken
+            preferences[STT_USE_ACCOUNT_TOKEN] = true.toString()
+        }
+    }
+
+    suspend fun updateAccountProfile(profile: AccountProfile) {
+        context.dataStore.edit { preferences ->
+            val session = preferences[ACCOUNT_SESSION_JSON]?.let { json ->
+                runCatching { gson.fromJson(json, AuthSession::class.java) }.getOrNull()
+            } ?: return@edit
+            preferences[ACCOUNT_SESSION_JSON] = gson.toJson(session.copy(user = profile))
+            preferences[LOGGED_IN_USERNAME] = profile.username
+        }
+    }
+
     /**
      * Clear saved username (logout)
      */
     suspend fun clearUsername() {
         context.dataStore.edit { preferences ->
             preferences.remove(LOGGED_IN_USERNAME)
+            preferences.remove(ACCOUNT_SESSION_JSON)
+            preferences.remove(LLM_AGENT_ACCESS_TOKEN)
+            preferences.remove(ACCOUNT_STT_ACCESS_TOKEN)
+            preferences.remove(STT_USE_ACCOUNT_TOKEN)
         }
     }
 }

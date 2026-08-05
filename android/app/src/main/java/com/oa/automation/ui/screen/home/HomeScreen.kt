@@ -1,39 +1,63 @@
 package com.oa.automation.ui.screen.home
 
+import android.app.DatePickerDialog
+import android.app.TimePickerDialog
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Event
+import androidx.compose.material.icons.filled.EventAvailable
+import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.GraphicEq
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.WorkspacePremium
+import androidx.compose.material.icons.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.NotificationsNone
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -41,8 +65,6 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -52,32 +74,157 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.Dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.oa.automation.R
+import com.oa.automation.domain.model.Meeting
+import com.oa.automation.domain.model.PresetReportTemplate
+import com.oa.automation.domain.model.ScheduledMeeting
+import com.oa.automation.ui.component.AppLauncherIcon
+import com.oa.automation.ui.component.FirebaseUiTokens
 import com.oa.automation.ui.component.MeetingCard
+import com.oa.automation.ui.component.ZhiWuScreenBackground
+import com.oa.automation.ui.theme.BrandBlue
+import com.oa.automation.ui.theme.LocalAppIsDarkTheme
+import com.oa.automation.infrastructure.notification.requestNotificationPermissionIfNeeded
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
 import org.koin.androidx.compose.koinViewModel
 
-/**
- * HomeScreen - 精简版首页
- * 设计原则：一屏展示核心内容，减少视觉噪音
- */
-@OptIn(ExperimentalMaterial3Api::class)
+private data class HomeColors(
+    val ink: Color,
+    val mutedInk: Color,
+    val blueTile: Color,
+    val mintTile: Color,
+    val lilacTile: Color,
+    val peachTile: Color,
+    val arrowSurface: Color,
+    val meetingSurface: Color,
+    val completedContainer: Color,
+    val pendingContainer: Color,
+    val completedContent: Color,
+    val pendingContent: Color,
+    val emptyIconContainer: Color
+)
+
+@Composable
+private fun homeColors(): HomeColors {
+    val scheme = MaterialTheme.colorScheme
+    return if (LocalAppIsDarkTheme.current) {
+        HomeColors(
+            ink = scheme.onBackground,
+            mutedInk = scheme.onSurfaceVariant,
+            blueTile = Color(0xFF1C2A3D),
+            mintTile = Color(0xFF17362F),
+            lilacTile = Color(0xFF2B2742),
+            peachTile = Color(0xFF3A2C22),
+            arrowSurface = scheme.surfaceVariant,
+            meetingSurface = scheme.surface,
+            completedContainer = Color(0xFF173A2F),
+            pendingContainer = Color(0xFF1C3048),
+            completedContent = Color(0xFF83D7A8),
+            pendingContent = Color(0xFF8FC2FF),
+            emptyIconContainer = Color(0xFF1C3048)
+        )
+    } else {
+        HomeColors(
+            ink = Color(0xFF172139),
+            mutedInk = Color(0xFF858D9B),
+            blueTile = Color(0xFFEDF5FF),
+            mintTile = Color(0xFFECFAF5),
+            lilacTile = Color(0xFFF2EFFF),
+            peachTile = Color(0xFFFFF2E8),
+            arrowSurface = Color.White.copy(alpha = 0.92f),
+            meetingSurface = Color.White.copy(alpha = 0.95f),
+            completedContainer = Color(0xFFE9F8F1),
+            pendingContainer = Color(0xFFEAF2FF),
+            completedContent = Color(0xFF24AD79),
+            pendingContent = BrandBlue,
+            emptyIconContainer = Color(0xFFEDF5FF)
+        )
+    }
+}
+
+private data class HomeLayoutSpec(
+    val compact: Boolean,
+    val sectionSpacing: Dp,
+    val tileHeight: Dp,
+    val tileTitleSize: Int,
+    val artworkWidth: Dp,
+    val artworkHeight: Dp,
+    val brandIconSize: Dp,
+    val brandTitleSize: Int,
+    val greetingSize: Int,
+    val recordHeight: Dp,
+    val recordIconSize: Dp,
+    val recordSpacing: Dp
+)
+
+private fun homeLayoutSpec(maxWidth: Dp, maxHeight: Dp): HomeLayoutSpec {
+    val compact = maxWidth < 400.dp || maxHeight < 730.dp
+    return if (compact) {
+        HomeLayoutSpec(
+            compact = true,
+            sectionSpacing = 8.dp,
+            tileHeight = 124.dp,
+            tileTitleSize = 18,
+            artworkWidth = 62.dp,
+            artworkHeight = 78.dp,
+            brandIconSize = 34.dp,
+            brandTitleSize = 25,
+            greetingSize = 24,
+            recordHeight = 58.dp,
+            recordIconSize = 38.dp,
+            recordSpacing = 6.dp
+        )
+    } else {
+        HomeLayoutSpec(
+            compact = false,
+            sectionSpacing = 12.dp,
+            tileHeight = 140.dp,
+            tileTitleSize = 19,
+            artworkWidth = 68.dp,
+            artworkHeight = 86.dp,
+            brandIconSize = 38.dp,
+            brandTitleSize = 27,
+            greetingSize = 26,
+            recordHeight = 62.dp,
+            recordIconSize = 42.dp,
+            recordSpacing = 7.dp
+        )
+    }
+}
+
 @Composable
 fun HomeScreen(
-    onNavigateToRecording: (String) -> Unit,
+    onNavigateToRecording: (String, HomeLaunchAction) -> Unit,
     onNavigateToReport: (String) -> Unit = {},
     onNavigateToSettings: () -> Unit,
-    onNavigateToVip: () -> Unit,
+    onNavigateToNotifications: () -> Unit,
     viewModel: HomeViewModel = koinViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    var showCreateDialog by remember { mutableStateOf(false) }
-    var draftMeetingTitle by remember { mutableStateOf("") }
     val snackbarHostState = remember { SnackbarHostState() }
+    var showMeetingDialog by remember { mutableStateOf(false) }
+    var showAllMeetings by remember { mutableStateOf(false) }
+    var showClearMeetingsDialog by remember { mutableStateOf(false) }
+    var draftMeetingTitle by remember { mutableStateOf("") }
+    var draftScheduledAt by remember { mutableStateOf(viewModel.suggestScheduledTime()) }
+    val context = LocalContext.current
 
     LaunchedEffect(uiState.message) {
         uiState.message?.let {
@@ -85,267 +232,184 @@ fun HomeScreen(
             viewModel.clearMessage()
         }
     }
-
-    LaunchedEffect(uiState.pendingMeetingId) {
-        uiState.pendingMeetingId?.let { meetingId ->
-            onNavigateToRecording(meetingId)
+    LaunchedEffect(uiState.pendingNavigation) {
+        uiState.pendingNavigation?.let { target ->
+            onNavigateToRecording(target.meetingId, target.action)
             viewModel.clearPendingMeeting()
         }
     }
 
-    if (showCreateDialog) {
-        NewMeetingDialog(
-            initialTitle = draftMeetingTitle,
-            suggestedTitle = viewModel.suggestMeetingTitle(),
-            onDismiss = { showCreateDialog = false },
-            onConfirm = { title ->
-                val finalTitle = title.trim().ifBlank { viewModel.suggestMeetingTitle() }
-                viewModel.startNewMeeting(finalTitle)
-                showCreateDialog = false
-            },
-            onTitleChange = { draftMeetingTitle = it }
+    if (showMeetingDialog) {
+        ScheduledMeetingDialog(
+            title = draftMeetingTitle,
+            scheduledAt = draftScheduledAt,
+            templates = uiState.reportTemplates,
+            onTitleChange = { draftMeetingTitle = it },
+            onScheduledAtChange = { draftScheduledAt = it },
+            onDismiss = { showMeetingDialog = false },
+            onConfirm = { reminderMinutes, templateName ->
+                requestNotificationPermissionIfNeeded(context)
+                viewModel.scheduleMeeting(
+                    title = draftMeetingTitle.trim().ifBlank { viewModel.suggestMeetingTitle("预定会议") },
+                    scheduledAt = draftScheduledAt,
+                    reminderMinutes = reminderMinutes,
+                    templateName = templateName
+                )
+                showMeetingDialog = false
+            }
         )
     }
-
-    uiState.editingMeetingId?.let { _ ->
+    if (showClearMeetingsDialog) {
+        AlertDialog(
+            onDismissRequest = { showClearMeetingsDialog = false },
+            icon = { Icon(Icons.Default.DeleteSweep, contentDescription = null) },
+            title = { Text("清空会议记录") },
+            text = { Text("全部会议、转写和纪要都会被删除，此操作无法撤销。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showClearMeetingsDialog = false
+                    viewModel.clearAllMeetings()
+                }) { Text("全部删除", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { showClearMeetingsDialog = false }) { Text("取消") } }
+        )
+    }
+    uiState.editingMeetingId?.let {
         EditTitleDialog(
             currentTitle = uiState.editingTitle,
-            onDismiss = { viewModel.cancelEditTitle() },
-            onSave = { viewModel.saveTitle() },
-            onTitleChange = { viewModel.onTitleEditChange(it) }
+            onDismiss = viewModel::cancelEditTitle,
+            onSave = viewModel::saveTitle,
+            onTitleChange = viewModel::onTitleEditChange
+        )
+    }
+    if (showAllMeetings) {
+        AllMeetingsSheet(
+            meetings = uiState.meetings,
+            regeneratingMeetingId = uiState.regeneratingMeetingId,
+            onDismiss = { showAllMeetings = false },
+            onOpen = { item ->
+                showAllMeetings = false
+                if (item.hasReport) onNavigateToReport(item.meeting.id)
+                else onNavigateToRecording(item.meeting.id, HomeLaunchAction.STANDARD)
+            },
+            onReportClick = { onNavigateToReport(it) },
+            onContinueRecording = { onNavigateToRecording(it, HomeLaunchAction.STANDARD) },
+            onRegenerateReport = viewModel::regenerateReport,
+            onDelete = viewModel::deleteMeeting,
+            onEdit = viewModel::startEditTitle
         )
     }
 
-    Scaffold(
-        snackbarHost = { SnackbarHost(snackbarHostState) },
-        topBar = {
-            TopAppBar(
-                title = {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.clickable {
-                            // Scroll to top / refresh on title click
-                        }
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.GraphicEq,
-                            contentDescription = null,
-                            modifier = Modifier.size(24.dp),
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("智悟本", fontWeight = FontWeight.SemiBold)
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface
-                ),
-                actions = {
-                    IconButton(onClick = onNavigateToSettings) {
-                        Icon(
-                            imageVector = Icons.Default.Settings,
-                            contentDescription = "设置"
-                        )
-                    }
-                }
-            )
-        },
-        floatingActionButton = {
-            FloatingActionButton(
-                onClick = {
-                    draftMeetingTitle = viewModel.suggestMeetingTitle()
-                    showCreateDialog = true
-                },
-                containerColor = MaterialTheme.colorScheme.primary,
-                shape = RoundedCornerShape(16.dp)
-            ) {
-                Icon(Icons.Default.Add, contentDescription = "新建会议")
-            }
-        }
-    ) { paddingValues ->
-        if (!uiState.configLoaded) {
-            // Loading state
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(paddingValues),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    CircularProgressIndicator()
-                    Text(
-                        text = "加载中...",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-        } else if (uiState.meetings.isEmpty()) {
-            EmptyState(
-                onCreateMeeting = {
-                    draftMeetingTitle = viewModel.suggestMeetingTitle()
-                    showCreateDialog = true
-                },
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(paddingValues)
-            )
-        } else {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(paddingValues),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                // 精简统计卡片
-                item {
-                    CompactStatsCard(
-                        meetingCount = uiState.meetings.size,
-                        onOpenVip = onNavigateToVip,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-
-                // 会议列表标题
-                item {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "会议记录",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            text = "${uiState.meetings.size} 条",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-
-                // 会议列表
-                items(uiState.meetings, key = { it.meeting.id }) { meetingWithReport ->
-                    MeetingCard(
-                        meeting = meetingWithReport.meeting,
-                        hasReport = meetingWithReport.hasReport,
-                        isRegenerating = uiState.regeneratingMeetingId == meetingWithReport.meeting.id,
-                        onClick = {
-                            if (meetingWithReport.hasReport) {
-                                onNavigateToReport(meetingWithReport.meeting.id)
-                            } else {
-                                onNavigateToRecording(meetingWithReport.meeting.id)
-                            }
-                        },
-                        onReportClick = { onNavigateToReport(meetingWithReport.meeting.id) },
-                        onContinueRecording = { onNavigateToRecording(meetingWithReport.meeting.id) },
-                        onRegenerateReport = { viewModel.regenerateReport(meetingWithReport.meeting.id) },
-                        onDelete = { viewModel.deleteMeeting(meetingWithReport.meeting.id) },
-                        onEdit = { viewModel.startEditTitle(meetingWithReport.meeting.id, meetingWithReport.meeting.title) }
-                    )
-                }
-
-                // 底部留白
-                item {
-                    Spacer(modifier = Modifier.height(80.dp))
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun CompactStatsCard(
-    meetingCount: Int,
-    onOpenVip: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Card(
-        modifier = modifier,
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = Color.Transparent
-        )
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(
-                    brush = Brush.linearGradient(
-                        colors = listOf(
-                            MaterialTheme.colorScheme.primaryContainer,
-                            MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f)
-                        )
-                    )
-                )
-                .padding(horizontal = 16.dp, vertical = 14.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+    ZhiWuScreenBackground {
+        Box(modifier = Modifier.fillMaxSize()) {
+            Scaffold(
+                containerColor = Color.Transparent,
+                snackbarHost = { SnackbarHost(snackbarHostState) }
+            ) { innerPadding ->
+                if (!uiState.configLoaded) {
                     Box(
-                        modifier = Modifier
-                            .size(40.dp)
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
+                        modifier = Modifier.fillMaxSize().padding(innerPadding),
                         contentAlignment = Alignment.Center
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.GraphicEq,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(20.dp)
-                        )
+                        CircularProgressIndicator()
                     }
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Column {
-                        Text(
-                            text = "$meetingCount",
-                            style = MaterialTheme.typography.headlineMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer
-                        )
-                        Text(
-                            text = "会议记录",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
-                        )
-                    }
+                    return@Scaffold
                 }
-
-                // VIP专区入口
-                Surface(
-                    onClick = onOpenVip,
-                    shape = RoundedCornerShape(10.dp),
-                    color = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.15f)
+                BoxWithConstraints(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(innerPadding)
                 ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                    val layout = homeLayoutSpec(maxWidth, maxHeight)
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .fillMaxHeight()
+                            .fillMaxWidth()
+                            .widthIn(max = 560.dp)
+                            .padding(
+                                start = FirebaseUiTokens.ScreenPadding,
+                                end = FirebaseUiTokens.ScreenPadding,
+                                top = if (layout.compact) 8.dp else 12.dp,
+                                bottom = 8.dp
+                            )
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.WorkspacePremium,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp),
-                            tint = MaterialTheme.colorScheme.tertiary
+                        HomeHeader(
+                            showNotificationDot = uiState.hasUnreadNotifications,
+                            onNavigateToNotifications = onNavigateToNotifications,
+                            layout = layout
                         )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = "VIP专区",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.tertiary,
-                            fontWeight = FontWeight.Medium
+                        Spacer(Modifier.height(layout.sectionSpacing))
+                        HomeGreeting(displayName = uiState.displayName, layout = layout)
+                        Spacer(Modifier.height(layout.sectionSpacing))
+                        QuickActionGrid(
+                            layout = layout,
+                            onQuickRecording = {
+                                viewModel.startNewMeeting(
+                                    viewModel.suggestMeetingTitle("快速会议"),
+                                    HomeLaunchAction.START_RECORDING
+                                )
+                            },
+                            onImportFile = {
+                                viewModel.startNewMeeting(
+                                    viewModel.suggestMeetingTitle("资料导入"),
+                                    HomeLaunchAction.OPEN_IMPORT
+                                )
+                            },
+                            onCreateMeeting = {
+                                draftMeetingTitle = viewModel.suggestMeetingTitle("预定会议")
+                                draftScheduledAt = viewModel.suggestScheduledTime()
+                                showMeetingDialog = true
+                            },
+                            onSettings = onNavigateToSettings
                         )
+                        if (uiState.scheduledMeetings.isNotEmpty()) {
+                            Spacer(Modifier.height(if (layout.compact) 6.dp else 10.dp))
+                            UpcomingMeetings(
+                                meetings = uiState.scheduledMeetings,
+                                onDelete = viewModel::deleteScheduledMeeting,
+                                layout = layout
+                            )
+                        }
+                        Spacer(Modifier.height(layout.sectionSpacing))
+                        RecentMeetingsHeader(
+                            meetingCount = uiState.meetings.size,
+                            hasMeetings = uiState.meetings.isNotEmpty(),
+                            onShowAll = { showAllMeetings = true },
+                            onClearAll = { showClearMeetingsDialog = true },
+                            layout = layout
+                        )
+                        Spacer(Modifier.height(if (layout.compact) 4.dp else 6.dp))
+                        if (uiState.meetings.isEmpty()) {
+                            EmptyHistory {
+                                viewModel.startNewMeeting(
+                                    viewModel.suggestMeetingTitle("快速会议"),
+                                    HomeLaunchAction.START_RECORDING
+                                )
+                            }
+                        } else {
+                            LazyColumn(
+                                modifier = Modifier.fillMaxWidth().weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(layout.recordSpacing),
+                                contentPadding = PaddingValues(bottom = 4.dp)
+                            ) {
+                                items(
+                                    items = uiState.meetings,
+                                    key = { item -> item.meeting.id }
+                                ) { item ->
+                                    HomeMeetingRow(
+                                        item = item,
+                                        layout = layout,
+                                        onClick = {
+                                            if (item.hasReport) onNavigateToReport(item.meeting.id)
+                                            else onNavigateToRecording(item.meeting.id, HomeLaunchAction.STANDARD)
+                                        },
+                                        onEdit = { viewModel.startEditTitle(item.meeting.id, item.meeting.title) },
+                                        onDelete = { viewModel.deleteMeeting(item.meeting.id) }
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -354,140 +418,1050 @@ private fun CompactStatsCard(
 }
 
 @Composable
-private fun EmptyState(
+private fun HomeHeader(
+    showNotificationDot: Boolean,
+    onNavigateToNotifications: () -> Unit,
+    layout: HomeLayoutSpec
+) {
+    val colors = homeColors()
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            AppLauncherIcon(modifier = Modifier.size(layout.brandIconSize), contentDescription = "智悟本")
+            Spacer(Modifier.width(11.dp))
+            Text(
+                text = "智悟本",
+                style = MaterialTheme.typography.headlineLarge.copy(
+                    fontSize = layout.brandTitleSize.sp,
+                    lineHeight = (layout.brandTitleSize + 6).sp
+                ),
+                fontWeight = FontWeight.Bold,
+                color = colors.ink
+            )
+        }
+        Box {
+            IconButton(onClick = onNavigateToNotifications) {
+                Icon(
+                    imageVector = Icons.Default.NotificationsNone,
+                    contentDescription = "消息通知",
+                    tint = colors.ink,
+                    modifier = Modifier.size(27.dp)
+                )
+            }
+            if (showNotificationDot) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .offset(x = (-3).dp, y = 4.dp)
+                        .size(10.dp)
+                        .clip(CircleShape)
+                        .background(BrandBlue)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun HomeGreeting(displayName: String, layout: HomeLayoutSpec) {
+    val colors = homeColors()
+    Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+        Text(
+            text = "您好，${displayName.ifBlank { "朋友" }}",
+            style = MaterialTheme.typography.headlineLarge.copy(
+                fontSize = layout.greetingSize.sp,
+                lineHeight = (layout.greetingSize + 8).sp
+            ),
+            fontWeight = FontWeight.Bold,
+            color = colors.ink,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Text(
+            text = formattedToday(),
+            style = MaterialTheme.typography.bodyLarge.copy(fontSize = 15.sp),
+            color = colors.mutedInk
+        )
+    }
+}
+
+@Composable
+private fun QuickActionGrid(
+    layout: HomeLayoutSpec,
+    onQuickRecording: () -> Unit,
+    onImportFile: () -> Unit,
     onCreateMeeting: () -> Unit,
+    onSettings: () -> Unit
+) {
+    val colors = homeColors()
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            FeatureTile(
+                title = "快速会议",
+                subtitle = "一键开始，\n智能转写",
+                kind = HomeActionArt.MIC,
+                containerColor = colors.blueTile,
+                accent = BrandBlue,
+                layout = layout,
+                onClick = onQuickRecording,
+                modifier = Modifier.weight(1f)
+            )
+            FeatureTile(
+                title = "文件导入",
+                subtitle = "导入音视频\n智能解析",
+                kind = HomeActionArt.FOLDER,
+                containerColor = colors.mintTile,
+                accent = Color(0xFF20B98D),
+                layout = layout,
+                onClick = onImportFile,
+                modifier = Modifier.weight(1f)
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            FeatureTile(
+                title = "预定会议",
+                subtitle = "安排时间，\n提前提醒",
+                kind = HomeActionArt.ADD,
+                containerColor = colors.lilacTile,
+                accent = Color(0xFF8073F0),
+                layout = layout,
+                onClick = onCreateMeeting,
+                modifier = Modifier.weight(1f)
+            )
+            FeatureTile(
+                title = "常用设置",
+                subtitle = "个性设置，\n专属体验",
+                kind = HomeActionArt.SETTINGS,
+                containerColor = colors.peachTile,
+                accent = Color(0xFFF4A13A),
+                layout = layout,
+                onClick = onSettings,
+                modifier = Modifier.weight(1f)
+            )
+        }
+    }
+}
+
+private enum class HomeActionArt {
+    MIC,
+    FOLDER,
+    ADD,
+    SETTINGS
+}
+
+@Composable
+private fun FeatureTile(
+    title: String,
+    subtitle: String,
+    kind: HomeActionArt,
+    containerColor: Color,
+    accent: Color,
+    layout: HomeLayoutSpec,
+    onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Column(
-        modifier = modifier.padding(32.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+    val colors = homeColors()
+    Card(
+        onClick = onClick,
+        modifier = modifier.height(layout.tileHeight),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = containerColor),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp, pressedElevation = 2.dp)
     ) {
-        Box(
-            modifier = Modifier
-                .size(72.dp)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.primaryContainer),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                imageVector = Icons.Default.GraphicEq,
-                contentDescription = null,
-                modifier = Modifier.size(36.dp),
-                tint = MaterialTheme.colorScheme.primary
+        Box(modifier = Modifier.fillMaxSize().padding(15.dp)) {
+            ActionArtwork(
+                kind = kind,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .offset(x = (-2).dp, y = (-3).dp)
+                    .width(layout.artworkWidth)
+                    .height(layout.artworkHeight)
             )
-        }
-
-        Spacer(modifier = Modifier.height(20.dp))
-
-        Text(
-            text = "开始您的第一次会议",
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.SemiBold,
-            color = MaterialTheme.colorScheme.onSurface
-        )
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        Text(
-            text = "点击右下角按钮创建会议\n录音时可实时预览转写内容",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center
-        )
-
-        Spacer(modifier = Modifier.height(24.dp))
-
-        Button(
-            onClick = onCreateMeeting,
-            shape = RoundedCornerShape(12.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.primary
-            )
-        ) {
-            Icon(Icons.Default.Add, contentDescription = null)
-            Spacer(modifier = Modifier.width(8.dp))
-            Text("创建会议", fontWeight = FontWeight.Medium)
+            Column(Modifier.align(Alignment.TopStart)) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleLarge.copy(
+                        fontSize = layout.tileTitleSize.sp,
+                        lineHeight = (layout.tileTitleSize + 6).sp
+                    ),
+                    fontWeight = FontWeight.Bold,
+                    color = colors.ink
+                )
+                Spacer(Modifier.height(7.dp))
+                Text(
+                    text = subtitle,
+                    modifier = Modifier.width(76.dp),
+                    style = MaterialTheme.typography.bodyMedium.copy(fontSize = 12.sp, lineHeight = 18.sp),
+                    color = colors.mutedInk,
+                    maxLines = 2
+                )
+            }
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .offset(y = if (layout.compact) 9.dp else 5.dp)
+                    .size(if (layout.compact) 34.dp else 38.dp),
+                shape = CircleShape,
+                color = colors.arrowSurface
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                        contentDescription = null,
+                        tint = accent,
+                        modifier = Modifier.size(if (layout.compact) 20.dp else 22.dp)
+                    )
+                }
+            }
         }
     }
 }
 
 @Composable
-private fun NewMeetingDialog(
-    initialTitle: String,
-    suggestedTitle: String,
-    onDismiss: () -> Unit,
-    onConfirm: (String) -> Unit,
-    onTitleChange: (String) -> Unit
-) {
-    var title by remember { mutableStateOf(initialTitle) }
+private fun ActionArtwork(kind: HomeActionArt, modifier: Modifier = Modifier) {
+    Canvas(
+        modifier = modifier.graphicsLayer {
+            // Restore the slight side perspective of the original artwork while
+            // keeping the geometry generated in Compose and free of bitmap debris.
+            rotationY = -12f
+            rotationX = 4f
+            rotationZ = when (kind) {
+                HomeActionArt.MIC -> -1.5f
+                HomeActionArt.FOLDER -> 1.0f
+                HomeActionArt.ADD -> -1.0f
+                HomeActionArt.SETTINGS -> 1.5f
+            }
+            cameraDistance = 12f * density
+        }
+    ) {
+        // Keep every edge inside the canvas. This avoids the isolated alpha pixels
+        // that were visible when the old transparent 3D bitmaps met dark cards.
+        when (kind) {
+            HomeActionArt.MIC -> drawMicArtwork()
+            HomeActionArt.FOLDER -> drawFolderArtwork()
+            HomeActionArt.ADD -> drawAddArtwork()
+            HomeActionArt.SETTINGS -> drawSettingsArtwork()
+        }
+    }
+}
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("新建会议", fontWeight = FontWeight.SemiBold) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(
-                    text = "为会议起个名称，方便后续查找",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawMicArtwork() {
+    val w = size.width
+    val h = size.height
+    val centerX = w * 0.50f
+    val bodyTop = h * 0.10f
+    val bodyWidth = w * 0.42f
+    val bodyHeight = h * 0.55f
+    val bodyLeft = centerX - bodyWidth / 2f
+
+    drawOval(
+        color = Color.Black.copy(alpha = 0.16f),
+        topLeft = Offset(w * 0.10f, h * 0.83f),
+        size = Size(w * 0.80f, h * 0.11f)
+    )
+    drawRoundRect(
+        color = Color(0xFF83A9E0),
+        topLeft = Offset(bodyLeft + w * 0.015f, bodyTop + h * 0.025f),
+        size = Size(bodyWidth, bodyHeight),
+        cornerRadius = androidx.compose.ui.geometry.CornerRadius(bodyWidth / 2f)
+    )
+    drawRoundRect(
+        brush = Brush.verticalGradient(
+            listOf(Color(0xFFF5FAFF), Color(0xFFBEDAFF), Color(0xFF8FB8F0))
+        ),
+        topLeft = Offset(bodyLeft, bodyTop),
+        size = Size(bodyWidth, bodyHeight),
+        cornerRadius = androidx.compose.ui.geometry.CornerRadius(bodyWidth / 2f)
+    )
+    drawRoundRect(
+        brush = Brush.horizontalGradient(
+            listOf(Color.Transparent, Color.White.copy(alpha = 0.48f), Color.Transparent)
+        ),
+        topLeft = Offset(bodyLeft + bodyWidth * 0.17f, bodyTop + bodyHeight * 0.08f),
+        size = Size(bodyWidth * 0.23f, bodyHeight * 0.74f),
+        cornerRadius = androidx.compose.ui.geometry.CornerRadius(bodyWidth * 0.12f)
+    )
+    drawRoundRect(
+        color = Color.White.copy(alpha = 0.34f),
+        topLeft = Offset(bodyLeft + bodyWidth * 0.18f, bodyTop + bodyHeight * 0.05f),
+        size = Size(bodyWidth * 0.50f, bodyHeight * 0.11f),
+        cornerRadius = androidx.compose.ui.geometry.CornerRadius(bodyWidth * 0.06f)
+    )
+
+    val stroke = w * 0.065f
+    val frameLeft = centerX - w * 0.33f
+    val frameTop = bodyTop + bodyHeight * 0.35f
+    val frameWidth = w * 0.66f
+    val frameHeight = h * 0.36f
+    drawRoundRect(
+        color = Color(0xFF9FC4F0),
+        topLeft = Offset(frameLeft + w * 0.012f, frameTop + h * 0.018f),
+        size = Size(frameWidth, frameHeight),
+        cornerRadius = androidx.compose.ui.geometry.CornerRadius(frameWidth * 0.25f),
+        style = Stroke(width = stroke * 1.12f)
+    )
+    drawRoundRect(
+        color = Color(0xFFF0F7FF),
+        topLeft = Offset(frameLeft, frameTop),
+        size = Size(frameWidth, frameHeight),
+        cornerRadius = androidx.compose.ui.geometry.CornerRadius(frameWidth * 0.25f),
+        style = Stroke(width = stroke)
+    )
+    drawLine(
+        color = Color(0xFFB8D5F5),
+        start = Offset(centerX, frameTop + frameHeight),
+        end = Offset(centerX, h * 0.80f),
+        strokeWidth = stroke,
+        cap = androidx.compose.ui.graphics.StrokeCap.Round
+    )
+    drawLine(
+        color = Color.White.copy(alpha = 0.74f),
+        start = Offset(centerX - w * 0.24f, frameTop + frameHeight * 0.28f),
+        end = Offset(centerX - w * 0.24f, frameTop + frameHeight * 0.58f),
+        strokeWidth = w * 0.025f,
+        cap = androidx.compose.ui.graphics.StrokeCap.Round
+    )
+    drawRoundRect(
+        color = Color(0xFF8FAFDC),
+        topLeft = Offset(w * 0.23f, h * 0.795f),
+        size = Size(w * 0.54f, h * 0.10f),
+        cornerRadius = androidx.compose.ui.geometry.CornerRadius(h * 0.05f)
+    )
+    drawRoundRect(
+        brush = Brush.verticalGradient(listOf(Color(0xFFFFFFFF), Color(0xFFBBD6F6))),
+        topLeft = Offset(w * 0.23f, h * 0.78f),
+        size = Size(w * 0.54f, h * 0.10f),
+        cornerRadius = androidx.compose.ui.geometry.CornerRadius(h * 0.05f)
+    )
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawFolderArtwork() {
+    val w = size.width
+    val h = size.height
+    val left = w * 0.12f
+    val top = h * 0.26f
+    val folderWidth = w * 0.76f
+    val folderHeight = h * 0.45f
+
+    drawOval(
+        color = Color.Black.copy(alpha = 0.14f),
+        topLeft = Offset(w * 0.08f, h * 0.78f),
+        size = Size(w * 0.84f, h * 0.10f)
+    )
+    drawRoundRect(
+        brush = Brush.verticalGradient(listOf(Color(0xFF8DC6B7), Color(0xFF6EAC9E))),
+        topLeft = Offset(left + w * 0.025f, top + h * 0.085f),
+        size = Size(folderWidth, folderHeight),
+        cornerRadius = androidx.compose.ui.geometry.CornerRadius(w * 0.08f)
+    )
+    drawRoundRect(
+        brush = Brush.verticalGradient(listOf(Color(0xFFEFFFFA), Color(0xFFA8DFD0), Color(0xFF7DC2B1))),
+        topLeft = Offset(left, top + h * 0.04f),
+        size = Size(folderWidth, folderHeight),
+        cornerRadius = androidx.compose.ui.geometry.CornerRadius(w * 0.08f)
+    )
+    drawRoundRect(
+        brush = Brush.verticalGradient(listOf(Color(0xFFF4FFFC), Color(0xFFB9EBDD))),
+        topLeft = Offset(left + w * 0.03f, top),
+        size = Size(w * 0.36f, h * 0.18f),
+        cornerRadius = androidx.compose.ui.geometry.CornerRadius(w * 0.06f)
+    )
+    drawRoundRect(
+        color = Color(0xFFB3EADA).copy(alpha = 0.72f),
+        topLeft = Offset(left + w * 0.07f, top + h * 0.18f),
+        size = Size(folderWidth * 0.84f, folderHeight * 0.64f),
+        cornerRadius = androidx.compose.ui.geometry.CornerRadius(w * 0.06f)
+    )
+    drawRoundRect(
+        color = Color.White.copy(alpha = 0.25f),
+        topLeft = Offset(left + w * 0.10f, top + h * 0.24f),
+        size = Size(folderWidth * 0.72f, h * 0.055f),
+        cornerRadius = androidx.compose.ui.geometry.CornerRadius(h * 0.027f)
+    )
+    drawRoundRect(
+        brush = Brush.horizontalGradient(listOf(Color.Transparent, Color.White.copy(alpha = 0.46f), Color.Transparent)),
+        topLeft = Offset(left + w * 0.16f, top + h * 0.08f),
+        size = Size(w * 0.11f, folderHeight * 0.62f),
+        cornerRadius = androidx.compose.ui.geometry.CornerRadius(w * 0.05f)
+    )
+    drawRoundRect(
+        color = Color(0xFF75B8A9),
+        topLeft = Offset(w * 0.08f, h * 0.745f),
+        size = Size(w * 0.84f, h * 0.10f),
+        cornerRadius = androidx.compose.ui.geometry.CornerRadius(h * 0.05f)
+    )
+    drawRoundRect(
+        brush = Brush.verticalGradient(listOf(Color.White, Color(0xFFBDEADE))),
+        topLeft = Offset(w * 0.08f, h * 0.72f),
+        size = Size(w * 0.84f, h * 0.10f),
+        cornerRadius = androidx.compose.ui.geometry.CornerRadius(h * 0.05f)
+    )
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAddArtwork() {
+    val w = size.width
+    val h = size.height
+    val tile = w * 0.64f
+    val left = (w - tile) / 2f
+    val top = h * 0.10f
+
+    drawOval(
+        color = Color.Black.copy(alpha = 0.14f),
+        topLeft = Offset(w * 0.08f, h * 0.82f),
+        size = Size(w * 0.84f, h * 0.09f)
+    )
+    drawRoundRect(
+        color = Color(0xFF7667D0),
+        topLeft = Offset(left + w * 0.035f, top + h * 0.035f),
+        size = Size(tile, tile),
+        cornerRadius = androidx.compose.ui.geometry.CornerRadius(w * 0.13f)
+    )
+    drawRoundRect(
+        brush = Brush.verticalGradient(listOf(Color(0xFFF7F5FF), Color(0xFFB9B0FF), Color(0xFF8E80F2))),
+        topLeft = Offset(left, top),
+        size = Size(tile, tile),
+        cornerRadius = androidx.compose.ui.geometry.CornerRadius(w * 0.13f)
+    )
+    drawRoundRect(
+        color = Color.White.copy(alpha = 0.30f),
+        topLeft = Offset(left + tile * 0.12f, top + tile * 0.11f),
+        size = Size(tile * 0.21f, tile * 0.68f),
+        cornerRadius = androidx.compose.ui.geometry.CornerRadius(tile * 0.10f)
+    )
+    drawRoundRect(
+        color = Color.White.copy(alpha = 0.38f),
+        topLeft = Offset(left + tile * 0.12f, top + tile * 0.11f),
+        size = Size(tile * 0.70f, tile * 0.11f),
+        cornerRadius = androidx.compose.ui.geometry.CornerRadius(tile * 0.055f)
+    )
+    drawRoundRect(
+        color = Color.White.copy(alpha = 0.92f),
+        topLeft = Offset(w * 0.31f, h * 0.30f),
+        size = Size(w * 0.38f, h * 0.07f),
+        cornerRadius = androidx.compose.ui.geometry.CornerRadius(h * 0.035f)
+    )
+    drawRoundRect(
+        color = Color.White.copy(alpha = 0.92f),
+        topLeft = Offset(w * 0.465f, h * 0.185f),
+        size = Size(w * 0.07f, h * 0.30f),
+        cornerRadius = androidx.compose.ui.geometry.CornerRadius(w * 0.035f)
+    )
+    drawRoundRect(
+        color = Color(0xFF8477DB),
+        topLeft = Offset(w * 0.08f, h * 0.795f),
+        size = Size(w * 0.84f, h * 0.10f),
+        cornerRadius = androidx.compose.ui.geometry.CornerRadius(h * 0.05f)
+    )
+    drawRoundRect(
+        brush = Brush.verticalGradient(listOf(Color.White, Color(0xFFC7C0FF))),
+        topLeft = Offset(w * 0.08f, h * 0.765f),
+        size = Size(w * 0.84f, h * 0.10f),
+        cornerRadius = androidx.compose.ui.geometry.CornerRadius(h * 0.05f)
+    )
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSettingsArtwork() {
+    val w = size.width
+    val h = size.height
+    val center = Offset(w * 0.50f, h * 0.45f)
+    val outerRadius = w * 0.31f
+
+    drawOval(
+        color = Color.Black.copy(alpha = 0.14f),
+        topLeft = Offset(w * 0.08f, h * 0.82f),
+        size = Size(w * 0.84f, h * 0.09f)
+    )
+    fun drawGearLayer(colors: List<Color>, yOffset: Float) {
+        repeat(8) { index ->
+            rotate(index * 45f, pivot = center) {
+                drawRoundRect(
+                    brush = Brush.verticalGradient(colors),
+                    topLeft = Offset(center.x - w * 0.075f, center.y - outerRadius - h * 0.05f + yOffset),
+                    size = Size(w * 0.15f, h * 0.16f),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(w * 0.07f)
                 )
-                OutlinedTextField(
-                    value = title,
-                    onValueChange = {
-                        title = it
-                        onTitleChange(it)
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("会议名称") },
-                    placeholder = { Text(suggestedTitle) },
-                    singleLine = true,
-                    shape = RoundedCornerShape(12.dp)
-                )
-            }
-        },
-        confirmButton = {
-            Button(onClick = { onConfirm(title) }) {
-                Text("开始录音")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("取消")
             }
         }
+        drawCircle(
+            brush = Brush.radialGradient(colors),
+            radius = outerRadius,
+            center = Offset(center.x, center.y + yOffset)
+        )
+    }
+    drawGearLayer(listOf(Color(0xFFCE7B2C), Color(0xFFB96520)), h * 0.035f)
+    drawGearLayer(listOf(Color(0xFFFFE7C2), Color(0xFFF2A34D)), 0f)
+    drawCircle(
+        brush = Brush.radialGradient(listOf(Color(0xFFFFE9C9), Color(0xFFF3A44E))),
+        radius = outerRadius,
+        center = center
+    )
+    drawCircle(color = Color(0xFFC87528), radius = w * 0.12f, center = center)
+    drawCircle(color = Color(0xFF5B3C25), radius = w * 0.075f, center = center)
+    drawArc(
+        color = Color.White.copy(alpha = 0.52f),
+        startAngle = 205f,
+        sweepAngle = 125f,
+        useCenter = false,
+        topLeft = Offset(center.x - outerRadius * 0.70f, center.y - outerRadius * 0.70f),
+        size = Size(outerRadius * 1.40f, outerRadius * 1.40f),
+        style = Stroke(width = w * 0.035f)
+    )
+    drawRoundRect(
+        color = Color(0xFFD28535),
+        topLeft = Offset(w * 0.08f, h * 0.795f),
+        size = Size(w * 0.84f, h * 0.10f),
+        cornerRadius = androidx.compose.ui.geometry.CornerRadius(h * 0.05f)
+    )
+    drawRoundRect(
+        brush = Brush.verticalGradient(listOf(Color.White, Color(0xFFFFD59C))),
+        topLeft = Offset(w * 0.08f, h * 0.765f),
+        size = Size(w * 0.84f, h * 0.10f),
+        cornerRadius = androidx.compose.ui.geometry.CornerRadius(h * 0.05f)
     )
 }
 
 @Composable
-private fun EditTitleDialog(
-    currentTitle: String,
-    onDismiss: () -> Unit,
-    onSave: () -> Unit,
-    onTitleChange: (String) -> Unit
+private fun RecentMeetingsHeader(
+    meetingCount: Int,
+    hasMeetings: Boolean,
+    onShowAll: () -> Unit,
+    onClearAll: () -> Unit,
+    layout: HomeLayoutSpec
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("修改名称", fontWeight = FontWeight.SemiBold) },
-        text = {
-            OutlinedTextField(
-                value = currentTitle,
-                onValueChange = onTitleChange,
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text("会议名称") },
-                singleLine = true,
-                shape = RoundedCornerShape(12.dp)
-            )
-        },
-        confirmButton = {
-            Button(onClick = onSave) {
-                Text("保存")
+    val colors = homeColors()
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(
+            text = "最近记录",
+            style = MaterialTheme.typography.headlineSmall.copy(
+                fontSize = if (layout.compact) 19.sp else 21.sp
+            ),
+            fontWeight = FontWeight.Bold,
+            color = colors.ink
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (hasMeetings) {
+                IconButton(onClick = onClearAll, modifier = Modifier.size(40.dp)) {
+                    Icon(
+                        imageVector = Icons.Default.DeleteSweep,
+                        contentDescription = "清空会议记录",
+                        tint = colors.mutedInk,
+                        modifier = Modifier.size(21.dp)
+                    )
+                }
             }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("取消")
+            if (meetingCount > 3) {
+                TextButton(onClick = onShowAll) {
+                    Text("查看全部", color = colors.mutedInk)
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                        contentDescription = null,
+                        tint = colors.mutedInk,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
             }
         }
+    }
+}
+
+private enum class MeetingSource {
+    QUICK,
+    SCHEDULED,
+    IMPORT
+}
+
+private fun meetingSource(title: String): MeetingSource {
+    val normalized = title.trim().lowercase(Locale.getDefault())
+    return when {
+        listOf("资料导入", "文件导入", "导入会议", "import").any(normalized::contains) ->
+            MeetingSource.IMPORT
+        listOf("预定会议", "预约会议", "预定", "scheduled").any(normalized::contains) ->
+            MeetingSource.SCHEDULED
+        else -> MeetingSource.QUICK
+    }
+}
+
+@Composable
+@OptIn(ExperimentalFoundationApi::class)
+private fun HomeMeetingRow(
+    item: MeetingWithReport,
+    layout: HomeLayoutSpec,
+    onClick: () -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit
+) {
+    val colors = homeColors()
+    var showMenu by remember { mutableStateOf(false) }
+    var showDeleteDialog by remember { mutableStateOf(false) }
+    val source = meetingSource(item.meeting.title)
+    val icon = when (source) {
+        MeetingSource.QUICK -> Icons.Default.Mic
+        MeetingSource.SCHEDULED -> Icons.Default.EventAvailable
+        MeetingSource.IMPORT -> Icons.Default.FolderOpen
+    }
+    val iconTint = when (source) {
+        MeetingSource.QUICK -> BrandBlue
+        MeetingSource.SCHEDULED -> Color(0xFF806EF0)
+        MeetingSource.IMPORT -> Color(0xFF28BA91)
+    }
+    if (showDeleteDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeleteDialog = false },
+            icon = { Icon(Icons.Default.DeleteOutline, null, tint = MaterialTheme.colorScheme.error) },
+            title = { Text("删除会议") },
+            text = { Text("“${item.meeting.title}”及其录音、转写和纪要将被永久删除。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showDeleteDialog = false
+                    onDelete()
+                }) { Text("删除", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { showDeleteDialog = false }) { Text("取消") } }
+        )
+    }
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(
+                onClick = onClick,
+                onLongClickLabel = "会议操作",
+                onLongClick = { showMenu = true }
+            ),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = colors.meetingSurface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(layout.recordHeight)
+                .padding(horizontal = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Surface(
+                modifier = Modifier.size(layout.recordIconSize),
+                shape = RoundedCornerShape(12.dp),
+                color = iconTint.copy(alpha = 0.12f)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(icon, contentDescription = null, tint = iconTint, modifier = Modifier.size(24.dp))
+                }
+            }
+            Spacer(Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    text = item.meeting.title,
+                    style = MaterialTheme.typography.titleMedium.copy(fontSize = 15.sp, lineHeight = 20.sp),
+                    color = colors.ink,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = meetingMeta(item.meeting),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.mutedInk,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Surface(
+                shape = RoundedCornerShape(50),
+                color = if (item.hasReport) colors.completedContainer else colors.pendingContainer
+            ) {
+                Text(
+                    text = if (item.hasReport) "已完成" else "待完善",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (item.hasReport) colors.completedContent else colors.pendingContent,
+                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp)
+                )
+            }
+            Icon(
+                imageVector = Icons.Default.KeyboardArrowRight,
+                contentDescription = "打开会议",
+                tint = colors.mutedInk.copy(alpha = 0.62f),
+                modifier = Modifier.size(25.dp)
+            )
+            Box(modifier = Modifier.size(1.dp)) {
+                DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                    DropdownMenuItem(
+                        text = { Text("修改名称") },
+                        leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
+                        onClick = {
+                            showMenu = false
+                            onEdit()
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("删除", color = MaterialTheme.colorScheme.error) },
+                        leadingIcon = { Icon(Icons.Default.DeleteOutline, null, tint = MaterialTheme.colorScheme.error) },
+                        onClick = {
+                            showMenu = false
+                            showDeleteDialog = true
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EmptyHistory(onStart: () -> Unit) {
+    val colors = homeColors()
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        color = colors.meetingSurface
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 18.dp, vertical = 17.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Surface(shape = CircleShape, color = colors.emptyIconContainer) {
+                Icon(
+                    Icons.Default.Description,
+                    contentDescription = null,
+                    tint = BrandBlue,
+                    modifier = Modifier.padding(10.dp)
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text("还没有会议记录", style = MaterialTheme.typography.titleSmall, color = colors.ink)
+                Text("从一段录音开始整理想法", style = MaterialTheme.typography.bodySmall, color = colors.mutedInk)
+            }
+            TextButton(onClick = onStart) { Text("开始") }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AllMeetingsSheet(
+    meetings: List<MeetingWithReport>,
+    regeneratingMeetingId: String?,
+    onDismiss: () -> Unit,
+    onOpen: (MeetingWithReport) -> Unit,
+    onReportClick: (String) -> Unit,
+    onContinueRecording: (String) -> Unit,
+    onRegenerateReport: (String) -> Unit,
+    onDelete: (String) -> Unit,
+    onEdit: (String, String) -> Unit
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Text(
+            text = "全部会议",
+            style = MaterialTheme.typography.titleLarge,
+            modifier = Modifier.padding(horizontal = FirebaseUiTokens.ScreenPadding)
+        )
+        Spacer(Modifier.height(12.dp))
+        LazyColumn(
+            contentPadding = PaddingValues(
+                start = FirebaseUiTokens.ScreenPadding,
+                end = FirebaseUiTokens.ScreenPadding,
+                bottom = 28.dp
+            ),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            items(meetings, key = { it.meeting.id }) { item ->
+                MeetingCard(
+                    meeting = item.meeting,
+                    hasReport = item.hasReport,
+                    isRegenerating = regeneratingMeetingId == item.meeting.id,
+                    onClick = { onOpen(item) },
+                    onReportClick = { onReportClick(item.meeting.id) },
+                    onContinueRecording = { onContinueRecording(item.meeting.id) },
+                    onRegenerateReport = { onRegenerateReport(item.meeting.id) },
+                    onDelete = { onDelete(item.meeting.id) },
+                    onEdit = { onEdit(item.meeting.id, item.meeting.title) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun UpcomingMeetings(
+    meetings: List<ScheduledMeeting>,
+    onDelete: (String) -> Unit,
+    layout: HomeLayoutSpec
+) {
+    val colors = homeColors()
+    Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Default.EventAvailable,
+                    contentDescription = null,
+                    tint = BrandBlue,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(Modifier.width(7.dp))
+                Text(
+                    text = "即将开始",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = colors.ink
+                )
+            }
+            Text(
+                text = "已安排 ${meetings.size} 场",
+                style = MaterialTheme.typography.labelMedium,
+                color = colors.mutedInk
+            )
+        }
+        meetings.take(2).forEach { meeting ->
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                color = colors.meetingSurface
+            ) {
+                Row(
+                    modifier = Modifier.padding(
+                        horizontal = 13.dp,
+                        vertical = if (layout.compact) 8.dp else 10.dp
+                    ),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(9.dp),
+                        color = BrandBlue.copy(alpha = 0.12f)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CalendarMonth,
+                            contentDescription = null,
+                            tint = BrandBlue,
+                            modifier = Modifier.padding(8.dp).size(18.dp)
+                        )
+                    }
+                    Spacer(Modifier.width(10.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = meeting.title,
+                            style = MaterialTheme.typography.titleSmall,
+                            color = colors.ink,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = scheduledMeetingMeta(meeting),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colors.mutedInk,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    IconButton(onClick = { onDelete(meeting.id) }) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "取消预定",
+                            tint = colors.mutedInk
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ScheduledMeetingDialog(
+    title: String,
+    scheduledAt: Long,
+    templates: List<PresetReportTemplate>,
+    onTitleChange: (String) -> Unit,
+    onScheduledAtChange: (Long) -> Unit,
+    onDismiss: () -> Unit,
+    onConfirm: (reminderMinutes: Int, templateName: String?) -> Unit
+) {
+    val context = LocalContext.current
+    var reminderExpanded by remember { mutableStateOf(false) }
+    var templateExpanded by remember { mutableStateOf(false) }
+    var reminderMinutes by remember { mutableStateOf(15) }
+    var templateName by remember { mutableStateOf(templates.firstOrNull()?.name) }
+    val calendar = Calendar.getInstance().apply { timeInMillis = scheduledAt }
+    val dateText = SimpleDateFormat("yyyy年M月d日", Locale.SIMPLIFIED_CHINESE).format(calendar.time)
+    val timeText = SimpleDateFormat("HH:mm", Locale.getDefault()).format(calendar.time)
+    val canConfirm = title.isNotBlank() && scheduledAt > System.currentTimeMillis()
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Default.Event, contentDescription = null) },
+        title = { Text("预定会议") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = onTitleChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("会议标题") },
+                    singleLine = true
+                )
+                Text(
+                    text = "会议时间",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = {
+                            DatePickerDialog(
+                                context,
+                                { _, year, month, day ->
+                                    val next = Calendar.getInstance().apply {
+                                        timeInMillis = scheduledAt
+                                        set(Calendar.YEAR, year)
+                                        set(Calendar.MONTH, month)
+                                        set(Calendar.DAY_OF_MONTH, day)
+                                    }
+                                    onScheduledAtChange(next.timeInMillis)
+                                },
+                                calendar.get(Calendar.YEAR),
+                                calendar.get(Calendar.MONTH),
+                                calendar.get(Calendar.DAY_OF_MONTH)
+                            ).show()
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) { Text(dateText, maxLines = 1) }
+                    OutlinedButton(
+                        onClick = {
+                            TimePickerDialog(
+                                context,
+                                { _, hour, minute ->
+                                    val next = Calendar.getInstance().apply {
+                                        timeInMillis = scheduledAt
+                                        set(Calendar.HOUR_OF_DAY, hour)
+                                        set(Calendar.MINUTE, minute)
+                                        set(Calendar.SECOND, 0)
+                                        set(Calendar.MILLISECOND, 0)
+                                    }
+                                    onScheduledAtChange(next.timeInMillis)
+                                },
+                                calendar.get(Calendar.HOUR_OF_DAY),
+                                calendar.get(Calendar.MINUTE),
+                                true
+                            ).show()
+                        },
+                        modifier = Modifier.weight(0.72f)
+                    ) { Text(timeText) }
+                }
+                Box {
+                    OutlinedButton(
+                        onClick = { reminderExpanded = true },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("提醒：${reminderLabel(reminderMinutes)}")
+                    }
+                    DropdownMenu(
+                        expanded = reminderExpanded,
+                        onDismissRequest = { reminderExpanded = false }
+                    ) {
+                        listOf(5, 15, 30, 60, 0).forEach { minutes ->
+                            DropdownMenuItem(
+                                text = { Text(reminderLabel(minutes)) },
+                                onClick = {
+                                    reminderMinutes = minutes
+                                    reminderExpanded = false
+                                }
+                            )
+                        }
+                    }
+                }
+                if (templates.isNotEmpty()) {
+                    Box {
+                        OutlinedButton(
+                            onClick = { templateExpanded = true },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = "纪要模板：${templateName ?: "跟随默认"}",
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = templateExpanded,
+                            onDismissRequest = { templateExpanded = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("跟随默认") },
+                                onClick = {
+                                    templateName = null
+                                    templateExpanded = false
+                                }
+                            )
+                            templates.forEach { template ->
+                                DropdownMenuItem(
+                                    text = { Text(template.name) },
+                                    onClick = {
+                                        templateName = template.name
+                                        templateExpanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+                Text(
+                    text = "到点后可直接进入快速会议，纪要模板会沿用本次预定设置。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onConfirm(reminderMinutes, templateName) },
+                enabled = canConfirm
+            ) { Text("保存预定") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
     )
+}
+
+@Composable
+private fun EditTitleDialog(currentTitle: String, onDismiss: () -> Unit, onSave: () -> Unit, onTitleChange: (String) -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("修改会议名称") },
+        text = { OutlinedTextField(currentTitle, onTitleChange, Modifier.fillMaxWidth(), label = { Text("会议名称") }, singleLine = true) },
+        confirmButton = { Button(onClick = onSave, enabled = currentTitle.isNotBlank()) { Text("保存") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
+    )
+}
+
+private fun formattedToday(): String = SimpleDateFormat("yyyy年M月d日  EEEE", Locale.SIMPLIFIED_CHINESE).format(Date())
+
+private fun scheduledMeetingMeta(meeting: ScheduledMeeting): String {
+    val date = SimpleDateFormat("M月d日  HH:mm", Locale.SIMPLIFIED_CHINESE)
+        .format(Date(meeting.scheduledAt))
+    val reminder = reminderLabel(meeting.reminderMinutes)
+    return if (meeting.templateName.isNullOrBlank()) "$date · $reminder" else "$date · $reminder · ${meeting.templateName}"
+}
+
+private fun reminderLabel(minutes: Int): String = when (minutes) {
+    0 -> "不提醒"
+    60 -> "提前 1 小时"
+    else -> "提前 $minutes 分钟"
+}
+
+private fun meetingMeta(meeting: Meeting): String {
+    val date = SimpleDateFormat("yyyy/MM/dd  HH:mm", Locale.SIMPLIFIED_CHINESE).format(Date(meeting.createdAt))
+    return if (meeting.durationMs > 0L) "$date  |  ${formatDuration(meeting.durationMs)}" else date
+}
+
+private fun formatDuration(durationMs: Long): String {
+    val totalSeconds = durationMs / 1_000
+    return "%d:%02d".format(totalSeconds / 60, totalSeconds % 60)
 }

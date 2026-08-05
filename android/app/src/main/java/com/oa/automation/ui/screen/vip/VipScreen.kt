@@ -1,12 +1,6 @@
 package com.oa.automation.ui.screen.vip
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,7 +9,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -25,20 +18,20 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Architecture
+import androidx.compose.material.icons.automirrored.filled.FactCheck
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Construction
-import androidx.compose.material.icons.filled.ExpandLess
-import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.AdminPanelSettings
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.WorkspacePremium
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -50,25 +43,35 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.oa.automation.domain.model.PresetReportTemplate
+import com.oa.automation.domain.model.AccountPlan
+import com.oa.automation.domain.model.AccountProfile
+import com.oa.automation.domain.model.RechargeOrder
 import org.koin.androidx.compose.koinViewModel
+
+internal enum class VipContentMode {
+    NON_VIP,
+    VIP,
+    ADMIN
+}
+
+internal fun resolveVipContentMode(profile: AccountProfile?): VipContentMode = when {
+    profile?.isAdmin == true -> VipContentMode.ADMIN
+    profile?.constructionLogsUnlocked == true -> VipContentMode.VIP
+    else -> VipContentMode.NON_VIP
+}
 
 /**
  * VipScreen - VIP专区
- * 支持两种专业模板切换，启用/禁用功能
+ * 根据会员权限展示月卡入口或专业模板工作区。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -98,10 +101,22 @@ fun VipScreen(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
-                title = { Text("VIP专区", fontWeight = FontWeight.SemiBold) },
+                title = {
+                    Column {
+                        Text("VIP会员与专业能力", fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "智能体 · 小Woo",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "返回我的"
+                        )
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -118,115 +133,424 @@ fun VipScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // 模板选择卡片
-            TemplateSelectorCard(
-                selectedType = uiState.activeTemplateType,
-                onSelect = viewModel::selectTemplate,
-                modifier = Modifier.fillMaxWidth()
-            )
+            val profile = uiState.profile
+            val contentMode = resolveVipContentMode(profile)
+            val hasVipAccess = contentMode != VipContentMode.NON_VIP
 
-            // 当前选中模板的内容预览
-            val currentTemplate = uiState.templates.find {
-                it.name == uiState.activeTemplateType.templateName
+            uiState.accountError?.let { error ->
+                Text(
+                    text = error,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
             }
 
-            TemplateContentCard(
-                template = currentTemplate,
-                templateType = uiState.activeTemplateType,
-                modifier = Modifier.fillMaxWidth()
-            )
+            if (hasVipAccess) {
+                MembershipBanner(
+                    profile = profile,
+                    isLoading = uiState.isAccountLoading,
+                    onRefresh = viewModel::refreshMembership
+                )
+                uiState.quotaError?.let { error ->
+                    Text(
+                        text = error,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+                if (contentMode == VipContentMode.ADMIN) {
+                    AdminRechargeSection(
+                        orders = uiState.pendingAdminOrders,
+                        processingOrderId = uiState.processingOrderId,
+                        onApprove = viewModel::approveRecharge,
+                        onReject = viewModel::rejectRecharge
+                    )
+                }
+                ProfessionalTemplatesSection(
+                    selectedType = uiState.activeTemplateType,
+                    onSelect = viewModel::selectTemplate,
+                    isStarting = uiState.isStarting,
+                    quotaRemaining = uiState.quota?.requestsRemaining,
+                    onStart = viewModel::startRecording,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            } else {
+                MembershipPromotion(
+                    profile = profile,
+                    isLoading = uiState.isAccountLoading,
+                    onRefresh = viewModel::refreshMembership
+                )
+                RechargePlansSection(
+                    plans = uiState.plans,
+                    orders = uiState.orders,
+                    processingOrderId = uiState.processingOrderId,
+                    onSubmit = viewModel::submitRecharge
+                )
+            }
 
-            // 操作按钮
-            ActionButtonsRow(
-                isStarting = uiState.isStarting,
-                onStart = viewModel::startRecording,
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(2.dp))
         }
     }
 }
 
 @Composable
-private fun TemplateSelectorCard(
-    selectedType: VipTemplateType,
-    onSelect: (VipTemplateType) -> Unit,
+private fun MembershipPromotion(
+    profile: AccountProfile?,
+    isLoading: Boolean,
+    onRefresh: () -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.primaryContainer
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(42.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primary),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.WorkspacePremium,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onPrimary
+                )
+            }
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Text(
+                    text = "${profile?.planName ?: "Free"} 套餐",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "剩余 ${profile?.quota?.requestsRemaining ?: 10} 次试用 · VIP 可解锁专业模板",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            }
+            IconButton(onClick = onRefresh, enabled = !isLoading) {
+                if (isLoading) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                } else {
+                    Icon(Icons.Default.Refresh, contentDescription = "刷新会员状态")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MembershipBanner(
+    profile: AccountProfile?,
+    isLoading: Boolean,
+    onRefresh: () -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.medium,
+        color = if (profile?.vipEnabled == true || profile?.isAdmin == true) {
+            MaterialTheme.colorScheme.primaryContainer
+        } else {
+            MaterialTheme.colorScheme.surface
+        },
+        border = androidx.compose.foundation.BorderStroke(
+            1.dp,
+            MaterialTheme.colorScheme.outlineVariant
+        )
+    ) {
+        Row(
+            modifier = Modifier.padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Icon(
+                imageVector = if (profile?.isAdmin == true) {
+                    Icons.Default.AdminPanelSettings
+                } else {
+                    Icons.Default.WorkspacePremium
+                },
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = when {
+                        profile?.isAdmin == true -> "管理员 · 默认 VIP"
+                        profile?.vipEnabled == true -> "VIP 权益已生效"
+                        else -> "普通用户"
+                    },
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Text(
+                    text = if (profile?.constructionLogsUnlocked == true || profile?.isAdmin == true) {
+                        "专业工程与监理模板已解锁"
+                    } else {
+                        "专业工程与监理模板未解锁"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            IconButton(onClick = onRefresh, enabled = !isLoading) {
+                if (isLoading) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                } else {
+                    Icon(Icons.Default.Refresh, contentDescription = "刷新会员状态")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RechargePlansSection(
+    plans: List<AccountPlan>,
+    orders: List<RechargeOrder>,
+    processingOrderId: String?,
+    onSubmit: (String) -> Unit
+) {
+    val pendingOrder = orders.firstOrNull { it.status == "pending" }
+    Text(
+        text = "月卡套餐",
+        style = MaterialTheme.typography.titleSmall,
+        fontWeight = FontWeight.SemiBold
+    )
+    pendingOrder?.let { order ->
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = MaterialTheme.shapes.medium,
+            color = MaterialTheme.colorScheme.tertiaryContainer
+        ) {
+            Text(
+                text = "${order.planName}：待管理员确认",
+                modifier = Modifier.padding(12.dp),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onTertiaryContainer
+            )
+        }
+    }
+    plans.chunked(2).forEach { rowPlans ->
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            rowPlans.forEach { plan ->
+                CompactPlanCard(
+                    plan = plan,
+                    isProcessing = processingOrderId == plan.code,
+                    enabled = pendingOrder == null && processingOrderId == null,
+                    onSubmit = { onSubmit(plan.code) },
+                    modifier = Modifier.weight(1f)
+                )
+            }
+            if (rowPlans.size == 1) Spacer(modifier = Modifier.weight(1f))
+        }
+    }
+}
+
+@Composable
+private fun CompactPlanCard(
+    plan: AccountPlan,
+    isProcessing: Boolean,
+    enabled: Boolean,
+    onSubmit: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Card(
+    Surface(
         modifier = modifier,
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = Color.Transparent
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surface,
+        border = androidx.compose.foundation.BorderStroke(
+            1.dp,
+            MaterialTheme.colorScheme.outlineVariant
         )
     ) {
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(
-                    brush = Brush.linearGradient(
-                        colors = listOf(
-                            MaterialTheme.colorScheme.primaryContainer,
-                            MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f)
-                        )
-                    )
-                )
-                .padding(16.dp)
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            // 标题
+            Text(
+                text = plan.name,
+                style = MaterialTheme.typography.titleSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.Bottom,
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Box(
-                    modifier = Modifier
-                        .size(36.dp)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.WorkspacePremium,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(20.dp)
+                Text(
+                    text = "${plan.quotaAmount} 次",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    text = "¥%.0f/月".format(plan.priceCents / 100.0),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.secondary
+                )
+            }
+            Button(
+                onClick = onSubmit,
+                enabled = enabled,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(38.dp),
+                shape = MaterialTheme.shapes.medium
+            ) {
+                if (isProcessing) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onPrimary
                     )
-                }
-                Spacer(modifier = Modifier.width(10.dp))
-                Column {
-                    Text(
-                        text = "专业日志模板",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Text(
-                        text = "选择适合您工作的模板类型",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                } else {
+                    Text("申请")
                 }
             }
+        }
+    }
+}
 
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // 模板选项
-            TemplateOption(
-                icon = Icons.Default.Construction,
-                title = "工程行业施工日志",
-                description = "施工部位、进度、质量、安全记录",
-                isSelected = selectedType == VipTemplateType.ENGINEERING,
-                onClick = { onSelect(VipTemplateType.ENGINEERING) }
+@Composable
+private fun AdminRechargeSection(
+    orders: List<RechargeOrder>,
+    processingOrderId: String?,
+    onApprove: (String) -> Unit,
+    onReject: (String) -> Unit
+) {
+    Text("充值审批", style = MaterialTheme.typography.titleMedium)
+    if (orders.isEmpty()) {
+        Text(
+            text = "暂无待审批订单",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+    orders.forEach { order ->
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = MaterialTheme.shapes.medium,
+            border = androidx.compose.foundation.BorderStroke(
+                1.dp,
+                MaterialTheme.colorScheme.outlineVariant
             )
+        ) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(order.username, style = MaterialTheme.typography.titleSmall)
+                Text(
+                    text = "${order.planName} · ${order.quotaAmount} 次 · ¥%.2f".format(order.amountCents / 100.0),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = { onReject(order.id) },
+                        enabled = processingOrderId == null,
+                        modifier = Modifier.weight(1f),
+                        shape = MaterialTheme.shapes.medium
+                    ) {
+                        Text("拒绝")
+                    }
+                    Button(
+                        onClick = { onApprove(order.id) },
+                        enabled = processingOrderId == null,
+                        modifier = Modifier.weight(1f),
+                        shape = MaterialTheme.shapes.medium
+                    ) {
+                        if (processingOrderId == order.id) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.onPrimary
+                            )
+                        } else {
+                            Text("批准入账")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
-            Spacer(modifier = Modifier.height(8.dp))
-
-            TemplateOption(
-                icon = Icons.Default.Architecture,
-                title = "建筑专业设计日志",
-                description = "设计任务、进展、技术要点、协调事项",
-                isSelected = selectedType == VipTemplateType.DESIGN,
-                onClick = { onSelect(VipTemplateType.DESIGN) }
+@Composable
+private fun ProfessionalTemplatesSection(
+    selectedType: VipTemplateType,
+    onSelect: (VipTemplateType) -> Unit,
+    isStarting: Boolean,
+    quotaRemaining: Int?,
+    onStart: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier,
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surface,
+        border = androidx.compose.foundation.BorderStroke(
+            1.dp,
+            MaterialTheme.colorScheme.outlineVariant
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.WorkspacePremium,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(20.dp)
+                )
+                Text(
+                    text = "专业模板",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                TemplateOption(
+                    icon = Icons.Default.Construction,
+                    title = "工程/建筑 施工/设计日志",
+                    isSelected = selectedType == VipTemplateType.CONSTRUCTION_DESIGN,
+                    onClick = { onSelect(VipTemplateType.CONSTRUCTION_DESIGN) },
+                    modifier = Modifier.weight(1f)
+                )
+                TemplateOption(
+                    icon = Icons.AutoMirrored.Filled.FactCheck,
+                    title = "监理会例会日志",
+                    isSelected = selectedType == VipTemplateType.SUPERVISION_MEETING,
+                    onClick = { onSelect(VipTemplateType.SUPERVISION_MEETING) },
+                    modifier = Modifier.weight(1f)
+                )
+            }
+            ActionButtonsRow(
+                isStarting = isStarting,
+                quotaRemaining = quotaRemaining,
+                onStart = onStart,
+                modifier = Modifier.fillMaxWidth()
             )
         }
     }
@@ -236,32 +560,37 @@ private fun TemplateSelectorCard(
 private fun TemplateOption(
     icon: ImageVector,
     title: String,
-    description: String,
     isSelected: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
-        color = if (isSelected)
-            MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
-        else
-            MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
+        modifier = modifier.height(72.dp),
+        shape = MaterialTheme.shapes.medium,
+        color = if (isSelected) {
+            MaterialTheme.colorScheme.primaryContainer
+        } else {
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+        },
+        border = androidx.compose.foundation.BorderStroke(
+            1.dp,
+            if (isSelected) MaterialTheme.colorScheme.primary
+            else MaterialTheme.colorScheme.outlineVariant
+        ),
         onClick = onClick
     ) {
         Row(
-            modifier = Modifier.padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Box(
                 modifier = Modifier
-                    .size(36.dp)
+                    .size(32.dp)
                     .clip(CircleShape)
                     .background(
-                        if (isSelected)
-                            MaterialTheme.colorScheme.primary
-                        else
-                            MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)
+                        if (isSelected) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.surface
                     ),
                 contentAlignment = Alignment.Center
             ) {
@@ -272,113 +601,26 @@ private fun TemplateOption(
                         MaterialTheme.colorScheme.onPrimary
                     else
                         MaterialTheme.colorScheme.outline,
-                    modifier = Modifier.size(18.dp)
+                    modifier = Modifier.size(17.dp)
                 )
             }
-            Spacer(modifier = Modifier.width(10.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
-                    color = if (isSelected)
-                        MaterialTheme.colorScheme.primary
-                    else
-                        MaterialTheme.colorScheme.onSurface
-                )
-                Text(
-                    text = description,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
+            Text(
+                text = title,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer
+                else MaterialTheme.colorScheme.onSurface,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
             if (isSelected) {
                 Icon(
                     imageVector = Icons.Default.Check,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(20.dp)
+                    modifier = Modifier.size(18.dp)
                 )
-            }
-        }
-    }
-}
-
-@Composable
-private fun TemplateContentCard(
-    template: PresetReportTemplate?,
-    templateType: VipTemplateType,
-    modifier: Modifier = Modifier
-) {
-    var expanded by remember { mutableStateOf(false) }
-
-    Card(
-        modifier = modifier,
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        )
-    ) {
-        Column {
-            // 标题栏
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { expanded = !expanded }
-                    .padding(14.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = if (templateType == VipTemplateType.ENGINEERING)
-                            Icons.Default.Construction
-                        else
-                            Icons.Default.Architecture,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "模板内容",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                }
-                Icon(
-                    imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(20.dp)
-                )
-            }
-
-            // 模板内容
-            AnimatedVisibility(
-                visible = expanded,
-                enter = expandVertically() + fadeIn(),
-                exit = shrinkVertically() + fadeOut()
-            ) {
-                Surface(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 350.dp)
-                        .padding(horizontal = 14.dp, vertical = 8.dp),
-                    shape = RoundedCornerShape(10.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
-                ) {
-                    Text(
-                        text = template?.content ?: "模板未加载",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier
-                            .padding(12.dp)
-                            .verticalScroll(rememberScrollState())
-                    )
-                }
             }
         }
     }
@@ -387,16 +629,17 @@ private fun TemplateContentCard(
 @Composable
 private fun ActionButtonsRow(
     isStarting: Boolean,
+    quotaRemaining: Int?,
     onStart: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Button(
         onClick = onStart,
-        enabled = !isStarting,
+        enabled = !isStarting && (quotaRemaining ?: 0) > 0,
         modifier = modifier
             .fillMaxWidth()
             .height(48.dp),
-        shape = RoundedCornerShape(12.dp)
+        shape = RoundedCornerShape(8.dp)
     ) {
         if (isStarting) {
             CircularProgressIndicator(
@@ -412,6 +655,12 @@ private fun ActionButtonsRow(
             )
         }
         Spacer(modifier = Modifier.width(6.dp))
-        Text("开始记录")
+        Text(
+            when {
+                (quotaRemaining ?: 0) > 0 -> "使用此模板开始记录"
+                quotaRemaining == 0 -> "AI 处理额度已用尽"
+                else -> "额度状态暂不可用"
+            }
+        )
     }
 }

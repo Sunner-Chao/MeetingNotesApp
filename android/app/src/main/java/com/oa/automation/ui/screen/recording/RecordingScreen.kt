@@ -1,6 +1,7 @@
 package com.oa.automation.ui.screen.recording
 
-import android.graphics.BitmapFactory
+import android.content.ClipData
+import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -16,8 +17,10 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -38,12 +41,15 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.BrokenImage
 import androidx.compose.material.icons.filled.Collections
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Error
@@ -53,17 +59,34 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.OpenInFull
 import androidx.compose.material.icons.filled.PhotoCamera
+import androidx.compose.material.icons.filled.ContentPaste
+import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.Hub
+import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Apps
+import androidx.compose.material.icons.filled.AudioFile
+import androidx.compose.material.icons.filled.OpenInNew
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.SaveAlt
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Summarize
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -77,12 +100,12 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -94,17 +117,42 @@ import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.oa.automation.domain.model.MeetingAttachment
 import com.oa.automation.domain.model.PresetReportTemplate
+import com.oa.automation.domain.model.STTEngineType
+import com.oa.automation.domain.model.STTLanguage
+import com.oa.automation.domain.model.TencentAsrQuotaWarningLevel
+import com.oa.automation.infrastructure.audio.ArchivedMeetingAudio
+import com.oa.automation.infrastructure.image.OrientedImageDecoder
+import com.oa.automation.infrastructure.textimport.ExternalTextSource
+import com.oa.automation.ui.location.ImageLocationPermission
 import java.io.File
+import java.text.SimpleDateFormat
+import java.time.Instant
+import java.util.Date
+import java.util.Locale
 import org.koin.androidx.compose.koinViewModel
 
 /**
  * RecordingScreen - 精简版录音页面
  * 设计原则：核心操作突出，次要信息折叠
  */
+enum class RecordingLaunchAction {
+    STANDARD,
+    START_RECORDING,
+    OPEN_IMPORT;
+
+    companion object {
+        fun from(value: String): RecordingLaunchAction = when (value) {
+            "IMPORT_TEXT_FILE", "IMPORT_AUDIO_FILE" -> OPEN_IMPORT
+            else -> entries.firstOrNull { it.name == value } ?: STANDARD
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RecordingScreen(
     meetingId: String,
+    launchAction: RecordingLaunchAction = RecordingLaunchAction.STANDARD,
     onNavigateBack: () -> Unit,
     onNavigateToReport: (String) -> Unit,
     viewModel: RecordingViewModel = koinViewModel()
@@ -112,15 +160,49 @@ fun RecordingScreen(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
+    var pendingImageImportUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
+    var pendingAudioSave by remember { mutableStateOf<PendingMeetingAudioExport?>(null) }
+    var launchActionConsumed by rememberSaveable(meetingId, launchAction) {
+        mutableStateOf(false)
+    }
+
+    val locationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        val uris = pendingImageImportUris
+        pendingImageImportUris = emptyList()
+        if (uris.isNotEmpty()) {
+            viewModel.importImages(uris, captureLocation = permissions.values.any { it })
+        }
+    }
+
+    fun importImagesWithOptionalLocation(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        if (ImageLocationPermission.isGranted(context)) {
+            viewModel.importImages(uris, captureLocation = true)
+        } else {
+            pendingImageImportUris = uris
+            locationPermissionLauncher.launch(ImageLocationPermission.requestedPermissions)
+        }
+    }
 
     val galleryLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.GetMultipleContents()
-    ) { uris -> viewModel.importImages(uris) }
+    ) { uris -> importImagesWithOptionalLocation(uris) }
     val cameraLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.TakePicture()
     ) { saved ->
-        if (saved) pendingCameraUri?.let { viewModel.importImages(listOf(it)) }
+        if (saved) pendingCameraUri?.let { importImagesWithOptionalLocation(listOf(it)) }
         pendingCameraUri = null
+    }
+    val audioSaveLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("audio/*")
+    ) { destination ->
+        val pending = pendingAudioSave
+        pendingAudioSave = null
+        if (destination != null && pending != null) {
+            viewModel.savePreparedAudio(pending, destination)
+        }
     }
 
     fun launchCamera() {
@@ -135,10 +217,12 @@ fun RecordingScreen(
         cameraLauncher.launch(uri)
     }
 
-    BackHandler {
+    fun navigateBackAndStopRecording() {
         viewModel.handleScreenExit()
         onNavigateBack()
     }
+
+    BackHandler(onBack = ::navigateBackAndStopRecording)
 
     LaunchedEffect(meetingId) {
         viewModel.loadMeeting(meetingId)
@@ -148,6 +232,32 @@ fun RecordingScreen(
         if (uiState.reportReadyToOpen) {
             viewModel.consumeReportNavigation()
             onNavigateToReport(meetingId)
+        }
+    }
+
+    LaunchedEffect(uiState.pendingAudioExport) {
+        uiState.pendingAudioExport?.let { export ->
+            when (export.action) {
+                MeetingAudioExportAction.SAVE -> {
+                    pendingAudioSave = export
+                    viewModel.consumeAudioExport()
+                    audioSaveLauncher.launch(export.prepared.displayName)
+                }
+
+                MeetingAudioExportAction.SHARE -> {
+                    val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                        type = export.prepared.mimeType
+                        putExtra(Intent.EXTRA_STREAM, export.prepared.uri)
+                        clipData = ClipData.newRawUri(
+                            export.prepared.displayName,
+                            export.prepared.uri
+                        )
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                    context.startActivity(Intent.createChooser(shareIntent, "分享会议音频"))
+                    viewModel.consumeAudioExport()
+                }
+            }
         }
     }
 
@@ -165,133 +275,205 @@ fun RecordingScreen(
     }
 
     val filePickerLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        uri?.let {
-            try {
-                val text = context.contentResolver.openInputStream(it)
-                    ?.use { input -> input.bufferedReader().readText() }
-                    .orEmpty()
-                viewModel.updateManualText(text)
-            } catch (_: Exception) {
-            }
+        ActivityResultContracts.GetContent()
+    ) { uri -> uri?.let(viewModel::importTextDocument) }
+    val audioPickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri -> uri?.let(viewModel::importAudioDocument) }
+
+    LaunchedEffect(meetingId, launchAction, uiState.meetingTitle, launchActionConsumed) {
+        if (launchActionConsumed || uiState.meetingTitle.isBlank()) return@LaunchedEffect
+        when (launchAction) {
+            RecordingLaunchAction.STANDARD -> Unit
+            RecordingLaunchAction.START_RECORDING -> viewModel.startRecording()
+            RecordingLaunchAction.OPEN_IMPORT -> viewModel.switchToImportMode()
         }
+        launchActionConsumed = true
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
+    val displayedUiState = if (
+        launchAction == RecordingLaunchAction.OPEN_IMPORT && !launchActionConsumed
+    ) {
+        uiState.copy(inputMode = InputMode.IMPORT)
+    } else {
+        uiState
+    }
+
+    RecordingReferenceScaffold(
+        uiState = displayedUiState,
+        onNavigateBack = ::navigateBackAndStopRecording,
+        onNavigateToReport = { onNavigateToReport(meetingId) },
+        onTitleChange = viewModel::onMeetingTitleChange,
+        onSaveTitle = viewModel::saveMeetingTitle,
+        onSelectTemplate = viewModel::selectReportTemplate,
+        onSttEngineSelected = viewModel::switchSttEngine,
+        onSttLanguageSelected = viewModel::switchSttLanguage,
+        onSwitchToVoice = viewModel::switchToVoiceMode,
+        onSwitchToImport = viewModel::switchToImportMode,
+        onStartRecording = viewModel::startRecording,
+        onStopRecording = viewModel::stopRecording,
+        onTogglePause = viewModel::togglePauseRecording,
+        onAddMarker = viewModel::addRecordingMarker,
+        onStartJourney = viewModel::startJourney,
+        onSaveCurrentJourneyStage = viewModel::saveCurrentJourneyStage,
+        onPauseJourney = viewModel::pauseJourney,
+        onContinueJourney = viewModel::continueJourney,
+        onAbandonRecording = viewModel::abandonRecording,
+        onGenerateReport = viewModel::generateReport,
+        onCancelTranscription = viewModel::cancelTranscription,
+        onCancelReport = viewModel::cancelReportGeneration,
+        onTextChange = viewModel::updateManualText,
+        onPasteText = viewModel::importClipboardText,
+        onOpenExternalTextSource = viewModel::openExternalTextSource,
+        onImportTextFile = { filePickerLauncher.launch("text/*") },
+        onImportAudioFile = { audioPickerLauncher.launch("audio/*") },
+        onGenerateFromImport = viewModel::generateFromImport,
+        onTakePhoto = ::launchCamera,
+        onPickImages = { galleryLauncher.launch("image/*") },
+        onDeleteAttachment = viewModel::deleteAttachment,
+        onRefreshAudio = viewModel::refreshArchivedAudio,
+        onSaveAudio = viewModel::saveArchivedAudio,
+        onShareAudio = viewModel::shareArchivedAudio,
+        onDismissError = viewModel::clearError,
+        onSelectStreamingTranscript = viewModel::selectStreamingTranscript,
+        onSelectBackendTranscript = viewModel::selectBackendTranscript,
+        onDismissTranscriptPicker = viewModel::dismissTranscriptPicker
+    )
+}
+
+@Composable
+internal fun MeetingAudioExportCard(
+    items: List<ArchivedMeetingAudio>,
+    isLoading: Boolean,
+    busyAudioId: String?,
+    statusMessage: String,
+    isTranscribing: Boolean,
+    onRefresh: () -> Unit,
+    onSave: (ArchivedMeetingAudio) -> Unit,
+    onShare: (ArchivedMeetingAudio) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.medium,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        Icons.Default.AudioFile,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp)
+                    )
                     Text(
-                        text = uiState.meetingTitle.ifBlank { "会议录音" },
-                        maxLines = 1,
+                        text = "会议音频",
+                        style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold
                     )
-                },
-                navigationIcon = {
-                    IconButton(onClick = {
-                        viewModel.handleScreenExit()
-                        onNavigateBack()
-                    }) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+                }
+                IconButton(
+                    onClick = onRefresh,
+                    enabled = !isLoading && busyAudioId == null,
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    if (isLoading) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    } else {
+                        Icon(
+                            Icons.Default.Refresh,
+                            contentDescription = "刷新会议音频",
+                            modifier = Modifier.size(18.dp)
+                        )
                     }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface
-                )
-            )
-        }
-    ) { paddingValues ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            // 模板选择器
-            if (uiState.presetTemplates.isNotEmpty()) {
-                TemplateSelectorCard(
-                    templates = uiState.presetTemplates,
-                    selectedTemplateName = uiState.reportTemplate.selectedName,
-                    onSelectTemplate = viewModel::selectReportTemplate
-                )
-            }
-
-            // 输入模式切换
-            CompactInputModeToggle(
-                inputMode = uiState.inputMode,
-                onSwitchToVoice = viewModel::switchToVoiceMode,
-                onSwitchToText = viewModel::switchToTextMode
-            )
-
-            MeetingImagesSection(
-                attachments = uiState.attachments,
-                onTakePhoto = ::launchCamera,
-                onPickImages = { galleryLauncher.launch("image/*") },
-                onDelete = viewModel::deleteAttachment
-            )
-
-            // 错误提示
-            AnimatedVisibility(
-                visible = uiState.error != null,
-                enter = fadeIn() + scaleIn(),
-                exit = fadeOut() + scaleOut()
-            ) {
-                uiState.error?.let { error ->
-                    CompactErrorBanner(
-                        error = error,
-                        onDismiss = viewModel::clearError
-                    )
                 }
             }
 
-            if (uiState.inputMode == InputMode.VOICE) {
-                // 录音与生成纪要双卡片（核心操作区）
-                DualActionCards(
-                    isRecording = uiState.isRecording,
-                    isTranscribing = uiState.isTranscribing,
-                    isGeneratingReport = uiState.isGeneratingReport,
-                    hasRecording = uiState.hasRecording,
-                    sttEngineLabel = uiState.sttEngineLabel,
-                    onRecordClick = {
-                        if (uiState.isRecording) {
-                            viewModel.stopRecording()
-                        } else {
-                            viewModel.startRecording()
-                        }
+            if (items.isEmpty()) {
+                Text(
+                    text = when {
+                        isLoading -> "正在查找服务器归档音频"
+                        isTranscribing -> "正在准备会议音频"
+                        else -> "暂无可导出的会议音频"
                     },
-                    onGenerateReport = viewModel::generateReport
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-
-                // 转写内容（可折叠）
-                CollapsibleTranscriptCard(
-                    transcript = uiState.liveTranscript,
-                    previewMode = uiState.transcriptPreviewMode,
-                    isRecording = uiState.isRecording
-                )
+            } else {
+                items.forEach { audio ->
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = MaterialTheme.shapes.small,
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = formatRecordingAudioTime(audio.createdAt),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Text(
+                                    text = listOfNotNull(
+                                        audio.durationSec?.let(::formatRecordingAudioDuration),
+                                        formatRecordingAudioSize(audio.bytes)
+                                    ).joinToString(" · "),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            if (busyAudioId == audio.id) {
+                                Box(modifier = Modifier.size(80.dp), contentAlignment = Alignment.Center) {
+                                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                                }
+                            } else {
+                                IconButton(
+                                    onClick = { onSave(audio) },
+                                    enabled = busyAudioId == null,
+                                    modifier = Modifier.size(40.dp)
+                                ) {
+                                    Icon(Icons.Default.SaveAlt, contentDescription = "保存会议音频")
+                                }
+                                IconButton(
+                                    onClick = { onShare(audio) },
+                                    enabled = busyAudioId == null,
+                                    modifier = Modifier.size(40.dp)
+                                ) {
+                                    Icon(Icons.Default.Share, contentDescription = "分享会议音频")
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
-            if (uiState.inputMode == InputMode.TEXT) {
-                Spacer(modifier = Modifier.height(4.dp))
-
-                // 文本输入卡片
-                CompactTextInputCard(
-                    text = uiState.manualTextInput,
-                    onTextChange = viewModel::updateManualText,
-                    onImportFile = { filePickerLauncher.launch(arrayOf("text/plain", "application/msword")) }
-                )
-
-                // 文本模式下的生成纪要卡片
-                TextModeActionCard(
-                    hasContent = uiState.manualTextInput.isNotBlank(),
-                    isGeneratingReport = uiState.isGeneratingReport,
-                    onGenerateReport = viewModel::saveTextAndGenerateReport
+            if (statusMessage.isNotBlank()) {
+                Text(
+                    text = statusMessage,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (statusMessage.contains("失败")) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.primary
+                    }
                 )
             }
-
-            Spacer(modifier = Modifier.height(24.dp))
         }
     }
 }
@@ -300,11 +482,11 @@ fun RecordingScreen(
 private fun CompactInputModeToggle(
     inputMode: InputMode,
     onSwitchToVoice: () -> Unit,
-    onSwitchToText: () -> Unit
+    onSwitchToImport: () -> Unit
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
+        shape = MaterialTheme.shapes.medium,
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
     ) {
         Row(
@@ -319,10 +501,10 @@ private fun CompactInputModeToggle(
                 modifier = Modifier.weight(1f)
             )
             ModeButton(
-                text = "文本",
-                icon = Icons.Default.Description,
-                selected = inputMode == InputMode.TEXT,
-                onClick = onSwitchToText,
+                text = "导入",
+                icon = Icons.Default.FolderOpen,
+                selected = inputMode == InputMode.IMPORT,
+                onClick = onSwitchToImport,
                 modifier = Modifier.weight(1f)
             )
         }
@@ -339,7 +521,7 @@ private fun ModeButton(
 ) {
     Surface(
         modifier = modifier,
-        shape = RoundedCornerShape(12.dp),
+        shape = MaterialTheme.shapes.small,
         color = if (selected) MaterialTheme.colorScheme.primary else Color.Transparent,
         onClick = onClick
     ) {
@@ -385,7 +567,7 @@ private fun TemplateSelectorCard(
                     modifier = Modifier
                         .fillMaxWidth()
                         .heightIn(max = 350.dp),
-                    shape = RoundedCornerShape(12.dp),
+                    shape = RoundedCornerShape(8.dp),
                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
                 ) {
                     Text(
@@ -403,13 +585,13 @@ private fun TemplateSelectorCard(
                     Text("关闭")
                 }
             },
-            shape = RoundedCornerShape(20.dp)
+            shape = MaterialTheme.shapes.large
         )
     }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
+        shape = MaterialTheme.shapes.medium,
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surface
         )
@@ -473,11 +655,10 @@ private fun TemplateSelectorCard(
                                 .combinedClickable(
                                     onClick = {
                                         onSelectTemplate(template)
-                                        expanded = false
                                     },
                                     onLongClick = { previewTemplate = template }
                                 ),
-                            shape = RoundedCornerShape(10.dp),
+                            shape = RoundedCornerShape(8.dp),
                             color = if (isSelected)
                                 MaterialTheme.colorScheme.primaryContainer
                             else
@@ -498,7 +679,7 @@ private fun TemplateSelectorCard(
                                             MaterialTheme.colorScheme.onSurface
                                     )
                                     Text(
-                                        text = "长按预览内容",
+                                        text = templateSelectionHint(template),
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -520,14 +701,55 @@ private fun TemplateSelectorCard(
     }
 }
 
+private fun templateSelectionHint(template: PresetReportTemplate): String {
+    return template.subtitle
+        .takeIf { it.isNotBlank() }
+        ?.let { "$it · 长按预览" }
+        ?: "长按预览内容"
+}
+
 @Composable
-private fun CompactErrorBanner(
+private fun TencentQuotaWarningBanner(
+    warning: String,
+    warningLevel: TencentAsrQuotaWarningLevel
+) {
+    val critical = warningLevel == TencentAsrQuotaWarningLevel.CRITICAL ||
+        warningLevel == TencentAsrQuotaWarningLevel.EXHAUSTED
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(6.dp),
+        color = if (critical) MaterialTheme.colorScheme.errorContainer
+            else MaterialTheme.colorScheme.secondaryContainer
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.Top,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Icon(
+                Icons.Default.Warning,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+                tint = if (critical) MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.onSecondaryContainer
+            )
+            Text(
+                text = warning,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.weight(1f)
+            )
+        }
+    }
+}
+
+@Composable
+internal fun CompactErrorBanner(
     error: String,
     onDismiss: () -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(8.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.errorContainer
         )
@@ -562,12 +784,146 @@ private fun CompactErrorBanner(
 }
 
 @Composable
+internal fun RuntimeServiceSwitcher(
+    sttEngineType: STTEngineType,
+    sttLanguage: STTLanguage,
+    isSwitchingStt: Boolean,
+    isSwitchingLanguage: Boolean,
+    onSttEngineSelected: (STTEngineType) -> Unit,
+    onSttLanguageSelected: (STTLanguage) -> Unit
+) {
+    var sttMenuExpanded by remember { mutableStateOf(false) }
+    val sttLabel = if (sttEngineType == STTEngineType.TENCENT_HYBRID) {
+        "智悟增强云模型"
+    } else {
+        "智悟本地模型"
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    Icons.Default.Hub,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    text = "实时识别",
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold
+                )
+                if (isSwitchingStt || isSwitchingLanguage) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                STTLanguage.entries.forEach { language ->
+                    val selected = language == sttLanguage
+                    OutlinedButton(
+                        onClick = { onSttLanguageSelected(language) },
+                        modifier = Modifier.weight(1f).height(48.dp),
+                        enabled = !isSwitchingLanguage,
+                        shape = MaterialTheme.shapes.small,
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            containerColor = if (selected) {
+                                MaterialTheme.colorScheme.primaryContainer
+                            } else {
+                                Color.Transparent
+                            }
+                        )
+                    ) {
+                        Text(language.displayName, maxLines = 1)
+                        if (selected) {
+                            Spacer(Modifier.width(4.dp))
+                            Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
+                        }
+                    }
+                }
+            }
+            Box(modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(
+                    onClick = { sttMenuExpanded = true },
+                    modifier = Modifier.fillMaxWidth().height(48.dp),
+                    enabled = !isSwitchingStt,
+                    shape = MaterialTheme.shapes.small
+                ) {
+                    Icon(
+                        if (sttEngineType == STTEngineType.TENCENT_HYBRID) {
+                            Icons.Default.Cloud
+                        } else {
+                            Icons.Default.Speed
+                        },
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(sttLabel, maxLines = 1)
+                    Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                }
+                DropdownMenu(
+                    expanded = sttMenuExpanded,
+                    onDismissRequest = { sttMenuExpanded = false }
+                ) {
+                    listOf(
+                        STTEngineType.FASTER_WHISPER to "智悟本地模型",
+                        STTEngineType.TENCENT_HYBRID to "智悟增强云模型"
+                    ).forEach { (engine, label) ->
+                        DropdownMenuItem(
+                            text = { Text(label) },
+                            leadingIcon = {
+                                Icon(
+                                    if (engine == STTEngineType.TENCENT_HYBRID) {
+                                        Icons.Default.Cloud
+                                    } else {
+                                        Icons.Default.Speed
+                                    },
+                                    contentDescription = null
+                                )
+                            },
+                            trailingIcon = {
+                                if (
+                                    engine == sttEngineType ||
+                                    engine == STTEngineType.FASTER_WHISPER &&
+                                    sttEngineType == STTEngineType.SENSE_VOICE
+                                ) {
+                                    Icon(Icons.Default.Check, contentDescription = null)
+                                }
+                            },
+                            onClick = {
+                                sttMenuExpanded = false
+                                onSttEngineSelected(engine)
+                            }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun DualActionCards(
     isRecording: Boolean,
     isTranscribing: Boolean,
     isGeneratingReport: Boolean,
     hasRecording: Boolean,
-    sttEngineLabel: String,
     onRecordClick: () -> Unit,
     onGenerateReport: () -> Unit
 ) {
@@ -593,11 +949,7 @@ private fun DualActionCards(
             enabled = !isTranscribing,
             onClick = onRecordClick,
             modifier = Modifier.weight(1f),
-            statusChips = {
-                if (sttEngineLabel.isNotBlank()) {
-                    StatusChip(label = sttEngineLabel, isActive = false)
-                }
-            }
+            statusChips = null
         )
 
         // 生成纪要卡片
@@ -666,57 +1018,46 @@ private fun ActionCard(
     )
 
     Card(
-        modifier = modifier,
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.Transparent),
+        modifier = modifier.border(
+            width = 1.dp,
+            color = statusColor.copy(alpha = if (enabled) 0.55f else 0.2f),
+            shape = MaterialTheme.shapes.medium
+        ),
+        shape = MaterialTheme.shapes.medium,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
         onClick = if (enabled) onClick else {{}}
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(
-                    brush = Brush.linearGradient(
-                        colors = listOf(
-                            statusColor.copy(alpha = if (enabled) 0.12f else 0.05f),
-                            statusColor.copy(alpha = if (enabled) 0.04f else 0.02f)
-                        )
-                    )
-                )
-                .padding(16.dp),
+                .padding(14.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            // 图标
             Box(
                 modifier = Modifier
-                    .size(56.dp)
+                    .size(42.dp)
                     .scale(iconScale)
-                    .clip(CircleShape)
-                    .background(statusColor.copy(alpha = 0.15f)),
+                    .clip(MaterialTheme.shapes.small)
+                    .background(if (enabled) statusColor else statusColor.copy(alpha = 0.45f)),
                 contentAlignment = Alignment.Center
             ) {
-                Box(
-                    modifier = Modifier
-                        .size(40.dp)
-                        .clip(CircleShape)
-                        .background(if (enabled) statusColor else statusColor.copy(alpha = 0.5f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = icon,
-                        contentDescription = null,
-                        tint = Color.White,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(21.dp)
+                )
             }
 
             // 标题
             Text(
                 text = title,
                 style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = if (enabled) statusColor else statusColor.copy(alpha = 0.6f)
+                fontWeight = FontWeight.SemiBold,
+                color = if (enabled) MaterialTheme.colorScheme.onSurface
+                else MaterialTheme.colorScheme.onSurfaceVariant
             )
 
             // 副标题
@@ -798,13 +1139,22 @@ private fun CollapsibleTranscriptCard(
                         .fillMaxWidth()
                         .height(400.dp)
                 ) {
-                    Text(
-                        text = transcript.ifBlank { "暂无内容" },
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .verticalScroll(rememberScrollState())
-                    )
+                    if (transcript.isBlank()) {
+                        Text(
+                            text = "暂无内容",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    } else {
+                        SelectionContainer {
+                            Text(
+                                text = transcript,
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .verticalScroll(rememberScrollState())
+                            )
+                        }
+                    }
                 }
             },
             confirmButton = {
@@ -817,7 +1167,11 @@ private fun CollapsibleTranscriptCard(
 
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
+        shape = MaterialTheme.shapes.medium,
+        border = androidx.compose.foundation.BorderStroke(
+            1.dp,
+            MaterialTheme.colorScheme.outlineVariant
+        ),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surface
         )
@@ -874,7 +1228,7 @@ private fun CollapsibleTranscriptCard(
                         FilledTonalButton(
                             onClick = { showFullDialog = true },
                             modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(10.dp)
+                            shape = RoundedCornerShape(8.dp)
                         ) {
                             Icon(Icons.Default.OpenInFull, null, Modifier.size(16.dp))
                             Spacer(Modifier.width(6.dp))
@@ -889,24 +1243,30 @@ private fun CollapsibleTranscriptCard(
                             .heightIn(max = 180.dp)
                             .background(
                                 MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
-                                RoundedCornerShape(10.dp)
+                                RoundedCornerShape(8.dp)
                             )
                             .padding(12.dp)
                     ) {
-                        Text(
-                            text = transcript.ifBlank {
+                        if (transcript.isBlank()) {
+                            Text(
+                                text =
                                 if (isRecording) previewMode.ifBlank { "实时预览处理中" }
-                                else "开始录音后显示转写内容"
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = if (transcript.isBlank())
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            else
-                                MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .verticalScroll(transcriptScrollState)
-                        )
+                                else "开始录音后显示转写内容",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        } else {
+                            SelectionContainer {
+                                Text(
+                                    text = transcript,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .verticalScroll(transcriptScrollState)
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -915,7 +1275,7 @@ private fun CollapsibleTranscriptCard(
 }
 
 @Composable
-private fun MeetingImagesSection(
+internal fun MeetingImagesSection(
     attachments: List<MeetingAttachment>,
     onTakePhoto: () -> Unit,
     onPickImages: () -> Unit,
@@ -952,7 +1312,8 @@ private fun MeetingImagesSection(
             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(attachments, key = { it.id }) { attachment ->
                     val bitmap = remember(attachment.localPath) {
-                        BitmapFactory.decodeFile(attachment.localPath)?.asImageBitmap()
+                        OrientedImageDecoder.decode(File(attachment.localPath), maximumDimension = 512)
+                            ?.asImageBitmap()
                     }
                     Box(
                         modifier = Modifier
@@ -996,12 +1357,21 @@ private fun MeetingImagesSection(
 @Composable
 private fun CompactTextInputCard(
     text: String,
+    importStatus: String,
+    externalSources: List<ExternalTextSource>,
     onTextChange: (String) -> Unit,
+    onPaste: () -> Unit,
+    onOpenExternalSource: (ExternalTextSource) -> Unit,
     onImportFile: () -> Unit
 ) {
+    var importMenuExpanded by remember { mutableStateOf(false) }
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
+        shape = MaterialTheme.shapes.medium,
+        border = androidx.compose.foundation.BorderStroke(
+            1.dp,
+            MaterialTheme.colorScheme.outlineVariant
+        ),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surface
         )
@@ -1031,8 +1401,49 @@ private fun CompactTextInputCard(
                         fontWeight = FontWeight.SemiBold
                     )
                 }
-                TextButton(onClick = onImportFile) {
-                    Text("导入文件", style = MaterialTheme.typography.labelSmall)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = onPaste) {
+                        Icon(
+                            Icons.Default.ContentPaste,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("粘贴", style = MaterialTheme.typography.labelSmall)
+                    }
+                    Box {
+                        IconButton(onClick = { importMenuExpanded = true }) {
+                            Icon(Icons.Default.Apps, contentDescription = "选择导入来源")
+                        }
+                        DropdownMenu(
+                            expanded = importMenuExpanded,
+                            onDismissRequest = { importMenuExpanded = false }
+                        ) {
+                            externalSources.forEach { source ->
+                                DropdownMenuItem(
+                                    text = { Text(source.label) },
+                                    leadingIcon = {
+                                        Icon(Icons.Default.OpenInNew, contentDescription = null)
+                                    },
+                                    onClick = {
+                                        importMenuExpanded = false
+                                        onOpenExternalSource(source)
+                                    }
+                                )
+                            }
+                            if (externalSources.isNotEmpty()) HorizontalDivider()
+                            DropdownMenuItem(
+                                text = { Text("本地文本文件") },
+                                leadingIcon = {
+                                    Icon(Icons.Default.FolderOpen, contentDescription = null)
+                                },
+                                onClick = {
+                                    importMenuExpanded = false
+                                    onImportFile()
+                                }
+                            )
+                        }
+                    }
                 }
             }
 
@@ -1044,11 +1455,41 @@ private fun CompactTextInputCard(
                     .heightIn(min = 200.dp, max = 350.dp),
                 label = { Text("请输入会议内容", style = MaterialTheme.typography.labelSmall) },
                 placeholder = { Text("请输入会议内容", style = MaterialTheme.typography.bodySmall) },
-                shape = RoundedCornerShape(10.dp),
+                shape = RoundedCornerShape(8.dp),
                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences)
             )
+            if (importStatus.isNotBlank()) {
+                Text(
+                    text = importStatus,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
     }
+}
+
+private fun formatRecordingAudioTime(value: String): String = runCatching {
+    SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+        .format(Date.from(Instant.parse(value)))
+}.getOrDefault(value)
+
+private fun formatRecordingAudioDuration(seconds: Double): String {
+    val total = seconds.toLong().coerceAtLeast(0)
+    val hours = total / 3600
+    val minutes = (total % 3600) / 60
+    val remainingSeconds = total % 60
+    return if (hours > 0) {
+        "%d:%02d:%02d".format(Locale.US, hours, minutes, remainingSeconds)
+    } else {
+        "%02d:%02d".format(Locale.US, minutes, remainingSeconds)
+    }
+}
+
+private fun formatRecordingAudioSize(bytes: Long): String = when {
+    bytes >= 1024L * 1024L -> "%.1f MB".format(Locale.US, bytes / (1024.0 * 1024.0))
+    bytes >= 1024L -> "%.1f KB".format(Locale.US, bytes / 1024.0)
+    else -> "$bytes B"
 }
 
 @Suppress("UNUSED_PARAMETER")
@@ -1124,7 +1565,7 @@ private fun TranscriptOptionItem(
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(8.dp),
         color = if (isSelected)
             MaterialTheme.colorScheme.primaryContainer
         else

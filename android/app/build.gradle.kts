@@ -1,6 +1,5 @@
 import java.awt.*
 import java.awt.image.BufferedImage
-import java.io.FileOutputStream
 import javax.imageio.ImageIO
 
 plugins {
@@ -24,6 +23,28 @@ fun loadEnvFile(path: String): Map<String, String> {
         }
 }
 
+fun loadRelayConfig(path: String): Map<String, String> {
+    if (path.isBlank()) return emptyMap()
+    val file = rootProject.file(path)
+    if (!file.exists()) return emptyMap()
+    return file.readLines()
+        .map { it.trim() }
+        .filter { it.isNotBlank() && !it.startsWith("#") }
+        .mapNotNull { line ->
+            val separator = when {
+                line.contains("=") -> '='
+                line.contains(":") -> ':'
+                else -> return@mapNotNull null
+            }
+            val index = line.indexOf(separator)
+            if (index <= 0) return@mapNotNull null
+            val key = line.substring(0, index).trim().lowercase()
+            val value = line.substring(index + 1).trim().removeSurrounding("\"")
+            key to value
+        }
+        .toMap()
+}
+
 val claudeEnv = loadEnvFile("local.defaults.env")
 
 android {
@@ -34,8 +55,8 @@ android {
         applicationId = "com.oa.automation"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 10213
+        versionName = "1.2.13"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -88,25 +109,136 @@ android {
 }
 
 android.defaultConfig {
+    val relayConfig = loadRelayConfig(
+        System.getenv("MEETINGNOTES_RELAY_CONFIG_FILE")
+            ?: claudeEnv["MEETINGNOTES_RELAY_CONFIG_FILE"].orEmpty()
+    )
     val anthropicBaseUrl = claudeEnv["ANTHROPIC_BASE_URL"] ?: ""
     val anthropicModel = claudeEnv["ANTHROPIC_MODEL"]
         ?: claudeEnv["ANTHROPIC_DEFAULT_SONNET_MODEL"]
         ?: ""
+    val sttEndpoint = claudeEnv["MEETINGNOTES_STT_ENDPOINT"]
+        ?.takeIf { it.isNotBlank() }
+        ?: "http://localhost:8888"
+    val sttModel = claudeEnv["MEETINGNOTES_STT_MODEL"]
+        ?.takeIf { it.isNotBlank() }
+        ?: "small"
+    val sttCloudEndpoint = claudeEnv["MEETINGNOTES_STT_CLOUD_ENDPOINT"]
+        ?.takeIf { it.isNotBlank() }
+        ?: ""
+    val sttCloudModel = claudeEnv["MEETINGNOTES_STT_CLOUD_MODEL"]
+        ?.takeIf { it.isNotBlank() }
+        ?: "whisper-1"
+    val sttRemoteSwitchEnabled = claudeEnv["MEETINGNOTES_STT_REMOTE_SWITCH_ENABLED"]
+        ?.toBooleanStrictOrNull()
+        ?: false
+    val sttSwitchTimeoutSeconds = claudeEnv["MEETINGNOTES_STT_SWITCH_TIMEOUT_SECONDS"]
+        ?.toIntOrNull()
+        ?.coerceIn(15, 600)
+        ?: 90
+    val sttStreamSwitchTimeoutSeconds = claudeEnv[
+        "MEETINGNOTES_STT_STREAM_SWITCH_TIMEOUT_SECONDS"
+    ]
+        ?.toIntOrNull()
+        ?.coerceIn(3, 120)
+        ?: 20
+    val sttStreamUiUpdateIntervalMs = claudeEnv[
+        "MEETINGNOTES_STT_STREAM_UI_UPDATE_INTERVAL_MS"
+    ]
+        ?.toIntOrNull()
+        ?.coerceIn(80, 1_000)
+        ?: 180
+    val transcriptPreviewMaxChars = claudeEnv[
+        "MEETINGNOTES_TRANSCRIPT_PREVIEW_MAX_CHARS"
+    ]
+        ?.toIntOrNull()
+        ?.coerceIn(800, 8_000)
+        ?: 2_400
+    val sttCloudConnectTimeoutSeconds = claudeEnv["MEETINGNOTES_STT_CLOUD_CONNECT_TIMEOUT_SECONDS"]
+        ?.toIntOrNull()
+        ?.coerceIn(5, 120)
+        ?: 30
+    val sttCloudReadTimeoutSeconds = claudeEnv["MEETINGNOTES_STT_CLOUD_READ_TIMEOUT_SECONDS"]
+        ?.toIntOrNull()
+        ?.coerceIn(60, 3600)
+        ?: 1800
+    val sttCloudWriteTimeoutSeconds = claudeEnv["MEETINGNOTES_STT_CLOUD_WRITE_TIMEOUT_SECONDS"]
+        ?.toIntOrNull()
+        ?.coerceIn(30, 1800)
+        ?: 600
+    val profileDisplayNameMaxLength = claudeEnv["MEETINGNOTES_PROFILE_NAME_MAX_LENGTH"]
+        ?.toIntOrNull()
+        ?.coerceIn(1, 100)
+        ?: 40
+    val profileAvatarMaxDimension = claudeEnv["MEETINGNOTES_PROFILE_AVATAR_MAX_DIMENSION"]
+        ?.toIntOrNull()
+        ?.coerceIn(128, 2048)
+        ?: 512
+    val profileAvatarJpegQuality = claudeEnv["MEETINGNOTES_PROFILE_AVATAR_JPEG_QUALITY"]
+        ?.toIntOrNull()
+        ?.coerceIn(50, 100)
+        ?: 86
+    val profileAvatarMaxBytes = claudeEnv["MEETINGNOTES_PROFILE_AVATAR_MAX_BYTES"]
+        ?.toIntOrNull()
+        ?.coerceIn(32 * 1024, 2 * 1024 * 1024)
+        ?: 262_144
 
     buildConfigField("String", "DEFAULT_CLAUDE_BASE_URL", "\"$anthropicBaseUrl\"")
     // API keys must be entered at runtime; embedding one in an APK exposes it to every user.
     buildConfigField("String", "DEFAULT_CLAUDE_API_KEY", "\"\"")
     buildConfigField("String", "DEFAULT_CLAUDE_MODEL", "\"$anthropicModel\"")
 
-    // The public STT endpoint is intentionally not a credential. Commercial access
-    // tokens must be provisioned by the service, never embedded in an APK.
-    buildConfigField("String", "DEFAULT_STT_ENDPOINT", "\"http://118.25.43.185:8888\"")
-    buildConfigField("String", "DEFAULT_STT_MODEL", "\"small\"")
-    buildConfigField("String", "DEFAULT_STT_TRIAL_TOKEN", "\"meetingnotes-trial\"")
+    // STT endpoint/model are build-time environment defaults. Access tokens are
+    // provisioned at runtime and must never be embedded in the APK.
+    buildConfigField("String", "DEFAULT_STT_ENDPOINT", "\"$sttEndpoint\"")
+    buildConfigField("String", "DEFAULT_STT_MODEL", "\"$sttModel\"")
+    buildConfigField("String", "DEFAULT_STT_CLOUD_ENDPOINT", "\"$sttCloudEndpoint\"")
+    buildConfigField("String", "DEFAULT_STT_CLOUD_MODEL", "\"$sttCloudModel\"")
+    buildConfigField("boolean", "STT_REMOTE_SWITCH_ENABLED", sttRemoteSwitchEnabled.toString())
+    buildConfigField("int", "STT_SWITCH_TIMEOUT_SECONDS", sttSwitchTimeoutSeconds.toString())
+    buildConfigField(
+        "int",
+        "STT_STREAM_SWITCH_TIMEOUT_SECONDS",
+        sttStreamSwitchTimeoutSeconds.toString()
+    )
+    buildConfigField(
+        "int",
+        "STT_STREAM_UI_UPDATE_INTERVAL_MS",
+        sttStreamUiUpdateIntervalMs.toString()
+    )
+    buildConfigField(
+        "int",
+        "TRANSCRIPT_PREVIEW_MAX_CHARS",
+        transcriptPreviewMaxChars.toString()
+    )
+    buildConfigField("int", "STT_CLOUD_CONNECT_TIMEOUT_SECONDS", sttCloudConnectTimeoutSeconds.toString())
+    buildConfigField("int", "STT_CLOUD_READ_TIMEOUT_SECONDS", sttCloudReadTimeoutSeconds.toString())
+    buildConfigField("int", "STT_CLOUD_WRITE_TIMEOUT_SECONDS", sttCloudWriteTimeoutSeconds.toString())
+    buildConfigField("int", "PROFILE_NAME_MAX_LENGTH", profileDisplayNameMaxLength.toString())
+    buildConfigField("int", "PROFILE_AVATAR_MAX_DIMENSION", profileAvatarMaxDimension.toString())
+    buildConfigField("int", "PROFILE_AVATAR_JPEG_QUALITY", profileAvatarJpegQuality.toString())
+    buildConfigField("int", "PROFILE_AVATAR_MAX_BYTES", profileAvatarMaxBytes.toString())
+
+    val defaultAgentEndpoint = claudeEnv["MEETINGNOTES_AGENT_ENDPOINT"]
+        ?.takeIf { it.isNotBlank() }
+        ?: "http://localhost:8090/api/agent"
+    val defaultAccountEndpoint = claudeEnv["MEETINGNOTES_ACCOUNT_ENDPOINT"]
+        ?.takeIf { it.isNotBlank() }
+        ?: "http://localhost:8090/api"
+    val defaultAppUpdateEndpoint = claudeEnv["MEETINGNOTES_APP_UPDATE_ENDPOINT"]
+        ?.takeIf { it.isNotBlank() }
+        ?: "${defaultAccountEndpoint.trimEnd('/')}/app-update/android"
+    val defaultRelayBaseUrl = relayConfig["baseurl"]
+        ?.takeIf { it.isNotBlank() }
+        ?: claudeEnv["MEETINGNOTES_RELAY_BASE_URL"]?.takeIf { it.isNotBlank() }
+        ?: ""
 
     // Agent requests are routed through a server-side gateway. The gateway owns
     // Codex CLI / Claude CLI credentials and returns scoped user responses.
-    buildConfigField("String", "DEFAULT_AGENT_ENDPOINT", "\"https://118.25.43.185/api/agent\"")
+    buildConfigField("String", "DEFAULT_AGENT_ENDPOINT", "\"$defaultAgentEndpoint\"")
+    buildConfigField("String", "DEFAULT_ACCOUNT_ENDPOINT", "\"$defaultAccountEndpoint\"")
+    buildConfigField("String", "DEFAULT_APP_UPDATE_ENDPOINT", "\"$defaultAppUpdateEndpoint\"")
+    buildConfigField("String", "DEFAULT_RELAY_BASE_URL", "\"$defaultRelayBaseUrl\"")
 
     // Default LLM cloud settings
     buildConfigField("String", "DEFAULT_LLM_CLOUD_ENDPOINT", "\"https://api.minimaxi.com/anthropic\"")
@@ -162,8 +294,9 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
 
-// Generate launcher icon PNGs with book + "悟" character
+// Generate legacy launcher PNGs from the project-owned high-resolution master.
 val densities = mapOf(
+    "mipmap-mdpi" to 48,
     "mipmap-hdpi" to 72,
     "mipmap-xhdpi" to 96,
     "mipmap-xxhdpi" to 144,
@@ -171,9 +304,52 @@ val densities = mapOf(
 )
 
 tasks.register("generateIconPngs") {
-    description = "Generate launcher icon PNGs with book and 悟 character"
+    description = "Generate launcher icon PNGs from the configured master image"
     group = "icon"
     doLast {
+        val configuredMaster = providers.gradleProperty("launcherIconMaster")
+            .orElse(providers.environmentVariable("MEETINGNOTES_ICON_MASTER"))
+            .orElse("src/main/icon/launcher-master.png")
+            .get()
+        val masterFile = file(configuredMaster)
+        require(masterFile.isFile) {
+            "Launcher icon master not found: ${masterFile.absolutePath}"
+        }
+        val master = ImageIO.read(masterFile)
+        val contentScale = providers.gradleProperty("launcherIconContentScale")
+            .orElse(providers.environmentVariable("MEETINGNOTES_ICON_CONTENT_SCALE"))
+            .orElse("1.0")
+            .get()
+            .toDouble()
+        require(contentScale in 0.5..1.0) {
+            "Launcher icon content scale must be between 0.5 and 1.0"
+        }
+        val brandCropScale = providers.gradleProperty("launcherBrandCropScale")
+            .orElse(providers.environmentVariable("MEETINGNOTES_BRAND_ICON_CROP_SCALE"))
+            .orElse("0.82")
+            .get()
+            .toDouble()
+        require(brandCropScale in 0.7..1.0) {
+            "Brand icon crop scale must be between 0.7 and 1.0"
+        }
+        val launcherCanvasSize = maxOf(master.width, master.height)
+        val launcherArtwork = BufferedImage(
+            launcherCanvasSize,
+            launcherCanvasSize,
+            BufferedImage.TYPE_INT_ARGB
+        )
+        val launcherGraphics = launcherArtwork.createGraphics()
+        launcherGraphics.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+        launcherGraphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC)
+        launcherGraphics.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY)
+        val availableSize = launcherCanvasSize * contentScale
+        val imageScale = minOf(availableSize / master.width, availableSize / master.height)
+        val targetWidth = (master.width * imageScale).toInt()
+        val targetHeight = (master.height * imageScale).toInt()
+        val left = (launcherCanvasSize - targetWidth) / 2
+        val top = (launcherCanvasSize - targetHeight) / 2
+        launcherGraphics.drawImage(master, left, top, targetWidth, targetHeight, null)
+        launcherGraphics.dispose()
         densities.forEach { (folder, size) ->
             val outDir = file("src/main/res/$folder")
             outDir.mkdirs()
@@ -181,51 +357,35 @@ tasks.register("generateIconPngs") {
                 val img = BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB)
                 val g = img.createGraphics()
                 g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-                g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_LCD_HRGB)
-
-                val s = size.toFloat() / 108f
-
-                // Background
-                g.color = Color(0x2563EB)
-                g.fillRoundRect(0, 0, size, size, size / 5, size / 5)
-
-                // Book spine
-                g.color = Color(0x1E3A8A)
-                g.fillRect((28 * s).toInt(), (30 * s).toInt(), (5 * s).toInt(), (48 * s).toInt())
-
-                // Binding holes
-                g.color = Color(0x3B82F6)
-                val holeR = (1.2f * s).toInt()
-                for (cy in listOf(40f, 54f, 68f)) {
-                    g.fillOval((29.5f * s - holeR).toInt(), (cy * s - holeR).toInt(), holeR * 2, holeR * 2)
-                }
-
-                // Page layers
-                g.color = Color(0x93C5FD)
-                g.fillRect((76 * s).toInt(), (33 * s).toInt(), (4 * s).toInt(), (42 * s).toInt())
-                g.color = Color(0xBFDBFE)
-                g.fillRect((74 * s).toInt(), (31.5f * s).toInt(), (4 * s).toInt(), (45 * s).toInt())
-
-                // Main page
-                g.color = Color.WHITE
-                g.fillRoundRect((33 * s).toInt(), (30 * s).toInt(), (43 * s).toInt(), (48 * s).toInt(), (2 * s).toInt(), (2 * s).toInt())
-
-                // Character 悟
-                g.color = Color(0x1E40AF)
-                g.font = Font("Microsoft YaHei", Font.BOLD, (30 * s).toInt())
-                val fm = g.fontMetrics
-                val textW = fm.stringWidth("悟")
-                val textX = (53.5f * s - textW / 2f).toInt()
-                val textY = (54f * s - (fm.ascent + fm.descent) / 2f).toInt()
-                g.drawString("悟", textX, textY)
-
+                g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC)
+                g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY)
+                g.drawImage(launcherArtwork, 0, 0, size, size, null)
                 g.dispose()
                 val outFile = outDir.resolve(fileName)
-                val os = FileOutputStream(outFile)
-                ImageIO.write(img, "png", os)
-                os.close()
+                ImageIO.write(img, "png", outFile)
                 println("Generated: ${outFile.absolutePath}")
             }
         }
+        val brandIcon = file("src/main/res/drawable-nodpi/brand_icon.png")
+        brandIcon.parentFile.mkdirs()
+        val brandCropSize = (minOf(master.width, master.height) * brandCropScale).toInt()
+        val brandCropLeft = (master.width - brandCropSize) / 2
+        val brandCropTop = (master.height - brandCropSize) / 2
+        val brandArtwork = master.getSubimage(
+            brandCropLeft,
+            brandCropTop,
+            brandCropSize,
+            brandCropSize
+        )
+        ImageIO.write(brandArtwork, "png", brandIcon)
+        println("Generated: ${brandIcon.absolutePath} (${brandCropSize}x${brandCropSize} crop)")
+        println("Generated: ${brandIcon.absolutePath}")
+        val adaptiveForeground = file("src/main/res/drawable-nodpi/launcher_foreground_art.png")
+        ImageIO.write(launcherArtwork, "png", adaptiveForeground)
+        println("Generated: ${adaptiveForeground.absolutePath}")
     }
+}
+
+tasks.named("preBuild").configure {
+    dependsOn("generateIconPngs")
 }

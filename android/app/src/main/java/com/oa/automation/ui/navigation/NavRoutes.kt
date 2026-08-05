@@ -30,10 +30,25 @@ object Home
 object Settings
 
 @Serializable
-object Vip
+object Notifications
 
 @Serializable
-data class Recording(val meetingId: String)
+object AccountProfile
+
+@Serializable
+object AccountQuota
+
+@Serializable
+object AccountUsers
+
+@Serializable
+object AccountVip
+
+@Serializable
+data class Recording(
+    val meetingId: String,
+    val launchAction: String = "STANDARD"
+)
 
 @Serializable
 data class Report(val meetingId: String)

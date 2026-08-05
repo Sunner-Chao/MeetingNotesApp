@@ -6,5 +6,10 @@ data class MeetingAttachment(
     val displayName: String,
     val localPath: String,
     val mimeType: String,
-    val createdAt: Long
+    val createdAt: Long,
+    val latitude: Double? = null,
+    val longitude: Double? = null,
+    val accuracyMeters: Float? = null,
+    val locationCapturedAt: Long? = null,
+    val locationSource: String? = null
 )

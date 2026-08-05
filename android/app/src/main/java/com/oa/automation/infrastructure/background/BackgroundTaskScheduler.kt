@@ -22,7 +22,10 @@ data class BackgroundTaskStatus(
     val id: UUID? = null,
     val state: BackgroundTaskState = BackgroundTaskState.NONE,
     val error: String? = null,
-    val runAttemptCount: Int = 0
+    val runAttemptCount: Int = 0,
+    val progressPercent: Int? = null,
+    val progressStage: String = "",
+    val progressIndeterminate: Boolean = false
 ) {
     val isActive: Boolean
         get() = state == BackgroundTaskState.QUEUED || state == BackgroundTaskState.RUNNING
@@ -34,13 +37,14 @@ class BackgroundTaskScheduler(context: Context) {
         .setRequiredNetworkType(NetworkType.CONNECTED)
         .build()
 
-    fun enqueueTranscription(meetingId: String, audioFile: File): UUID {
+    fun enqueueTranscription(meetingId: String, audioFile: File, streamSessionId: String? = null): UUID {
         val request = OneTimeWorkRequestBuilder<TranscriptionWorker>()
             .setInputData(
                 workDataOf(
                     TranscriptionWorker.KEY_MEETING_ID to meetingId,
                     TranscriptionWorker.KEY_AUDIO_PATH to audioFile.absolutePath,
-                    TranscriptionWorker.KEY_TRANSCRIPT_ID to UUID.randomUUID().toString()
+                    TranscriptionWorker.KEY_TRANSCRIPT_ID to UUID.randomUUID().toString(),
+                    TranscriptionWorker.KEY_STREAM_SESSION_ID to streamSessionId.orEmpty()
                 )
             )
             .setConstraints(networkConstraint)
@@ -50,7 +54,9 @@ class BackgroundTaskScheduler(context: Context) {
             .build()
         workManager.enqueueUniqueWork(
             transcriptionWorkName(meetingId),
-            ExistingWorkPolicy.REPLACE,
+            // Keep every recording segment. A later stop must wait for the earlier
+            // segment instead of replacing its final transcription task.
+            ExistingWorkPolicy.APPEND_OR_REPLACE,
             request
         )
         return request.id
@@ -80,6 +86,14 @@ class BackgroundTaskScheduler(context: Context) {
         workManager.getWorkInfosForUniqueWorkFlow(reportWorkName(meetingId))
             .map(::latestStatus)
 
+    fun cancelTranscription(meetingId: String) {
+        workManager.cancelUniqueWork(transcriptionWorkName(meetingId))
+    }
+
+    fun cancelReport(meetingId: String) {
+        workManager.cancelUniqueWork(reportWorkName(meetingId))
+    }
+
     private fun latestStatus(workInfos: List<WorkInfo>): BackgroundTaskStatus {
         val workInfo = workInfos.lastOrNull() ?: return BackgroundTaskStatus()
         return BackgroundTaskStatus(
@@ -92,12 +106,18 @@ class BackgroundTaskScheduler(context: Context) {
                 WorkInfo.State.CANCELLED -> BackgroundTaskState.CANCELLED
             },
             error = workInfo.outputData.getString(KEY_ERROR),
-            runAttemptCount = workInfo.runAttemptCount
+            runAttemptCount = workInfo.runAttemptCount,
+            progressPercent = workInfo.progress.getInt(KEY_PROGRESS_PERCENT, -1).takeIf { it >= 0 },
+            progressStage = workInfo.progress.getString(KEY_PROGRESS_STAGE).orEmpty(),
+            progressIndeterminate = workInfo.progress.getBoolean(KEY_PROGRESS_INDETERMINATE, false)
         )
     }
 
     companion object {
         const val KEY_ERROR = "error"
+        const val KEY_PROGRESS_PERCENT = "progress_percent"
+        const val KEY_PROGRESS_STAGE = "progress_stage"
+        const val KEY_PROGRESS_INDETERMINATE = "progress_indeterminate"
         fun transcriptionWorkName(meetingId: String) = "meeting-transcription-$meetingId"
         fun reportWorkName(meetingId: String) = "meeting-report-$meetingId"
         private fun transcriptionTag(meetingId: String) = "transcription:$meetingId"

@@ -2,19 +2,32 @@ package com.oa.automation.ui.screen.settings
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.oa.automation.BuildConfig
 import com.oa.automation.data.local.ConfigDataStore
 import com.oa.automation.domain.model.AppConfig
+import com.oa.automation.domain.model.AppThemeMode
 import com.oa.automation.domain.model.AgentProvider
 import com.oa.automation.domain.model.CloudApiFormat
+import com.oa.automation.domain.model.ClaudeReasoningEffort
+import com.oa.automation.domain.model.CodexReasoningEffort
 import com.oa.automation.domain.model.DiscoveredSTTServer
 import com.oa.automation.domain.model.LLMConfig
 import com.oa.automation.domain.model.LLMEngineType
 import com.oa.automation.domain.model.ReportTemplate
 import com.oa.automation.domain.model.STTConfig
 import com.oa.automation.domain.model.STTEngineType
+import com.oa.automation.domain.model.TencentAsrBudgetPolicy
+import com.oa.automation.domain.model.TencentAsrTier
+import com.oa.automation.domain.model.TencentAsrUsage
+import com.oa.automation.infrastructure.account.AccountSessionSynchronizer
 import com.oa.automation.infrastructure.llm.OllamaEngine
 import com.oa.automation.infrastructure.llm.AgentGatewayEngine
 import com.oa.automation.infrastructure.stt.STTServiceClient
+import com.oa.automation.infrastructure.stt.CloudSTTEngine
+import com.oa.automation.infrastructure.stt.SttAuthorizationException
+import com.oa.automation.infrastructure.update.AppUpdateCheck
+import com.oa.automation.infrastructure.update.AppUpdateService
+import com.oa.automation.infrastructure.update.AndroidAppUpdate
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -22,9 +35,12 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -39,23 +55,105 @@ data class SettingsUiState(
     val isTestingLLM: Boolean = false,
     val isScanningSTT: Boolean = false,
     val isSwitchingSTT: Boolean = false,
+    val isLoadingTencentAsrPolicy: Boolean = false,
+    val tencentAsrUsage: TencentAsrUsage? = null,
+    val tencentAsrUsageError: String? = null,
+    val tencentAsrPolicy: TencentAsrBudgetPolicy? = null,
+    val tencentAsrPolicyError: String? = null,
     val discoveredServers: List<DiscoveredSTTServer> = emptyList(),
-    val message: String? = null,
-    val isLoggedOut: Boolean = false
+    val themeMode: AppThemeMode = AppThemeMode.SYSTEM,
+    val floatingBallEnabled: Boolean = false,
+    val isCheckingUpdate: Boolean = false,
+    val isDownloadingUpdate: Boolean = false,
+    val updateProgress: Int? = null,
+    val availableUpdate: AndroidAppUpdate? = null,
+    val message: String? = null
 )
 
 /**
  * ViewModel for Settings Screen
  */
 class SettingsViewModel(
-    private val configDataStore: ConfigDataStore
+    private val configDataStore: ConfigDataStore,
+    private val appUpdateService: AppUpdateService,
+    private val accountSessionSynchronizer: AccountSessionSynchronizer
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(SettingsUiState())
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
+    private var tencentPolicyRefreshJob: Job? = null
+    private var lastTencentPolicyConfigKey: String? = null
 
     init {
         loadConfig()
+        viewModelScope.launch {
+            configDataStore.appThemeModeFlow.collect { mode ->
+                _uiState.value = _uiState.value.copy(themeMode = mode)
+            }
+        }
+        viewModelScope.launch {
+            configDataStore.floatingBallEnabledFlow.collect { enabled ->
+                _uiState.value = _uiState.value.copy(floatingBallEnabled = enabled)
+            }
+        }
+    }
+
+    fun updateThemeMode(mode: AppThemeMode) {
+        viewModelScope.launch { configDataStore.updateAppThemeMode(mode) }
+    }
+
+    fun updateFloatingBallEnabled(enabled: Boolean) {
+        viewModelScope.launch { configDataStore.updateFloatingBallEnabled(enabled) }
+    }
+
+    fun checkForAppUpdate() {
+        if (_uiState.value.isCheckingUpdate) return
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isCheckingUpdate = true, message = null)
+            appUpdateService.checkForUpdate().fold(
+                onSuccess = { result ->
+                    _uiState.value = _uiState.value.copy(
+                        isCheckingUpdate = false,
+                        availableUpdate = (result as? AppUpdateCheck.Available)?.update,
+                        message = if (result is AppUpdateCheck.UpToDate) "已是最新版本" else null
+                    )
+                },
+                onFailure = { error ->
+                    _uiState.value = _uiState.value.copy(
+                        isCheckingUpdate = false,
+                        message = "版本检查失败: ${error.message ?: "未知错误"}"
+                    )
+                }
+            )
+        }
+    }
+
+    fun downloadAndInstallUpdate() {
+        val update = _uiState.value.availableUpdate ?: return
+        if (!appUpdateService.canInstallPackages()) {
+            appUpdateService.requestInstallPermission()
+            _uiState.value = _uiState.value.copy(message = "请允许智悟本安装未知来源应用后重新点击更新")
+            return
+        }
+        if (_uiState.value.isDownloadingUpdate) return
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isDownloadingUpdate = true, updateProgress = 0, message = null)
+            appUpdateService.download(update) { progress ->
+                _uiState.value = _uiState.value.copy(updateProgress = progress)
+            }.fold(
+                onSuccess = { downloaded ->
+                    _uiState.value = _uiState.value.copy(isDownloadingUpdate = false, updateProgress = 100)
+                    appUpdateService.install(downloaded)
+                },
+                onFailure = { error ->
+                    _uiState.value = _uiState.value.copy(
+                        isDownloadingUpdate = false,
+                        updateProgress = null,
+                        message = "安装包下载失败: ${error.message ?: "未知错误"}"
+                    )
+                }
+            )
+        }
     }
 
     /**
@@ -68,40 +166,150 @@ class SettingsViewModel(
                     appConfig = config,
                     isLoading = false
                 )
+                scheduleTencentAsrStatusRefresh(config.sttConfig)
             }
         }
     }
+
+    private fun scheduleTencentAsrStatusRefresh(config: STTConfig) {
+        val configKey = config.tencentUsageConfigKey()
+        if (configKey == null) {
+            tencentPolicyRefreshJob?.cancel()
+            lastTencentPolicyConfigKey = null
+            _uiState.value = _uiState.value.copy(
+                isLoadingTencentAsrPolicy = false,
+                tencentAsrUsage = null,
+                tencentAsrUsageError = null,
+                tencentAsrPolicy = null,
+                tencentAsrPolicyError = null
+            )
+            return
+        }
+        if (configKey == lastTencentPolicyConfigKey) return
+        lastTencentPolicyConfigKey = configKey
+        tencentPolicyRefreshJob?.cancel()
+        tencentPolicyRefreshJob = viewModelScope.launch {
+            delay(600)
+            loadTencentAsrStatus(config, forceUsageRefresh = false)
+        }
+    }
+
+    fun refreshTencentAsrStatus() {
+        val config = _uiState.value.appConfig.sttConfig
+        val configKey = config.tencentUsageConfigKey() ?: return
+        lastTencentPolicyConfigKey = configKey
+        tencentPolicyRefreshJob?.cancel()
+        tencentPolicyRefreshJob = viewModelScope.launch {
+            loadTencentAsrStatus(config, forceUsageRefresh = true)
+        }
+    }
+
+    private suspend fun loadTencentAsrStatus(
+        config: STTConfig,
+        forceUsageRefresh: Boolean
+    ) {
+        _uiState.value = _uiState.value.copy(
+            isLoadingTencentAsrPolicy = true,
+            tencentAsrPolicyError = null
+        )
+        val status = withContext(Dispatchers.IO) {
+            loadTencentAsrStatusWithSessionRetry(config, forceUsageRefresh)
+        }
+        if (_uiState.value.appConfig.sttConfig.tencentUsageConfigKey() != status.configKey) return
+        lastTencentPolicyConfigKey = status.configKey
+        _uiState.value = _uiState.value.copy(
+            isLoadingTencentAsrPolicy = false,
+            tencentAsrUsage = status.usage.getOrNull(),
+            tencentAsrUsageError = status.usage.exceptionOrNull()?.message
+                ?: if (status.usage.isFailure) "智悟增强云模型官方用量查询失败" else null,
+            tencentAsrPolicy = status.policy.getOrNull(),
+            tencentAsrPolicyError = status.policy.exceptionOrNull()?.message
+                ?: if (status.policy.isFailure) "智悟增强云模型状态查询失败" else null
+        )
+    }
+
+    private suspend fun loadTencentAsrStatusWithSessionRetry(
+        initialConfig: STTConfig,
+        forceUsageRefresh: Boolean
+    ): TencentAsrStatusResult {
+        var config = initialConfig
+        var result = queryTencentAsrStatus(config, forceUsageRefresh)
+        val authorizationFailed = result.usage.hasSttAuthorizationFailure() ||
+            result.policy.hasSttAuthorizationFailure()
+        if (!authorizationFailed || !configDataStore.sttUsesAccountTokenFlow.first()) {
+            return result
+        }
+
+        val refresh = accountSessionSynchronizer.refresh()
+        if (refresh.isFailure) {
+            val message = refresh.exceptionOrNull()?.message.orEmpty()
+            val failure = IllegalStateException(
+                if (message.isBlank()) "登录会话续期失败，请重新登录" else "登录会话续期失败：$message"
+            )
+            return result.replaceAuthorizationFailures(failure)
+        }
+
+        config = configDataStore.appConfigFlow.first().sttConfig
+        result = queryTencentAsrStatus(config, forceUsageRefresh)
+        return result
+    }
+
+    private fun queryTencentAsrStatus(
+        config: STTConfig,
+        forceUsageRefresh: Boolean
+    ) = TencentAsrStatusResult(
+        configKey = config.tencentUsageConfigKey(),
+        usage = STTServiceClient.fetchTencentAsrUsage(
+            config.localEndpoint,
+            config.apiToken,
+            forceRefresh = forceUsageRefresh
+        ),
+        policy = STTServiceClient.fetchTencentAsrPolicy(config.localEndpoint, config.apiToken)
+    )
 
     /**
      * Update STT engine type
      */
     fun updateSTTEngineType(engineType: STTEngineType) {
         val currentConfig = _uiState.value.appConfig.sttConfig
+        if (engineType == currentConfig.engineType) {
+            _uiState.value = _uiState.value.copy(
+                message = "当前已是 ${engineType.displayName}，无需重复切换"
+            )
+            return
+        }
+        val usesManagedTencent = engineType == STTEngineType.TENCENT_HYBRID
+        val managedCloudEndpoint = "${currentConfig.localEndpoint.trimEnd('/')}/cloud-asr"
         val nextConfig = currentConfig.copy(
             engineType = engineType,
-            localModel = engineType.defaultModel.ifBlank { currentConfig.localModel }
+            localModel = engineType.defaultModel.ifBlank { currentConfig.localModel },
+            cloudEndpoint = if (usesManagedTencent) managedCloudEndpoint else currentConfig.cloudEndpoint,
+            cloudApiKey = if (usesManagedTencent) null else currentConfig.cloudApiKey,
+            cloudModel = if (usesManagedTencent) {
+                currentConfig.tencentAsrTier.cloudModel
+            } else {
+                currentConfig.cloudModel
+            }
         )
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isSaving = true, isSwitchingSTT = true)
             try {
-                configDataStore.updateSTTConfig(nextConfig)
                 val switchResult = withContext(Dispatchers.IO) {
                     requestRemoteSttSwitch(nextConfig)
                 }
+                val successMessage = switchResult.getOrElse { throw it }
+                configDataStore.updateSTTConfig(nextConfig)
                 _uiState.value = _uiState.value.copy(
                     appConfig = _uiState.value.appConfig.copy(sttConfig = nextConfig),
                     isSaving = false,
                     isSwitchingSTT = false,
-                    message = switchResult.fold(
-                        onSuccess = { it },
-                        onFailure = { "STT 配置已保存，PC 服务切换失败: ${it.message}" }
-                    )
+                    message = successMessage
                 )
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
                     isSaving = false,
                     isSwitchingSTT = false,
-                    message = "保存失败: ${e.message}"
+                    message = "STT 切换失败，已保留原配置: ${e.message}"
                 )
             }
         }
@@ -111,7 +319,17 @@ class SettingsViewModel(
      * Update STT local endpoint
      */
     fun updateSTTLocalEndpoint(endpoint: String) {
-        updateSTTConfig(_uiState.value.appConfig.sttConfig.copy(localEndpoint = endpoint))
+        val config = _uiState.value.appConfig.sttConfig
+        updateSTTConfig(
+            config.copy(
+                localEndpoint = endpoint,
+                cloudEndpoint = if (config.engineType == STTEngineType.TENCENT_HYBRID) {
+                    "${endpoint.trimEnd('/')}/cloud-asr"
+                } else {
+                    config.cloudEndpoint
+                }
+            )
+        )
     }
 
     /**
@@ -122,21 +340,27 @@ class SettingsViewModel(
     }
 
     fun updateSTTApiToken(apiToken: String?) {
-        updateSTTConfig(_uiState.value.appConfig.sttConfig.copy(apiToken = apiToken))
+        updateSTTConfig(
+            _uiState.value.appConfig.sttConfig.copy(apiToken = apiToken),
+            manualApiToken = true
+        )
     }
 
-    /**
-     * Update STT cloud endpoint
-     */
-    fun updateSTTCloudEndpoint(endpoint: String?) {
-        updateSTTConfig(_uiState.value.appConfig.sttConfig.copy(cloudEndpoint = endpoint))
+    fun updateSTTCloudModel(model: String) {
+        updateSTTConfig(_uiState.value.appConfig.sttConfig.copy(cloudModel = model))
     }
 
-    /**
-     * Update STT cloud API key
-     */
-    fun updateSTTCloudApiKey(apiKey: String?) {
-        updateSTTConfig(_uiState.value.appConfig.sttConfig.copy(cloudApiKey = apiKey))
+    fun updateTencentAsrTier(tier: TencentAsrTier) {
+        val currentConfig = _uiState.value.appConfig.sttConfig
+        if (currentConfig.tencentAsrTier == tier && currentConfig.cloudModel == tier.cloudModel) return
+        updateSTTConfig(
+            currentConfig.copy(
+                tencentAsrTier = tier,
+                cloudModel = tier.cloudModel,
+                cloudEndpoint = "${currentConfig.localEndpoint.trimEnd('/')}/cloud-asr",
+                cloudApiKey = null
+            )
+        )
     }
 
     /**
@@ -156,6 +380,14 @@ class SettingsViewModel(
 
     fun updateAgentProvider(provider: AgentProvider) {
         updateLLMConfig(_uiState.value.appConfig.llmConfig.copy(agentProvider = provider))
+    }
+
+    fun updateCodexReasoningEffort(effort: CodexReasoningEffort) {
+        updateLLMConfig(_uiState.value.appConfig.llmConfig.copy(codexReasoningEffort = effort))
+    }
+
+    fun updateClaudeReasoningEffort(effort: ClaudeReasoningEffort) {
+        updateLLMConfig(_uiState.value.appConfig.llmConfig.copy(claudeReasoningEffort = effort))
     }
 
     /**
@@ -204,11 +436,12 @@ class SettingsViewModel(
     /**
      * Save STT config
      */
-    private fun updateSTTConfig(config: STTConfig) {
+    private fun updateSTTConfig(config: STTConfig, manualApiToken: Boolean = false) {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isSaving = true)
             try {
                 configDataStore.updateSTTConfig(config)
+                if (manualApiToken) configDataStore.updateManualSttApiToken(config.apiToken)
                 _uiState.value = _uiState.value.copy(
                     appConfig = _uiState.value.appConfig.copy(sttConfig = config),
                     isSaving = false,
@@ -260,16 +493,6 @@ class SettingsViewModel(
      */
     fun clearMessage() {
         _uiState.value = _uiState.value.copy(message = null)
-    }
-
-    /**
-     * Logout - clear saved username
-     */
-    fun logout() {
-        viewModelScope.launch {
-            configDataStore.clearUsername()
-            _uiState.value = _uiState.value.copy(isLoggedOut = true)
-        }
     }
 
     /**
@@ -338,7 +561,10 @@ class SettingsViewModel(
             try {
                 val config = _uiState.value.appConfig.sttConfig
                 val result = withContext(Dispatchers.IO) {
-                    STTServiceClient.testConnection(config.localEndpoint, config.apiToken)
+                    when (config.engineType) {
+                        STTEngineType.TENCENT_HYBRID -> CloudSTTEngine.testHybridConnection(config)
+                        else -> STTServiceClient.testConnection(config.localEndpoint, config.apiToken)
+                    }
                 }
                 _uiState.value = _uiState.value.copy(
                     isTestingSTT = false,
@@ -474,8 +700,11 @@ class SettingsViewModel(
     }
 
     private fun requestRemoteSttSwitch(config: STTConfig): Result<String> {
-        if (config.engineType == STTEngineType.CLOUD_ASR) {
-            return Result.success("STT 已切换为云端 ASR")
+        if (config.engineType == STTEngineType.TENCENT_HYBRID) {
+            return Result.success("STT 已成功切换为 ${config.engineType.displayName}")
+        }
+        if (!BuildConfig.STT_REMOTE_SWITCH_ENABLED) {
+            return Result.success("STT 已成功切换为 ${config.engineType.displayName}")
         }
 
         val endpoint = config.localEndpoint.trim().trimEnd('/')
@@ -486,14 +715,17 @@ class SettingsViewModel(
         val engine = when (config.engineType) {
             STTEngineType.FASTER_WHISPER -> "faster-whisper"
             STTEngineType.SENSE_VOICE -> "sensevoice"
-            STTEngineType.CLOUD_ASR -> return Result.success("STT 已切换为云端 ASR")
+            STTEngineType.TENCENT_HYBRID -> return Result.success("已切换为智悟增强云模型")
         }
         val model = config.localModel.ifBlank { config.engineType.defaultModel }
-        val body = """{"engine":"$engine","model":"$model"}"""
+        val body = JSONObject()
+            .put("engine", engine)
+            .put("model", model)
+            .toString()
 
         val client = OkHttpClient.Builder()
             .connectTimeout(30, TimeUnit.SECONDS)
-            .readTimeout(15, TimeUnit.MINUTES)
+            .readTimeout(BuildConfig.STT_SWITCH_TIMEOUT_SECONDS.toLong(), TimeUnit.SECONDS)
             .writeTimeout(60, TimeUnit.SECONDS)
             .build()
 
@@ -524,7 +756,8 @@ class SettingsViewModel(
         displayName: String
     ): Result<String> {
         var lastError: String? = null
-        repeat(60) { attempt ->
+        val attempts = (BuildConfig.STT_SWITCH_TIMEOUT_SECONDS / 2).coerceIn(1, 8)
+        repeat(attempts) { attempt ->
             if (attempt > 0) {
                 Thread.sleep(2000)
             }
@@ -559,3 +792,25 @@ class SettingsViewModel(
         return Result.failure(Exception("等待 PC 服务恢复超时${lastError?.let { ": $it" }.orEmpty()}"))
     }
 }
+
+private fun STTConfig.tencentUsageConfigKey(): String? {
+    if (engineType != STTEngineType.TENCENT_HYBRID) return null
+    val endpoint = localEndpoint.trim().trimEnd('/')
+    val token = apiToken?.trim().orEmpty()
+    if (endpoint.isBlank() || token.isBlank()) return null
+    return "$endpoint|${token.hashCode()}"
+}
+
+private data class TencentAsrStatusResult(
+    val configKey: String?,
+    val usage: Result<TencentAsrUsage>,
+    val policy: Result<TencentAsrBudgetPolicy>
+) {
+    fun replaceAuthorizationFailures(failure: Throwable) = copy(
+        usage = if (usage.hasSttAuthorizationFailure()) Result.failure(failure) else usage,
+        policy = if (policy.hasSttAuthorizationFailure()) Result.failure(failure) else policy
+    )
+}
+
+private fun Result<*>.hasSttAuthorizationFailure(): Boolean =
+    exceptionOrNull() is SttAuthorizationException

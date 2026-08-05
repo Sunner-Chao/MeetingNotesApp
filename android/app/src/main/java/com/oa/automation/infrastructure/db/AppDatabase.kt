@@ -7,14 +7,24 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
-    entities = [MeetingEntity::class, TranscriptEntity::class, ReportEntity::class, MeetingAttachmentEntity::class],
-    version = 3,
+    entities = [
+        MeetingEntity::class,
+        TranscriptEntity::class,
+        ReportEntity::class,
+        MeetingAttachmentEntity::class,
+        ScheduledMeetingEntity::class,
+        JourneyEntity::class,
+        JourneyStageEntity::class
+    ],
+    version = 6,
     exportSchema = false
 )
 @TypeConverters(DbConverters::class)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun meetingDao(): MeetingDao
     abstract fun reportDao(): ReportDao
+    abstract fun scheduledMeetingDao(): ScheduledMeetingDao
+    abstract fun journeyDao(): JourneyDao
 
     companion object {
         val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -40,6 +50,95 @@ abstract class AppDatabase : RoomDatabase() {
                     """.trimIndent()
                 )
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_meeting_attachments_meetingId ON meeting_attachments(meetingId)")
+            }
+        }
+
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS scheduled_meetings (
+                        id TEXT NOT NULL,
+                        title TEXT NOT NULL,
+                        scheduledAt INTEGER NOT NULL,
+                        reminderMinutes INTEGER NOT NULL,
+                        templateName TEXT,
+                        createdAt INTEGER NOT NULL,
+                        PRIMARY KEY(id)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_scheduled_meetings_scheduledAt " +
+                        "ON scheduled_meetings(scheduledAt)"
+                )
+            }
+        }
+
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE meeting_attachments ADD COLUMN latitude REAL")
+                db.execSQL("ALTER TABLE meeting_attachments ADD COLUMN longitude REAL")
+                db.execSQL("ALTER TABLE meeting_attachments ADD COLUMN accuracyMeters REAL")
+                db.execSQL("ALTER TABLE meeting_attachments ADD COLUMN locationCapturedAt INTEGER")
+                db.execSQL("ALTER TABLE meeting_attachments ADD COLUMN locationSource TEXT")
+            }
+        }
+
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS journeys (
+                        id TEXT NOT NULL,
+                        meetingId TEXT NOT NULL,
+                        title TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        currentStageId TEXT,
+                        createdAt INTEGER NOT NULL,
+                        updatedAt INTEGER NOT NULL,
+                        pausedAt INTEGER,
+                        completedAt INTEGER,
+                        PRIMARY KEY(id),
+                        FOREIGN KEY(meetingId) REFERENCES meetings(id) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS index_journeys_meetingId " +
+                        "ON journeys(meetingId)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_journeys_status ON journeys(status)"
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS journey_stages (
+                        id TEXT NOT NULL,
+                        journeyId TEXT NOT NULL,
+                        sequenceNumber INTEGER NOT NULL,
+                        title TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        startedAt INTEGER NOT NULL,
+                        updatedAt INTEGER NOT NULL,
+                        savedAt INTEGER,
+                        PRIMARY KEY(id),
+                        FOREIGN KEY(journeyId) REFERENCES journeys(id) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_journey_stages_journeyId " +
+                        "ON journey_stages(journeyId)"
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS index_journey_stages_journeyId_sequenceNumber " +
+                        "ON journey_stages(journeyId, sequenceNumber)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_journey_stages_status " +
+                        "ON journey_stages(status)"
+                )
             }
         }
     }
