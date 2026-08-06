@@ -62,6 +62,12 @@ class CommunityCommentPayload(BaseModel):
     content: str = Field(min_length=1, max_length=1000)
 
 
+class CommunityCommentModerationPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: str = Field(min_length=1, max_length=20)
+
+
 class CommunityMediaManifestPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -304,6 +310,74 @@ def build_community_router(
     ) -> dict:
         try:
             return service().delete_comment(principal.user_id, comment_id)
+        except CommunityError as exc:
+            raise community_http_error(exc) from exc
+
+    @router.post("/comments/{comment_id}/report", status_code=201)
+    def report_community_comment(
+        comment_id: str,
+        payload: CommunityReportPayload,
+        response: Response,
+        principal: Any = Depends(account_principal_dependency),
+    ) -> dict:
+        try:
+            report, created = service().report_comment(
+                principal.user_id,
+                comment_id,
+                CommunityReportInput(**payload.model_dump()),
+            )
+        except CommunityError as exc:
+            raise community_http_error(exc) from exc
+        response.status_code = 201 if created else 200
+        return report
+
+    @router.get("/bookmarks")
+    def list_community_bookmarks(
+        cursor: str | None = None,
+        limit: int = Query(default=20, ge=1, le=50),
+        principal: Any = Depends(account_principal_dependency),
+    ) -> dict:
+        try:
+            return service().list_bookmarks(
+                principal.user_id,
+                cursor=cursor,
+                limit=limit,
+            )
+        except CommunityError as exc:
+            raise community_http_error(exc) from exc
+
+    @router.get("/comment-reports")
+    def list_community_comment_reports(
+        status: str = Query(default="open"),
+        cursor: str | None = None,
+        limit: int = Query(default=20, ge=1, le=50),
+        principal: Any = Depends(account_principal_dependency),
+    ) -> dict:
+        if not bool(getattr(principal, "is_admin", False)):
+            raise community_http_error(CommunityPermissionError("需要管理员权限"))
+        try:
+            return service().list_comment_reports(
+                status=status,
+                cursor=cursor,
+                limit=limit,
+            )
+        except CommunityError as exc:
+            raise community_http_error(exc) from exc
+
+    @router.post("/comment-reports/{report_id}")
+    def resolve_community_comment_report(
+        report_id: str,
+        payload: CommunityCommentModerationPayload,
+        principal: Any = Depends(account_principal_dependency),
+    ) -> dict:
+        if not bool(getattr(principal, "is_admin", False)):
+            raise community_http_error(CommunityPermissionError("需要管理员权限"))
+        try:
+            return service().resolve_comment_report(
+                report_id,
+                decision=payload.decision,
+                reviewed_by=principal.user_id,
+            )
         except CommunityError as exc:
             raise community_http_error(exc) from exc
 

@@ -252,6 +252,63 @@ class CommunityRouteTests(unittest.TestCase):
             self.assertEqual(deleted.json()["status"], "deleted")
             self.assertEqual(client.get(f"/api/community/posts/{post_id}/comments").json()["items"], [])
 
+    def test_bookmark_and_comment_report_routes_are_scoped_and_admin_resolvable(self) -> None:
+        owner_headers = {"Authorization": "Bearer owner-token"}
+        admin_headers = {"Authorization": "Bearer admin-token"}
+        with TestClient(self.app) as client:
+            created = client.post(
+                "/api/account/community/drafts", headers=owner_headers, json=self.payload()
+            )
+            post_id = created.json()["id"]
+            client.post(f"/api/account/community/posts/{post_id}/publish", headers=owner_headers)
+            client.post(
+                f"/api/account/community/moderation/{post_id}",
+                headers=admin_headers,
+                json={"decision": "approved", "reason": ""},
+            )
+            bookmarked = client.post(
+                f"/api/account/community/posts/{post_id}/bookmark",
+                headers=owner_headers,
+            )
+            self.assertTrue(bookmarked.json()["bookmarked"])
+            saved = client.get("/api/account/community/bookmarks", headers=owner_headers)
+            self.assertEqual(saved.status_code, 200)
+            self.assertEqual(saved.json()["items"][0]["id"], post_id)
+
+            comment = client.post(
+                f"/api/account/community/posts/{post_id}/comments",
+                headers=owner_headers,
+                json={"content": "需要补充现场安全说明"},
+            )
+            comment_id = comment.json()["id"]
+            report = client.post(
+                f"/api/account/community/comments/{comment_id}/report",
+                headers=admin_headers,
+                json={"category": "safety", "reason": "安全信息不足"},
+            )
+            self.assertEqual(report.status_code, 201)
+            queue = client.get(
+                "/api/account/community/comment-reports?status=open",
+                headers=admin_headers,
+            )
+            self.assertEqual(queue.status_code, 200)
+            report_id = queue.json()["items"][0]["id"]
+            self.assertNotIn("reporter_user_id", queue.json()["items"][0])
+            self.assertEqual(
+                client.get(
+                    "/api/account/community/comment-reports",
+                    headers={"Authorization": "Bearer owner-token"},
+                ).status_code,
+                403,
+            )
+            resolved = client.post(
+                f"/api/account/community/comment-reports/{report_id}",
+                headers=admin_headers,
+                json={"decision": "keep"},
+            )
+            self.assertEqual(resolved.status_code, 200)
+            self.assertEqual(resolved.json()["status"], "resolved")
+
     def test_media_manifest_and_chunk_routes_require_owner_then_public_review(self) -> None:
         owner_headers = {"Authorization": "Bearer owner-token"}
         original = b"\x89PNG\r\n\x1a\n" + b"not-a-real-image"

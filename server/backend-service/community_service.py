@@ -271,6 +271,32 @@ class CommunityService:
                 CREATE INDEX IF NOT EXISTS idx_community_comments_user
                     ON community_comments(user_id, status, updated_at DESC);
 
+                CREATE TABLE IF NOT EXISTS community_comment_reports (
+                    id TEXT PRIMARY KEY,
+                    comment_id TEXT NOT NULL,
+                    reporter_user_id TEXT NOT NULL,
+                    category TEXT NOT NULL
+                        CHECK(category IN ('privacy', 'copyright', 'safety', 'spam', 'other')),
+                    reason TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'open'
+                        CHECK(status IN ('open', 'resolved')),
+                    resolution TEXT NOT NULL DEFAULT ''
+                        CHECK(resolution IN ('', 'keep', 'delete', 'author_deleted')),
+                    reviewed_by TEXT,
+                    reviewed_at INTEGER,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    UNIQUE(comment_id, reporter_user_id),
+                    FOREIGN KEY(comment_id) REFERENCES community_comments(id) ON DELETE CASCADE,
+                    FOREIGN KEY(reporter_user_id) REFERENCES users(id) ON DELETE CASCADE,
+                    FOREIGN KEY(reviewed_by) REFERENCES users(id) ON DELETE SET NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_community_comment_reports_status
+                    ON community_comment_reports(status, created_at DESC, id DESC);
+                CREATE INDEX IF NOT EXISTS idx_community_comment_reports_comment
+                    ON community_comment_reports(comment_id, status, created_at DESC);
+
                 CREATE TABLE IF NOT EXISTS community_post_index (
                     post_id TEXT PRIMARY KEY,
                     destination TEXT NOT NULL DEFAULT '',
@@ -317,6 +343,26 @@ class CommunityService:
                 CREATE INDEX IF NOT EXISTS idx_community_post_pois_name
                     ON community_post_pois(poi_name, post_id);
                 """
+            )
+            self._ensure_comment_report_columns(conn)
+
+    @staticmethod
+    def _ensure_comment_report_columns(conn: sqlite3.Connection) -> None:
+        columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(community_comment_reports)").fetchall()
+        }
+        if "resolution" not in columns:
+            conn.execute(
+                "ALTER TABLE community_comment_reports ADD COLUMN resolution TEXT NOT NULL DEFAULT ''"
+            )
+        if "reviewed_by" not in columns:
+            conn.execute(
+                "ALTER TABLE community_comment_reports ADD COLUMN reviewed_by TEXT"
+            )
+        if "reviewed_at" not in columns:
+            conn.execute(
+                "ALTER TABLE community_comment_reports ADD COLUMN reviewed_at INTEGER"
             )
 
     def create_private_draft(
@@ -918,7 +964,206 @@ class CommunityService:
                 "UPDATE community_comments SET status = 'deleted', updated_at = ? WHERE id = ?",
                 (now, clean_comment_id),
             )
+            conn.execute(
+                "UPDATE community_comment_reports SET status = 'resolved', resolution = 'author_deleted', "
+                "reviewed_by = ?, reviewed_at = ?, updated_at = ? "
+                "WHERE comment_id = ? AND status = 'open'",
+                (clean_user_id, now, now, clean_comment_id),
+            )
             return {"id": clean_comment_id, "status": "deleted"}
+
+    def report_comment(
+        self,
+        reporter_user_id: str,
+        comment_id: str,
+        report: CommunityReportInput,
+    ) -> tuple[dict, bool]:
+        clean_reporter_id = self._validated_id(reporter_user_id, "reporter_user_id")
+        clean_comment_id = self._validated_id(comment_id, "comment_id")
+        category, reason = self._validated_report(report)
+        now = int(time.time() * 1000)
+        with self._connect() as conn:
+            comment = conn.execute(
+                """
+                SELECT c.*, p.user_id AS post_owner_id, p.status AS post_status,
+                       m.decision AS review_decision
+                FROM community_comments c
+                JOIN community_posts p ON p.id = c.post_id
+                LEFT JOIN community_moderation m ON m.post_id = p.id
+                WHERE c.id = ?
+                """,
+                (clean_comment_id,),
+            ).fetchone()
+            if (
+                comment is None
+                or comment["status"] != "visible"
+                or comment["post_status"] != "published"
+                or comment["review_decision"] != "approved"
+            ):
+                raise CommunityNotFoundError("评论不存在或暂不可举报")
+            if comment["user_id"] == clean_reporter_id:
+                raise CommunityPermissionError("不能举报自己的评论")
+            existing = conn.execute(
+                "SELECT * FROM community_comment_reports WHERE comment_id = ? AND reporter_user_id = ?",
+                (clean_comment_id, clean_reporter_id),
+            ).fetchone()
+            if existing is not None:
+                return self._comment_report_payload(existing), False
+            report_id = uuid.uuid4().hex
+            conn.execute(
+                """
+                INSERT INTO community_comment_reports(
+                    id, comment_id, reporter_user_id, category, reason, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 'open', ?, ?)
+                """,
+                (report_id, clean_comment_id, clean_reporter_id, category, reason, now, now),
+            )
+            created = conn.execute(
+                "SELECT * FROM community_comment_reports WHERE id = ?",
+                (report_id,),
+            ).fetchone()
+            return self._comment_report_payload(created), True
+
+    def list_comment_reports(
+        self,
+        *,
+        status: str = "open",
+        cursor: str | None = None,
+        limit: int = 20,
+    ) -> dict:
+        clean_status = status.strip().lower()
+        if clean_status not in {"open", "resolved", "all"}:
+            raise CommunityError("评论举报筛选无效")
+        normalized_limit = self._normalized_limit(limit)
+        cursor_created_at, cursor_id = self._decode_cursor(cursor)
+        query = """
+            SELECT r.*, c.post_id, c.content, c.status AS comment_status,
+                   p.title AS post_title
+            FROM community_comment_reports r
+            JOIN community_comments c ON c.id = r.comment_id
+            JOIN community_posts p ON p.id = c.post_id
+            WHERE 1 = 1
+        """
+        params: list[object] = []
+        if clean_status != "all":
+            query += " AND r.status = ?"
+            params.append(clean_status)
+        if cursor_created_at is not None and cursor_id is not None:
+            query += " AND (r.created_at < ? OR (r.created_at = ? AND r.id < ?))"
+            params.extend([cursor_created_at, cursor_created_at, cursor_id])
+        query += " ORDER BY r.created_at DESC, r.id DESC LIMIT ?"
+        params.append(normalized_limit + 1)
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        has_more = len(rows) > normalized_limit
+        visible_rows = rows[:normalized_limit]
+        return {
+            "items": [self._comment_report_queue_payload(row) for row in visible_rows],
+            "next_cursor": self._encode_cursor(visible_rows[-1], "created_at")
+            if has_more and visible_rows
+            else None,
+        }
+
+    def resolve_comment_report(
+        self,
+        report_id: str,
+        *,
+        decision: str,
+        reviewed_by: str,
+    ) -> dict:
+        clean_report_id = self._validated_id(report_id, "report_id")
+        clean_reviewer_id = self._validated_id(reviewed_by, "reviewed_by")
+        clean_decision = decision.strip().lower()
+        if clean_decision not in {"keep", "delete"}:
+            raise CommunityError("评论举报处置无效")
+        now = int(time.time() * 1000)
+        with self._connect() as conn:
+            report = conn.execute(
+                "SELECT * FROM community_comment_reports WHERE id = ?",
+                (clean_report_id,),
+            ).fetchone()
+            if report is None:
+                raise CommunityNotFoundError("评论举报不存在")
+            if clean_decision == "delete":
+                conn.execute(
+                    "UPDATE community_comments SET status = 'deleted', updated_at = ? WHERE id = ?",
+                    (now, report["comment_id"]),
+                )
+                conn.execute(
+                    "UPDATE community_comment_reports SET status = 'resolved', resolution = 'delete', "
+                    "reviewed_by = ?, reviewed_at = ?, updated_at = ? "
+                    "WHERE comment_id = ? AND status = 'open'",
+                    (clean_reviewer_id, now, now, report["comment_id"]),
+                )
+            else:
+                conn.execute(
+                    "UPDATE community_comment_reports SET status = 'resolved', resolution = 'keep', "
+                    "reviewed_by = ?, reviewed_at = ?, updated_at = ? WHERE id = ?",
+                    (clean_reviewer_id, now, now, clean_report_id),
+                )
+            return {
+                "id": clean_report_id,
+                "comment_id": report["comment_id"],
+                "status": "resolved",
+                "decision": clean_decision,
+                "reviewed_by": clean_reviewer_id,
+            }
+
+    def list_bookmarks(
+        self,
+        user_id: str,
+        *,
+        cursor: str | None = None,
+        limit: int = 20,
+    ) -> dict:
+        clean_user_id = self._validated_id(user_id, "user_id")
+        normalized_limit = self._normalized_limit(limit)
+        cursor_created_at, cursor_id = self._decode_cursor(cursor)
+        query = """
+            SELECT p.*, m.decision AS review_decision, m.reason AS review_reason,
+                   m.reviewed_at AS review_reviewed_at,
+                   b.created_at AS bookmark_created_at
+            FROM community_post_bookmarks b
+            JOIN community_posts p ON p.id = b.post_id
+            JOIN community_moderation m ON m.post_id = p.id
+            WHERE b.user_id = ? AND p.status = 'published' AND m.decision = 'approved'
+        """
+        params: list[object] = [clean_user_id]
+        if cursor_created_at is not None and cursor_id is not None:
+            query += " AND (b.created_at < ? OR (b.created_at = ? AND b.post_id < ?))"
+            params.extend([cursor_created_at, cursor_created_at, cursor_id])
+        query += " ORDER BY b.created_at DESC, b.post_id DESC LIMIT ?"
+        params.append(normalized_limit + 1)
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+            media_by_post = {
+                row["id"]: self._public_media_payloads(conn, row["id"])
+                for row in rows[:normalized_limit]
+            }
+            index_by_post = {
+                row["id"]: self._public_index_payload(conn, row["id"])
+                for row in rows[:normalized_limit]
+            }
+            interaction_by_post = {
+                row["id"]: self._interaction_payload(conn, row["id"], clean_user_id)
+                for row in rows[:normalized_limit]
+            }
+        has_more = len(rows) > normalized_limit
+        visible_rows = rows[:normalized_limit]
+        return {
+            "items": [
+                self._public_post_payload(
+                    row,
+                    media_by_post[row["id"]],
+                    index_by_post[row["id"]],
+                    interaction_by_post[row["id"]],
+                )
+                for row in visible_rows
+            ],
+            "next_cursor": self._encode_cursor(visible_rows[-1], "bookmark_created_at")
+            if has_more and visible_rows
+            else None,
+        }
 
     def list_moderation_queue(
         self,
@@ -1598,6 +1843,40 @@ class CommunityService:
             "author_label": "研学同行者",
             "created_at": row["created_at"],
             "can_delete": can_delete,
+        }
+
+    @staticmethod
+    def _comment_report_payload(row: sqlite3.Row | None) -> dict:
+        if row is None:
+            raise CommunityNotFoundError("评论举报不存在")
+        return {
+            "id": row["id"],
+            "comment_id": row["comment_id"],
+            "category": row["category"],
+            "reason": row["reason"],
+            "status": row["status"],
+            "resolution": row["resolution"],
+            "reviewed_at": row["reviewed_at"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    @staticmethod
+    def _comment_report_queue_payload(row: sqlite3.Row) -> dict:
+        return {
+            "id": row["id"],
+            "comment_id": row["comment_id"],
+            "post_id": row["post_id"],
+            "post_title": row["post_title"],
+            "content": row["content"],
+            "comment_status": row["comment_status"],
+            "category": row["category"],
+            "reason": row["reason"],
+            "status": row["status"],
+            "resolution": row["resolution"],
+            "reviewed_at": row["reviewed_at"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
         }
 
     @staticmethod

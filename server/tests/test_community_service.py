@@ -31,12 +31,13 @@ class CommunityServiceTests(unittest.TestCase):
         self.db_path = Path(self.temp_dir.name) / "community.db"
         self.owner_id = "community-owner"
         self.other_id = "community-other"
+        self.third_id = "community-third"
         conn = sqlite3.connect(self.db_path)
         try:
             conn.execute("CREATE TABLE users (id TEXT PRIMARY KEY)")
             conn.executemany(
                 "INSERT INTO users(id) VALUES (?)",
-                ((self.owner_id,), (self.other_id,)),
+                ((self.owner_id,), (self.other_id,), (self.third_id,)),
             )
             conn.commit()
         finally:
@@ -331,6 +332,65 @@ class CommunityServiceTests(unittest.TestCase):
         self.assertEqual(withdrawn["status"], "withdrawn")
         with self.assertRaises(CommunityNotFoundError):
             self.service.toggle_like(self.owner_id, created["id"])
+
+    def test_bookmarks_and_comment_reports_have_public_gates_and_admin_resolution(self) -> None:
+        created, _ = self.service.create_private_draft(self.owner_id, self.snapshot())
+        self.service.publish(self.owner_id, created["id"])
+        self.service.review_post(
+            created["id"],
+            decision="approved",
+            reason="",
+            reviewed_by=self.other_id,
+        )
+        self.service.toggle_bookmark(self.owner_id, created["id"])
+        bookmarks = self.service.list_bookmarks(self.owner_id)
+        self.assertEqual([item["id"] for item in bookmarks["items"]], [created["id"]])
+        self.assertNotIn("user_id", bookmarks["items"][0])
+
+        comment = self.service.create_comment(self.owner_id, created["id"], "评论内容")
+        report, created_report = self.service.report_comment(
+            self.other_id,
+            comment["id"],
+            CommunityReportInput(category="spam", reason="无关推广"),
+        )
+        repeated, repeated_created = self.service.report_comment(
+            self.other_id,
+            comment["id"],
+            CommunityReportInput(category="privacy", reason="重复提交"),
+        )
+        self.assertTrue(created_report)
+        self.assertFalse(repeated_created)
+        self.assertEqual(report["id"], repeated["id"])
+        second_report, _ = self.service.report_comment(
+            self.third_id,
+            comment["id"],
+            CommunityReportInput(category="privacy", reason="可能含位置"),
+        )
+        queue = self.service.list_comment_reports()
+        self.assertEqual(len(queue["items"]), 2)
+        self.assertTrue(all(item["comment_id"] == comment["id"] for item in queue["items"]))
+        self.assertTrue(all("reporter_user_id" not in item for item in queue["items"]))
+
+        resolved = self.service.resolve_comment_report(
+            report["id"],
+            decision="delete",
+            reviewed_by=self.other_id,
+        )
+        self.assertEqual(resolved["status"], "resolved")
+        self.assertEqual(self.service.list_comments(created["id"])["items"], [])
+        self.assertEqual(self.service.list_comment_reports()["items"], [])
+        with self.service._connect() as conn:
+            audit_rows = conn.execute(
+                "SELECT id, resolution, reviewed_by, reviewed_at "
+                "FROM community_comment_reports WHERE comment_id = ? ORDER BY id",
+                (comment["id"],),
+            ).fetchall()
+        self.assertEqual({row["id"] for row in audit_rows}, {report["id"], second_report["id"]})
+        self.assertTrue(all(row["resolution"] == "delete" for row in audit_rows))
+        self.assertTrue(all(row["reviewed_by"] == self.other_id for row in audit_rows))
+        self.assertTrue(all(row["reviewed_at"] is not None for row in audit_rows))
+        self.service.withdraw(self.owner_id, created["id"])
+        self.assertEqual(self.service.list_bookmarks(self.owner_id)["items"], [])
 
     def test_resumable_media_is_sanitized_and_public_only_after_review(self) -> None:
         created, _ = self.service.create_private_draft(self.owner_id, self.snapshot())
