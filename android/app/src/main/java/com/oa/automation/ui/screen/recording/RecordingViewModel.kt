@@ -53,6 +53,8 @@ import com.oa.automation.infrastructure.stt.STTServiceClient
 import com.oa.automation.infrastructure.textimport.SharedTextImportCoordinator
 import com.oa.automation.infrastructure.textimport.ExternalTextSource
 import com.oa.automation.infrastructure.textimport.ExternalTextSourceLauncher
+import com.oa.automation.infrastructure.community.PublishedPostMediaStore
+import com.oa.automation.infrastructure.db.PublishedPostMediaEntity
 import com.oa.automation.locale.SimplifiedChineseText
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -109,6 +111,7 @@ data class RecordingUiState(
     val isSavingJourneyEdition: Boolean = false,
     val journeyEditionEditorVisible: Boolean = false,
     val latestPublishedPost: PublishedPost? = null,
+    val publishedPostMedia: List<PublishedPostMediaSummary> = emptyList(),
     val communitySyncState: com.oa.automation.domain.model.CommunitySyncState? = null,
     val isCreatingPublishedPost: Boolean = false,
     val isSavingPublishedPost: Boolean = false,
@@ -141,6 +144,21 @@ data class RecordingUiState(
     val isImportingAudio: Boolean = false,
     val recordingMarkers: List<Long> = emptyList()
 )
+
+data class PublishedPostMediaSummary(
+    val id: String,
+    val displayName: String,
+    val included: Boolean
+)
+
+private fun List<PublishedPostMediaEntity>.toSummaries(): List<PublishedPostMediaSummary> =
+    map {
+        PublishedPostMediaSummary(
+            id = it.id,
+            displayName = it.displayName,
+            included = it.status != PublishedPostMediaStore.EXCLUDED
+        )
+    }
 
 internal fun recordingActionPending(session: RecordingSessionState): Boolean = when {
     session.error != null -> false
@@ -186,6 +204,7 @@ internal fun RecordingUiState.resetForMeetingChange(): RecordingUiState = copy(
     isSavingJourneyEdition = false,
     journeyEditionEditorVisible = false,
     latestPublishedPost = null,
+    publishedPostMedia = emptyList(),
     communitySyncState = null,
     isCreatingPublishedPost = false,
     isSavingPublishedPost = false,
@@ -247,6 +266,7 @@ class RecordingViewModel(
     private val generateJourneyEditionUseCase: GenerateJourneyEditionUseCase,
     private val createPublishedPostSnapshotUseCase: CreatePublishedPostSnapshotUseCase,
     private val communitySyncRepository: CommunitySyncRepository,
+    private val publishedPostMediaStore: PublishedPostMediaStore,
     context: Context
 ) : ViewModel() {
 
@@ -268,6 +288,7 @@ class RecordingViewModel(
     private var stageDraftCollectionJob: Job? = null
     private var journeyEditionCollectionJob: Job? = null
     private var publishedPostCollectionJob: Job? = null
+    private var publishedPostMediaCollectionJob: Job? = null
     private var communitySyncCollectionJob: Job? = null
     private var transcriptionCollectionJob: Job? = null
     private var reportCollectionJob: Job? = null
@@ -525,6 +546,7 @@ class RecordingViewModel(
                         isSavingJourneyEdition = false,
                         journeyEditionEditorVisible = false,
                         latestPublishedPost = null,
+                        publishedPostMedia = emptyList(),
                         communitySyncState = null,
                         isCreatingPublishedPost = false,
                         isSavingPublishedPost = false,
@@ -532,6 +554,8 @@ class RecordingViewModel(
                         journeyStageCount = if (journey == null) 0 else state.journeyStageCount
                     )
                 }
+                publishedPostMediaCollectionJob?.cancel()
+                publishedPostMediaCollectionJob = null
                 journeyStageCollectionJob?.cancel()
                 journeyStageCollectionJob = null
                 if (journey == null) return@journeyUpdate
@@ -550,6 +574,19 @@ class RecordingViewModel(
                     publishedPostRepository.observeLatest(journeyId).collect { post ->
                         if (isCurrentMeeting(meetingId) && _uiState.value.journey?.id == journeyId) {
                             _uiState.update { it.copy(latestPublishedPost = post) }
+                            publishedPostMediaCollectionJob?.cancel()
+                            publishedPostMediaCollectionJob = post?.let { observedPost ->
+                                viewModelScope.launch {
+                                    val media = publishedPostMediaStore.list(observedPost.id)
+                                    if (isCurrentMeeting(meetingId) &&
+                                        _uiState.value.latestPublishedPost?.id == observedPost.id
+                                    ) {
+                                        _uiState.update {
+                                            it.copy(publishedPostMedia = media.toSummaries())
+                                        }
+                                    }
+                                }
+                            }
                             communitySyncCollectionJob?.cancel()
                             communitySyncCollectionJob = post?.let { observedPost ->
                                 viewModelScope.launch {
@@ -1435,11 +1472,13 @@ class RecordingViewModel(
         viewModelScope.launch {
             createPublishedPostSnapshotUseCase(journey, edition).fold(
                 onSuccess = { post ->
+                    val media = publishedPostMediaStore.list(post.id)
                     if (isCurrentMeeting(meetingId)) {
                         _uiState.update {
                             it.copy(
                                 isCreatingPublishedPost = false,
                                 latestPublishedPost = post,
+                                publishedPostMedia = media.toSummaries(),
                                 publishedPostReviewVisible = true,
                                 journeyStatusMessage = "发布快照待检查"
                             )
@@ -1461,15 +1500,66 @@ class RecordingViewModel(
     }
 
     fun openPublishedPostReview() {
-        if (_uiState.value.latestPublishedPost == null) {
+        val post = _uiState.value.latestPublishedPost
+        if (post == null) {
             _uiState.update { it.copy(error = "当前还没有发布快照") }
             return
         }
-        _uiState.update { it.copy(publishedPostReviewVisible = true, error = null) }
+        val meetingId = currentMeetingId
+        viewModelScope.launch {
+            val media = publishedPostMediaStore.list(post.id)
+            if (isCurrentMeeting(meetingId) && _uiState.value.latestPublishedPost?.id == post.id) {
+                _uiState.update {
+                    it.copy(
+                        publishedPostMedia = media.toSummaries(),
+                        publishedPostReviewVisible = true,
+                        error = null
+                    )
+                }
+            }
+        }
     }
 
     fun dismissPublishedPostReview() {
         _uiState.update { it.copy(publishedPostReviewVisible = false) }
+    }
+
+    fun setPublishedPostMediaIncluded(mediaId: String, included: Boolean) {
+        val post = _uiState.value.latestPublishedPost ?: return
+        if (post.status != PublishedPostStatus.REVIEW || _uiState.value.isSavingPublishedPost) return
+        val meetingId = currentMeetingId
+        _uiState.update { it.copy(isSavingPublishedPost = true, error = null) }
+        viewModelScope.launch {
+            publishedPostMediaStore.setIncluded(post.id, mediaId, included).fold(
+                onSuccess = { media ->
+                    if (isCurrentMeeting(meetingId) &&
+                        _uiState.value.latestPublishedPost?.id == post.id
+                    ) {
+                        _uiState.update {
+                            it.copy(
+                                isSavingPublishedPost = false,
+                                publishedPostMedia = media.toSummaries(),
+                                journeyStatusMessage = if (included) {
+                                    "图片已恢复到发布快照"
+                                } else {
+                                    "图片已从发布快照排除"
+                                }
+                            )
+                        }
+                    }
+                },
+                onFailure = { error ->
+                    if (isCurrentMeeting(meetingId)) {
+                        _uiState.update {
+                            it.copy(
+                                isSavingPublishedPost = false,
+                                error = "更新发布图片失败: ${error.message ?: "未知错误"}"
+                            )
+                        }
+                    }
+                }
+            )
+        }
     }
 
     fun savePublishedPostReview(privacyReviewed: Boolean, rightsConfirmed: Boolean) {

@@ -119,7 +119,7 @@ val appModule = module {
     single { AccountApiService() }
     single { AccountSessionSynchronizer(get(), get()) }
     single { CommunitySyncProcessor(get(), get(), get(), get(), get()) }
-    single { PublishedPostMediaStore(androidContext(), get()) }
+    single { PublishedPostMediaStore(androidContext(), get(), get()) }
     single { ProfileAvatarCodec(androidContext()) }
 
     // Use Cases
@@ -137,7 +137,7 @@ val appModule = module {
     viewModel { AccountViewModel(get(), get(), get(), get(), get()) }
     viewModel { CommunityViewModel(get(), get()) }
     viewModel { CommunityPostDetailViewModel(get(), get()) }
-    viewModel { RecordingViewModel(get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), androidContext()) }
+    viewModel { RecordingViewModel(get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), androidContext()) }
     viewModel { ReportViewModel(get(), get(), get(), get(), get(), get(), get()) }
     viewModel { SettingsViewModel(get(), get(), get()) }
     viewModel { VipViewModel(get(), get(), get(), get(), get()) }

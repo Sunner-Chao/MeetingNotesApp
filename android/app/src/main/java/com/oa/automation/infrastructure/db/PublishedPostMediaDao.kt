@@ -13,6 +13,9 @@ interface PublishedPostMediaDao {
     @Query("SELECT * FROM published_post_media WHERE postId = :postId ORDER BY createdAt ASC")
     suspend fun findByPostId(postId: String): List<PublishedPostMediaEntity>
 
+    @Query("SELECT * FROM published_post_media WHERE id = :id LIMIT 1")
+    suspend fun findById(id: String): PublishedPostMediaEntity?
+
     @Query(
         "UPDATE published_post_media SET remoteMediaId = :remoteMediaId, status = :status, " +
             "lastError = NULL, updatedAt = :updatedAt WHERE id = :id"
@@ -29,4 +32,15 @@ interface PublishedPostMediaDao {
             "updatedAt = :updatedAt WHERE id = :id"
     )
     suspend fun markFailed(id: String, status: String, lastError: String, updatedAt: Long): Int
+
+    @Query(
+        "UPDATE published_post_media SET status = :status, lastError = NULL, " +
+            "updatedAt = :updatedAt WHERE id = :id AND postId = :postId"
+    )
+    suspend fun updateSelection(
+        postId: String,
+        id: String,
+        status: String,
+        updatedAt: Long
+    ): Int
 }

@@ -3,9 +3,11 @@ package com.oa.automation.infrastructure.community
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import com.oa.automation.domain.model.PublishedPostStatus
 import com.oa.automation.domain.model.MeetingAttachment
 import com.oa.automation.infrastructure.db.PublishedPostMediaDao
 import com.oa.automation.infrastructure.db.PublishedPostMediaEntity
+import com.oa.automation.infrastructure.db.PublishedPostDao
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -16,8 +18,32 @@ import kotlin.math.max
 
 class PublishedPostMediaStore(
     private val context: Context,
-    private val dao: PublishedPostMediaDao
+    private val dao: PublishedPostMediaDao,
+    private val postDao: PublishedPostDao
 ) {
+    suspend fun list(postId: String): List<PublishedPostMediaEntity> =
+        withContext(Dispatchers.IO) { dao.findByPostId(postId) }
+
+    suspend fun setIncluded(
+        postId: String,
+        mediaId: String,
+        included: Boolean
+    ): Result<List<PublishedPostMediaEntity>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val post = postDao.findById(postId) ?: error("发布快照不存在")
+            require(post.status == PublishedPostStatus.REVIEW.name) {
+                "仅发布前检查中的图片可以调整"
+            }
+            val media = dao.findById(mediaId) ?: error("发布图片不存在")
+            require(media.postId == postId) { "发布图片不属于当前快照" }
+            val status = if (included) PENDING else EXCLUDED
+            check(dao.updateSelection(postId, mediaId, status, System.currentTimeMillis()) == 1) {
+                "发布图片无法更新"
+            }
+            dao.findByPostId(postId)
+        }
+    }
+
     suspend fun prepare(postId: String, attachments: List<MeetingAttachment>): List<PublishedPostMediaEntity> =
         withContext(Dispatchers.IO) {
             val destination = File(context.filesDir, "community-media/$postId").apply { mkdirs() }
@@ -113,6 +139,8 @@ class PublishedPostMediaStore(
     }
 
     companion object {
+        const val EXCLUDED = "EXCLUDED"
+        const val PENDING = "PENDING"
         private const val MAX_ORIGINAL_EDGE = 2_560
         private const val MAX_THUMBNAIL_EDGE = 640
         private const val ORIGINAL_QUALITY = 88

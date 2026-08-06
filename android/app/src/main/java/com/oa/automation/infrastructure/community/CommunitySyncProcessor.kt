@@ -160,7 +160,9 @@ class CommunitySyncProcessor(
         endpoint: String,
         token: String
     ) {
-        publishedPostMediaDao.findByPostId(postId).forEach { media ->
+        publishedPostMediaDao.findByPostId(postId)
+            .filter { it.status != PublishedPostMediaStore.EXCLUDED }
+            .forEach { media ->
             try {
                 val original = File(media.originalPath)
                 val thumbnail = File(media.thumbnailPath)

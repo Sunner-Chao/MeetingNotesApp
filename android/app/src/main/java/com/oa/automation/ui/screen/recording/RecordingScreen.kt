@@ -331,6 +331,7 @@ fun RecordingScreen(
         onCreatePublishedPost = viewModel::createPublishedPostSnapshot,
         onOpenPublishedPost = viewModel::openPublishedPostReview,
         onSavePublishedPostReview = viewModel::savePublishedPostReview,
+        onSetPublishedPostMediaIncluded = viewModel::setPublishedPostMediaIncluded,
         onMarkPublishedPostReady = viewModel::markPublishedPostReady,
         onPublishPublishedPost = viewModel::publishPublishedPost,
         onWithdrawPublishedPost = viewModel::withdrawPublishedPost,

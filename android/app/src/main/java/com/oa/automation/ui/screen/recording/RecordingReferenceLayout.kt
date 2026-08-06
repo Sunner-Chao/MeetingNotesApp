@@ -40,6 +40,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -311,6 +312,7 @@ internal fun RecordingReferenceScaffold(
     onCreatePublishedPost: () -> Unit,
     onOpenPublishedPost: () -> Unit,
     onSavePublishedPostReview: (Boolean, Boolean) -> Unit,
+    onSetPublishedPostMediaIncluded: (String, Boolean) -> Unit,
     onMarkPublishedPostReady: (Boolean, Boolean) -> Unit,
     onPublishPublishedPost: () -> Unit,
     onWithdrawPublishedPost: () -> Unit,
@@ -482,8 +484,10 @@ internal fun RecordingReferenceScaffold(
     uiState.latestPublishedPost?.takeIf { uiState.publishedPostReviewVisible }?.let { post ->
         PublishedPostReviewDialog(
             post = post,
+            media = uiState.publishedPostMedia,
             isSaving = uiState.isSavingPublishedPost,
             onSaveReview = onSavePublishedPostReview,
+            onSetMediaIncluded = onSetPublishedPostMediaIncluded,
             onMarkReady = onMarkPublishedPostReady,
             onPublish = onPublishPublishedPost,
             onWithdraw = onWithdrawPublishedPost,
@@ -837,8 +841,10 @@ private fun JourneyEditionEditorDialog(
 @Composable
 private fun PublishedPostReviewDialog(
     post: PublishedPost,
+    media: List<PublishedPostMediaSummary>,
     isSaving: Boolean,
     onSaveReview: (Boolean, Boolean) -> Unit,
+    onSetMediaIncluded: (String, Boolean) -> Unit,
     onMarkReady: (Boolean, Boolean) -> Unit,
     onPublish: () -> Unit,
     onWithdraw: () -> Unit,
@@ -882,6 +888,66 @@ private fun PublishedPostReviewDialog(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.primary
                 )
+                if (media.isNotEmpty()) {
+                    val includedCount = media.count { it.included }
+                    Text(
+                        text = "发布图片 $includedCount/${media.size}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    LazyColumn(modifier = Modifier.height(96.dp)) {
+                        items(media, key = { it.id }) { item ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = item.displayName,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = if (item.included) "将同步至社区" else "已排除，不会上传",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (item.included) {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        } else {
+                                            MaterialTheme.colorScheme.outline
+                                        }
+                                    )
+                                }
+                                if (reviewable) {
+                                    IconButton(
+                                        onClick = {
+                                            onSetMediaIncluded(item.id, !item.included)
+                                        },
+                                        enabled = !isSaving
+                                    ) {
+                                        Icon(
+                                            imageVector = if (item.included) {
+                                                Icons.Default.Close
+                                            } else {
+                                                Icons.Default.AddPhotoAlternate
+                                            },
+                                            contentDescription = if (item.included) {
+                                                "从发布快照排除 ${item.displayName}"
+                                            } else {
+                                                "恢复 ${item.displayName}"
+                                            },
+                                            tint = if (item.included) {
+                                                MaterialTheme.colorScheme.onSurfaceVariant
+                                            } else {
+                                                MaterialTheme.colorScheme.primary
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 if (reviewable) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(
@@ -911,7 +977,7 @@ private fun PublishedPostReviewDialog(
                     onValueChange = {},
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(min = 180.dp, max = 280.dp),
+                        .heightIn(min = 120.dp, max = 180.dp),
                     readOnly = true,
                     label = { Text(post.title) },
                     minLines = 7,
