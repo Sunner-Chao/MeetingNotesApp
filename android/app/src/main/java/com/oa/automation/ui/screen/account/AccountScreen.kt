@@ -144,6 +144,7 @@ fun AccountScreen(
     onNavigateToProfile: () -> Unit,
     onNavigateToQuotaDetails: () -> Unit,
     onNavigateToUserManagement: () -> Unit,
+    onNavigateToCommunityModeration: () -> Unit,
     onNavigateToSettings: () -> Unit,
     onLogout: () -> Unit,
     viewModel: AccountViewModel = koinViewModel()
@@ -228,7 +229,8 @@ fun AccountScreen(
                         layout = layout,
                         onOpenProfile = onNavigateToProfile,
                         onOpenSettings = onNavigateToSettings,
-                        onManageUsers = onNavigateToUserManagement
+                        onManageUsers = onNavigateToUserManagement,
+                        onModerateCommunity = onNavigateToCommunityModeration
                     )
                     Spacer(modifier = Modifier.height(12.dp))
                 }
@@ -686,7 +688,8 @@ private fun AccountActionGroup(
     layout: AccountLayoutSpec,
     onOpenProfile: () -> Unit,
     onOpenSettings: () -> Unit,
-    onManageUsers: () -> Unit
+    onManageUsers: () -> Unit,
+    onModerateCommunity: () -> Unit
 ) {
     Surface(
         modifier = Modifier
@@ -722,6 +725,16 @@ private fun AccountActionGroup(
                     title = "用户管理",
                     rowHeight = layout.actionRowHeight,
                     onClick = onManageUsers
+                )
+                HorizontalDivider(
+                    modifier = Modifier.padding(horizontal = 18.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant
+                )
+                AccountActionRow(
+                    icon = Icons.Default.Security,
+                    title = "社区审核",
+                    rowHeight = layout.actionRowHeight,
+                    onClick = onModerateCommunity
                 )
             }
         }

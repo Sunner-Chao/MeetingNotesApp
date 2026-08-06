@@ -108,7 +108,12 @@ data class CommunityPostDetailUiState(
     val post: PublicCommunityPost? = null,
     val mediaBaseUrl: String = "",
     val isLoading: Boolean = true,
-    val error: String? = null
+    val error: String? = null,
+    val showReportDialog: Boolean = false,
+    val reportCategory: String = "privacy",
+    val reportReason: String = "",
+    val isReporting: Boolean = false,
+    val reportMessage: String? = null
 )
 
 class CommunityPostDetailViewModel(
@@ -142,5 +147,63 @@ class CommunityPostDetailViewModel(
                 }
             )
         }
+    }
+
+    fun openReportDialog() {
+        _uiState.update { it.copy(showReportDialog = true, reportMessage = null, error = null) }
+    }
+
+    fun dismissReportDialog() {
+        if (_uiState.value.isReporting) return
+        _uiState.update { it.copy(showReportDialog = false, reportReason = "", reportMessage = null) }
+    }
+
+    fun selectReportCategory(category: String) {
+        _uiState.update { it.copy(reportCategory = category, reportMessage = null) }
+    }
+
+    fun updateReportReason(reason: String) {
+        _uiState.update { it.copy(reportReason = reason.take(1000), reportMessage = null) }
+    }
+
+    fun submitReport(postId: String) {
+        val state = _uiState.value
+        if (state.isReporting) return
+        viewModelScope.launch {
+            val session = configDataStore.authSessionFlow.first()
+            if (session == null) {
+                _uiState.update { it.copy(reportMessage = "登录后可提交举报") }
+                return@launch
+            }
+            val endpoint = configDataStore.accountEndpointFlow.first()
+            _uiState.update { it.copy(isReporting = true, reportMessage = null) }
+            accountApiService.reportCommunityPost(
+                endpoint = endpoint,
+                token = session.accessToken,
+                postId = postId,
+                category = state.reportCategory,
+                reason = state.reportReason
+            ).fold(
+                onSuccess = {
+                    _uiState.update {
+                        it.copy(
+                            showReportDialog = false,
+                            isReporting = false,
+                            reportReason = "",
+                            reportMessage = "已提交举报"
+                        )
+                    }
+                },
+                onFailure = { error ->
+                    _uiState.update {
+                        it.copy(isReporting = false, reportMessage = error.message ?: "举报提交失败")
+                    }
+                }
+            )
+        }
+    }
+
+    fun clearReportMessage() {
+        _uiState.update { it.copy(reportMessage = null) }
     }
 }

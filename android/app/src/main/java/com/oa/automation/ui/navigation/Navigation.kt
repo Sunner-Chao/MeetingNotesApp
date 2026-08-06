@@ -27,6 +27,7 @@ import com.oa.automation.data.local.ConfigDataStore
 import com.oa.automation.ui.screen.account.AccountProfileScreen
 import com.oa.automation.ui.screen.account.AccountQuotaDetailsScreen
 import com.oa.automation.ui.screen.account.AccountUserManagementScreen
+import com.oa.automation.ui.screen.account.CommunityModerationScreen
 import com.oa.automation.ui.screen.community.CommunityPostDetailScreen
 import com.oa.automation.ui.screen.login.LoginScreen
 import com.oa.automation.ui.screen.login.LoginViewModel
@@ -166,6 +167,9 @@ fun OAAutomationNavHost(
                     onNavigateToAccountUsers = {
                         navController.navigate(AccountUsers)
                     },
+                    onNavigateToCommunityModeration = {
+                        navController.navigate(AccountCommunityModeration)
+                    },
                     onNavigateToCommunityPost = { postId ->
                         navController.navigate(CommunityPost(postId))
                     },
@@ -214,6 +218,12 @@ fun OAAutomationNavHost(
 
             composable<AccountUsers> {
                 AccountUserManagementScreen(
+                    onNavigateBack = { navController.popBackStack() }
+                )
+            }
+
+            composable<AccountCommunityModeration> {
+                CommunityModerationScreen(
                     onNavigateBack = { navController.popBackStack() }
                 )
             }

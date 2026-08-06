@@ -11,6 +11,8 @@ import com.oa.automation.domain.model.RechargeOrder
 import com.oa.automation.domain.model.SocialAuthProvider
 import com.oa.automation.domain.model.PublishedPost
 import com.oa.automation.domain.model.CommunityPostPage
+import com.oa.automation.domain.model.CommunityModerationItem
+import com.oa.automation.domain.model.CommunityReport
 import com.oa.automation.domain.model.MyCommunityPost
 import com.oa.automation.domain.model.PublicCommunityPost
 import java.io.IOException
@@ -137,6 +139,52 @@ class AccountApiService(
             object : TypeToken<CommunityPostPage<MyCommunityPost>>() {}.type
         )
     }
+
+    suspend fun reportCommunityPost(
+        endpoint: String,
+        token: String,
+        postId: String,
+        category: String,
+        reason: String = ""
+    ): Result<CommunityReport> = request(
+        endpoint = endpoint,
+        path = "account/community/posts/$postId/report",
+        token = token,
+        method = "POST",
+        jsonBody = gson.toJson(mapOf("category" to category, "reason" to reason))
+    ) { body -> gson.fromJson(body, CommunityReport::class.java) }
+
+    suspend fun adminCommunityModerationQueue(
+        endpoint: String,
+        token: String,
+        status: String = "pending",
+        cursor: String? = null,
+        limit: Int = 20
+    ): Result<CommunityPostPage<CommunityModerationItem>> = request(
+        endpoint = endpoint,
+        path = "${communityListPath("account/community/moderation", cursor, limit)}&status=${URLEncoder.encode(status, Charsets.UTF_8.name())}",
+        token = token,
+        method = "GET"
+    ) { body ->
+        gson.fromJson(
+            body,
+            object : TypeToken<CommunityPostPage<CommunityModerationItem>>() {}.type
+        )
+    }
+
+    suspend fun moderateCommunityPost(
+        endpoint: String,
+        token: String,
+        postId: String,
+        decision: String,
+        reason: String = ""
+    ): Result<CommunityPostResponse> = request(
+        endpoint = endpoint,
+        path = "account/community/moderation/$postId",
+        token = token,
+        method = "POST",
+        jsonBody = gson.toJson(mapOf("decision" to decision, "reason" to reason))
+    ) { body -> gson.fromJson(body, CommunityPostResponse::class.java) }
 
     suspend fun createCommunityMedia(
         endpoint: String,

@@ -57,6 +57,7 @@ fun MainWorkspaceScreen(
     onNavigateToAccountProfile: () -> Unit,
     onNavigateToAccountQuota: () -> Unit,
     onNavigateToAccountUsers: () -> Unit,
+    onNavigateToCommunityModeration: () -> Unit,
     onNavigateToCommunityPost: (String) -> Unit,
     onLogout: () -> Unit
 ) {
@@ -103,6 +104,7 @@ fun MainWorkspaceScreen(
                             onNavigateToProfile = onNavigateToAccountProfile,
                             onNavigateToQuotaDetails = onNavigateToAccountQuota,
                             onNavigateToUserManagement = onNavigateToAccountUsers,
+                            onNavigateToCommunityModeration = onNavigateToCommunityModeration,
                             onNavigateToSettings = onNavigateToSettings,
                             onLogout = onLogout
                         )

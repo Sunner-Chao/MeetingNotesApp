@@ -47,6 +47,7 @@ import com.oa.automation.infrastructure.textimport.ExternalTextSourceLauncher
 import com.oa.automation.infrastructure.update.AppUpdateService
 import com.oa.automation.ui.screen.home.HomeViewModel
 import com.oa.automation.ui.screen.account.AccountViewModel
+import com.oa.automation.ui.screen.account.CommunityModerationViewModel
 import com.oa.automation.ui.screen.community.CommunityPostDetailViewModel
 import com.oa.automation.ui.screen.community.CommunityViewModel
 import com.oa.automation.ui.screen.login.LoginViewModel
@@ -135,6 +136,7 @@ val appModule = module {
     viewModel { RegisterViewModel(get(), get()) }
     viewModel { HomeViewModel(get(), get(), get(), get(), get(), get(), get(), get()) }
     viewModel { AccountViewModel(get(), get(), get(), get(), get()) }
+    viewModel { CommunityModerationViewModel(get(), get()) }
     viewModel { CommunityViewModel(get(), get()) }
     viewModel { CommunityPostDetailViewModel(get(), get()) }
     viewModel { RecordingViewModel(get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), androidContext()) }

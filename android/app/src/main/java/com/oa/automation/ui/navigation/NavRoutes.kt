@@ -42,6 +42,9 @@ object AccountQuota
 object AccountUsers
 
 @Serializable
+object AccountCommunityModeration
+
+@Serializable
 object AccountVip
 
 @Serializable

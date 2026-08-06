@@ -160,4 +160,48 @@ class CommunityApiServiceTest {
         )
         assertEquals("hello", uploadRequest.body.readUtf8())
     }
+
+    @Test
+    fun reportUsesAuthenticatedPostAndModerationQueueUsesAdminBearer() = runBlocking {
+        server.enqueue(
+            MockResponse().setResponseCode(201).setBody(
+                """{"id":"report-1","post_id":"post-1","category":"privacy","reason":"位置","status":"open"}"""
+            )
+        )
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """{"items":[{"id":"post-1","title":"研学","content":"正文","published_at":10,"open_report_count":1,"reports":[{"category":"privacy","reason":"位置","created_at":9}]}],"next_cursor":null}"""
+            )
+        )
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """{"id":"post-1","client_snapshot_id":"local-1","status":"published","moderation_status":"pending"}"""
+            )
+        )
+        val endpoint = server.url("/api").toString()
+        val report = service.reportCommunityPost(
+            endpoint,
+            "session-token",
+            "post-1",
+            "privacy",
+            "位置"
+        ).getOrThrow()
+        assertEquals("report-1", report.id)
+        val reportRequest = server.takeRequest()
+        assertEquals("/api/account/community/posts/post-1/report", reportRequest.path)
+        assertEquals("Bearer session-token", reportRequest.getHeader("Authorization"))
+        assertTrue(reportRequest.body.readUtf8().contains("\"category\":\"privacy\""))
+
+        val queue = service.adminCommunityModerationQueue(endpoint, "admin-token", "reported").getOrThrow()
+        assertEquals(1, queue.items.single().openReportCount)
+        val queueRequest = server.takeRequest()
+        assertEquals("/api/account/community/moderation?limit=20&status=reported", queueRequest.path)
+        assertEquals("Bearer admin-token", queueRequest.getHeader("Authorization"))
+
+        service.moderateCommunityPost(endpoint, "admin-token", "post-1", "approved", "").getOrThrow()
+        val moderationRequest = server.takeRequest()
+        assertEquals("/api/account/community/moderation/post-1", moderationRequest.path)
+        assertEquals("Bearer admin-token", moderationRequest.getHeader("Authorization"))
+        assertTrue(moderationRequest.body.readUtf8().contains("\"decision\":\"approved\""))
+    }
 }

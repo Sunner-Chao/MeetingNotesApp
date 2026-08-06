@@ -26,8 +26,11 @@ import androidx.compose.material.icons.filled.AutoStories
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Explore
+import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Verified
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -35,11 +38,14 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -321,6 +327,18 @@ fun CommunityPostDetailScreen(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val post = uiState.post
     LaunchedEffect(postId) { viewModel.load(postId) }
+    if (uiState.showReportDialog) {
+        CommunityReportDialog(
+            category = uiState.reportCategory,
+            reason = uiState.reportReason,
+            isSubmitting = uiState.isReporting,
+            error = uiState.reportMessage,
+            onCategoryChange = viewModel::selectReportCategory,
+            onReasonChange = viewModel::updateReportReason,
+            onDismiss = viewModel::dismissReportDialog,
+            onSubmit = { viewModel.submitReport(postId) }
+        )
+    }
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
@@ -330,6 +348,11 @@ fun CommunityPostDetailScreen(
                     IconButton(onClick = onNavigateBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
                     }
+                },
+                actions = {
+                    IconButton(onClick = viewModel::openReportDialog) {
+                        Icon(Icons.Default.Flag, contentDescription = "举报")
+                    }
                 }
             )
         }
@@ -338,11 +361,21 @@ fun CommunityPostDetailScreen(
             uiState.isLoading -> Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 3.dp)
             }
-            post != null -> CommunityPostDetail(
-                post = post,
-                mediaBaseUrl = uiState.mediaBaseUrl,
-                modifier = Modifier.padding(padding)
-            )
+            post != null -> Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+                uiState.reportMessage?.let { message ->
+                    Text(
+                        text = message,
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+                CommunityPostDetail(
+                    post = post,
+                    mediaBaseUrl = uiState.mediaBaseUrl,
+                    modifier = Modifier.weight(1f)
+                )
+            }
             else -> CommunityEmptyState(
                 message = uiState.error ?: "内容暂不可查看",
                 isError = true,
@@ -351,6 +384,74 @@ fun CommunityPostDetailScreen(
             )
         }
     }
+}
+
+@Composable
+private fun CommunityReportDialog(
+    category: String,
+    reason: String,
+    isSubmitting: Boolean,
+    error: String?,
+    onCategoryChange: (String) -> Unit,
+    onReasonChange: (String) -> Unit,
+    onDismiss: () -> Unit,
+    onSubmit: () -> Unit
+) {
+    val categories = listOf(
+        "privacy" to "隐私信息",
+        "copyright" to "版权问题",
+        "safety" to "安全风险",
+        "spam" to "广告或垃圾内容",
+        "other" to "其他"
+    )
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("举报这篇笔记") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                categories.forEach { (value, label) ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onCategoryChange(value) },
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(selected = category == value, onClick = { onCategoryChange(value) })
+                        Text(label, style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+                OutlinedTextField(
+                    value = reason,
+                    onValueChange = onReasonChange,
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    label = { Text("补充说明（可选）") },
+                    minLines = 2,
+                    maxLines = 4,
+                    enabled = !isSubmitting
+                )
+                error?.let {
+                    Text(
+                        text = it,
+                        modifier = Modifier.padding(top = 6.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = onSubmit, enabled = !isSubmitting) {
+                if (isSubmitting) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(8.dp))
+                }
+                Text("提交")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !isSubmitting) { Text("取消") }
+        }
+    )
 }
 
 @Composable

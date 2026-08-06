@@ -41,3 +41,29 @@ data class CommunityPostPage<T>(
     val items: List<T> = emptyList(),
     @SerializedName("next_cursor") val nextCursor: String? = null
 )
+
+data class CommunityReport(
+    val id: String,
+    @SerializedName("post_id") val postId: String,
+    val category: String,
+    val reason: String = "",
+    val status: String = "open",
+    @SerializedName("created_at") val createdAt: Long = 0,
+    @SerializedName("updated_at") val updatedAt: Long = 0
+)
+
+data class CommunityModerationReport(
+    val category: String,
+    val reason: String = "",
+    @SerializedName("created_at") val createdAt: Long = 0
+)
+
+data class CommunityModerationItem(
+    val id: String,
+    val title: String,
+    val content: String,
+    @SerializedName("published_at") val publishedAt: Long = 0,
+    val review: CommunityReview = CommunityReview(),
+    @SerializedName("open_report_count") val openReportCount: Int = 0,
+    val reports: List<CommunityModerationReport> = emptyList()
+)
