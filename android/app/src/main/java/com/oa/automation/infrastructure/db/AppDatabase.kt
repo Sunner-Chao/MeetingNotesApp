@@ -17,9 +17,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         JourneyStageEntity::class,
         StageDraftVersionEntity::class,
         JourneyEditionEntity::class,
-        PublishedPostEntity::class
+        PublishedPostEntity::class,
+        CommunitySyncOutboxEntity::class
     ],
-    version = 10,
+    version = 11,
     exportSchema = false
 )
 @TypeConverters(DbConverters::class)
@@ -31,6 +32,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun stageDraftDao(): StageDraftDao
     abstract fun journeyEditionDao(): JourneyEditionDao
     abstract fun publishedPostDao(): PublishedPostDao
+    abstract fun communitySyncOutboxDao(): CommunitySyncOutboxDao
 
     companion object {
         val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -280,6 +282,40 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL(
                     "CREATE INDEX IF NOT EXISTS index_published_posts_journeyId_status " +
                         "ON published_posts(journeyId, status)"
+                )
+            }
+        }
+
+        val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS community_sync_outbox (
+                        postId TEXT NOT NULL,
+                        operation TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        remotePostId TEXT,
+                        attemptCount INTEGER NOT NULL,
+                        lastError TEXT,
+                        createdAt INTEGER NOT NULL,
+                        updatedAt INTEGER NOT NULL,
+                        PRIMARY KEY(postId),
+                        FOREIGN KEY(postId) REFERENCES published_posts(id)
+                            ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS index_community_sync_outbox_postId " +
+                        "ON community_sync_outbox(postId)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_community_sync_outbox_status " +
+                        "ON community_sync_outbox(status)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_community_sync_outbox_updatedAt " +
+                        "ON community_sync_outbox(updatedAt)"
                 )
             }
         }

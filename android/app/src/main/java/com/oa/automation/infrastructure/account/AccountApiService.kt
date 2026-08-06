@@ -9,6 +9,7 @@ import com.oa.automation.domain.model.AccountSessionCredentials
 import com.oa.automation.domain.model.AuthSession
 import com.oa.automation.domain.model.RechargeOrder
 import com.oa.automation.domain.model.SocialAuthProvider
+import com.oa.automation.domain.model.PublishedPost
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
@@ -26,6 +27,62 @@ class AccountApiService(
         .build(),
     private val gson: Gson = Gson()
 ) {
+    data class CommunityPostResponse(
+        val id: String,
+        @com.google.gson.annotations.SerializedName("client_snapshot_id") val clientSnapshotId: String,
+        val status: String,
+        @com.google.gson.annotations.SerializedName("moderation_status") val moderationStatus: String
+    )
+
+    suspend fun createCommunityDraft(
+        endpoint: String,
+        token: String,
+        post: PublishedPost
+    ): Result<CommunityPostResponse> = request(
+        endpoint = endpoint,
+        path = "account/community/drafts",
+        token = token,
+        method = "POST",
+        jsonBody = gson.toJson(
+            mapOf(
+                "client_snapshot_id" to post.id,
+                "journey_id" to post.journeyId,
+                "journey_edition_id" to post.journeyEditionId,
+                "source_edition_version" to post.sourceEditionVersion,
+                "title" to post.title,
+                "content" to post.content,
+                "ai_assisted" to post.aiAssisted,
+                "redacted_coordinate_count" to post.redactedCoordinateCount,
+                "privacy_reviewed" to post.privacyReviewed,
+                "rights_confirmed" to post.rightsConfirmed
+            )
+        )
+    ) { body -> gson.fromJson(body, CommunityPostResponse::class.java) }
+
+    suspend fun publishCommunityPost(
+        endpoint: String,
+        token: String,
+        postId: String
+    ): Result<CommunityPostResponse> = request(
+        endpoint = endpoint,
+        path = "account/community/posts/$postId/publish",
+        token = token,
+        method = "POST",
+        jsonBody = "{}"
+    ) { body -> gson.fromJson(body, CommunityPostResponse::class.java) }
+
+    suspend fun withdrawCommunityPost(
+        endpoint: String,
+        token: String,
+        postId: String
+    ): Result<CommunityPostResponse> = request(
+        endpoint = endpoint,
+        path = "account/community/posts/$postId/withdraw",
+        token = token,
+        method = "POST",
+        jsonBody = "{}"
+    ) { body -> gson.fromJson(body, CommunityPostResponse::class.java) }
+
     suspend fun login(endpoint: String, username: String, password: String): Result<AuthSession> =
         postCredentials(endpoint, "auth/login", username, password)
 
@@ -241,6 +298,7 @@ private fun Response.toAccountError(body: String): String {
         403 -> detail.ifBlank { "当前账号没有操作权限" }
         404 -> detail.ifBlank { "请求的账户资源不存在" }
         409 -> detail.ifBlank { "账号或订单状态冲突" }
+        422 -> detail.ifBlank { "社区快照字段不符合要求" }
         503 -> "账户服务暂时不可用"
         else -> detail.ifBlank { "账户服务请求失败（HTTP $code）" }
     }

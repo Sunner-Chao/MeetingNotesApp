@@ -22,6 +22,9 @@ import com.oa.automation.infrastructure.account.AccountSessionSynchronizer
 import com.oa.automation.infrastructure.account.ProfileAvatarCodec
 import com.oa.automation.infrastructure.attachment.MeetingAttachmentStore
 import com.oa.automation.infrastructure.background.BackgroundTaskScheduler
+import com.oa.automation.infrastructure.community.CommunitySyncEnqueuer
+import com.oa.automation.infrastructure.community.CommunitySyncScheduler
+import com.oa.automation.infrastructure.community.CommunitySyncProcessor
 import com.oa.automation.infrastructure.db.AppDatabase
 import com.oa.automation.infrastructure.llm.LLMEngine
 import com.oa.automation.infrastructure.llm.AgentQuotaService
@@ -34,6 +37,7 @@ import com.oa.automation.infrastructure.repository.PublishedPostRepositoryImpl
 import com.oa.automation.infrastructure.repository.ReportRepositoryImpl
 import com.oa.automation.infrastructure.repository.ScheduledMeetingRepositoryImpl
 import com.oa.automation.infrastructure.repository.StageDraftRepositoryImpl
+import com.oa.automation.infrastructure.repository.CommunitySyncRepositoryImpl
 import com.oa.automation.application.usecase.GenerateStageDraftUseCase
 import com.oa.automation.infrastructure.service.RecordingSessionController
 import com.oa.automation.infrastructure.stt.StreamingSttClient
@@ -69,6 +73,7 @@ val appModule = module {
             .addMigrations(AppDatabase.MIGRATION_7_8)
             .addMigrations(AppDatabase.MIGRATION_8_9)
             .addMigrations(AppDatabase.MIGRATION_9_10)
+            .addMigrations(AppDatabase.MIGRATION_10_11)
             .build()
     }
     single { get<AppDatabase>().meetingDao() }
@@ -78,6 +83,7 @@ val appModule = module {
     single { get<AppDatabase>().stageDraftDao() }
     single { get<AppDatabase>().journeyEditionDao() }
     single { get<AppDatabase>().publishedPostDao() }
+    single { get<AppDatabase>().communitySyncOutboxDao() }
 
     // Infrastructure
     single<MeetingRepository> { MeetingRepositoryImpl(get()) }
@@ -85,6 +91,10 @@ val appModule = module {
     single<StageDraftRepository> { StageDraftRepositoryImpl(get()) }
     single<JourneyEditionRepository> { JourneyEditionRepositoryImpl(get()) }
     single<PublishedPostRepository> { PublishedPostRepositoryImpl(get()) }
+    single<CommunitySyncEnqueuer> { CommunitySyncScheduler(androidContext()) }
+    single<com.oa.automation.domain.repository.CommunitySyncRepository> {
+        CommunitySyncRepositoryImpl(get(), get(), get())
+    }
     single { DeviceLocationProvider(androidContext()) }
     single { MeetingAttachmentStore(androidContext(), get(), get()) }
     single<ReportRepository> { ReportRepositoryImpl(get()) }
@@ -103,6 +113,7 @@ val appModule = module {
     single { AgentQuotaService() }
     single { AccountApiService() }
     single { AccountSessionSynchronizer(get(), get()) }
+    single { CommunitySyncProcessor(get(), get(), get(), get()) }
     single { ProfileAvatarCodec(androidContext()) }
 
     // Use Cases
@@ -118,7 +129,7 @@ val appModule = module {
     viewModel { RegisterViewModel(get(), get()) }
     viewModel { HomeViewModel(get(), get(), get(), get(), get(), get(), get(), get()) }
     viewModel { AccountViewModel(get(), get(), get(), get(), get()) }
-    viewModel { RecordingViewModel(get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), androidContext()) }
+    viewModel { RecordingViewModel(get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), androidContext()) }
     viewModel { ReportViewModel(get(), get(), get(), get(), get(), get(), get()) }
     viewModel { SettingsViewModel(get(), get(), get()) }
     viewModel { VipViewModel(get(), get(), get(), get(), get()) }

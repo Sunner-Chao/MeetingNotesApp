@@ -312,6 +312,7 @@ internal fun RecordingReferenceScaffold(
     onOpenPublishedPost: () -> Unit,
     onSavePublishedPostReview: (Boolean, Boolean) -> Unit,
     onMarkPublishedPostReady: (Boolean, Boolean) -> Unit,
+    onPublishPublishedPost: () -> Unit,
     onWithdrawPublishedPost: () -> Unit,
     onDismissPublishedPostReview: () -> Unit,
     onAbandonRecording: () -> Unit,
@@ -484,6 +485,7 @@ internal fun RecordingReferenceScaffold(
             isSaving = uiState.isSavingPublishedPost,
             onSaveReview = onSavePublishedPostReview,
             onMarkReady = onMarkPublishedPostReady,
+            onPublish = onPublishPublishedPost,
             onWithdraw = onWithdrawPublishedPost,
             onDismiss = onDismissPublishedPostReview
         )
@@ -642,6 +644,7 @@ internal fun RecordingReferenceScaffold(
                     onCreatePublishedPost = onCreatePublishedPost,
                     onOpenPublishedPost = onOpenPublishedPost,
                     onWithdrawPublishedPost = onWithdrawPublishedPost,
+                    onPublishPublishedPost = onPublishPublishedPost,
                     onGenerateReport = onGenerateReport,
                     onCancelTranscription = onCancelTranscription,
                     onCancelReport = onCancelReport,
@@ -837,6 +840,7 @@ private fun PublishedPostReviewDialog(
     isSaving: Boolean,
     onSaveReview: (Boolean, Boolean) -> Unit,
     onMarkReady: (Boolean, Boolean) -> Unit,
+    onPublish: () -> Unit,
     onWithdraw: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -941,10 +945,13 @@ private fun PublishedPostReviewDialog(
                     ) { Text("保存检查") }
                 }
 
-                PublishedPostStatus.READY -> TextButton(
-                    onClick = onWithdraw,
-                    enabled = !isSaving
-                ) { Text("撤回准备", color = MaterialTheme.colorScheme.error) }
+                PublishedPostStatus.READY -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = onPublish, enabled = !isSaving) { Text("同步并发布") }
+                    TextButton(
+                        onClick = onWithdraw,
+                        enabled = !isSaving
+                    ) { Text("撤回准备", color = MaterialTheme.colorScheme.error) }
+                }
 
                 PublishedPostStatus.WITHDRAWN -> Unit
             }

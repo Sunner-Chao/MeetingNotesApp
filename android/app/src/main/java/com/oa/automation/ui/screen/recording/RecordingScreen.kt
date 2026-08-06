@@ -332,6 +332,7 @@ fun RecordingScreen(
         onOpenPublishedPost = viewModel::openPublishedPostReview,
         onSavePublishedPostReview = viewModel::savePublishedPostReview,
         onMarkPublishedPostReady = viewModel::markPublishedPostReady,
+        onPublishPublishedPost = viewModel::publishPublishedPost,
         onWithdrawPublishedPost = viewModel::withdrawPublishedPost,
         onDismissPublishedPostReview = viewModel::dismissPublishedPostReview,
         onAbandonRecording = viewModel::abandonRecording,

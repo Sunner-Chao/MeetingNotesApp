@@ -44,6 +44,7 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Groups
@@ -178,6 +179,7 @@ internal fun SiriRecorderContent(
     onOpenJourneyEdition: () -> Unit,
     onCreatePublishedPost: () -> Unit,
     onOpenPublishedPost: () -> Unit,
+    onPublishPublishedPost: () -> Unit,
     onWithdrawPublishedPost: () -> Unit,
     onGenerateReport: () -> Unit,
     onCancelTranscription: () -> Unit,
@@ -252,6 +254,7 @@ internal fun SiriRecorderContent(
                 onOpenJourneyEdition = onOpenJourneyEdition,
                 onCreatePublishedPost = onCreatePublishedPost,
                 onOpenPublishedPost = onOpenPublishedPost,
+                onPublishPublishedPost = onPublishPublishedPost,
                 onWithdrawPublishedPost = onWithdrawPublishedPost
             )
             if (uiState.journey != null) {
@@ -365,6 +368,7 @@ private fun SiriTopBar(
     onOpenJourneyEdition: () -> Unit,
     onCreatePublishedPost: () -> Unit,
     onOpenPublishedPost: () -> Unit,
+    onPublishPublishedPost: () -> Unit,
     onWithdrawPublishedPost: () -> Unit
 ) {
     Row(
@@ -576,6 +580,13 @@ private fun SiriTopBar(
                                         text = "查看社区发布预览",
                                         onClick = onOpenPublishedPost,
                                         onExpandedChange = onMenuExpandedChange
+                                    )
+                                    SiriMenuItem(
+                                        icon = Icons.Default.Cloud,
+                                        text = "同步并发布社区内容",
+                                        onClick = onPublishPublishedPost,
+                                        onExpandedChange = onMenuExpandedChange,
+                                        enabled = journeyActionEnabled
                                     )
                                     SiriMenuItem(
                                         icon = Icons.Default.Close,

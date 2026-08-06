@@ -20,6 +20,7 @@ import com.oa.automation.domain.model.JourneyEdition
 import com.oa.automation.domain.model.JourneyEditionStatus
 import com.oa.automation.domain.model.PublishedPost
 import com.oa.automation.domain.model.PublishedPostStatus
+import com.oa.automation.domain.model.CommunitySyncStatus
 import com.oa.automation.domain.model.ReportTemplateConfig
 import com.oa.automation.domain.repository.JourneyRepository
 import com.oa.automation.domain.repository.MeetingRepository
@@ -27,6 +28,7 @@ import com.oa.automation.domain.repository.ReportRepository
 import com.oa.automation.domain.repository.StageDraftRepository
 import com.oa.automation.domain.repository.JourneyEditionRepository
 import com.oa.automation.domain.repository.PublishedPostRepository
+import com.oa.automation.domain.repository.CommunitySyncRepository
 import com.oa.automation.application.usecase.GenerateStageDraftUseCase
 import com.oa.automation.application.usecase.GenerateJourneyEditionUseCase
 import com.oa.automation.application.usecase.CreatePublishedPostSnapshotUseCase
@@ -107,6 +109,7 @@ data class RecordingUiState(
     val isSavingJourneyEdition: Boolean = false,
     val journeyEditionEditorVisible: Boolean = false,
     val latestPublishedPost: PublishedPost? = null,
+    val communitySyncState: com.oa.automation.domain.model.CommunitySyncState? = null,
     val isCreatingPublishedPost: Boolean = false,
     val isSavingPublishedPost: Boolean = false,
     val publishedPostReviewVisible: Boolean = false,
@@ -183,6 +186,7 @@ internal fun RecordingUiState.resetForMeetingChange(): RecordingUiState = copy(
     isSavingJourneyEdition = false,
     journeyEditionEditorVisible = false,
     latestPublishedPost = null,
+    communitySyncState = null,
     isCreatingPublishedPost = false,
     isSavingPublishedPost = false,
     publishedPostReviewVisible = false,
@@ -242,6 +246,7 @@ class RecordingViewModel(
     private val generateStageDraftUseCase: GenerateStageDraftUseCase,
     private val generateJourneyEditionUseCase: GenerateJourneyEditionUseCase,
     private val createPublishedPostSnapshotUseCase: CreatePublishedPostSnapshotUseCase,
+    private val communitySyncRepository: CommunitySyncRepository,
     context: Context
 ) : ViewModel() {
 
@@ -263,6 +268,7 @@ class RecordingViewModel(
     private var stageDraftCollectionJob: Job? = null
     private var journeyEditionCollectionJob: Job? = null
     private var publishedPostCollectionJob: Job? = null
+    private var communitySyncCollectionJob: Job? = null
     private var transcriptionCollectionJob: Job? = null
     private var reportCollectionJob: Job? = null
     private var pendingRecordingStartJob: Job? = null
@@ -415,6 +421,8 @@ class RecordingViewModel(
             journeyEditionCollectionJob = null
             publishedPostCollectionJob?.cancel()
             publishedPostCollectionJob = null
+            communitySyncCollectionJob?.cancel()
+            communitySyncCollectionJob = null
             resetStreamingPreviewState()
             _uiState.value = _uiState.value.resetForMeetingChange()
         }
@@ -498,6 +506,8 @@ class RecordingViewModel(
         journeyEditionCollectionJob = null
         publishedPostCollectionJob?.cancel()
         publishedPostCollectionJob = null
+        communitySyncCollectionJob?.cancel()
+        communitySyncCollectionJob = null
         journeyCollectionJob = viewModelScope.launch {
             journeyRepository.observeByMeetingId(meetingId).collect journeyUpdate@ { journey ->
                 if (!isCurrentMeeting(meetingId)) return@journeyUpdate
@@ -515,6 +525,7 @@ class RecordingViewModel(
                         isSavingJourneyEdition = false,
                         journeyEditionEditorVisible = false,
                         latestPublishedPost = null,
+                        communitySyncState = null,
                         isCreatingPublishedPost = false,
                         isSavingPublishedPost = false,
                         publishedPostReviewVisible = false,
@@ -539,6 +550,24 @@ class RecordingViewModel(
                     publishedPostRepository.observeLatest(journeyId).collect { post ->
                         if (isCurrentMeeting(meetingId) && _uiState.value.journey?.id == journeyId) {
                             _uiState.update { it.copy(latestPublishedPost = post) }
+                            communitySyncCollectionJob?.cancel()
+                            communitySyncCollectionJob = post?.let { observedPost ->
+                                viewModelScope.launch {
+                                    communitySyncRepository.observe(observedPost.id).collect { syncState ->
+                                        if (isCurrentMeeting(meetingId) &&
+                                            _uiState.value.latestPublishedPost?.id == observedPost.id
+                                        ) {
+                                            _uiState.update {
+                                                it.copy(
+                                                    communitySyncState = syncState,
+                                                    journeyStatusMessage = syncState?.status.toJourneyStatusMessage()
+                                                        ?: it.journeyStatusMessage
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -1500,13 +1529,18 @@ class RecordingViewModel(
             )
             result.fold(
                 onSuccess = { ready ->
+                    val syncResult = communitySyncRepository.enqueueUpload(ready.id)
                     if (isCurrentMeeting(meetingId)) {
                         _uiState.update {
                             it.copy(
                                 isSavingPublishedPost = false,
                                 latestPublishedPost = ready,
                                 publishedPostReviewVisible = false,
-                                journeyStatusMessage = "社区发布预览已就绪"
+                                journeyStatusMessage = if (syncResult.isSuccess) {
+                                    "社区发布预览已就绪，等待同步"
+                                } else {
+                                    "社区发布预览已就绪"
+                                }
                             )
                         }
                     }
@@ -1533,13 +1567,18 @@ class RecordingViewModel(
         viewModelScope.launch {
             publishedPostRepository.withdraw(post.id).fold(
                 onSuccess = { withdrawn ->
+                    val syncResult = communitySyncRepository.requestWithdraw(withdrawn.id)
                     if (isCurrentMeeting(meetingId)) {
                         _uiState.update {
                             it.copy(
                                 isSavingPublishedPost = false,
                                 latestPublishedPost = withdrawn,
                                 publishedPostReviewVisible = false,
-                                journeyStatusMessage = "发布准备已撤回"
+                                journeyStatusMessage = if (syncResult.isSuccess) {
+                                    "发布准备已撤回，正在同步撤回状态"
+                                } else {
+                                    "发布准备已撤回"
+                                }
                             )
                         }
                     }
@@ -1550,6 +1589,38 @@ class RecordingViewModel(
                             it.copy(
                                 isSavingPublishedPost = false,
                                 error = "撤回发布准备失败: ${error.message ?: "未知错误"}"
+                            )
+                        }
+                    }
+                }
+            )
+        }
+    }
+
+    fun publishPublishedPost() {
+        val post = _uiState.value.latestPublishedPost ?: return
+        if (post.status != PublishedPostStatus.READY || _uiState.value.isSavingPublishedPost) return
+        val meetingId = currentMeetingId
+        _uiState.update { it.copy(isSavingPublishedPost = true, error = null) }
+        viewModelScope.launch {
+            communitySyncRepository.requestPublish(post.id).fold(
+                onSuccess = {
+                    if (isCurrentMeeting(meetingId)) {
+                        _uiState.update {
+                            it.copy(
+                                isSavingPublishedPost = false,
+                                publishedPostReviewVisible = false,
+                                journeyStatusMessage = "已加入社区发布队列"
+                            )
+                        }
+                    }
+                },
+                onFailure = { error ->
+                    if (isCurrentMeeting(meetingId)) {
+                        _uiState.update {
+                            it.copy(
+                                isSavingPublishedPost = false,
+                                error = "加入社区发布队列失败: ${error.message ?: "未知错误"}"
                             )
                         }
                     }
@@ -2209,6 +2280,7 @@ class RecordingViewModel(
         stageDraftCollectionJob?.cancel()
         journeyEditionCollectionJob?.cancel()
         publishedPostCollectionJob?.cancel()
+        communitySyncCollectionJob?.cancel()
         transcriptionCollectionJob?.cancel()
         reportCollectionJob?.cancel()
         audioRefreshJob?.cancel()
@@ -2217,6 +2289,18 @@ class RecordingViewModel(
         pendingExternalTextMeetingId = null
         recordingTimerJob?.cancel()
         super.onCleared()
+    }
+
+    private fun CommunitySyncStatus?.toJourneyStatusMessage(): String? = when (this) {
+        CommunitySyncStatus.PENDING -> "社区内容等待同步"
+        CommunitySyncStatus.UPLOADING -> "正在同步社区私有草稿"
+        CommunitySyncStatus.PRIVATE_DRAFT -> "社区私有草稿已同步"
+        CommunitySyncStatus.PUBLISHING -> "正在发布社区内容"
+        CommunitySyncStatus.PUBLISHED -> "社区内容已发布"
+        CommunitySyncStatus.WITHDRAWING -> "正在同步撤回状态"
+        CommunitySyncStatus.WITHDRAWN -> "社区内容已撤回"
+        CommunitySyncStatus.FAILED -> "社区同步失败，可稍后重试"
+        null -> null
     }
 
     private fun enqueueReportGeneration(meetingId: String) {
