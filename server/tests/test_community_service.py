@@ -249,6 +249,48 @@ class CommunityServiceTests(unittest.TestCase):
             [],
         )
 
+    def test_public_cursor_pagination_is_stable_and_preserves_filter_scope(self) -> None:
+        created_ids = []
+        for index in range(3):
+            created, _ = self.service.create_private_draft(
+                self.owner_id,
+                self.snapshot(
+                    client_snapshot_id=f"pagination-{index}",
+                    destination="上海",
+                    tags=("科普",),
+                ),
+            )
+            self.service.publish(self.owner_id, created["id"])
+            self.service.review_post(
+                created["id"],
+                decision="approved",
+                reason="",
+                reviewed_by="reviewer-01",
+            )
+            created_ids.append(created["id"])
+
+        first_page = self.service.list_public_posts(
+            limit=2,
+            destination="上海",
+            tag="科普",
+        )
+        self.assertEqual(len(first_page["items"]), 2)
+        self.assertIsNotNone(first_page["next_cursor"])
+
+        second_page = self.service.list_public_posts(
+            limit=2,
+            cursor=first_page["next_cursor"],
+            destination="上海",
+            tag="科普",
+        )
+        first_ids = [item["id"] for item in first_page["items"]]
+        second_ids = [item["id"] for item in second_page["items"]]
+        self.assertTrue(set(first_ids).issubset(set(created_ids)))
+        self.assertTrue(set(second_ids).issubset(set(created_ids)))
+        self.assertTrue(set(first_ids).isdisjoint(second_ids))
+        self.assertEqual(len(second_ids), 1)
+        self.assertIsNone(second_page["next_cursor"])
+
     def test_resumable_media_is_sanitized_and_public_only_after_review(self) -> None:
         created, _ = self.service.create_private_draft(self.owner_id, self.snapshot())
         self.service.publish(self.owner_id, created["id"])
