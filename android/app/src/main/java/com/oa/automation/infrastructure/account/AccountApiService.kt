@@ -18,6 +18,7 @@ import com.oa.automation.domain.model.CommunityDeleteResult
 import com.oa.automation.domain.model.CommunityInteractionState
 import com.oa.automation.domain.model.CommunityCommentReport
 import com.oa.automation.domain.model.CommunityCommentReportQueueItem
+import com.oa.automation.domain.model.CommunityOperationsSummary
 import com.oa.automation.domain.model.MyCommunityPost
 import com.oa.automation.domain.model.PublicCommunityPost
 import java.io.IOException
@@ -325,6 +326,17 @@ class AccountApiService(
         method = "POST",
         jsonBody = gson.toJson(mapOf("decision" to decision))
     ) { body -> gson.fromJson(body, CommunityDeleteResult::class.java) }
+
+    suspend fun adminCommunityOperationsSummary(
+        endpoint: String,
+        token: String,
+        hours: Int = 24
+    ): Result<CommunityOperationsSummary> = request(
+        endpoint = endpoint,
+        path = "account/community/operations-summary?hours=${hours.coerceIn(1, 168)}",
+        token = token,
+        method = "GET"
+    ) { body -> gson.fromJson(body, CommunityOperationsSummary::class.java) }
 
     suspend fun adminCommunityModerationQueue(
         endpoint: String,
@@ -682,12 +694,16 @@ private fun Response.toAccountError(body: String): String {
     val detail = runCatching {
         JsonParser.parseString(body).asJsonObject.get("detail")?.asString.orEmpty()
     }.getOrDefault("").take(200)
+    val retryAfter = header("Retry-After")?.toIntOrNull()?.coerceAtLeast(1)
     return when (code) {
         400 -> detail.ifBlank { "请求内容不正确" }
         401 -> detail.ifBlank { "用户名、密码或登录会话无效" }
         403 -> detail.ifBlank { "当前账号没有操作权限" }
         404 -> detail.ifBlank { "请求的账户资源不存在" }
         409 -> detail.ifBlank { "账号或订单状态冲突" }
+        429 -> detail.ifBlank {
+            retryAfter?.let { "操作太频繁，请在 $it 秒后重试" } ?: "操作太频繁，请稍后重试"
+        }
         422 -> detail.ifBlank { "社区快照字段不符合要求" }
         503 -> "账户服务暂时不可用"
         else -> detail.ifBlank { "账户服务请求失败（HTTP $code）" }

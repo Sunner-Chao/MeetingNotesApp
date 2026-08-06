@@ -371,10 +371,19 @@ class CommunityApiServiceTest {
         assertEquals("Bearer session-token", reportRequest.getHeader("Authorization"))
         assertTrue(reportRequest.body.readUtf8().contains("\"category\":\"privacy\""))
 
-        val queue = service.adminCommunityModerationQueue(endpoint, "admin-token", "reported").getOrThrow()
+        val queue = service.adminCommunityModerationQueue(
+            endpoint,
+            "admin-token",
+            status = "reported",
+            cursor = "moderation-cursor",
+            limit = 9
+        ).getOrThrow()
         assertEquals(1, queue.items.single().openReportCount)
         val queueRequest = server.takeRequest()
-        assertEquals("/api/account/community/moderation?limit=20&status=reported", queueRequest.path)
+        assertEquals(
+            "/api/account/community/moderation?limit=9&cursor=moderation-cursor&status=reported",
+            queueRequest.path
+        )
         assertEquals("Bearer admin-token", queueRequest.getHeader("Authorization"))
 
         service.moderateCommunityPost(endpoint, "admin-token", "post-1", "approved", "").getOrThrow()
@@ -382,5 +391,41 @@ class CommunityApiServiceTest {
         assertEquals("/api/account/community/moderation/post-1", moderationRequest.path)
         assertEquals("Bearer admin-token", moderationRequest.getHeader("Authorization"))
         assertTrue(moderationRequest.body.readUtf8().contains("\"decision\":\"approved\""))
+    }
+
+    @Test
+    fun operationsSummaryAndRateLimitErrorsRemainCompact() = runBlocking {
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """{"window_hours":24,"generated_at":100,"allowed_action_count":18,"limited_action_count":2,"pending_post_count":3,"reported_post_count":1,"open_comment_report_count":4}"""
+            )
+        )
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(429)
+                .setHeader("Retry-After", "12")
+                .setBody("{}")
+        )
+        val endpoint = server.url("/api").toString()
+
+        val summary = service.adminCommunityOperationsSummary(
+            endpoint,
+            "admin-token",
+            hours = 24
+        ).getOrThrow()
+        assertEquals(3, summary.pendingPostCount)
+        assertEquals(4, summary.openCommentReportCount)
+        assertEquals(2, summary.limitedActionCount)
+        val summaryRequest = server.takeRequest()
+        assertEquals("/api/account/community/operations-summary?hours=24", summaryRequest.path)
+        assertEquals("Bearer admin-token", summaryRequest.getHeader("Authorization"))
+
+        val limited = service.toggleCommunityLike(
+            endpoint,
+            "session-token",
+            "post-1"
+        ).exceptionOrNull()
+        assertTrue(limited?.message.orEmpty().contains("12 秒后重试"))
+        assertEquals("/api/account/community/posts/post-1/like", server.takeRequest().path)
     }
 }

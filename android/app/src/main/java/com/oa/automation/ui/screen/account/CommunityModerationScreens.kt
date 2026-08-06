@@ -3,6 +3,8 @@ package com.oa.automation.ui.screen.account
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -47,6 +49,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.oa.automation.domain.model.CommunityCommentReportQueueItem
 import com.oa.automation.domain.model.CommunityModerationItem
+import com.oa.automation.domain.model.CommunityOperationsSummary
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -152,6 +155,7 @@ fun CommunityModerationScreen(
                     text = { Text("评论") }
                 )
             }
+            state.summary?.let { ModerationSummary(it) }
             if (isPostSection) {
                 TabRow(selectedTabIndex = moderationFilters.indexOf(state.filter).coerceAtLeast(0)) {
                     moderationFilters.forEach { filter ->
@@ -198,9 +202,65 @@ fun CommunityModerationScreen(
                             )
                         }
                     }
+                    val nextCursor = if (isPostSection) {
+                        state.nextPostCursor
+                    } else {
+                        state.nextCommentReportCursor
+                    }
+                    if (nextCursor != null) {
+                        item {
+                            TextButton(
+                                onClick = viewModel::loadMore,
+                                enabled = !state.isLoadingMore,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                if (state.isLoadingMore) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(18.dp),
+                                        strokeWidth = 2.dp
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                }
+                                Text(if (state.isLoadingMore) "加载中" else "加载更多")
+                            }
+                        }
+                    }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ModerationSummary(summary: CommunityOperationsSummary) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        horizontalArrangement = Arrangement.spacedBy(20.dp)
+    ) {
+        ModerationSummaryMetric("待审", summary.pendingPostCount)
+        ModerationSummaryMetric("帖子举报", summary.reportedPostCount)
+        ModerationSummaryMetric("评论举报", summary.openCommentReportCount)
+        ModerationSummaryMetric("${summary.windowHours}h 限流", summary.limitedActionCount)
+    }
+}
+
+@Composable
+private fun ModerationSummaryMetric(label: String, value: Int) {
+    Column(modifier = Modifier.width(72.dp)) {
+        Text(
+            value.toString(),
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold
+        )
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1
+        )
     }
 }
 

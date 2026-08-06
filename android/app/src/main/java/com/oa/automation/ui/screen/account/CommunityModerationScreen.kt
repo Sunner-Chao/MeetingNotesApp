@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.oa.automation.data.local.ConfigDataStore
 import com.oa.automation.domain.model.CommunityCommentReportQueueItem
 import com.oa.automation.domain.model.CommunityModerationItem
+import com.oa.automation.domain.model.CommunityOperationsSummary
 import com.oa.automation.infrastructure.account.AccountApiService
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -20,8 +21,12 @@ data class CommunityModerationUiState(
     val filter: String = "pending",
     val items: List<CommunityModerationItem> = emptyList(),
     val commentReports: List<CommunityCommentReportQueueItem> = emptyList(),
+    val summary: CommunityOperationsSummary? = null,
+    val nextPostCursor: String? = null,
+    val nextCommentReportCursor: String? = null,
     val isAdmin: Boolean = false,
     val isLoading: Boolean = false,
+    val isLoadingMore: Boolean = false,
     val processingPostId: String? = null,
     val processingReportId: String? = null,
     val error: String? = null,
@@ -40,52 +45,126 @@ class CommunityModerationViewModel(
 
     fun selectSection(section: CommunityModerationSection) {
         val state = _uiState.value
-        if (state.section == section || state.isLoading) return
+        if (state.section == section || state.isLoading || state.isLoadingMore) return
         _uiState.update { it.copy(section = section, error = null, message = null) }
         load()
     }
 
     fun load(filter: String = _uiState.value.filter) {
-        if (_uiState.value.isLoading) return
+        loadPage(filter = filter, cursor = null, append = false)
+    }
+
+    fun loadMore() {
+        val state = _uiState.value
+        if (state.isLoading || state.isLoadingMore) return
+        val cursor = if (state.section == CommunityModerationSection.POSTS) {
+            state.nextPostCursor
+        } else {
+            state.nextCommentReportCursor
+        } ?: return
+        loadPage(filter = state.filter, cursor = cursor, append = true)
+    }
+
+    private fun loadPage(filter: String, cursor: String?, append: Boolean) {
+        val state = _uiState.value
+        if (state.isLoading || state.isLoadingMore) return
         viewModelScope.launch {
             val section = _uiState.value.section
             val session = configDataStore.authSessionFlow.first()
             val isAdmin = session?.user?.isAdmin == true
-            _uiState.update { it.copy(filter = filter, isAdmin = isAdmin, isLoading = true, error = null) }
+            _uiState.update {
+                it.copy(
+                    filter = filter,
+                    isAdmin = isAdmin,
+                    isLoading = !append,
+                    isLoadingMore = append,
+                    error = null
+                )
+            }
             if (!isAdmin || session == null) {
-                _uiState.update { it.copy(isLoading = false, error = "仅管理员可访问审核工作台") }
+                _uiState.update {
+                    it.copy(
+                        isLoading = false,
+                        isLoadingMore = false,
+                        error = "仅管理员可访问审核工作台"
+                    )
+                }
                 return@launch
             }
             val endpoint = configDataStore.accountEndpointFlow.first()
+            var loadedSuccessfully = false
             if (section == CommunityModerationSection.POSTS) {
                 accountApiService.adminCommunityModerationQueue(
                     endpoint = endpoint,
                     token = session.accessToken,
-                    status = filter
+                    status = filter,
+                    cursor = cursor
                 ).fold(
                     onSuccess = { page ->
-                        _uiState.update { it.copy(items = page.items, isLoading = false) }
+                        loadedSuccessfully = true
+                        _uiState.update { current ->
+                            current.copy(
+                                items = if (append) {
+                                    (current.items + page.items).distinctBy(CommunityModerationItem::id)
+                                } else {
+                                    page.items
+                                },
+                                nextPostCursor = page.nextCursor,
+                                isLoading = false,
+                                isLoadingMore = false
+                            )
+                        }
                     },
                     onFailure = { error ->
                         _uiState.update {
-                            it.copy(isLoading = false, error = error.message ?: "审核队列加载失败")
+                            it.copy(
+                                isLoading = false,
+                                isLoadingMore = false,
+                                error = error.message ?: "审核队列加载失败"
+                            )
                         }
                     }
                 )
             } else {
                 accountApiService.adminCommunityCommentReports(
                     endpoint = endpoint,
-                    token = session.accessToken
+                    token = session.accessToken,
+                    cursor = cursor
                 ).fold(
                     onSuccess = { page ->
-                        _uiState.update { it.copy(commentReports = page.items, isLoading = false) }
+                        loadedSuccessfully = true
+                        _uiState.update { current ->
+                            current.copy(
+                                commentReports = if (append) {
+                                    (current.commentReports + page.items)
+                                        .distinctBy(CommunityCommentReportQueueItem::id)
+                                } else {
+                                    page.items
+                                },
+                                nextCommentReportCursor = page.nextCursor,
+                                isLoading = false,
+                                isLoadingMore = false
+                            )
+                        }
                     },
                     onFailure = { error ->
                         _uiState.update {
-                            it.copy(isLoading = false, error = error.message ?: "评论举报队列加载失败")
+                            it.copy(
+                                isLoading = false,
+                                isLoadingMore = false,
+                                error = error.message ?: "评论举报队列加载失败"
+                            )
                         }
                     }
                 )
+            }
+            if (!append && loadedSuccessfully) {
+                accountApiService.adminCommunityOperationsSummary(
+                    endpoint = endpoint,
+                    token = session.accessToken
+                ).onSuccess { summary ->
+                    _uiState.update { it.copy(summary = summary) }
+                }
             }
         }
     }
@@ -142,6 +221,7 @@ class CommunityModerationViewModel(
     private fun resolveCommentReport(reportId: String, decision: String) {
         val state = _uiState.value
         if (state.processingReportId != null) return
+        val targetCommentId = state.commentReports.firstOrNull { it.id == reportId }?.commentId
         viewModelScope.launch {
             val session = configDataStore.authSessionFlow.first()
             if (session?.user?.isAdmin != true) {
@@ -161,7 +241,11 @@ class CommunityModerationViewModel(
                 onSuccess = {
                     _uiState.update { current ->
                         current.copy(
-                            commentReports = current.commentReports.filterNot { it.id == reportId },
+                            commentReports = current.commentReports.filterNot {
+                                it.id == reportId ||
+                                    (decision == "delete" && targetCommentId != null &&
+                                        it.commentId == targetCommentId)
+                            },
                             processingReportId = null,
                             deleteReportId = null,
                             message = if (decision == "delete") "评论已删除" else "评论已保留"

@@ -113,6 +113,16 @@ data class CommunityCommentReportQueueItem(
     @SerializedName("updated_at") val updatedAt: Long = 0
 )
 
+data class CommunityOperationsSummary(
+    @SerializedName("window_hours") val windowHours: Int = 24,
+    @SerializedName("generated_at") val generatedAt: Long = 0,
+    @SerializedName("allowed_action_count") val allowedActionCount: Int = 0,
+    @SerializedName("limited_action_count") val limitedActionCount: Int = 0,
+    @SerializedName("pending_post_count") val pendingPostCount: Int = 0,
+    @SerializedName("reported_post_count") val reportedPostCount: Int = 0,
+    @SerializedName("open_comment_report_count") val openCommentReportCount: Int = 0
+)
+
 data class CommunityModerationReport(
     val category: String,
     val reason: String = "",
