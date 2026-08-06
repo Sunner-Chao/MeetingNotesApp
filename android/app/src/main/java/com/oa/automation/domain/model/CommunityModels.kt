@@ -22,7 +22,9 @@ data class PublicCommunityPost(
     @SerializedName("travel_days") val travelDays: Int = 0,
     val stages: List<String> = emptyList(),
     val tags: List<String> = emptyList(),
-    val pois: List<String> = emptyList()
+    val pois: List<String> = emptyList(),
+    @SerializedName("like_count") val likeCount: Int = 0,
+    @SerializedName("comment_count") val commentCount: Int = 0
 )
 
 data class PublicCommunityMedia(
@@ -63,6 +65,28 @@ data class CommunityReport(
     val status: String = "open",
     @SerializedName("created_at") val createdAt: Long = 0,
     @SerializedName("updated_at") val updatedAt: Long = 0
+)
+
+data class CommunityInteractionState(
+    @SerializedName("post_id") val postId: String,
+    val liked: Boolean = false,
+    val bookmarked: Boolean = false,
+    @SerializedName("like_count") val likeCount: Int = 0,
+    @SerializedName("comment_count") val commentCount: Int = 0
+)
+
+data class CommunityComment(
+    val id: String,
+    @SerializedName("post_id") val postId: String,
+    val content: String,
+    @SerializedName("author_label") val authorLabel: String = "研学同行者",
+    @SerializedName("created_at") val createdAt: Long = 0,
+    @SerializedName("can_delete") val canDelete: Boolean = false
+)
+
+data class CommunityDeleteResult(
+    val id: String,
+    val status: String
 )
 
 data class CommunityModerationReport(

@@ -32,7 +32,14 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FilterAlt
 import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.BookmarkBorder
+import androidx.compose.material.icons.filled.ChatBubbleOutline
+import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -69,6 +76,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.oa.automation.domain.model.MyCommunityPost
+import com.oa.automation.domain.model.CommunityComment
+import com.oa.automation.domain.model.CommunityInteractionState
 import com.oa.automation.domain.model.PublicCommunityPost
 import java.text.SimpleDateFormat
 import java.net.URL
@@ -602,8 +611,19 @@ fun CommunityPostDetailScreen(
                 }
                 CommunityPostDetail(
                     post = post,
+                    interaction = uiState.interaction,
+                    comments = uiState.comments,
+                    isLoadingComments = uiState.isLoadingComments,
+                    isInteracting = uiState.isInteracting,
+                    isSubmittingComment = uiState.isSubmittingComment,
+                    commentDraft = uiState.commentDraft,
                     mediaBaseUrl = uiState.mediaBaseUrl,
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.weight(1f),
+                    onToggleLike = { viewModel.toggleLike(postId) },
+                    onToggleBookmark = { viewModel.toggleBookmark(postId) },
+                    onCommentDraftChange = viewModel::updateCommentDraft,
+                    onSubmitComment = { viewModel.submitComment(postId) },
+                    onDeleteComment = viewModel::deleteComment
                 )
             }
             else -> CommunityEmptyState(
@@ -687,8 +707,19 @@ private fun CommunityReportDialog(
 @Composable
 private fun CommunityPostDetail(
     post: PublicCommunityPost,
+    interaction: CommunityInteractionState?,
+    comments: List<CommunityComment>,
+    isLoadingComments: Boolean,
+    isInteracting: Boolean,
+    isSubmittingComment: Boolean,
+    commentDraft: String,
     mediaBaseUrl: String,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onToggleLike: () -> Unit,
+    onToggleBookmark: () -> Unit,
+    onCommentDraftChange: (String) -> Unit,
+    onSubmitComment: () -> Unit,
+    onDeleteComment: (String) -> Unit
 ) {
     Column(
         modifier = modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
@@ -714,8 +745,119 @@ private fun CommunityPostDetail(
             }
         }
         CommunityPostMetadata(post)
+        CommunityInteractionBar(
+            interaction = interaction,
+            isBusy = isInteracting,
+            onToggleLike = onToggleLike,
+            onToggleBookmark = onToggleBookmark
+        )
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         Text(post.content, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface)
+        CommunityComments(
+            comments = comments,
+            isLoading = isLoadingComments,
+            isSubmitting = isSubmittingComment,
+            draft = commentDraft,
+            onDraftChange = onCommentDraftChange,
+            onSubmit = onSubmitComment,
+            onDelete = onDeleteComment,
+            commentCount = interaction?.commentCount ?: post.commentCount
+        )
+    }
+}
+
+@Composable
+private fun CommunityInteractionBar(
+    interaction: CommunityInteractionState?,
+    isBusy: Boolean,
+    onToggleLike: () -> Unit,
+    onToggleBookmark: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        IconButton(onClick = onToggleLike, enabled = !isBusy) {
+            Icon(
+                imageVector = if (interaction?.liked == true) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                contentDescription = if (interaction?.liked == true) "取消点赞" else "点赞",
+                tint = if (interaction?.liked == true) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Text((interaction?.likeCount ?: 0).toString(), style = MaterialTheme.typography.labelMedium)
+        Icon(Icons.Default.ChatBubbleOutline, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 10.dp).size(18.dp))
+        Text((interaction?.commentCount ?: 0).toString(), style = MaterialTheme.typography.labelMedium)
+        Spacer(Modifier.weight(1f))
+        IconButton(onClick = onToggleBookmark, enabled = !isBusy) {
+            Icon(
+                imageVector = if (interaction?.bookmarked == true) Icons.Default.Bookmark else Icons.Default.BookmarkBorder,
+                contentDescription = if (interaction?.bookmarked == true) "取消收藏" else "收藏",
+                tint = if (interaction?.bookmarked == true) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+private fun CommunityComments(
+    comments: List<CommunityComment>,
+    isLoading: Boolean,
+    isSubmitting: Boolean,
+    draft: String,
+    onDraftChange: (String) -> Unit,
+    onSubmit: () -> Unit,
+    onDelete: (String) -> Unit,
+    commentCount: Int
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("评论 $commentCount", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+        if (isLoading) {
+            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+        }
+        if (comments.isEmpty() && !isLoading) {
+            Text("还没有评论", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+        }
+        comments.forEach { comment ->
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                shape = RoundedCornerShape(7.dp)
+            ) {
+                Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(comment.authorLabel, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(Modifier.width(8.dp))
+                        Text(formatCommunityDate(comment.createdAt), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                        if (comment.canDelete) {
+                            Spacer(Modifier.weight(1f))
+                            IconButton(onClick = { onDelete(comment.id) }, enabled = !isSubmitting, modifier = Modifier.size(28.dp)) {
+                                Icon(Icons.Default.DeleteOutline, contentDescription = "删除评论", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.outline)
+                            }
+                        }
+                    }
+                    Text(comment.content, style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+        }
+        OutlinedTextField(
+            value = draft,
+            onValueChange = onDraftChange,
+            modifier = Modifier.fillMaxWidth(),
+            minLines = 2,
+            maxLines = 4,
+            placeholder = { Text("写下你的观察") },
+            trailingIcon = {
+                IconButton(onClick = onSubmit, enabled = draft.isNotBlank() && !isSubmitting) {
+                    if (isSubmitting) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    } else {
+                        Icon(Icons.Default.Send, contentDescription = "发表评论")
+                    }
+                }
+            },
+            shape = RoundedCornerShape(8.dp)
+        )
     }
 }
 

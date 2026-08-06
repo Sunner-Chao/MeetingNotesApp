@@ -13,6 +13,9 @@ import com.oa.automation.domain.model.PublishedPost
 import com.oa.automation.domain.model.CommunityPostPage
 import com.oa.automation.domain.model.CommunityModerationItem
 import com.oa.automation.domain.model.CommunityReport
+import com.oa.automation.domain.model.CommunityComment
+import com.oa.automation.domain.model.CommunityDeleteResult
+import com.oa.automation.domain.model.CommunityInteractionState
 import com.oa.automation.domain.model.MyCommunityPost
 import com.oa.automation.domain.model.PublicCommunityPost
 import java.io.IOException
@@ -176,6 +179,93 @@ class AccountApiService(
         method = "POST",
         jsonBody = gson.toJson(mapOf("category" to category, "reason" to reason))
     ) { body -> gson.fromJson(body, CommunityReport::class.java) }
+
+    suspend fun communityInteractions(
+        endpoint: String,
+        token: String,
+        postId: String
+    ): Result<CommunityInteractionState> = request(
+        endpoint = endpoint,
+        path = "account/community/posts/$postId/interactions",
+        token = token,
+        method = "GET"
+    ) { body -> gson.fromJson(body, CommunityInteractionState::class.java) }
+
+    suspend fun toggleCommunityLike(
+        endpoint: String,
+        token: String,
+        postId: String
+    ): Result<CommunityInteractionState> = request(
+        endpoint = endpoint,
+        path = "account/community/posts/$postId/like",
+        token = token,
+        method = "POST",
+        jsonBody = "{}"
+    ) { body -> gson.fromJson(body, CommunityInteractionState::class.java) }
+
+    suspend fun toggleCommunityBookmark(
+        endpoint: String,
+        token: String,
+        postId: String
+    ): Result<CommunityInteractionState> = request(
+        endpoint = endpoint,
+        path = "account/community/posts/$postId/bookmark",
+        token = token,
+        method = "POST",
+        jsonBody = "{}"
+    ) { body -> gson.fromJson(body, CommunityInteractionState::class.java) }
+
+    suspend fun publicCommunityComments(
+        endpoint: String,
+        postId: String,
+        cursor: String? = null,
+        limit: Int = 50
+    ): Result<CommunityPostPage<CommunityComment>> = request(
+        endpoint = endpoint,
+        path = communityListPath("community/posts/$postId/comments", cursor, limit),
+        method = "GET"
+    ) { body ->
+        gson.fromJson(body, object : TypeToken<CommunityPostPage<CommunityComment>>() {}.type)
+    }
+
+    suspend fun accountCommunityComments(
+        endpoint: String,
+        token: String,
+        postId: String,
+        cursor: String? = null,
+        limit: Int = 50
+    ): Result<CommunityPostPage<CommunityComment>> = request(
+        endpoint = endpoint,
+        path = communityListPath("account/community/posts/$postId/comments", cursor, limit),
+        token = token,
+        method = "GET"
+    ) { body ->
+        gson.fromJson(body, object : TypeToken<CommunityPostPage<CommunityComment>>() {}.type)
+    }
+
+    suspend fun createCommunityComment(
+        endpoint: String,
+        token: String,
+        postId: String,
+        content: String
+    ): Result<CommunityComment> = request(
+        endpoint = endpoint,
+        path = "account/community/posts/$postId/comments",
+        token = token,
+        method = "POST",
+        jsonBody = gson.toJson(mapOf("content" to content))
+    ) { body -> gson.fromJson(body, CommunityComment::class.java) }
+
+    suspend fun deleteCommunityComment(
+        endpoint: String,
+        token: String,
+        commentId: String
+    ): Result<CommunityDeleteResult> = request(
+        endpoint = endpoint,
+        path = "account/community/comments/$commentId",
+        token = token,
+        method = "DELETE"
+    ) { body -> gson.fromJson(body, CommunityDeleteResult::class.java) }
 
     suspend fun adminCommunityModerationQueue(
         endpoint: String,

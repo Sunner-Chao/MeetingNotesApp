@@ -5,6 +5,8 @@ import androidx.lifecycle.viewModelScope
 import com.oa.automation.data.local.ConfigDataStore
 import com.oa.automation.domain.model.MyCommunityPost
 import com.oa.automation.domain.model.CommunityFacets
+import com.oa.automation.domain.model.CommunityComment
+import com.oa.automation.domain.model.CommunityInteractionState
 import com.oa.automation.domain.model.PublicCommunityPost
 import com.oa.automation.infrastructure.account.AccountApiService
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -206,8 +208,15 @@ private fun communityMediaBaseUrl(endpoint: String): String {
 
 data class CommunityPostDetailUiState(
     val post: PublicCommunityPost? = null,
+    val interaction: CommunityInteractionState? = null,
+    val comments: List<CommunityComment> = emptyList(),
+    val commentsNextCursor: String? = null,
     val mediaBaseUrl: String = "",
     val isLoading: Boolean = true,
+    val isLoadingComments: Boolean = false,
+    val isInteracting: Boolean = false,
+    val isSubmittingComment: Boolean = false,
+    val commentDraft: String = "",
     val error: String? = null,
     val showReportDialog: Boolean = false,
     val reportCategory: String = "privacy",
@@ -232,10 +241,17 @@ class CommunityPostDetailViewModel(
                     _uiState.update {
                         it.copy(
                             post = post,
+                            interaction = CommunityInteractionState(
+                                postId = post.id,
+                                likeCount = post.likeCount,
+                                commentCount = post.commentCount
+                            ),
                             mediaBaseUrl = communityMediaBaseUrl(endpoint),
                             isLoading = false
                         )
                     }
+                    loadComments(endpoint, postId)
+                    loadInteractions(endpoint, postId)
                 },
                 onFailure = { error ->
                     _uiState.update {
@@ -243,6 +259,139 @@ class CommunityPostDetailViewModel(
                             isLoading = false,
                             error = error.message ?: "内容暂不可查看"
                         )
+                    }
+                }
+            )
+        }
+    }
+
+    fun toggleLike(postId: String) {
+        toggleInteraction { endpoint, token ->
+            accountApiService.toggleCommunityLike(endpoint, token, postId)
+        }
+    }
+
+    fun toggleBookmark(postId: String) {
+        toggleInteraction { endpoint, token ->
+            accountApiService.toggleCommunityBookmark(endpoint, token, postId)
+        }
+    }
+
+    private fun toggleInteraction(
+        action: suspend (String, String) -> Result<CommunityInteractionState>
+    ) {
+        if (_uiState.value.isInteracting) return
+        viewModelScope.launch {
+            val session = configDataStore.authSessionFlow.first()
+            if (session == null) {
+                _uiState.update { it.copy(reportMessage = "登录后可参与互动") }
+                return@launch
+            }
+            val endpoint = configDataStore.accountEndpointFlow.first()
+            _uiState.update { it.copy(isInteracting = true, reportMessage = null) }
+            action(endpoint, session.accessToken).fold(
+                onSuccess = { state ->
+                    _uiState.update { it.copy(interaction = state, isInteracting = false) }
+                },
+                onFailure = { error ->
+                    _uiState.update {
+                        it.copy(isInteracting = false, reportMessage = error.message ?: "互动操作失败")
+                    }
+                }
+            )
+        }
+    }
+
+    private suspend fun loadInteractions(endpoint: String, postId: String) {
+        val session = configDataStore.authSessionFlow.first() ?: return
+        accountApiService.communityInteractions(endpoint, session.accessToken, postId)
+            .onSuccess { state -> _uiState.update { it.copy(interaction = state) } }
+    }
+
+    private suspend fun loadComments(endpoint: String, postId: String) {
+        _uiState.update { it.copy(isLoadingComments = true) }
+        val session = configDataStore.authSessionFlow.first()
+        val result = if (session == null) {
+            accountApiService.publicCommunityComments(endpoint, postId)
+        } else {
+            accountApiService.accountCommunityComments(endpoint, session.accessToken, postId)
+        }
+        result.fold(
+            onSuccess = { page ->
+                _uiState.update {
+                    it.copy(
+                        comments = page.items,
+                        commentsNextCursor = page.nextCursor,
+                        isLoadingComments = false
+                    )
+                }
+            },
+            onFailure = { error ->
+                _uiState.update {
+                    it.copy(isLoadingComments = false, reportMessage = error.message ?: "评论加载失败")
+                }
+            }
+        )
+    }
+
+    fun updateCommentDraft(value: String) {
+        _uiState.update { it.copy(commentDraft = value.take(1000), reportMessage = null) }
+    }
+
+    fun submitComment(postId: String) {
+        val content = _uiState.value.commentDraft.trim()
+        if (content.isBlank() || _uiState.value.isSubmittingComment) return
+        viewModelScope.launch {
+            val session = configDataStore.authSessionFlow.first()
+            if (session == null) {
+                _uiState.update { it.copy(reportMessage = "登录后可发表评论") }
+                return@launch
+            }
+            val endpoint = configDataStore.accountEndpointFlow.first()
+            _uiState.update { it.copy(isSubmittingComment = true, reportMessage = null) }
+            accountApiService.createCommunityComment(endpoint, session.accessToken, postId, content).fold(
+                onSuccess = { comment ->
+                    _uiState.update { state ->
+                        state.copy(
+                            comments = listOf(comment) + state.comments,
+                            commentDraft = "",
+                            isSubmittingComment = false,
+                            interaction = state.interaction?.copy(
+                                commentCount = state.interaction.commentCount + 1
+                            )
+                        )
+                    }
+                },
+                onFailure = { error ->
+                    _uiState.update {
+                        it.copy(isSubmittingComment = false, reportMessage = error.message ?: "评论发布失败")
+                    }
+                }
+            )
+        }
+    }
+
+    fun deleteComment(commentId: String) {
+        if (_uiState.value.isSubmittingComment) return
+        viewModelScope.launch {
+            val session = configDataStore.authSessionFlow.first() ?: return@launch
+            val endpoint = configDataStore.accountEndpointFlow.first()
+            _uiState.update { it.copy(isSubmittingComment = true, reportMessage = null) }
+            accountApiService.deleteCommunityComment(endpoint, session.accessToken, commentId).fold(
+                onSuccess = {
+                    _uiState.update { state ->
+                        state.copy(
+                            comments = state.comments.filterNot { it.id == commentId },
+                            isSubmittingComment = false,
+                            interaction = state.interaction?.copy(
+                                commentCount = (state.interaction.commentCount - 1).coerceAtLeast(0)
+                            )
+                        )
+                    }
+                },
+                onFailure = { error ->
+                    _uiState.update {
+                        it.copy(isSubmittingComment = false, reportMessage = error.message ?: "评论删除失败")
                     }
                 }
             )

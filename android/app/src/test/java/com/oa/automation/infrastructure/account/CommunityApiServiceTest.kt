@@ -147,6 +147,34 @@ class CommunityApiServiceTest {
     }
 
     @Test
+    fun interactionsAndCommentsUseAuthenticatedOwnerRoutes() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"post_id":"post-1","liked":false,"bookmarked":false,"like_count":2,"comment_count":1}"""))
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"post_id":"post-1","liked":true,"bookmarked":false,"like_count":3,"comment_count":1}"""))
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"post_id":"post-1","liked":true,"bookmarked":true,"like_count":3,"comment_count":1}"""))
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"items":[{"id":"comment-1","post_id":"post-1","content":"现场很有启发","author_label":"研学同行者","created_at":10,"can_delete":true}],"next_cursor":null}"""))
+        server.enqueue(MockResponse().setResponseCode(201).setBody("""{"id":"comment-2","post_id":"post-1","content":"建议预留讨论时间","author_label":"研学同行者","created_at":11,"can_delete":true}"""))
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"id":"comment-2","status":"deleted"}"""))
+
+        val endpoint = server.url("/api").toString()
+        assertEquals(2, service.communityInteractions(endpoint, "session-token", "post-1").getOrThrow().likeCount)
+        assertTrue(service.toggleCommunityLike(endpoint, "session-token", "post-1").getOrThrow().liked)
+        assertTrue(service.toggleCommunityBookmark(endpoint, "session-token", "post-1").getOrThrow().bookmarked)
+        assertTrue(service.accountCommunityComments(endpoint, "session-token", "post-1").getOrThrow().items.single().canDelete)
+        assertEquals(
+            "comment-2",
+            service.createCommunityComment(endpoint, "session-token", "post-1", "建议预留讨论时间").getOrThrow().id
+        )
+        assertEquals("deleted", service.deleteCommunityComment(endpoint, "session-token", "comment-2").getOrThrow().status)
+
+        assertEquals("/api/account/community/posts/post-1/interactions", server.takeRequest().path)
+        assertEquals("/api/account/community/posts/post-1/like", server.takeRequest().path)
+        assertEquals("/api/account/community/posts/post-1/bookmark", server.takeRequest().path)
+        assertEquals("/api/account/community/posts/post-1/comments?limit=50", server.takeRequest().path)
+        assertEquals("/api/account/community/posts/post-1/comments", server.takeRequest().path)
+        assertEquals("/api/account/community/comments/comment-2", server.takeRequest().path)
+    }
+
+    @Test
     fun createMediaAndUploadChunkUseAuthenticatedResumableProtocol() = runBlocking {
         server.enqueue(
             MockResponse().setResponseCode(201).setBody(
