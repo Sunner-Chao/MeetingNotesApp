@@ -5,13 +5,16 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Callable
+import re
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from community_service import (
     CommunityDraftInput,
     CommunityError,
+    CommunityMediaManifestInput,
     CommunityPermissionError,
     CommunityService,
 )
@@ -37,6 +40,21 @@ class CommunityModerationPayload(BaseModel):
 
     decision: str = Field(min_length=1, max_length=20)
     reason: str = Field(default="", max_length=500)
+
+
+class CommunityMediaManifestPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    client_media_id: str = Field(min_length=1, max_length=128)
+    display_name: str = Field(min_length=1, max_length=200)
+    mime_type: str = Field(min_length=1, max_length=40)
+    original_bytes: int = Field(gt=0)
+    original_sha256: str = Field(min_length=64, max_length=64)
+    thumbnail_bytes: int = Field(gt=0)
+    thumbnail_sha256: str = Field(min_length=64, max_length=64)
+
+
+CONTENT_RANGE_PATTERN = re.compile(r"^bytes (\d+)-(\d+)/(\d+)$")
 
 
 def community_http_error(exc: CommunityError) -> HTTPException:
@@ -91,6 +109,74 @@ def build_community_router(
                 principal.user_id,
                 cursor=cursor,
                 limit=limit,
+            )
+        except CommunityError as exc:
+            raise community_http_error(exc) from exc
+
+    @router.get("/media-quota")
+    def get_community_media_quota(
+        principal: Any = Depends(account_principal_dependency),
+    ) -> dict:
+        try:
+            return service().media_quota(principal.user_id)
+        except CommunityError as exc:
+            raise community_http_error(exc) from exc
+
+    @router.get("/posts/{post_id}/media")
+    def list_community_media(
+        post_id: str,
+        principal: Any = Depends(account_principal_dependency),
+    ) -> dict:
+        try:
+            return service().list_owner_media(principal.user_id, post_id)
+        except CommunityError as exc:
+            raise community_http_error(exc) from exc
+
+    @router.post("/posts/{post_id}/media")
+    def create_community_media_manifest(
+        post_id: str,
+        payload: CommunityMediaManifestPayload,
+        response: Response,
+        principal: Any = Depends(account_principal_dependency),
+    ) -> dict:
+        try:
+            media, created = service().create_media_manifest(
+                principal.user_id,
+                post_id,
+                CommunityMediaManifestInput(**payload.model_dump()),
+            )
+        except CommunityError as exc:
+            raise community_http_error(exc) from exc
+        response.status_code = 201 if created else 200
+        return media
+
+    @router.put("/posts/{post_id}/media/{media_id}/{variant}")
+    async def upload_community_media_chunk(
+        post_id: str,
+        media_id: str,
+        variant: str,
+        request: Request,
+        content_range: str | None = Header(default=None, alias="Content-Range"),
+        chunk_sha256: str | None = Header(default=None, alias="X-Chunk-SHA256"),
+        principal: Any = Depends(account_principal_dependency),
+    ) -> dict:
+        match = CONTENT_RANGE_PATTERN.fullmatch((content_range or "").strip())
+        if match is None:
+            raise HTTPException(status_code=400, detail="Content-Range 格式无效")
+        if not chunk_sha256:
+            raise HTTPException(status_code=400, detail="缺少 X-Chunk-SHA256")
+        start, end, total = (int(value) for value in match.groups())
+        try:
+            return service().append_media_chunk(
+                principal.user_id,
+                post_id,
+                media_id,
+                variant,
+                start=start,
+                end=end,
+                total=total,
+                data=await request.body(),
+                chunk_sha256=chunk_sha256,
             )
         except CommunityError as exc:
             raise community_http_error(exc) from exc
@@ -160,5 +246,21 @@ def build_public_community_router(db_path_provider: Callable[[], Path]) -> APIRo
             return service().get_public_post(post_id)
         except CommunityError as exc:
             raise community_http_error(exc) from exc
+
+    @router.get("/media/{media_id}/thumbnail")
+    def get_public_community_media_thumbnail(media_id: str) -> FileResponse:
+        try:
+            path, mime_type = service().public_media_file(media_id, "thumbnail")
+        except CommunityError as exc:
+            raise community_http_error(exc) from exc
+        return FileResponse(path, media_type=mime_type, headers={"Cache-Control": "public, max-age=3600"})
+
+    @router.get("/media/{media_id}/content")
+    def get_public_community_media_content(media_id: str) -> FileResponse:
+        try:
+            path, mime_type = service().public_media_file(media_id, "original")
+        except CommunityError as exc:
+            raise community_http_error(exc) from exc
+        return FileResponse(path, media_type=mime_type, headers={"Cache-Control": "public, max-age=3600"})
 
     return router

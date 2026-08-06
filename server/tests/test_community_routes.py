@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import hashlib
 import sqlite3
 import tempfile
 import unittest
@@ -154,6 +155,48 @@ class CommunityRouteTests(unittest.TestCase):
             mine = client.get("/api/account/community/posts", headers=owner_headers)
             self.assertEqual(mine.status_code, 200)
             self.assertEqual(mine.json()["items"][0]["review"]["status"], "approved")
+
+    def test_media_manifest_and_chunk_routes_require_owner_then_public_review(self) -> None:
+        owner_headers = {"Authorization": "Bearer owner-token"}
+        original = b"\x89PNG\r\n\x1a\n" + b"not-a-real-image"
+        thumbnail = original
+        with TestClient(self.app) as client:
+            created = client.post(
+                "/api/account/community/drafts", headers=owner_headers, json=self.payload()
+            )
+            post_id = created.json()["id"]
+            manifest = client.post(
+                f"/api/account/community/posts/{post_id}/media",
+                headers=owner_headers,
+                json={
+                    "client_media_id": "route-media-01",
+                    "display_name": "现场图.png",
+                    "mime_type": "image/png",
+                    "original_bytes": len(original),
+                    "original_sha256": hashlib.sha256(original).hexdigest(),
+                    "thumbnail_bytes": len(thumbnail),
+                    "thumbnail_sha256": hashlib.sha256(thumbnail).hexdigest(),
+                },
+            )
+            self.assertEqual(manifest.status_code, 201)
+            media_id = manifest.json()["id"]
+            invalid_chunk = client.put(
+                f"/api/account/community/posts/{post_id}/media/{media_id}/original",
+                headers={
+                    **owner_headers,
+                    "Content-Range": f"bytes 0-{len(original) - 1}/{len(original)}",
+                    "X-Chunk-SHA256": hashlib.sha256(original).hexdigest(),
+                },
+                content=original,
+            )
+            self.assertEqual(invalid_chunk.status_code, 400)
+            self.assertEqual(
+                client.get(
+                    f"/api/account/community/posts/{post_id}/media", headers=owner_headers
+                ).status_code,
+                200,
+            )
+            self.assertEqual(client.get("/api/account/community/media-quota", headers=owner_headers).status_code, 200)
 
 
 if __name__ == "__main__":

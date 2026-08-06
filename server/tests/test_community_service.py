@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import sys
+import hashlib
 import sqlite3
+import struct
 import tempfile
 import unittest
+import zlib
 from pathlib import Path
 
 
@@ -14,6 +17,7 @@ from community_service import (
     CommunityConflictError,
     CommunityDraftInput,
     CommunityError,
+    CommunityMediaManifestInput,
     CommunityNotFoundError,
     CommunityService,
 )
@@ -57,6 +61,34 @@ class CommunityServiceTests(unittest.TestCase):
         }
         values.update(overrides)
         return CommunityDraftInput(**values)
+
+    @staticmethod
+    def png_with_metadata(note: str) -> bytes:
+        def chunk(kind: bytes, value: bytes) -> bytes:
+            return (
+                struct.pack(">I", len(value)) + kind + value +
+                struct.pack(">I", zlib.crc32(kind + value) & 0xFFFFFFFF)
+            )
+
+        return (
+            b"\x89PNG\r\n\x1a\n" +
+            chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)) +
+            chunk(b"tEXt", f"location={note}".encode("utf-8")) +
+            chunk(b"IDAT", zlib.compress(b"\x00\x00\x00\x00")) +
+            chunk(b"IEND", b"")
+        )
+
+    @staticmethod
+    def media_manifest(client_media_id: str, original: bytes, thumbnail: bytes) -> CommunityMediaManifestInput:
+        return CommunityMediaManifestInput(
+            client_media_id=client_media_id,
+            display_name="园区观察.png",
+            mime_type="image/png",
+            original_bytes=len(original),
+            original_sha256=hashlib.sha256(original).hexdigest(),
+            thumbnail_bytes=len(thumbnail),
+            thumbnail_sha256=hashlib.sha256(thumbnail).hexdigest(),
+        )
 
     def test_create_is_idempotent_and_rejects_key_reuse_with_changed_content(self) -> None:
         created, was_created = self.service.create_private_draft(
@@ -164,6 +196,107 @@ class CommunityServiceTests(unittest.TestCase):
         mine = self.service.list_owner_posts(self.owner_id)
         self.assertEqual(mine["items"][0]["review"]["reason"], "需去除未授权人物信息")
         self.assertEqual(self.service.list_owner_posts(self.other_id)["items"], [])
+
+    def test_resumable_media_is_sanitized_and_public_only_after_review(self) -> None:
+        created, _ = self.service.create_private_draft(self.owner_id, self.snapshot())
+        self.service.publish(self.owner_id, created["id"])
+        original = self.png_with_metadata("31.230416,121.473701")
+        thumbnail = self.png_with_metadata("thumbnail")
+        manifest = self.media_manifest("media-01", original, thumbnail)
+        media, was_created = self.service.create_media_manifest(
+            self.owner_id,
+            created["id"],
+            manifest,
+        )
+        repeated, was_repeated = self.service.create_media_manifest(
+            self.owner_id,
+            created["id"],
+            manifest,
+        )
+        self.assertTrue(was_created)
+        self.assertFalse(was_repeated)
+        self.assertEqual(media["id"], repeated["id"])
+
+        split = len(original) // 2
+        self.service.append_media_chunk(
+            self.owner_id,
+            created["id"],
+            media["id"],
+            "original",
+            start=0,
+            end=split - 1,
+            total=len(original),
+            data=original[:split],
+            chunk_sha256=hashlib.sha256(original[:split]).hexdigest(),
+        )
+        with self.assertRaises(CommunityConflictError):
+            self.service.append_media_chunk(
+                self.owner_id,
+                created["id"],
+                media["id"],
+                "original",
+                start=0,
+                end=split - 1,
+                total=len(original),
+                data=original[:split],
+                chunk_sha256=hashlib.sha256(original[:split]).hexdigest(),
+            )
+        self.service.append_media_chunk(
+            self.owner_id,
+            created["id"],
+            media["id"],
+            "original",
+            start=split,
+            end=len(original) - 1,
+            total=len(original),
+            data=original[split:],
+            chunk_sha256=hashlib.sha256(original[split:]).hexdigest(),
+        )
+        self.service.append_media_chunk(
+            self.owner_id,
+            created["id"],
+            media["id"],
+            "thumbnail",
+            start=0,
+            end=len(thumbnail) - 1,
+            total=len(thumbnail),
+            data=thumbnail,
+            chunk_sha256=hashlib.sha256(thumbnail).hexdigest(),
+        )
+        owner_media = self.service.list_owner_media(self.owner_id, created["id"])
+        self.assertEqual(owner_media["items"][0]["status"], "ready")
+        self.assertGreater(owner_media["quota"]["used_bytes"], 0)
+        with self.assertRaises(CommunityNotFoundError):
+            self.service.public_media_file(media["id"], "original")
+
+        self.service.review_post(
+            created["id"], decision="approved", reason="", reviewed_by="reviewer-01"
+        )
+        public_path, mime_type = self.service.public_media_file(media["id"], "original")
+        self.assertEqual(mime_type, "image/png")
+        self.assertTrue(public_path.is_file())
+        self.assertNotIn(b"tEXt", public_path.read_bytes())
+        public_post = self.service.get_public_post(created["id"])
+        self.assertEqual(public_post["media"][0]["id"], media["id"])
+
+    def test_media_quota_is_byte_based_not_a_fixed_image_count(self) -> None:
+        limited = CommunityService(
+            self.db_path,
+            media_root=Path(self.temp_dir.name) / "limited-media",
+            media_quota_bytes=100,
+            media_max_asset_bytes=100,
+            media_max_thumbnail_bytes=100,
+        )
+        limited.initialize()
+        created, _ = limited.create_private_draft(self.owner_id, self.snapshot(client_snapshot_id="quota-snapshot"))
+        original = self.png_with_metadata("one")
+        thumbnail = self.png_with_metadata("two")
+        with self.assertRaises(CommunityConflictError):
+            limited.create_media_manifest(
+                self.owner_id,
+                created["id"],
+                self.media_manifest("quota-media", original, thumbnail),
+            )
 
 
 if __name__ == "__main__":

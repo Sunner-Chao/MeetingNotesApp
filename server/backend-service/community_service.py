@@ -14,10 +14,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
+from community_media import CommunityMediaFormatError, sanitize_image_bytes
+
 
 POST_STATUSES = frozenset({"private_draft", "published", "withdrawn"})
 MODERATION_STATUSES = frozenset({"not_submitted", "pending"})
 REVIEW_DECISIONS = frozenset({"approved", "rejected"})
+MEDIA_MIME_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
+MEDIA_VARIANTS = frozenset({"original", "thumbnail"})
 ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 PRECISE_COORDINATE_PAIR_PATTERN = re.compile(
     r"(?<![\d.])"
@@ -61,6 +65,17 @@ class CommunityDraftInput:
     rights_confirmed: bool
 
 
+@dataclass(frozen=True)
+class CommunityMediaManifestInput:
+    client_media_id: str
+    display_name: str
+    mime_type: str
+    original_bytes: int
+    original_sha256: str
+    thumbnail_bytes: int
+    thumbnail_sha256: str
+
+
 class CommunityService:
     def __init__(
         self,
@@ -68,10 +83,20 @@ class CommunityService:
         *,
         title_max_length: int = 200,
         content_max_length: int = 100_000,
+        media_root: Path | None = None,
+        media_quota_bytes: int = 512 * 1024 * 1024,
+        media_max_asset_bytes: int = 24 * 1024 * 1024,
+        media_max_thumbnail_bytes: int = 2 * 1024 * 1024,
+        media_max_chunk_bytes: int = 1024 * 1024,
     ) -> None:
         self.db_path = Path(db_path)
         self.title_max_length = max(1, title_max_length)
         self.content_max_length = max(1, content_max_length)
+        self.media_root = Path(media_root) if media_root else self.db_path.parent / "community-media"
+        self.media_quota_bytes = max(1, media_quota_bytes)
+        self.media_max_asset_bytes = max(1, media_max_asset_bytes)
+        self.media_max_thumbnail_bytes = max(1, media_max_thumbnail_bytes)
+        self.media_max_chunk_bytes = max(1, media_max_chunk_bytes)
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -90,6 +115,7 @@ class CommunityService:
 
     def initialize(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.media_root.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.executescript(
                 """
@@ -137,6 +163,36 @@ class CommunityService:
 
                 CREATE INDEX IF NOT EXISTS idx_community_moderation_decision
                     ON community_moderation(decision, reviewed_at DESC);
+
+                CREATE TABLE IF NOT EXISTS community_post_media (
+                    id TEXT PRIMARY KEY,
+                    post_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    client_media_id TEXT NOT NULL,
+                    display_name TEXT NOT NULL,
+                    mime_type TEXT NOT NULL CHECK(mime_type IN ('image/jpeg', 'image/png', 'image/webp')),
+                    original_total_bytes INTEGER NOT NULL CHECK(original_total_bytes > 0),
+                    original_sha256 TEXT NOT NULL,
+                    original_received_bytes INTEGER NOT NULL DEFAULT 0
+                        CHECK(original_received_bytes >= 0),
+                    thumbnail_total_bytes INTEGER NOT NULL CHECK(thumbnail_total_bytes > 0),
+                    thumbnail_sha256 TEXT NOT NULL,
+                    thumbnail_received_bytes INTEGER NOT NULL DEFAULT 0
+                        CHECK(thumbnail_received_bytes >= 0),
+                    status TEXT NOT NULL CHECK(status IN ('pending', 'uploading', 'ready')),
+                    original_storage_key TEXT,
+                    thumbnail_storage_key TEXT,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    UNIQUE(user_id, post_id, client_media_id),
+                    FOREIGN KEY(post_id) REFERENCES community_posts(id) ON DELETE CASCADE,
+                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_community_post_media_post
+                    ON community_post_media(post_id, created_at ASC);
+                CREATE INDEX IF NOT EXISTS idx_community_post_media_owner
+                    ON community_post_media(user_id, status, updated_at DESC);
                 """
             )
 
@@ -201,7 +257,9 @@ class CommunityService:
 
     def get_post(self, user_id: str, post_id: str) -> dict:
         with self._connect() as conn:
-            return self._post_payload(self._owned_post(conn, user_id, post_id))
+            post = self._post_payload(self._owned_post(conn, user_id, post_id))
+            post["media"] = self._owner_media_payloads(conn, post["id"])
+            return post
 
     def list_owner_posts(
         self,
@@ -230,14 +288,17 @@ class CommunityService:
         params.append(normalized_limit + 1)
         with self._connect() as conn:
             rows = conn.execute(query, params).fetchall()
-        has_more = len(rows) > normalized_limit
-        visible_rows = rows[:normalized_limit]
-        return {
-            "items": [self._post_payload(row) for row in visible_rows],
-            "next_cursor": self._encode_cursor(visible_rows[-1], "updated_at")
-            if has_more and visible_rows
-            else None,
-        }
+            has_more = len(rows) > normalized_limit
+            visible_rows = rows[:normalized_limit]
+            return {
+                "items": [
+                    self._owner_post_payload(conn, row)
+                    for row in visible_rows
+                ],
+                "next_cursor": self._encode_cursor(visible_rows[-1], "updated_at")
+                if has_more and visible_rows
+                else None,
+            }
 
     def publish(self, user_id: str, post_id: str) -> dict:
         now = int(time.time() * 1000)
@@ -274,6 +335,197 @@ class CommunityService:
                 row = self._owned_post(conn, user_id, post_id)
             return self._post_payload(row)
 
+    def create_media_manifest(
+        self,
+        user_id: str,
+        post_id: str,
+        media: CommunityMediaManifestInput,
+    ) -> tuple[dict, bool]:
+        clean_user_id = self._validated_id(user_id, "user_id")
+        clean_post_id = self._validated_id(post_id, "post_id")
+        normalized = self._validated_media_manifest(media)
+        now = int(time.time() * 1000)
+        media_id = uuid.uuid4().hex
+        with self._connect() as conn:
+            post = self._owned_post(conn, clean_user_id, clean_post_id)
+            if post["status"] == "withdrawn":
+                raise CommunityConflictError("已撤回内容不能新增媒体")
+            existing = conn.execute(
+                """
+                SELECT * FROM community_post_media
+                WHERE user_id = ? AND post_id = ? AND client_media_id = ?
+                """,
+                (clean_user_id, clean_post_id, normalized["client_media_id"]),
+            ).fetchone()
+            if existing is not None:
+                if any(existing[key] != value for key, value in normalized.items() if key != "display_name"):
+                    raise CommunityConflictError("同一媒体清单 ID 已对应不同文件")
+                return self._media_payload(existing), False
+            used = conn.execute(
+                """
+                SELECT COALESCE(SUM(original_total_bytes + thumbnail_total_bytes), 0) AS total
+                FROM community_post_media WHERE user_id = ?
+                """,
+                (clean_user_id,),
+            ).fetchone()["total"]
+            requested = normalized["original_total_bytes"] + normalized["thumbnail_total_bytes"]
+            if int(used) + requested > self.media_quota_bytes:
+                raise CommunityConflictError("社区媒体存储配额不足")
+            conn.execute(
+                """
+                INSERT INTO community_post_media (
+                    id, post_id, user_id, client_media_id, display_name, mime_type,
+                    original_total_bytes, original_sha256, original_received_bytes,
+                    thumbnail_total_bytes, thumbnail_sha256, thumbnail_received_bytes,
+                    status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 0, 'pending', ?, ?)
+                """,
+                (
+                    media_id,
+                    clean_post_id,
+                    clean_user_id,
+                    normalized["client_media_id"],
+                    normalized["display_name"],
+                    normalized["mime_type"],
+                    normalized["original_total_bytes"],
+                    normalized["original_sha256"],
+                    normalized["thumbnail_total_bytes"],
+                    normalized["thumbnail_sha256"],
+                    now,
+                    now,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM community_post_media WHERE id = ?",
+                (media_id,),
+            ).fetchone()
+            return self._media_payload(row), True
+
+    def list_owner_media(self, user_id: str, post_id: str) -> dict:
+        with self._connect() as conn:
+            post = self._owned_post(conn, user_id, post_id)
+            return {
+                "items": self._owner_media_payloads(conn, post["id"]),
+                "quota": self._media_quota_payload(conn, post["user_id"]),
+            }
+
+    def append_media_chunk(
+        self,
+        user_id: str,
+        post_id: str,
+        media_id: str,
+        variant: str,
+        *,
+        start: int,
+        end: int,
+        total: int,
+        data: bytes,
+        chunk_sha256: str,
+    ) -> dict:
+        clean_variant = variant.strip().lower()
+        if clean_variant not in MEDIA_VARIANTS:
+            raise CommunityError("媒体版本无效")
+        if len(data) == 0 or len(data) > self.media_max_chunk_bytes:
+            raise CommunityError("上传分片大小无效")
+        if start < 0 or end < start or end - start + 1 != len(data):
+            raise CommunityError("上传范围无效")
+        if hashlib.sha256(data).hexdigest() != self._validated_sha256(chunk_sha256, "chunk_sha256"):
+            raise CommunityError("上传分片校验失败")
+        clean_media_id = self._validated_id(media_id, "media_id")
+        with self._connect() as conn:
+            self._owned_post(conn, user_id, post_id)
+            row = self._owned_media(conn, user_id, post_id, clean_media_id)
+            total_field = f"{clean_variant}_total_bytes"
+            received_field = f"{clean_variant}_received_bytes"
+            expected_total = int(row[total_field])
+            received = int(row[received_field])
+            if total != expected_total:
+                raise CommunityConflictError("上传总大小与资源清单不一致")
+            if start != received:
+                raise CommunityConflictError(f"请从偏移量 {received} 继续上传")
+            if end >= total:
+                raise CommunityError("上传范围超出资源大小")
+            partial_path = self._media_path(row, clean_variant, suffix=".part")
+            partial_path.parent.mkdir(parents=True, exist_ok=True)
+            with partial_path.open("ab") as stream:
+                stream.write(data)
+            updated_received = received + len(data)
+            now = int(time.time() * 1000)
+            storage_key: str | None = None
+            if updated_received == expected_total:
+                complete_data = partial_path.read_bytes()
+                expected_hash = str(row[f"{clean_variant}_sha256"])
+                if hashlib.sha256(complete_data).hexdigest() != expected_hash:
+                    partial_path.unlink(missing_ok=True)
+                    raise CommunityConflictError("完整媒体校验失败，请重新上传")
+                try:
+                    sanitized = sanitize_image_bytes(complete_data, str(row["mime_type"]))
+                except CommunityMediaFormatError as exc:
+                    partial_path.unlink(missing_ok=True)
+                    raise CommunityError(str(exc)) from exc
+                final_path = self._media_path(row, clean_variant)
+                final_path.write_bytes(sanitized)
+                partial_path.unlink(missing_ok=True)
+                storage_key = str(final_path.relative_to(self.media_root)).replace("\\", "/")
+            original_done = (
+                clean_variant == "original" and updated_received == expected_total
+            ) or (
+                clean_variant != "original"
+                and int(row["original_received_bytes"]) == int(row["original_total_bytes"])
+            )
+            thumbnail_done = (
+                clean_variant == "thumbnail" and updated_received == expected_total
+            ) or (
+                clean_variant != "thumbnail"
+                and int(row["thumbnail_received_bytes"]) == int(row["thumbnail_total_bytes"])
+            )
+            status = "ready" if original_done and thumbnail_done else "uploading"
+            storage_field = f"{clean_variant}_storage_key"
+            conn.execute(
+                f"""
+                UPDATE community_post_media
+                SET {received_field} = ?, {storage_field} = COALESCE(?, {storage_field}),
+                    status = ?, updated_at = ?
+                WHERE id = ? AND user_id = ? AND post_id = ?
+                """,
+                (updated_received, storage_key, status, now, clean_media_id, user_id, post_id),
+            )
+            updated = conn.execute(
+                "SELECT * FROM community_post_media WHERE id = ?",
+                (clean_media_id,),
+            ).fetchone()
+            return self._media_payload(updated)
+
+    def public_media_file(self, media_id: str, variant: str) -> tuple[Path, str]:
+        clean_media_id = self._validated_id(media_id, "media_id")
+        clean_variant = variant.strip().lower()
+        if clean_variant not in MEDIA_VARIANTS:
+            raise CommunityNotFoundError("媒体资源不存在")
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT m.* FROM community_post_media m
+                JOIN community_posts p ON p.id = m.post_id
+                JOIN community_moderation r ON r.post_id = p.id
+                WHERE m.id = ? AND m.status = 'ready' AND p.status = 'published'
+                    AND r.decision = 'approved'
+                """,
+                (clean_media_id,),
+            ).fetchone()
+            if row is None:
+                raise CommunityNotFoundError("媒体资源不存在或暂不可查看")
+            key = row[f"{clean_variant}_storage_key"]
+            if not key:
+                raise CommunityNotFoundError("媒体资源不存在或暂不可查看")
+            path = self.media_root / key
+            if not path.is_file():
+                raise CommunityNotFoundError("媒体资源暂不可用")
+            return path, str(row["mime_type"])
+
+    def media_quota(self, user_id: str) -> dict:
+        with self._connect() as conn:
+            return self._media_quota_payload(conn, self._validated_id(user_id, "user_id"))
+
     def review_post(
         self,
         post_id: str,
@@ -302,6 +554,15 @@ class CommunityService:
                 raise CommunityNotFoundError("社区内容不存在")
             if post["status"] != "published":
                 raise CommunityConflictError("只有已发布内容可以审核")
+            incomplete_media = conn.execute(
+                """
+                SELECT 1 FROM community_post_media
+                WHERE post_id = ? AND status != 'ready' LIMIT 1
+                """,
+                (clean_post_id,),
+            ).fetchone()
+            if incomplete_media is not None:
+                raise CommunityConflictError("图片资源尚未完成同步，暂不能审核")
             conn.execute(
                 """
                 INSERT INTO community_moderation (
@@ -352,10 +613,17 @@ class CommunityService:
         params.append(normalized_limit + 1)
         with self._connect() as conn:
             rows = conn.execute(query, params).fetchall()
+            media_by_post = {
+                row["id"]: self._public_media_payloads(conn, row["id"])
+                for row in rows[:normalized_limit]
+            }
         has_more = len(rows) > normalized_limit
         visible_rows = rows[:normalized_limit]
         return {
-            "items": [self._public_post_payload(row) for row in visible_rows],
+            "items": [
+                self._public_post_payload(row, media_by_post[row["id"]])
+                for row in visible_rows
+            ],
             "next_cursor": self._encode_cursor(visible_rows[-1], "published_at")
             if has_more and visible_rows
             else None,
@@ -376,7 +644,7 @@ class CommunityService:
             ).fetchone()
             if row is None:
                 raise CommunityNotFoundError("社区内容不存在或暂不可查看")
-            return self._public_post_payload(row)
+            return self._public_post_payload(row, self._public_media_payloads(conn, row["id"]))
 
     def _owned_post(
         self,
@@ -440,10 +708,38 @@ class CommunityService:
             "rights_confirmed": 1,
         }
 
+    def _validated_media_manifest(self, media: CommunityMediaManifestInput) -> dict:
+        display_name = media.display_name.strip()
+        mime_type = media.mime_type.strip().lower()
+        if not display_name or len(display_name) > 200:
+            raise CommunityError("图片名称无效")
+        if mime_type not in MEDIA_MIME_TYPES:
+            raise CommunityError("仅支持 JPEG、PNG 或 WebP 图片")
+        if not 0 < media.original_bytes <= self.media_max_asset_bytes:
+            raise CommunityError("原图大小超出限制")
+        if not 0 < media.thumbnail_bytes <= self.media_max_thumbnail_bytes:
+            raise CommunityError("缩略图大小超出限制")
+        return {
+            "client_media_id": self._validated_id(media.client_media_id, "client_media_id"),
+            "display_name": display_name,
+            "mime_type": mime_type,
+            "original_total_bytes": media.original_bytes,
+            "original_sha256": self._validated_sha256(media.original_sha256, "original_sha256"),
+            "thumbnail_total_bytes": media.thumbnail_bytes,
+            "thumbnail_sha256": self._validated_sha256(media.thumbnail_sha256, "thumbnail_sha256"),
+        }
+
     @staticmethod
     def _validated_id(value: str, field_name: str) -> str:
         clean = value.strip()
         if not ID_PATTERN.fullmatch(clean):
+            raise CommunityError(f"{field_name} 格式无效")
+        return clean
+
+    @staticmethod
+    def _validated_sha256(value: str, field_name: str) -> str:
+        clean = value.strip().lower()
+        if not re.fullmatch(r"[a-f0-9]{64}", clean):
             raise CommunityError(f"{field_name} 格式无效")
         return clean
 
@@ -468,6 +764,91 @@ class CommunityService:
         if timestamp < 0:
             raise CommunityError("分页游标无效")
         return timestamp, post_id
+
+    def _owned_media(
+        self,
+        conn: sqlite3.Connection,
+        user_id: str,
+        post_id: str,
+        media_id: str,
+    ) -> sqlite3.Row:
+        row = conn.execute(
+            """
+            SELECT * FROM community_post_media
+            WHERE id = ? AND user_id = ? AND post_id = ?
+            """,
+            (media_id, user_id, post_id),
+        ).fetchone()
+        if row is None:
+            raise CommunityNotFoundError("社区媒体不存在")
+        return row
+
+    def _media_path(self, row: sqlite3.Row, variant: str, suffix: str = "") -> Path:
+        extension = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}[row["mime_type"]]
+        return self.media_root / row["user_id"] / row["post_id"] / f"{row['id']}-{variant}.{extension}{suffix}"
+
+    def _owner_media_payloads(self, conn: sqlite3.Connection, post_id: str) -> list[dict]:
+        rows = conn.execute(
+            "SELECT * FROM community_post_media WHERE post_id = ? ORDER BY created_at ASC",
+            (post_id,),
+        ).fetchall()
+        return [self._media_payload(row) for row in rows]
+
+    def _public_media_payloads(self, conn: sqlite3.Connection, post_id: str) -> list[dict]:
+        rows = conn.execute(
+            """
+            SELECT * FROM community_post_media
+            WHERE post_id = ? AND status = 'ready' ORDER BY created_at ASC
+            """,
+            (post_id,),
+        ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "thumbnail_url": f"/api/community/media/{row['id']}/thumbnail",
+                "content_url": f"/api/community/media/{row['id']}/content",
+                "mime_type": row["mime_type"],
+            }
+            for row in rows
+        ]
+
+    def _media_quota_payload(self, conn: sqlite3.Connection, user_id: str) -> dict:
+        used = conn.execute(
+            """
+            SELECT COALESCE(SUM(original_total_bytes + thumbnail_total_bytes), 0) AS total
+            FROM community_post_media WHERE user_id = ?
+            """,
+            (user_id,),
+        ).fetchone()["total"]
+        used_bytes = int(used)
+        return {
+            "used_bytes": used_bytes,
+            "limit_bytes": self.media_quota_bytes,
+            "remaining_bytes": max(0, self.media_quota_bytes - used_bytes),
+        }
+
+    @staticmethod
+    def _media_payload(row: sqlite3.Row | None) -> dict:
+        if row is None:
+            raise CommunityNotFoundError("社区媒体不存在")
+        return {
+            "id": row["id"],
+            "client_media_id": row["client_media_id"],
+            "display_name": row["display_name"],
+            "mime_type": row["mime_type"],
+            "original_total_bytes": row["original_total_bytes"],
+            "original_received_bytes": row["original_received_bytes"],
+            "thumbnail_total_bytes": row["thumbnail_total_bytes"],
+            "thumbnail_received_bytes": row["thumbnail_received_bytes"],
+            "status": row["status"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def _owner_post_payload(self, conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
+        payload = self._post_payload(row)
+        payload["media"] = self._owner_media_payloads(conn, payload["id"])
+        return payload
 
     @staticmethod
     def _encode_cursor(row: sqlite3.Row, timestamp_field: str) -> str:
@@ -525,7 +906,7 @@ class CommunityService:
         return payload
 
     @classmethod
-    def _public_post_payload(cls, row: sqlite3.Row) -> dict:
+    def _public_post_payload(cls, row: sqlite3.Row, media: list[dict]) -> dict:
         payload = cls._post_payload(row)
         return {
             "id": payload["id"],
@@ -535,4 +916,5 @@ class CommunityService:
             "redacted_coordinate_count": payload["redacted_coordinate_count"],
             "published_at": payload["published_at"],
             "author_label": "研学同行者",
+            "media": media,
         }
