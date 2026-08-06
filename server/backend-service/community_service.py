@@ -229,6 +229,48 @@ class CommunityService:
                 CREATE INDEX IF NOT EXISTS idx_community_reports_status_created
                     ON community_reports(status, created_at DESC, id DESC);
 
+                CREATE TABLE IF NOT EXISTS community_post_likes (
+                    post_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    PRIMARY KEY(post_id, user_id),
+                    FOREIGN KEY(post_id) REFERENCES community_posts(id) ON DELETE CASCADE,
+                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_community_post_likes_post
+                    ON community_post_likes(post_id, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS community_post_bookmarks (
+                    post_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    PRIMARY KEY(post_id, user_id),
+                    FOREIGN KEY(post_id) REFERENCES community_posts(id) ON DELETE CASCADE,
+                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_community_post_bookmarks_user
+                    ON community_post_bookmarks(user_id, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS community_comments (
+                    id TEXT PRIMARY KEY,
+                    post_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'visible'
+                        CHECK(status IN ('visible', 'deleted')),
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    FOREIGN KEY(post_id) REFERENCES community_posts(id) ON DELETE CASCADE,
+                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_community_comments_post
+                    ON community_comments(post_id, status, created_at DESC, id DESC);
+                CREATE INDEX IF NOT EXISTS idx_community_comments_user
+                    ON community_comments(user_id, status, updated_at DESC);
+
                 CREATE TABLE IF NOT EXISTS community_post_index (
                     post_id TEXT PRIMARY KEY,
                     destination TEXT NOT NULL DEFAULT '',
@@ -727,6 +769,157 @@ class CommunityService:
             ).fetchone()
             return self._report_payload(created), True
 
+    def toggle_like(self, user_id: str, post_id: str) -> dict:
+        clean_user_id = self._validated_id(user_id, "user_id")
+        clean_post_id = self._validated_id(post_id, "post_id")
+        with self._connect() as conn:
+            self._approved_post(conn, clean_post_id)
+            existing = conn.execute(
+                "SELECT 1 FROM community_post_likes WHERE post_id = ? AND user_id = ?",
+                (clean_post_id, clean_user_id),
+            ).fetchone()
+            if existing is None:
+                conn.execute(
+                    "INSERT INTO community_post_likes(post_id, user_id, created_at) VALUES (?, ?, ?)",
+                    (clean_post_id, clean_user_id, int(time.time() * 1000)),
+                )
+                liked = True
+            else:
+                conn.execute(
+                    "DELETE FROM community_post_likes WHERE post_id = ? AND user_id = ?",
+                    (clean_post_id, clean_user_id),
+                )
+                liked = False
+            return self._interaction_payload(conn, clean_post_id, clean_user_id) | {
+                "post_id": clean_post_id,
+                "liked": liked,
+            }
+
+    def toggle_bookmark(self, user_id: str, post_id: str) -> dict:
+        clean_user_id = self._validated_id(user_id, "user_id")
+        clean_post_id = self._validated_id(post_id, "post_id")
+        with self._connect() as conn:
+            self._approved_post(conn, clean_post_id)
+            existing = conn.execute(
+                "SELECT 1 FROM community_post_bookmarks WHERE post_id = ? AND user_id = ?",
+                (clean_post_id, clean_user_id),
+            ).fetchone()
+            if existing is None:
+                conn.execute(
+                    "INSERT INTO community_post_bookmarks(post_id, user_id, created_at) VALUES (?, ?, ?)",
+                    (clean_post_id, clean_user_id, int(time.time() * 1000)),
+                )
+                bookmarked = True
+            else:
+                conn.execute(
+                    "DELETE FROM community_post_bookmarks WHERE post_id = ? AND user_id = ?",
+                    (clean_post_id, clean_user_id),
+                )
+                bookmarked = False
+            return self._interaction_payload(conn, clean_post_id, clean_user_id) | {
+                "post_id": clean_post_id,
+                "bookmarked": bookmarked,
+            }
+
+    def get_interactions(self, user_id: str, post_id: str) -> dict:
+        clean_user_id = self._validated_id(user_id, "user_id")
+        clean_post_id = self._validated_id(post_id, "post_id")
+        with self._connect() as conn:
+            self._approved_post(conn, clean_post_id)
+            return self._interaction_payload(conn, clean_post_id, clean_user_id) | {
+                "post_id": clean_post_id,
+            }
+
+    def create_comment(self, user_id: str, post_id: str, content: str) -> dict:
+        clean_user_id = self._validated_id(user_id, "user_id")
+        clean_post_id = self._validated_id(post_id, "post_id")
+        clean_content = content.strip()
+        if not clean_content:
+            raise CommunityError("评论内容不能为空")
+        if len(clean_content) > 1000:
+            raise CommunityError("评论内容不能超过 1000 个字符")
+        if PRECISE_COORDINATE_PAIR_PATTERN.search(clean_content) or COORDINATE_FIELD_PATTERN.search(clean_content):
+            raise CommunityError("评论不能包含精确位置")
+        now = int(time.time() * 1000)
+        comment_id = uuid.uuid4().hex
+        with self._connect() as conn:
+            self._approved_post(conn, clean_post_id)
+            conn.execute(
+                """
+                INSERT INTO community_comments(id, post_id, user_id, content, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, 'visible', ?, ?)
+                """,
+                (comment_id, clean_post_id, clean_user_id, clean_content, now, now),
+            )
+            row = conn.execute(
+                "SELECT * FROM community_comments WHERE id = ?",
+                (comment_id,),
+            ).fetchone()
+            return self._comment_payload(row, can_delete=True)
+
+    def list_comments(
+        self,
+        post_id: str,
+        *,
+        cursor: str | None = None,
+        limit: int = 50,
+        viewer_user_id: str | None = None,
+    ) -> dict:
+        clean_post_id = self._validated_id(post_id, "post_id")
+        normalized_limit = self._normalized_limit(limit)
+        cursor_created_at, cursor_id = self._decode_cursor(cursor)
+        clean_viewer_id = (
+            self._validated_id(viewer_user_id, "user_id")
+            if viewer_user_id is not None
+            else None
+        )
+        with self._connect() as conn:
+            self._approved_post(conn, clean_post_id)
+            query = """
+                SELECT * FROM community_comments
+                WHERE post_id = ? AND status = 'visible'
+            """
+            params: list[object] = [clean_post_id]
+            if cursor_created_at is not None and cursor_id is not None:
+                query += " AND (created_at < ? OR (created_at = ? AND id < ?))"
+                params.extend([cursor_created_at, cursor_created_at, cursor_id])
+            query += " ORDER BY created_at DESC, id DESC LIMIT ?"
+            params.append(normalized_limit + 1)
+            rows = conn.execute(query, params).fetchall()
+        has_more = len(rows) > normalized_limit
+        visible_rows = rows[:normalized_limit]
+        return {
+            "items": [
+                self._comment_payload(
+                    row,
+                    can_delete=clean_viewer_id is not None and row["user_id"] == clean_viewer_id,
+                )
+                for row in visible_rows
+            ],
+            "next_cursor": self._encode_cursor(visible_rows[-1], "created_at")
+            if has_more and visible_rows
+            else None,
+        }
+
+    def delete_comment(self, user_id: str, comment_id: str) -> dict:
+        clean_user_id = self._validated_id(user_id, "user_id")
+        clean_comment_id = self._validated_id(comment_id, "comment_id")
+        now = int(time.time() * 1000)
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM community_comments WHERE id = ? AND user_id = ?",
+                (clean_comment_id, clean_user_id),
+            ).fetchone()
+            if row is None:
+                raise CommunityNotFoundError("评论不存在")
+            if row["status"] == "deleted":
+                return {"id": clean_comment_id, "status": "deleted"}
+            conn.execute(
+                "UPDATE community_comments SET status = 'deleted', updated_at = ? WHERE id = ?",
+                (now, clean_comment_id),
+            )
+            return {"id": clean_comment_id, "status": "deleted"}
+
     def list_moderation_queue(
         self,
         *,
@@ -878,6 +1071,10 @@ class CommunityService:
                 row["id"]: self._public_index_payload(conn, row["id"])
                 for row in rows[:normalized_limit]
             }
+            interaction_by_post = {
+                row["id"]: self._interaction_payload(conn, row["id"])
+                for row in rows[:normalized_limit]
+            }
             facets = self._public_facets(conn)
         has_more = len(rows) > normalized_limit
         visible_rows = rows[:normalized_limit]
@@ -887,6 +1084,7 @@ class CommunityService:
                     row,
                     media_by_post[row["id"]],
                     index_by_post[row["id"]],
+                    interaction_by_post[row["id"]],
                 )
                 for row in visible_rows
             ],
@@ -915,7 +1113,21 @@ class CommunityService:
                 row,
                 self._public_media_payloads(conn, row["id"]),
                 self._public_index_payload(conn, row["id"]),
+                self._interaction_payload(conn, row["id"]),
             )
+
+    def _approved_post(self, conn: sqlite3.Connection, post_id: str) -> sqlite3.Row:
+        row = conn.execute(
+            """
+            SELECT p.* FROM community_posts p
+            JOIN community_moderation m ON m.post_id = p.id
+            WHERE p.id = ? AND p.status = 'published' AND m.decision = 'approved'
+            """,
+            (post_id,),
+        ).fetchone()
+        if row is None:
+            raise CommunityNotFoundError("社区内容不存在或暂不可互动")
+        return row
 
     def _owned_post(
         self,
@@ -1340,6 +1552,55 @@ class CommunityService:
         }
 
     @staticmethod
+    def _interaction_payload(
+        conn: sqlite3.Connection,
+        post_id: str,
+        viewer_user_id: str | None = None,
+    ) -> dict:
+        like_count = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM community_post_likes WHERE post_id = ?",
+                (post_id,),
+            ).fetchone()[0]
+        )
+        comment_count = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM community_comments WHERE post_id = ? AND status = 'visible'",
+                (post_id,),
+            ).fetchone()[0]
+        )
+        liked = False
+        bookmarked = False
+        if viewer_user_id is not None:
+            liked = conn.execute(
+                "SELECT 1 FROM community_post_likes WHERE post_id = ? AND user_id = ?",
+                (post_id, viewer_user_id),
+            ).fetchone() is not None
+            bookmarked = conn.execute(
+                "SELECT 1 FROM community_post_bookmarks WHERE post_id = ? AND user_id = ?",
+                (post_id, viewer_user_id),
+            ).fetchone() is not None
+        return {
+            "like_count": like_count,
+            "comment_count": comment_count,
+            "liked": liked,
+            "bookmarked": bookmarked,
+        }
+
+    @staticmethod
+    def _comment_payload(row: sqlite3.Row | None, *, can_delete: bool) -> dict:
+        if row is None:
+            raise CommunityNotFoundError("评论不存在")
+        return {
+            "id": row["id"],
+            "post_id": row["post_id"],
+            "content": row["content"],
+            "author_label": "研学同行者",
+            "created_at": row["created_at"],
+            "can_delete": can_delete,
+        }
+
+    @staticmethod
     def _public_facets(conn: sqlite3.Connection) -> dict:
         destinations = conn.execute(
             """
@@ -1384,6 +1645,7 @@ class CommunityService:
         row: sqlite3.Row,
         media: list[dict],
         index: dict,
+        interaction: dict,
     ) -> dict:
         payload = cls._post_payload(row)
         return {
@@ -1395,5 +1657,7 @@ class CommunityService:
             "published_at": payload["published_at"],
             "author_label": "研学同行者",
             "media": media,
+            "like_count": interaction["like_count"],
+            "comment_count": interaction["comment_count"],
             **index,
         }

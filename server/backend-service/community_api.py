@@ -56,6 +56,12 @@ class CommunityReportPayload(BaseModel):
     reason: str = Field(default="", max_length=1000)
 
 
+class CommunityCommentPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    content: str = Field(min_length=1, max_length=1000)
+
+
 class CommunityMediaManifestPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -233,6 +239,74 @@ def build_community_router(
         response.status_code = 201 if created else 200
         return report
 
+    @router.get("/posts/{post_id}/interactions")
+    def get_community_interactions(
+        post_id: str,
+        principal: Any = Depends(account_principal_dependency),
+    ) -> dict:
+        try:
+            return service().get_interactions(principal.user_id, post_id)
+        except CommunityError as exc:
+            raise community_http_error(exc) from exc
+
+    @router.post("/posts/{post_id}/like")
+    def toggle_community_like(
+        post_id: str,
+        principal: Any = Depends(account_principal_dependency),
+    ) -> dict:
+        try:
+            return service().toggle_like(principal.user_id, post_id)
+        except CommunityError as exc:
+            raise community_http_error(exc) from exc
+
+    @router.post("/posts/{post_id}/bookmark")
+    def toggle_community_bookmark(
+        post_id: str,
+        principal: Any = Depends(account_principal_dependency),
+    ) -> dict:
+        try:
+            return service().toggle_bookmark(principal.user_id, post_id)
+        except CommunityError as exc:
+            raise community_http_error(exc) from exc
+
+    @router.get("/posts/{post_id}/comments")
+    def list_account_community_comments(
+        post_id: str,
+        cursor: str | None = None,
+        limit: int = Query(default=50, ge=1, le=50),
+        principal: Any = Depends(account_principal_dependency),
+    ) -> dict:
+        try:
+            return service().list_comments(
+                post_id,
+                cursor=cursor,
+                limit=limit,
+                viewer_user_id=principal.user_id,
+            )
+        except CommunityError as exc:
+            raise community_http_error(exc) from exc
+
+    @router.post("/posts/{post_id}/comments", status_code=201)
+    def create_community_comment(
+        post_id: str,
+        payload: CommunityCommentPayload,
+        principal: Any = Depends(account_principal_dependency),
+    ) -> dict:
+        try:
+            return service().create_comment(principal.user_id, post_id, payload.content)
+        except CommunityError as exc:
+            raise community_http_error(exc) from exc
+
+    @router.delete("/comments/{comment_id}")
+    def delete_community_comment(
+        comment_id: str,
+        principal: Any = Depends(account_principal_dependency),
+    ) -> dict:
+        try:
+            return service().delete_comment(principal.user_id, comment_id)
+        except CommunityError as exc:
+            raise community_http_error(exc) from exc
+
     @router.get("/moderation")
     def list_community_moderation_queue(
         status: str = Query(default="pending"),
@@ -311,6 +385,17 @@ def build_public_community_router(db_path_provider: Callable[[], Path]) -> APIRo
     def get_public_community_post(post_id: str) -> dict:
         try:
             return service().get_public_post(post_id)
+        except CommunityError as exc:
+            raise community_http_error(exc) from exc
+
+    @router.get("/posts/{post_id}/comments")
+    def list_public_community_comments(
+        post_id: str,
+        cursor: str | None = None,
+        limit: int = Query(default=50, ge=1, le=50),
+    ) -> dict:
+        try:
+            return service().list_comments(post_id, cursor=cursor, limit=limit)
         except CommunityError as exc:
             raise community_http_error(exc) from exc
 

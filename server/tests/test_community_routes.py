@@ -192,6 +192,66 @@ class CommunityRouteTests(unittest.TestCase):
             self.assertNotIn("journey_id", item)
             self.assertNotIn("client_snapshot_id", item)
 
+    def test_interaction_and_comment_routes_require_approved_post_and_owner_delete(self) -> None:
+        owner_headers = {"Authorization": "Bearer owner-token"}
+        admin_headers = {"Authorization": "Bearer admin-token"}
+        with TestClient(self.app) as client:
+            created = client.post(
+                "/api/account/community/drafts", headers=owner_headers, json=self.payload()
+            )
+            post_id = created.json()["id"]
+            client.post(f"/api/account/community/posts/{post_id}/publish", headers=owner_headers)
+            self.assertEqual(
+                client.post(
+                    f"/api/account/community/posts/{post_id}/like",
+                    headers=owner_headers,
+                ).status_code,
+                404,
+            )
+            client.post(
+                f"/api/account/community/moderation/{post_id}",
+                headers=admin_headers,
+                json={"decision": "approved", "reason": ""},
+            )
+
+            liked = client.post(
+                f"/api/account/community/posts/{post_id}/like", headers=owner_headers
+            )
+            self.assertEqual(liked.status_code, 200)
+            self.assertTrue(liked.json()["liked"])
+            bookmarked = client.post(
+                f"/api/account/community/posts/{post_id}/bookmark", headers=owner_headers
+            )
+            self.assertTrue(bookmarked.json()["bookmarked"])
+            self.assertTrue(
+                client.get(
+                    f"/api/account/community/posts/{post_id}/interactions",
+                    headers=owner_headers,
+                ).json()["bookmarked"]
+            )
+
+            comment = client.post(
+                f"/api/account/community/posts/{post_id}/comments",
+                headers=owner_headers,
+                json={"content": "建议安排半天现场观察"},
+            )
+            self.assertEqual(comment.status_code, 201)
+            comment_id = comment.json()["id"]
+            public_comments = client.get(f"/api/community/posts/{post_id}/comments")
+            self.assertEqual(public_comments.status_code, 200)
+            self.assertEqual(public_comments.json()["items"][0]["content"], "建议安排半天现场观察")
+            self.assertNotIn("user_id", public_comments.json()["items"][0])
+
+            forbidden_delete = client.delete(
+                f"/api/account/community/comments/{comment_id}", headers=admin_headers
+            )
+            self.assertEqual(forbidden_delete.status_code, 404)
+            deleted = client.delete(
+                f"/api/account/community/comments/{comment_id}", headers=owner_headers
+            )
+            self.assertEqual(deleted.json()["status"], "deleted")
+            self.assertEqual(client.get(f"/api/community/posts/{post_id}/comments").json()["items"], [])
+
     def test_media_manifest_and_chunk_routes_require_owner_then_public_review(self) -> None:
         owner_headers = {"Authorization": "Bearer owner-token"}
         original = b"\x89PNG\r\n\x1a\n" + b"not-a-real-image"

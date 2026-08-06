@@ -291,6 +291,47 @@ class CommunityServiceTests(unittest.TestCase):
         self.assertEqual(len(second_ids), 1)
         self.assertIsNone(second_page["next_cursor"])
 
+    def test_interactions_are_idempotent_scoped_and_comment_deletion_is_soft(self) -> None:
+        created, _ = self.service.create_private_draft(self.owner_id, self.snapshot())
+        self.service.publish(self.owner_id, created["id"])
+        self.service.review_post(
+            created["id"],
+            decision="approved",
+            reason="",
+            reviewed_by=self.other_id,
+        )
+
+        liked = self.service.toggle_like(self.owner_id, created["id"])
+        self.assertTrue(liked["liked"])
+        self.assertEqual(liked["like_count"], 1)
+        unliked = self.service.toggle_like(self.owner_id, created["id"])
+        self.assertFalse(unliked["liked"])
+        self.assertEqual(unliked["like_count"], 0)
+
+        bookmarked = self.service.toggle_bookmark(self.owner_id, created["id"])
+        self.assertTrue(bookmarked["bookmarked"])
+        self.assertTrue(self.service.get_interactions(self.owner_id, created["id"])["bookmarked"])
+
+        own_comment = self.service.create_comment(self.owner_id, created["id"], "讲解很清楚")
+        other_comment = self.service.create_comment(self.other_id, created["id"], "适合团队参观")
+        comments = self.service.list_comments(created["id"], viewer_user_id=self.owner_id)
+        by_id = {item["id"]: item for item in comments["items"]}
+        self.assertTrue(by_id[own_comment["id"]]["can_delete"])
+        self.assertFalse(by_id[other_comment["id"]]["can_delete"])
+        self.assertEqual(self.service.get_interactions(self.owner_id, created["id"])["comment_count"], 2)
+
+        self.assertEqual(
+            self.service.delete_comment(self.owner_id, own_comment["id"])["status"],
+            "deleted",
+        )
+        remaining = self.service.list_comments(created["id"])
+        self.assertEqual([item["id"] for item in remaining["items"]], [other_comment["id"]])
+
+        withdrawn = self.service.withdraw(self.owner_id, created["id"])
+        self.assertEqual(withdrawn["status"], "withdrawn")
+        with self.assertRaises(CommunityNotFoundError):
+            self.service.toggle_like(self.owner_id, created["id"])
+
     def test_resumable_media_is_sanitized_and_public_only_after_review(self) -> None:
         created, _ = self.service.create_private_draft(self.owner_id, self.snapshot())
         self.service.publish(self.owner_id, created["id"])
