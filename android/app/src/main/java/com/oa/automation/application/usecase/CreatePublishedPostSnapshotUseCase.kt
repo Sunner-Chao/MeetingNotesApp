@@ -4,10 +4,16 @@ import com.oa.automation.domain.model.Journey
 import com.oa.automation.domain.model.JourneyEdition
 import com.oa.automation.domain.model.JourneyEditionStatus
 import com.oa.automation.domain.model.PublishedPost
+import com.oa.automation.domain.repository.MeetingRepository
 import com.oa.automation.domain.repository.PublishedPostRepository
+import com.oa.automation.domain.repository.StageDraftRepository
+import com.oa.automation.infrastructure.community.PublishedPostMediaStore
 
 class CreatePublishedPostSnapshotUseCase(
-    private val publishedPostRepository: PublishedPostRepository
+    private val publishedPostRepository: PublishedPostRepository,
+    private val stageDraftRepository: StageDraftRepository,
+    private val meetingRepository: MeetingRepository,
+    private val publishedPostMediaStore: PublishedPostMediaStore
 ) {
     suspend operator fun invoke(
         journey: Journey,
@@ -20,14 +26,23 @@ class CreatePublishedPostSnapshotUseCase(
             return Result.failure(IllegalStateException("请先确认总游记"))
         }
         val sanitized = PreciseCoordinateSanitizer.sanitize(edition.content)
-        return publishedPostRepository.createReviewSnapshot(
+        val post = publishedPostRepository.createReviewSnapshot(
             journeyId = journey.id,
             journeyEditionId = edition.id,
             sourceEditionVersion = edition.versionNumber,
             title = journey.title.ifBlank { "研学考察" },
             content = sanitized.content,
             redactedCoordinateCount = sanitized.redactedCount
-        )
+        ).getOrElse { return Result.failure(it) }
+        val sourceDrafts = stageDraftRepository.findByIds(edition.sourceStageDraftIds)
+            .getOrElse { return Result.failure(it) }
+            .filter { it.id in edition.sourceStageDraftIds }
+        val attachments = meetingRepository.findAttachmentsByJourneyStageIds(
+            sourceDrafts.map { it.stageId }
+        ).getOrElse { return Result.failure(it) }
+        // This produces fresh JPEG files, which removes EXIF before any network upload.
+        publishedPostMediaStore.prepare(post.id, attachments)
+        return Result.success(post)
     }
 }
 

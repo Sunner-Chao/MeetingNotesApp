@@ -18,9 +18,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         StageDraftVersionEntity::class,
         JourneyEditionEntity::class,
         PublishedPostEntity::class,
-        CommunitySyncOutboxEntity::class
+        CommunitySyncOutboxEntity::class,
+        PublishedPostMediaEntity::class
     ],
-    version = 11,
+    version = 12,
     exportSchema = false
 )
 @TypeConverters(DbConverters::class)
@@ -33,6 +34,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun journeyEditionDao(): JourneyEditionDao
     abstract fun publishedPostDao(): PublishedPostDao
     abstract fun communitySyncOutboxDao(): CommunitySyncOutboxDao
+    abstract fun publishedPostMediaDao(): PublishedPostMediaDao
 
     companion object {
         val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -316,6 +318,48 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL(
                     "CREATE INDEX IF NOT EXISTS index_community_sync_outbox_updatedAt " +
                         "ON community_sync_outbox(updatedAt)"
+                )
+            }
+        }
+
+        val MIGRATION_11_12 = object : Migration(11, 12) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS published_post_media (
+                        id TEXT NOT NULL,
+                        postId TEXT NOT NULL,
+                        sourceAttachmentId TEXT NOT NULL,
+                        displayName TEXT NOT NULL,
+                        originalPath TEXT NOT NULL,
+                        thumbnailPath TEXT NOT NULL,
+                        mimeType TEXT NOT NULL,
+                        originalBytes INTEGER NOT NULL,
+                        originalSha256 TEXT NOT NULL,
+                        thumbnailBytes INTEGER NOT NULL,
+                        thumbnailSha256 TEXT NOT NULL,
+                        remoteMediaId TEXT,
+                        status TEXT NOT NULL,
+                        lastError TEXT,
+                        createdAt INTEGER NOT NULL,
+                        updatedAt INTEGER NOT NULL,
+                        PRIMARY KEY(id),
+                        FOREIGN KEY(postId) REFERENCES published_posts(id)
+                            ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_published_post_media_postId " +
+                        "ON published_post_media(postId)"
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS index_published_post_media_postId_sourceAttachmentId " +
+                        "ON published_post_media(postId, sourceAttachmentId)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_published_post_media_status " +
+                        "ON published_post_media(status)"
                 )
             }
         }

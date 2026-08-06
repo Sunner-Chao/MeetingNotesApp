@@ -15,6 +15,7 @@ import com.oa.automation.domain.model.MyCommunityPost
 import com.oa.automation.domain.model.PublicCommunityPost
 import java.io.IOException
 import java.net.URLEncoder
+import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -36,6 +37,15 @@ class AccountApiService(
         @com.google.gson.annotations.SerializedName("client_snapshot_id") val clientSnapshotId: String,
         val status: String,
         @com.google.gson.annotations.SerializedName("moderation_status") val moderationStatus: String
+    )
+
+    data class CommunityMediaResponse(
+        val id: String,
+        @com.google.gson.annotations.SerializedName("original_received_bytes") val originalReceivedBytes: Long,
+        @com.google.gson.annotations.SerializedName("original_total_bytes") val originalTotalBytes: Long,
+        @com.google.gson.annotations.SerializedName("thumbnail_received_bytes") val thumbnailReceivedBytes: Long,
+        @com.google.gson.annotations.SerializedName("thumbnail_total_bytes") val thumbnailTotalBytes: Long,
+        val status: String
     )
 
     suspend fun createCommunityDraft(
@@ -127,6 +137,56 @@ class AccountApiService(
             object : TypeToken<CommunityPostPage<MyCommunityPost>>() {}.type
         )
     }
+
+    suspend fun createCommunityMedia(
+        endpoint: String,
+        token: String,
+        postId: String,
+        clientMediaId: String,
+        displayName: String,
+        mimeType: String,
+        originalBytes: Long,
+        originalSha256: String,
+        thumbnailBytes: Long,
+        thumbnailSha256: String
+    ): Result<CommunityMediaResponse> = request(
+        endpoint = endpoint,
+        path = "account/community/posts/$postId/media",
+        token = token,
+        method = "POST",
+        jsonBody = gson.toJson(
+            mapOf(
+                "client_media_id" to clientMediaId,
+                "display_name" to displayName,
+                "mime_type" to mimeType,
+                "original_bytes" to originalBytes,
+                "original_sha256" to originalSha256,
+                "thumbnail_bytes" to thumbnailBytes,
+                "thumbnail_sha256" to thumbnailSha256
+            )
+        )
+    ) { body -> gson.fromJson(body, CommunityMediaResponse::class.java) }
+
+    suspend fun uploadCommunityMediaChunk(
+        endpoint: String,
+        token: String,
+        postId: String,
+        mediaId: String,
+        variant: String,
+        start: Long,
+        total: Long,
+        bytes: ByteArray
+    ): Result<CommunityMediaResponse> = requestBytes(
+        endpoint = endpoint,
+        path = "account/community/posts/$postId/media/$mediaId/$variant",
+        token = token,
+        bytes = bytes,
+        contentType = "application/octet-stream",
+        headers = mapOf(
+            "Content-Range" to "bytes $start-${start + bytes.size - 1}/$total",
+            "X-Chunk-SHA256" to bytes.sha256()
+        )
+    ) { body -> gson.fromJson(body, CommunityMediaResponse::class.java) }
 
     suspend fun login(endpoint: String, username: String, password: String): Result<AuthSession> =
         postCredentials(endpoint, "auth/login", username, password)
@@ -339,7 +399,36 @@ class AccountApiService(
             }
         }
     }
+
+    private suspend fun <T> requestBytes(
+        endpoint: String,
+        path: String,
+        token: String,
+        bytes: ByteArray,
+        contentType: String,
+        headers: Map<String, String>,
+        parser: (String) -> T
+    ): Result<T> = withContext(Dispatchers.IO) {
+        runCatching {
+            val baseUrl = endpoint.trim().trimEnd('/')
+            require(baseUrl.isNotBlank()) { "账户服务地址未配置" }
+            val requestBuilder = Request.Builder()
+                .url("$baseUrl/$path")
+                .addHeader("Authorization", "Bearer $token")
+            headers.forEach { (name, value) -> requestBuilder.addHeader(name, value) }
+            requestBuilder.put(bytes.toRequestBody(contentType.toMediaType()))
+            client.newCall(requestBuilder.build()).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                if (!response.isSuccessful) throw IOException(response.toAccountError(body))
+                parser(body)
+            }
+        }
+    }
 }
+
+private fun ByteArray.sha256(): String = MessageDigest.getInstance("SHA-256")
+    .digest(this)
+    .joinToString("") { "%02x".format(it) }
 
 private fun Response.toAccountError(body: String): String {
     val detail = runCatching {

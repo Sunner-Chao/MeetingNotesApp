@@ -15,7 +15,15 @@ data class PublicCommunityPost(
     @SerializedName("ai_assisted") val aiAssisted: Boolean = false,
     @SerializedName("redacted_coordinate_count") val redactedCoordinateCount: Int = 0,
     @SerializedName("published_at") val publishedAt: Long,
-    @SerializedName("author_label") val authorLabel: String = "研学同行者"
+    @SerializedName("author_label") val authorLabel: String = "研学同行者",
+    val media: List<PublicCommunityMedia> = emptyList()
+)
+
+data class PublicCommunityMedia(
+    val id: String,
+    @SerializedName("thumbnail_url") val thumbnailUrl: String,
+    @SerializedName("content_url") val contentUrl: String,
+    @SerializedName("mime_type") val mimeType: String
 )
 
 data class MyCommunityPost(

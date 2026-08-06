@@ -19,6 +19,7 @@ data class CommunityUiState(
     val tab: CommunityTab = CommunityTab.DISCOVER,
     val publicPosts: List<PublicCommunityPost> = emptyList(),
     val myPosts: List<MyCommunityPost> = emptyList(),
+    val mediaBaseUrl: String = "",
     val isLoading: Boolean = false,
     val error: String? = null
 )
@@ -54,7 +55,13 @@ class CommunityViewModel(
         val endpoint = configDataStore.accountEndpointFlow.first()
         accountApiService.publicCommunityPosts(endpoint).fold(
             onSuccess = { page ->
-                _uiState.update { it.copy(publicPosts = page.items, isLoading = false) }
+                _uiState.update {
+                    it.copy(
+                        publicPosts = page.items,
+                        mediaBaseUrl = communityMediaBaseUrl(endpoint),
+                        isLoading = false
+                    )
+                }
             },
             onFailure = { error ->
                 _uiState.update {
@@ -92,8 +99,14 @@ class CommunityViewModel(
     }
 }
 
+private fun communityMediaBaseUrl(endpoint: String): String {
+    val clean = endpoint.trim().trimEnd('/')
+    return if (clean.endsWith("/api")) clean.removeSuffix("/api") else clean
+}
+
 data class CommunityPostDetailUiState(
     val post: PublicCommunityPost? = null,
+    val mediaBaseUrl: String = "",
     val isLoading: Boolean = true,
     val error: String? = null
 )
@@ -111,7 +124,13 @@ class CommunityPostDetailViewModel(
             val endpoint = configDataStore.accountEndpointFlow.first()
             accountApiService.publicCommunityPost(endpoint, postId).fold(
                 onSuccess = { post ->
-                    _uiState.update { it.copy(post = post, isLoading = false) }
+                    _uiState.update {
+                        it.copy(
+                            post = post,
+                            mediaBaseUrl = communityMediaBaseUrl(endpoint),
+                            isLoading = false
+                        )
+                    }
                 },
                 onFailure = { error ->
                     _uiState.update {

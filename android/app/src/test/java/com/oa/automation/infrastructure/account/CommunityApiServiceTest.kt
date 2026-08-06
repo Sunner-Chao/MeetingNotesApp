@@ -106,4 +106,58 @@ class CommunityApiServiceTest {
         assertEquals("/api/account/community/posts?limit=20", myRequest.path)
         assertEquals("Bearer session-token", myRequest.getHeader("Authorization"))
     }
+
+    @Test
+    fun createMediaAndUploadChunkUseAuthenticatedResumableProtocol() = runBlocking {
+        server.enqueue(
+            MockResponse().setResponseCode(201).setBody(
+                """{"id":"media-1","original_received_bytes":0,"original_total_bytes":5,"thumbnail_received_bytes":0,"thumbnail_total_bytes":3,"status":"uploading"}"""
+            )
+        )
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """{"id":"media-1","original_received_bytes":5,"original_total_bytes":5,"thumbnail_received_bytes":0,"thumbnail_total_bytes":3,"status":"uploading"}"""
+            )
+        )
+        val endpoint = server.url("/api").toString()
+        val created = service.createCommunityMedia(
+            endpoint = endpoint,
+            token = "session-token",
+            postId = "post-1",
+            clientMediaId = "local-media-1",
+            displayName = "现场照片.jpg",
+            mimeType = "image/jpeg",
+            originalBytes = 5,
+            originalSha256 = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+            thumbnailBytes = 3,
+            thumbnailSha256 = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        ).getOrThrow()
+        val manifestRequest = server.takeRequest()
+
+        assertEquals("/api/account/community/posts/post-1/media", manifestRequest.path)
+        assertEquals("Bearer session-token", manifestRequest.getHeader("Authorization"))
+        assertTrue(manifestRequest.body.readUtf8().contains("\"client_media_id\":\"local-media-1\""))
+
+        service.uploadCommunityMediaChunk(
+            endpoint = endpoint,
+            token = "session-token",
+            postId = "post-1",
+            mediaId = created.id,
+            variant = "original",
+            start = 0,
+            total = 5,
+            bytes = "hello".encodeToByteArray()
+        ).getOrThrow()
+        val uploadRequest = server.takeRequest()
+
+        assertEquals("/api/account/community/posts/post-1/media/media-1/original", uploadRequest.path)
+        assertEquals("PUT", uploadRequest.method)
+        assertEquals("Bearer session-token", uploadRequest.getHeader("Authorization"))
+        assertEquals("bytes 0-4/5", uploadRequest.getHeader("Content-Range"))
+        assertEquals(
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+            uploadRequest.getHeader("X-Chunk-SHA256")
+        )
+        assertEquals("hello", uploadRequest.body.readUtf8())
+    }
 }

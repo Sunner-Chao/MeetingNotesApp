@@ -25,6 +25,7 @@ import com.oa.automation.infrastructure.background.BackgroundTaskScheduler
 import com.oa.automation.infrastructure.community.CommunitySyncEnqueuer
 import com.oa.automation.infrastructure.community.CommunitySyncScheduler
 import com.oa.automation.infrastructure.community.CommunitySyncProcessor
+import com.oa.automation.infrastructure.community.PublishedPostMediaStore
 import com.oa.automation.infrastructure.db.AppDatabase
 import com.oa.automation.infrastructure.llm.LLMEngine
 import com.oa.automation.infrastructure.llm.AgentQuotaService
@@ -76,6 +77,7 @@ val appModule = module {
             .addMigrations(AppDatabase.MIGRATION_8_9)
             .addMigrations(AppDatabase.MIGRATION_9_10)
             .addMigrations(AppDatabase.MIGRATION_10_11)
+            .addMigrations(AppDatabase.MIGRATION_11_12)
             .build()
     }
     single { get<AppDatabase>().meetingDao() }
@@ -86,6 +88,7 @@ val appModule = module {
     single { get<AppDatabase>().journeyEditionDao() }
     single { get<AppDatabase>().publishedPostDao() }
     single { get<AppDatabase>().communitySyncOutboxDao() }
+    single { get<AppDatabase>().publishedPostMediaDao() }
 
     // Infrastructure
     single<MeetingRepository> { MeetingRepositoryImpl(get()) }
@@ -115,7 +118,8 @@ val appModule = module {
     single { AgentQuotaService() }
     single { AccountApiService() }
     single { AccountSessionSynchronizer(get(), get()) }
-    single { CommunitySyncProcessor(get(), get(), get(), get()) }
+    single { CommunitySyncProcessor(get(), get(), get(), get(), get()) }
+    single { PublishedPostMediaStore(androidContext(), get()) }
     single { ProfileAvatarCodec(androidContext()) }
 
     // Use Cases
@@ -124,7 +128,7 @@ val appModule = module {
     factory { GenerateReportUseCase(get(), get(), get(), get()) }
     factory { GenerateStageDraftUseCase(get(), get(), get(), get()) }
     factory { GenerateJourneyEditionUseCase(get(), get(), get()) }
-    factory { CreatePublishedPostSnapshotUseCase(get()) }
+    factory { CreatePublishedPostSnapshotUseCase(get(), get(), get(), get()) }
 
     // ViewModels
     viewModel { LoginViewModel(get(), get()) }

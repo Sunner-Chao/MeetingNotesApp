@@ -68,6 +68,10 @@ class StageDraftRepositoryImpl(
         }
     }
 
+    override suspend fun findByIds(ids: List<String>): Result<List<StageDraftVersion>> = runCatching {
+        if (ids.isEmpty()) emptyList() else dao.findByIds(ids.distinct()).map { it.toDomain() }
+    }
+
     override suspend fun saveDraft(id: String, content: String): Result<StageDraftVersion> = runCatching {
         require(content.isNotBlank()) { "Stage draft content must not be blank" }
         val existing = dao.findById(id) ?: error("Stage draft not found: $id")

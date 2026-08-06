@@ -18,5 +18,6 @@ interface MeetingRepository {
     suspend fun saveAttachment(attachment: MeetingAttachment): Result<MeetingAttachment>
     fun observeAttachments(meetingId: String): Flow<List<MeetingAttachment>>
     fun observeAttachmentsByJourneyStageId(journeyStageId: String): Flow<List<MeetingAttachment>>
+    suspend fun findAttachmentsByJourneyStageIds(stageIds: List<String>): Result<List<MeetingAttachment>>
     suspend fun deleteAttachment(id: String): Result<Unit>
 }

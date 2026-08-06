@@ -59,6 +59,9 @@ interface StageDraftDao {
     @Query("SELECT * FROM stage_draft_versions WHERE id = :id LIMIT 1")
     suspend fun findById(id: String): StageDraftVersionEntity?
 
+    @Query("SELECT * FROM stage_draft_versions WHERE id IN (:ids)")
+    suspend fun findByIds(ids: List<String>): List<StageDraftVersionEntity>
+
     @Query(
         "UPDATE stage_draft_versions SET content = :content, updatedAt = :updatedAt " +
             "WHERE id = :id AND status = 'DRAFT'"

@@ -63,6 +63,9 @@ class StageDraftRepositoryImplTest {
 
         override suspend fun findById(id: String): StageDraftVersionEntity? = values[id]
 
+        override suspend fun findByIds(ids: List<String>): List<StageDraftVersionEntity> =
+            ids.mapNotNull(values::get)
+
         override suspend fun updateDraftContent(id: String, content: String, updatedAt: Long): Int {
             val existing = values[id] ?: return 0
             if (existing.status != "DRAFT") return 0

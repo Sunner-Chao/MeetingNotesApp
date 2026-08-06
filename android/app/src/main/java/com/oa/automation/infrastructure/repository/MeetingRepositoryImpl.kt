@@ -88,6 +88,13 @@ class MeetingRepositoryImpl(
         meetingDao.observeAttachmentsByJourneyStageId(journeyStageId)
             .map { list -> list.map { it.toDomain() } }
 
+    override suspend fun findAttachmentsByJourneyStageIds(
+        stageIds: List<String>
+    ): Result<List<MeetingAttachment>> = runCatching {
+        if (stageIds.isEmpty()) emptyList()
+        else meetingDao.findAttachmentsByJourneyStageIds(stageIds.distinct()).map { it.toDomain() }
+    }
+
     override suspend fun deleteAttachment(id: String): Result<Unit> = runCatching {
         meetingDao.deleteAttachment(id)
     }

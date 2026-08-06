@@ -18,6 +18,8 @@ interface StageDraftRepository {
         journeyId: String
     ): Result<List<ConfirmedJourneyStageDraft>>
 
+    suspend fun findByIds(ids: List<String>): Result<List<StageDraftVersion>>
+
     suspend fun saveDraft(id: String, content: String): Result<StageDraftVersion>
 
     suspend fun confirmDraft(id: String): Result<StageDraftVersion>

@@ -1,5 +1,6 @@
 package com.oa.automation.ui.screen.community
 
+import android.graphics.BitmapFactory
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -42,9 +44,11 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -52,9 +56,12 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.oa.automation.domain.model.MyCommunityPost
 import com.oa.automation.domain.model.PublicCommunityPost
 import java.text.SimpleDateFormat
+import java.net.URL
 import java.util.Date
 import java.util.Locale
 import org.koin.androidx.compose.koinViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @Composable
 fun CommunityScreen(
@@ -128,7 +135,11 @@ private fun CommunityContent(
             }
             if (isDiscover) {
                 items(state.publicPosts, key = { it.id }) { post ->
-                    PublicPostCard(post, onClick = { onOpenPost(post.id) })
+                    PublicPostCard(
+                        post = post,
+                        mediaBaseUrl = state.mediaBaseUrl,
+                        onClick = { onOpenPost(post.id) }
+                    )
                 }
             } else {
                 items(state.myPosts, key = { it.id }) { post -> MyPostCard(post) }
@@ -138,7 +149,11 @@ private fun CommunityContent(
 }
 
 @Composable
-private fun PublicPostCard(post: PublicCommunityPost, onClick: () -> Unit) {
+private fun PublicPostCard(
+    post: PublicCommunityPost,
+    mediaBaseUrl: String,
+    onClick: () -> Unit
+) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(8.dp),
@@ -149,6 +164,13 @@ private fun PublicPostCard(post: PublicCommunityPost, onClick: () -> Unit) {
             modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            post.media.firstOrNull()?.let { media ->
+                CommunityThumbnail(
+                    url = "$mediaBaseUrl${media.thumbnailUrl}",
+                    contentDescription = "研学图片",
+                    modifier = Modifier.fillMaxWidth().height(184.dp)
+                )
+            }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
                     Icons.Default.Verified,
@@ -178,8 +200,8 @@ private fun PublicPostCard(post: PublicCommunityPost, onClick: () -> Unit) {
                 overflow = TextOverflow.Ellipsis
             )
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    if (post.aiAssisted) "已标注 AI 协作" else "现场记录",
+            Text(
+                if (post.media.isNotEmpty()) "${post.media.size} 张图片" else if (post.aiAssisted) "已标注 AI 协作" else "现场记录",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.outline
                 )
@@ -316,7 +338,11 @@ fun CommunityPostDetailScreen(
             uiState.isLoading -> Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 3.dp)
             }
-            post != null -> CommunityPostDetail(post, Modifier.padding(padding))
+            post != null -> CommunityPostDetail(
+                post = post,
+                mediaBaseUrl = uiState.mediaBaseUrl,
+                modifier = Modifier.padding(padding)
+            )
             else -> CommunityEmptyState(
                 message = uiState.error ?: "内容暂不可查看",
                 isError = true,
@@ -328,7 +354,11 @@ fun CommunityPostDetailScreen(
 }
 
 @Composable
-private fun CommunityPostDetail(post: PublicCommunityPost, modifier: Modifier = Modifier) {
+private fun CommunityPostDetail(
+    post: PublicCommunityPost,
+    mediaBaseUrl: String,
+    modifier: Modifier = Modifier
+) {
     Column(
         modifier = modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
@@ -341,8 +371,48 @@ private fun CommunityPostDetail(post: PublicCommunityPost, modifier: Modifier = 
             Spacer(Modifier.width(10.dp))
             Text(formatCommunityDate(post.publishedAt), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
         }
+        if (post.media.isNotEmpty()) {
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                items(post.media, key = { it.id }) { media ->
+                    CommunityThumbnail(
+                        url = "$mediaBaseUrl${media.thumbnailUrl}",
+                        contentDescription = "研学图片",
+                        modifier = Modifier.width(240.dp).height(160.dp)
+                    )
+                }
+            }
+        }
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         Text(post.content, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface)
+    }
+}
+
+@Composable
+private fun CommunityThumbnail(
+    url: String,
+    contentDescription: String,
+    modifier: Modifier = Modifier
+) {
+    val bitmap by produceState<android.graphics.Bitmap?>(initialValue = null, url) {
+        value = withContext(Dispatchers.IO) {
+            runCatching {
+                URL(url).openStream().use(BitmapFactory::decodeStream)
+            }.getOrNull()
+        }
+    }
+    if (bitmap != null) {
+        androidx.compose.foundation.Image(
+            bitmap = bitmap!!.asImageBitmap(),
+            contentDescription = contentDescription,
+            modifier = modifier,
+            contentScale = ContentScale.Crop
+        )
+    } else {
+        Surface(
+            modifier = modifier,
+            shape = RoundedCornerShape(6.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant
+        ) {}
     }
 }
 

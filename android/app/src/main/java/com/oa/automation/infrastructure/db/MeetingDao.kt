@@ -59,6 +59,12 @@ interface MeetingDao {
     @Query("SELECT * FROM meeting_attachments WHERE journeyStageId = :journeyStageId ORDER BY createdAt ASC")
     fun observeAttachmentsByJourneyStageId(journeyStageId: String): Flow<List<MeetingAttachmentEntity>>
 
+    @Query(
+        "SELECT * FROM meeting_attachments WHERE journeyStageId IN (:stageIds) " +
+            "ORDER BY createdAt ASC"
+    )
+    suspend fun findAttachmentsByJourneyStageIds(stageIds: List<String>): List<MeetingAttachmentEntity>
+
     @Query("DELETE FROM meeting_attachments WHERE id = :id")
     suspend fun deleteAttachment(id: String)
 }
