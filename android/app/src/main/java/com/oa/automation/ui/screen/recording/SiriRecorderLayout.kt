@@ -43,6 +43,7 @@ import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Groups
@@ -54,6 +55,7 @@ import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Summarize
 import androidx.compose.material3.DropdownMenu
@@ -98,6 +100,8 @@ import com.oa.automation.domain.model.StageDraftStatus
 import com.oa.automation.domain.model.StageDraftVersion
 import com.oa.automation.domain.model.JourneyEdition
 import com.oa.automation.domain.model.JourneyEditionStatus
+import com.oa.automation.domain.model.PublishedPost
+import com.oa.automation.domain.model.PublishedPostStatus
 import com.oa.automation.domain.model.STTLanguage
 import kotlin.math.PI
 import kotlin.math.sin
@@ -172,6 +176,9 @@ internal fun SiriRecorderContent(
     onOpenStageDraft: () -> Unit,
     onGenerateJourneyEdition: () -> Unit,
     onOpenJourneyEdition: () -> Unit,
+    onCreatePublishedPost: () -> Unit,
+    onOpenPublishedPost: () -> Unit,
+    onWithdrawPublishedPost: () -> Unit,
     onGenerateReport: () -> Unit,
     onCancelTranscription: () -> Unit,
     onCancelReport: () -> Unit,
@@ -227,6 +234,8 @@ internal fun SiriRecorderContent(
                 isGeneratingStageDraft = uiState.isGeneratingStageDraft,
                 latestJourneyEdition = uiState.latestJourneyEdition,
                 isGeneratingJourneyEdition = uiState.isGeneratingJourneyEdition,
+                latestPublishedPost = uiState.latestPublishedPost,
+                isCreatingPublishedPost = uiState.isCreatingPublishedPost,
                 selectedTemplateName = uiState.reportTemplate.selectedName,
                 journeyActionEnabled = !uiState.isJourneyActionPending &&
                     !uiState.isRecording &&
@@ -240,7 +249,10 @@ internal fun SiriRecorderContent(
                 onGenerateStageDraft = onGenerateStageDraft,
                 onOpenStageDraft = onOpenStageDraft,
                 onGenerateJourneyEdition = onGenerateJourneyEdition,
-                onOpenJourneyEdition = onOpenJourneyEdition
+                onOpenJourneyEdition = onOpenJourneyEdition,
+                onCreatePublishedPost = onCreatePublishedPost,
+                onOpenPublishedPost = onOpenPublishedPost,
+                onWithdrawPublishedPost = onWithdrawPublishedPost
             )
             if (uiState.journey != null) {
                 Spacer(Modifier.height(6.dp))
@@ -250,6 +262,7 @@ internal fun SiriRecorderContent(
                     latestSavedStage = uiState.latestSavedJourneyStage,
                     latestStageDraft = uiState.latestStageDraft,
                     latestJourneyEdition = uiState.latestJourneyEdition,
+                    latestPublishedPost = uiState.latestPublishedPost,
                     statusMessage = uiState.journeyStatusMessage,
                     palette = palette
                 )
@@ -338,6 +351,8 @@ private fun SiriTopBar(
     isGeneratingStageDraft: Boolean,
     latestJourneyEdition: JourneyEdition?,
     isGeneratingJourneyEdition: Boolean,
+    latestPublishedPost: PublishedPost?,
+    isCreatingPublishedPost: Boolean,
     selectedTemplateName: String,
     journeyActionEnabled: Boolean,
     onStartJourney: () -> Unit,
@@ -347,7 +362,10 @@ private fun SiriTopBar(
     onGenerateStageDraft: () -> Unit,
     onOpenStageDraft: () -> Unit,
     onGenerateJourneyEdition: () -> Unit,
-    onOpenJourneyEdition: () -> Unit
+    onOpenJourneyEdition: () -> Unit,
+    onCreatePublishedPost: () -> Unit,
+    onOpenPublishedPost: () -> Unit,
+    onWithdrawPublishedPost: () -> Unit
 ) {
     Row(
         modifier = Modifier.fillMaxWidth().height(40.dp),
@@ -534,6 +552,60 @@ private fun SiriTopBar(
                             )
                         }
                     }
+                    if (isCreatingPublishedPost) {
+                        SiriMenuItem(
+                            icon = Icons.Default.Share,
+                            text = "正在准备发布快照",
+                            onClick = {},
+                            onExpandedChange = onMenuExpandedChange,
+                            enabled = false
+                        )
+                    } else {
+                        latestPublishedPost?.let { post ->
+                            when (post.status) {
+                                PublishedPostStatus.REVIEW -> SiriMenuItem(
+                                    icon = Icons.Default.Share,
+                                    text = "发布前检查",
+                                    onClick = onOpenPublishedPost,
+                                    onExpandedChange = onMenuExpandedChange
+                                )
+
+                                PublishedPostStatus.READY -> {
+                                    SiriMenuItem(
+                                        icon = Icons.Default.Share,
+                                        text = "查看社区发布预览",
+                                        onClick = onOpenPublishedPost,
+                                        onExpandedChange = onMenuExpandedChange
+                                    )
+                                    SiriMenuItem(
+                                        icon = Icons.Default.Close,
+                                        text = "撤回发布准备",
+                                        onClick = onWithdrawPublishedPost,
+                                        onExpandedChange = onMenuExpandedChange,
+                                        enabled = journeyActionEnabled
+                                    )
+                                }
+
+                                PublishedPostStatus.WITHDRAWN -> SiriMenuItem(
+                                    icon = Icons.Default.Description,
+                                    text = "查看已撤回快照",
+                                    onClick = onOpenPublishedPost,
+                                    onExpandedChange = onMenuExpandedChange
+                                )
+                            }
+                        }
+                        if (latestJourneyEdition?.status == JourneyEditionStatus.CONFIRMED &&
+                            latestPublishedPost?.journeyEditionId != latestJourneyEdition.id
+                        ) {
+                            SiriMenuItem(
+                                icon = Icons.Default.Share,
+                                text = "创建社区发布预览",
+                                onClick = onCreatePublishedPost,
+                                onExpandedChange = onMenuExpandedChange,
+                                enabled = journeyActionEnabled
+                            )
+                        }
+                    }
                 }
                 if (canGenerate) {
                     SiriMenuItem(Icons.Default.Summarize, "生成会议纪要", onGenerateReport, onMenuExpandedChange)
@@ -575,9 +647,16 @@ private fun SiriJourneyStrip(
     latestSavedStage: JourneyStage?,
     latestStageDraft: StageDraftVersion?,
     latestJourneyEdition: JourneyEdition?,
+    latestPublishedPost: PublishedPost?,
     statusMessage: String,
     palette: SiriRecorderPalette
 ) {
+    val publishProgressLabel = when (latestPublishedPost?.status) {
+        PublishedPostStatus.REVIEW -> "发布快照待检查"
+        PublishedPostStatus.READY -> "社区发布预览已就绪"
+        PublishedPostStatus.WITHDRAWN -> "发布准备已撤回"
+        null -> null
+    }
     val editionProgressLabel = when (latestJourneyEdition?.status) {
         JourneyEditionStatus.DRAFT -> "总游记待编辑"
         JourneyEditionStatus.CONFIRMED -> "总游记已确认"
@@ -590,7 +669,7 @@ private fun SiriJourneyStrip(
             null -> null
         }
     }
-    val progressLabel = editionProgressLabel ?: draftProgressLabel ?: statusMessage.ifBlank {
+    val progressLabel = publishProgressLabel ?: editionProgressLabel ?: draftProgressLabel ?: statusMessage.ifBlank {
         when (journey.status) {
             JourneyStatus.PAUSED -> "旅程已暂停"
             JourneyStatus.COMPLETED -> "旅程已完成"

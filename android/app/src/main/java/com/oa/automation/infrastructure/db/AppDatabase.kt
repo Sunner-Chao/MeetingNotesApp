@@ -16,9 +16,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         JourneyEntity::class,
         JourneyStageEntity::class,
         StageDraftVersionEntity::class,
-        JourneyEditionEntity::class
+        JourneyEditionEntity::class,
+        PublishedPostEntity::class
     ],
-    version = 9,
+    version = 10,
     exportSchema = false
 )
 @TypeConverters(DbConverters::class)
@@ -29,6 +30,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun journeyDao(): JourneyDao
     abstract fun stageDraftDao(): StageDraftDao
     abstract fun journeyEditionDao(): JourneyEditionDao
+    abstract fun publishedPostDao(): PublishedPostDao
 
     companion object {
         val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -229,6 +231,55 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL(
                     "CREATE INDEX IF NOT EXISTS index_journey_editions_journeyId_status " +
                         "ON journey_editions(journeyId, status)"
+                )
+            }
+        }
+
+        val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS published_posts (
+                        id TEXT NOT NULL,
+                        journeyId TEXT NOT NULL,
+                        journeyEditionId TEXT NOT NULL,
+                        versionNumber INTEGER NOT NULL,
+                        sourceEditionVersion INTEGER NOT NULL,
+                        title TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        visibility TEXT NOT NULL,
+                        aiAssisted INTEGER NOT NULL,
+                        privacyReviewed INTEGER NOT NULL,
+                        rightsConfirmed INTEGER NOT NULL,
+                        redactedCoordinateCount INTEGER NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        updatedAt INTEGER NOT NULL,
+                        readyAt INTEGER,
+                        withdrawnAt INTEGER,
+                        PRIMARY KEY(id),
+                        FOREIGN KEY(journeyId) REFERENCES journeys(id)
+                            ON UPDATE NO ACTION ON DELETE CASCADE,
+                        FOREIGN KEY(journeyEditionId) REFERENCES journey_editions(id)
+                            ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_published_posts_journeyId " +
+                        "ON published_posts(journeyId)"
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS index_published_posts_journeyEditionId " +
+                        "ON published_posts(journeyEditionId)"
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS index_published_posts_journeyId_versionNumber " +
+                        "ON published_posts(journeyId, versionNumber)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_published_posts_journeyId_status " +
+                        "ON published_posts(journeyId, status)"
                 )
             }
         }

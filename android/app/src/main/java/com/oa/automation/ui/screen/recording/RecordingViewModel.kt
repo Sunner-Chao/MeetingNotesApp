@@ -18,14 +18,18 @@ import com.oa.automation.domain.model.StageDraftStatus
 import com.oa.automation.domain.model.StageDraftVersion
 import com.oa.automation.domain.model.JourneyEdition
 import com.oa.automation.domain.model.JourneyEditionStatus
+import com.oa.automation.domain.model.PublishedPost
+import com.oa.automation.domain.model.PublishedPostStatus
 import com.oa.automation.domain.model.ReportTemplateConfig
 import com.oa.automation.domain.repository.JourneyRepository
 import com.oa.automation.domain.repository.MeetingRepository
 import com.oa.automation.domain.repository.ReportRepository
 import com.oa.automation.domain.repository.StageDraftRepository
 import com.oa.automation.domain.repository.JourneyEditionRepository
+import com.oa.automation.domain.repository.PublishedPostRepository
 import com.oa.automation.application.usecase.GenerateStageDraftUseCase
 import com.oa.automation.application.usecase.GenerateJourneyEditionUseCase
+import com.oa.automation.application.usecase.CreatePublishedPostSnapshotUseCase
 import com.oa.automation.domain.model.Transcript
 import com.oa.automation.domain.model.MeetingAttachment
 import com.oa.automation.domain.model.STTConfig
@@ -102,6 +106,10 @@ data class RecordingUiState(
     val isGeneratingJourneyEdition: Boolean = false,
     val isSavingJourneyEdition: Boolean = false,
     val journeyEditionEditorVisible: Boolean = false,
+    val latestPublishedPost: PublishedPost? = null,
+    val isCreatingPublishedPost: Boolean = false,
+    val isSavingPublishedPost: Boolean = false,
+    val publishedPostReviewVisible: Boolean = false,
     val journeyStageCount: Int = 0,
     val isJourneyActionPending: Boolean = false,
     val journeyStatusMessage: String = "",
@@ -174,6 +182,10 @@ internal fun RecordingUiState.resetForMeetingChange(): RecordingUiState = copy(
     isGeneratingJourneyEdition = false,
     isSavingJourneyEdition = false,
     journeyEditionEditorVisible = false,
+    latestPublishedPost = null,
+    isCreatingPublishedPost = false,
+    isSavingPublishedPost = false,
+    publishedPostReviewVisible = false,
     journeyStageCount = 0,
     isJourneyActionPending = false,
     journeyStatusMessage = "",
@@ -218,6 +230,7 @@ class RecordingViewModel(
     private val journeyRepository: JourneyRepository,
     private val stageDraftRepository: StageDraftRepository,
     private val journeyEditionRepository: JourneyEditionRepository,
+    private val publishedPostRepository: PublishedPostRepository,
     private val reportRepository: ReportRepository,
     private val attachmentStore: MeetingAttachmentStore,
     private val recordingController: RecordingSessionController,
@@ -228,6 +241,7 @@ class RecordingViewModel(
     private val importedAudioStore: ImportedAudioStore,
     private val generateStageDraftUseCase: GenerateStageDraftUseCase,
     private val generateJourneyEditionUseCase: GenerateJourneyEditionUseCase,
+    private val createPublishedPostSnapshotUseCase: CreatePublishedPostSnapshotUseCase,
     context: Context
 ) : ViewModel() {
 
@@ -248,6 +262,7 @@ class RecordingViewModel(
     private var journeyStageCollectionJob: Job? = null
     private var stageDraftCollectionJob: Job? = null
     private var journeyEditionCollectionJob: Job? = null
+    private var publishedPostCollectionJob: Job? = null
     private var transcriptionCollectionJob: Job? = null
     private var reportCollectionJob: Job? = null
     private var pendingRecordingStartJob: Job? = null
@@ -398,6 +413,8 @@ class RecordingViewModel(
             stageDraftCollectionJob = null
             journeyEditionCollectionJob?.cancel()
             journeyEditionCollectionJob = null
+            publishedPostCollectionJob?.cancel()
+            publishedPostCollectionJob = null
             resetStreamingPreviewState()
             _uiState.value = _uiState.value.resetForMeetingChange()
         }
@@ -479,6 +496,8 @@ class RecordingViewModel(
         stageDraftCollectionJob = null
         journeyEditionCollectionJob?.cancel()
         journeyEditionCollectionJob = null
+        publishedPostCollectionJob?.cancel()
+        publishedPostCollectionJob = null
         journeyCollectionJob = viewModelScope.launch {
             journeyRepository.observeByMeetingId(meetingId).collect journeyUpdate@ { journey ->
                 if (!isCurrentMeeting(meetingId)) return@journeyUpdate
@@ -495,6 +514,10 @@ class RecordingViewModel(
                         isGeneratingJourneyEdition = false,
                         isSavingJourneyEdition = false,
                         journeyEditionEditorVisible = false,
+                        latestPublishedPost = null,
+                        isCreatingPublishedPost = false,
+                        isSavingPublishedPost = false,
+                        publishedPostReviewVisible = false,
                         journeyStageCount = if (journey == null) 0 else state.journeyStageCount
                     )
                 }
@@ -508,6 +531,14 @@ class RecordingViewModel(
                     journeyEditionRepository.observeLatest(journeyId).collect { edition ->
                         if (isCurrentMeeting(meetingId) && _uiState.value.journey?.id == journeyId) {
                             _uiState.update { it.copy(latestJourneyEdition = edition) }
+                        }
+                    }
+                }
+                publishedPostCollectionJob?.cancel()
+                publishedPostCollectionJob = viewModelScope.launch {
+                    publishedPostRepository.observeLatest(journeyId).collect { post ->
+                        if (isCurrentMeeting(meetingId) && _uiState.value.journey?.id == journeyId) {
+                            _uiState.update { it.copy(latestPublishedPost = post) }
                         }
                     }
                 }
@@ -1344,6 +1375,189 @@ class RecordingViewModel(
         }
     }
 
+    fun createPublishedPostSnapshot() {
+        val state = _uiState.value
+        val journey = state.journey ?: run {
+            _uiState.update { it.copy(error = "请先开始研学旅程") }
+            return
+        }
+        val edition = state.latestJourneyEdition ?: run {
+            _uiState.update { it.copy(error = "请先生成并确认总游记") }
+            return
+        }
+        if (edition.status != JourneyEditionStatus.CONFIRMED) {
+            _uiState.update { it.copy(error = "请先确认总游记") }
+            return
+        }
+        if (state.latestPublishedPost?.journeyEditionId == edition.id) {
+            _uiState.update { it.copy(publishedPostReviewVisible = true, error = null) }
+            return
+        }
+        if (state.isCreatingPublishedPost || state.isSavingPublishedPost) return
+
+        val meetingId = currentMeetingId
+        _uiState.update {
+            it.copy(
+                isCreatingPublishedPost = true,
+                journeyStatusMessage = "正在准备发布快照",
+                error = null
+            )
+        }
+        viewModelScope.launch {
+            createPublishedPostSnapshotUseCase(journey, edition).fold(
+                onSuccess = { post ->
+                    if (isCurrentMeeting(meetingId)) {
+                        _uiState.update {
+                            it.copy(
+                                isCreatingPublishedPost = false,
+                                latestPublishedPost = post,
+                                publishedPostReviewVisible = true,
+                                journeyStatusMessage = "发布快照待检查"
+                            )
+                        }
+                    }
+                },
+                onFailure = { error ->
+                    if (isCurrentMeeting(meetingId)) {
+                        _uiState.update {
+                            it.copy(
+                                isCreatingPublishedPost = false,
+                                error = "创建发布快照失败: ${error.message ?: "未知错误"}"
+                            )
+                        }
+                    }
+                }
+            )
+        }
+    }
+
+    fun openPublishedPostReview() {
+        if (_uiState.value.latestPublishedPost == null) {
+            _uiState.update { it.copy(error = "当前还没有发布快照") }
+            return
+        }
+        _uiState.update { it.copy(publishedPostReviewVisible = true, error = null) }
+    }
+
+    fun dismissPublishedPostReview() {
+        _uiState.update { it.copy(publishedPostReviewVisible = false) }
+    }
+
+    fun savePublishedPostReview(privacyReviewed: Boolean, rightsConfirmed: Boolean) {
+        val post = _uiState.value.latestPublishedPost ?: return
+        if (post.status != PublishedPostStatus.REVIEW) {
+            _uiState.update { it.copy(error = "当前发布快照不可修改检查项") }
+            return
+        }
+        if (_uiState.value.isSavingPublishedPost) return
+        val meetingId = currentMeetingId
+        _uiState.update { it.copy(isSavingPublishedPost = true, error = null) }
+        viewModelScope.launch {
+            publishedPostRepository.saveReview(post.id, privacyReviewed, rightsConfirmed).fold(
+                onSuccess = { saved ->
+                    if (isCurrentMeeting(meetingId)) {
+                        _uiState.update {
+                            it.copy(
+                                isSavingPublishedPost = false,
+                                latestPublishedPost = saved,
+                                journeyStatusMessage = "发布检查已保存"
+                            )
+                        }
+                    }
+                },
+                onFailure = { error ->
+                    if (isCurrentMeeting(meetingId)) {
+                        _uiState.update {
+                            it.copy(
+                                isSavingPublishedPost = false,
+                                error = "保存发布检查失败: ${error.message ?: "未知错误"}"
+                            )
+                        }
+                    }
+                }
+            )
+        }
+    }
+
+    fun markPublishedPostReady(privacyReviewed: Boolean, rightsConfirmed: Boolean) {
+        val post = _uiState.value.latestPublishedPost ?: return
+        if (post.status != PublishedPostStatus.REVIEW) return
+        if (!privacyReviewed || !rightsConfirmed) {
+            _uiState.update { it.copy(error = "请完成隐私与内容权利确认") }
+            return
+        }
+        if (_uiState.value.isSavingPublishedPost) return
+        val meetingId = currentMeetingId
+        _uiState.update { it.copy(isSavingPublishedPost = true, error = null) }
+        viewModelScope.launch {
+            val result = publishedPostRepository.saveReview(
+                post.id,
+                privacyReviewed = true,
+                rightsConfirmed = true
+            ).fold(
+                onSuccess = { saved -> publishedPostRepository.markReady(saved.id) },
+                onFailure = { error -> Result.failure(error) }
+            )
+            result.fold(
+                onSuccess = { ready ->
+                    if (isCurrentMeeting(meetingId)) {
+                        _uiState.update {
+                            it.copy(
+                                isSavingPublishedPost = false,
+                                latestPublishedPost = ready,
+                                publishedPostReviewVisible = false,
+                                journeyStatusMessage = "社区发布预览已就绪"
+                            )
+                        }
+                    }
+                },
+                onFailure = { error ->
+                    if (isCurrentMeeting(meetingId)) {
+                        _uiState.update {
+                            it.copy(
+                                isSavingPublishedPost = false,
+                                error = "发布准备失败: ${error.message ?: "未知错误"}"
+                            )
+                        }
+                    }
+                }
+            )
+        }
+    }
+
+    fun withdrawPublishedPost() {
+        val post = _uiState.value.latestPublishedPost ?: return
+        if (post.status != PublishedPostStatus.READY || _uiState.value.isSavingPublishedPost) return
+        val meetingId = currentMeetingId
+        _uiState.update { it.copy(isSavingPublishedPost = true, error = null) }
+        viewModelScope.launch {
+            publishedPostRepository.withdraw(post.id).fold(
+                onSuccess = { withdrawn ->
+                    if (isCurrentMeeting(meetingId)) {
+                        _uiState.update {
+                            it.copy(
+                                isSavingPublishedPost = false,
+                                latestPublishedPost = withdrawn,
+                                publishedPostReviewVisible = false,
+                                journeyStatusMessage = "发布准备已撤回"
+                            )
+                        }
+                    }
+                },
+                onFailure = { error ->
+                    if (isCurrentMeeting(meetingId)) {
+                        _uiState.update {
+                            it.copy(
+                                isSavingPublishedPost = false,
+                                error = "撤回发布准备失败: ${error.message ?: "未知错误"}"
+                            )
+                        }
+                    }
+                }
+            )
+        }
+    }
+
     private fun saveJourneyLifecycle(journey: Journey, statusMessage: String) {
         _uiState.update { it.copy(isJourneyActionPending = true, error = null) }
         viewModelScope.launch {
@@ -1994,6 +2208,7 @@ class RecordingViewModel(
         journeyStageCollectionJob?.cancel()
         stageDraftCollectionJob?.cancel()
         journeyEditionCollectionJob?.cancel()
+        publishedPostCollectionJob?.cancel()
         transcriptionCollectionJob?.cancel()
         reportCollectionJob?.cancel()
         audioRefreshJob?.cancel()

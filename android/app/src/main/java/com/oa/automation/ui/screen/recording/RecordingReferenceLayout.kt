@@ -78,6 +78,7 @@ import androidx.compose.material.icons.filled.Summarize
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -136,6 +137,8 @@ import com.oa.automation.domain.model.StageDraftStatus
 import com.oa.automation.domain.model.StageDraftVersion
 import com.oa.automation.domain.model.JourneyEdition
 import com.oa.automation.domain.model.JourneyEditionStatus
+import com.oa.automation.domain.model.PublishedPost
+import com.oa.automation.domain.model.PublishedPostStatus
 import com.oa.automation.domain.model.STTEngineType
 import com.oa.automation.domain.model.STTLanguage
 import com.oa.automation.infrastructure.audio.ArchivedMeetingAudio
@@ -305,6 +308,12 @@ internal fun RecordingReferenceScaffold(
     onSaveJourneyEditionContent: (String) -> Unit,
     onConfirmJourneyEdition: (String) -> Unit,
     onDismissJourneyEditionEditor: () -> Unit,
+    onCreatePublishedPost: () -> Unit,
+    onOpenPublishedPost: () -> Unit,
+    onSavePublishedPostReview: (Boolean, Boolean) -> Unit,
+    onMarkPublishedPostReady: (Boolean, Boolean) -> Unit,
+    onWithdrawPublishedPost: () -> Unit,
+    onDismissPublishedPostReview: () -> Unit,
     onAbandonRecording: () -> Unit,
     onGenerateReport: () -> Unit,
     onCancelTranscription: () -> Unit,
@@ -469,6 +478,17 @@ internal fun RecordingReferenceScaffold(
         )
     }
 
+    uiState.latestPublishedPost?.takeIf { uiState.publishedPostReviewVisible }?.let { post ->
+        PublishedPostReviewDialog(
+            post = post,
+            isSaving = uiState.isSavingPublishedPost,
+            onSaveReview = onSavePublishedPostReview,
+            onMarkReady = onMarkPublishedPostReady,
+            onWithdraw = onWithdrawPublishedPost,
+            onDismiss = onDismissPublishedPostReview
+        )
+    }
+
     FlowingProgressBorder(
         active = uiState.isTranscribing || uiState.isGeneratingReport,
         modifier = Modifier.fillMaxSize(),
@@ -619,6 +639,9 @@ internal fun RecordingReferenceScaffold(
                     onOpenStageDraft = onOpenStageDraft,
                     onGenerateJourneyEdition = onGenerateJourneyEdition,
                     onOpenJourneyEdition = onOpenJourneyEdition,
+                    onCreatePublishedPost = onCreatePublishedPost,
+                    onOpenPublishedPost = onOpenPublishedPost,
+                    onWithdrawPublishedPost = onWithdrawPublishedPost,
                     onGenerateReport = onGenerateReport,
                     onCancelTranscription = onCancelTranscription,
                     onCancelReport = onCancelReport,
@@ -802,6 +825,128 @@ private fun JourneyEditionEditorDialog(
                         enabled = content.isNotBlank() && !isSaving
                     ) { Text("保存修改") }
                 }
+            }
+        },
+        shape = RoundedCornerShape(18.dp)
+    )
+}
+
+@Composable
+private fun PublishedPostReviewDialog(
+    post: PublishedPost,
+    isSaving: Boolean,
+    onSaveReview: (Boolean, Boolean) -> Unit,
+    onMarkReady: (Boolean, Boolean) -> Unit,
+    onWithdraw: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val reviewable = post.status == PublishedPostStatus.REVIEW
+    var privacyReviewed by remember(post.id, post.updatedAt) {
+        mutableStateOf(post.privacyReviewed)
+    }
+    var rightsConfirmed by remember(post.id, post.updatedAt) {
+        mutableStateOf(post.rightsConfirmed)
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text("社区发布预览")
+                Text(
+                    text = "快照 ${post.versionNumber} · 总游记 v${post.sourceEditionVersion} · 仅本机",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier.heightIn(max = 500.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = when (post.status) {
+                        PublishedPostStatus.REVIEW -> "发布前检查"
+                        PublishedPostStatus.READY -> "已完成本地发布准备，尚未上传或公开。"
+                        PublishedPostStatus.WITHDRAWN -> "该发布准备已撤回，尚未上传或公开。"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = "AI 辅助内容 · 已移除 ${post.redactedCoordinateCount} 处精确坐标 · 不包含原始音频或图片 EXIF",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                if (reviewable) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(
+                            checked = privacyReviewed,
+                            onCheckedChange = { privacyReviewed = it },
+                            enabled = !isSaving
+                        )
+                        Text(
+                            "已检查正文，不含个人信息或不宜公开的精确位置",
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(
+                            checked = rightsConfirmed,
+                            onCheckedChange = { rightsConfirmed = it },
+                            enabled = !isSaving
+                        )
+                        Text(
+                            "确认拥有正文及后续所选图片的发布权利",
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+                OutlinedTextField(
+                    value = post.content,
+                    onValueChange = {},
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 180.dp, max = 280.dp),
+                    readOnly = true,
+                    label = { Text(post.title) },
+                    minLines = 7,
+                    maxLines = 11
+                )
+            }
+        },
+        confirmButton = {
+            if (reviewable) {
+                Button(
+                    onClick = { onMarkReady(privacyReviewed, rightsConfirmed) },
+                    enabled = privacyReviewed && rightsConfirmed && !isSaving
+                ) {
+                    if (isSaving) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    Text("完成发布准备")
+                }
+            } else {
+                TextButton(onClick = onDismiss) { Text("关闭") }
+            }
+        },
+        dismissButton = {
+            when (post.status) {
+                PublishedPostStatus.REVIEW -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = onDismiss, enabled = !isSaving) { Text("取消") }
+                    TextButton(
+                        onClick = { onSaveReview(privacyReviewed, rightsConfirmed) },
+                        enabled = !isSaving
+                    ) { Text("保存检查") }
+                }
+
+                PublishedPostStatus.READY -> TextButton(
+                    onClick = onWithdraw,
+                    enabled = !isSaving
+                ) { Text("撤回准备", color = MaterialTheme.colorScheme.error) }
+
+                PublishedPostStatus.WITHDRAWN -> Unit
             }
         },
         shape = RoundedCornerShape(18.dp)
