@@ -55,6 +55,13 @@ class PublishedPostRepositoryImpl(
         require(sourceEditionVersion > 0) { "Source edition version must be positive" }
         require(title.isNotBlank()) { "Published post title must not be blank" }
         require(content.isNotBlank()) { "Published post content must not be blank" }
+        require(destination.trim().length <= 120) { "Destination is too long" }
+        require(travelDate.isBlank() || Regex("\\d{4}-\\d{2}-\\d{2}").matches(travelDate.trim())) {
+            "Travel date must use YYYY-MM-DD"
+        }
+        require((stageTitles + tags + pois).all { it.trim().length <= 80 }) {
+            "Stage, tag and POI values must be 80 characters or fewer"
+        }
 
         val previous = dao.findLatest(journeyId)
         val now = System.currentTimeMillis()
@@ -118,18 +125,25 @@ class PublishedPostRepositoryImpl(
         require(existing.status == PublishedPostStatus.REVIEW.name) {
             "Only review snapshots can update metadata"
         }
-        require(destination.length <= 120) { "Destination is too long" }
-        require(travelDate.isBlank() || Regex("\\d{4}-\\d{2}-\\d{2}").matches(travelDate)) {
+        val cleanDestination = destination.trim()
+        val cleanTravelDate = travelDate.trim()
+        require(cleanDestination.length <= 120) { "Destination is too long" }
+        require(cleanTravelDate.isBlank() || Regex("\\d{4}-\\d{2}-\\d{2}").matches(cleanTravelDate)) {
             "Travel date must use YYYY-MM-DD"
         }
         require(travelDays in 0..31) { "Travel days must be between 0 and 31" }
-        fun normalize(values: List<String>) = values.map(String::trim)
-            .filter(String::isNotBlank).distinctBy(String::lowercase).take(50)
+        fun normalize(values: List<String>): List<String> {
+            val cleaned = values.map(String::trim).filter(String::isNotBlank)
+            require(cleaned.all { it.length <= 80 }) {
+                "Tag and POI values must be 80 characters or fewer"
+            }
+            return cleaned.distinctBy(String::lowercase).take(50)
+        }
         val now = System.currentTimeMillis()
         check(dao.updateMetadata(
             id = id,
-            destination = destination.trim(),
-            travelDate = travelDate.trim(),
+            destination = cleanDestination,
+            travelDate = cleanTravelDate,
             travelDays = travelDays,
             tags = normalize(tags),
             pois = normalize(pois),
