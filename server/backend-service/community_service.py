@@ -12,7 +12,7 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator, Mapping
 
 from community_media import CommunityMediaFormatError, sanitize_image_bytes
 
@@ -21,6 +21,11 @@ POST_STATUSES = frozenset({"private_draft", "published", "withdrawn"})
 MODERATION_STATUSES = frozenset({"not_submitted", "pending"})
 REVIEW_DECISIONS = frozenset({"approved", "rejected"})
 REPORT_CATEGORIES = frozenset({"privacy", "copyright", "safety", "spam", "other"})
+DEFAULT_ACTION_RATE_LIMITS: dict[str, tuple[int, int]] = {
+    "interaction": (60, 60),
+    "comment": (10, 60),
+    "report": (10, 60 * 60),
+}
 MAX_METADATA_ITEMS = 50
 MEDIA_MIME_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
 MEDIA_VARIANTS = frozenset({"original", "thumbnail"})
@@ -51,6 +56,14 @@ class CommunityNotFoundError(CommunityError):
 
 class CommunityPermissionError(CommunityError):
     status_code = 403
+
+
+class CommunityRateLimitError(CommunityError):
+    status_code = 429
+
+    def __init__(self, retry_after_seconds: int) -> None:
+        self.retry_after_seconds = max(1, retry_after_seconds)
+        super().__init__(f"操作过于频繁，请在 {self.retry_after_seconds} 秒后重试")
 
 
 @dataclass(frozen=True)
@@ -102,6 +115,8 @@ class CommunityService:
         media_max_asset_bytes: int = 24 * 1024 * 1024,
         media_max_thumbnail_bytes: int = 2 * 1024 * 1024,
         media_max_chunk_bytes: int = 1024 * 1024,
+        action_rate_limits: Mapping[str, tuple[int, int]] | None = None,
+        now_ms_provider: Callable[[], int] | None = None,
     ) -> None:
         self.db_path = Path(db_path)
         self.title_max_length = max(1, title_max_length)
@@ -111,6 +126,14 @@ class CommunityService:
         self.media_max_asset_bytes = max(1, media_max_asset_bytes)
         self.media_max_thumbnail_bytes = max(1, media_max_thumbnail_bytes)
         self.media_max_chunk_bytes = max(1, media_max_chunk_bytes)
+        self.action_rate_limits = {
+            **DEFAULT_ACTION_RATE_LIMITS,
+            **(dict(action_rate_limits) if action_rate_limits is not None else {}),
+        }
+        for action, (limit, window_seconds) in self.action_rate_limits.items():
+            if action not in DEFAULT_ACTION_RATE_LIMITS or limit < 1 or window_seconds < 1:
+                raise ValueError("community action rate limit is invalid")
+        self._now_ms = now_ms_provider or (lambda: int(time.time() * 1000))
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -297,6 +320,34 @@ class CommunityService:
                 CREATE INDEX IF NOT EXISTS idx_community_comment_reports_comment
                     ON community_comment_reports(comment_id, status, created_at DESC);
 
+                CREATE TABLE IF NOT EXISTS community_action_rate_windows (
+                    user_id TEXT NOT NULL,
+                    action TEXT NOT NULL
+                        CHECK(action IN ('interaction', 'comment', 'report')),
+                    window_started_at INTEGER NOT NULL,
+                    window_seconds INTEGER NOT NULL CHECK(window_seconds > 0),
+                    action_count INTEGER NOT NULL CHECK(action_count > 0),
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY(user_id, action),
+                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_community_action_rate_windows_updated
+                    ON community_action_rate_windows(updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS community_activity_metrics (
+                    bucket_started_at INTEGER NOT NULL,
+                    action TEXT NOT NULL
+                        CHECK(action IN ('interaction', 'comment', 'report')),
+                    outcome TEXT NOT NULL CHECK(outcome IN ('allowed', 'limited')),
+                    attempt_count INTEGER NOT NULL CHECK(attempt_count > 0),
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY(bucket_started_at, action, outcome)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_community_activity_metrics_bucket
+                    ON community_activity_metrics(bucket_started_at DESC);
+
                 CREATE TABLE IF NOT EXISTS community_post_index (
                     post_id TEXT PRIMARY KEY,
                     destination TEXT NOT NULL DEFAULT '',
@@ -364,6 +415,64 @@ class CommunityService:
             conn.execute(
                 "ALTER TABLE community_comment_reports ADD COLUMN reviewed_at INTEGER"
             )
+
+    def _consume_action_attempt(self, user_id: str, action: str) -> None:
+        limit, window_seconds = self.action_rate_limits[action]
+        now = self._now_ms()
+        window_ms = window_seconds * 1000
+        window_started_at = now - (now % window_ms)
+        metric_bucket = now - (now % (60 * 60 * 1000))
+        action_count = 1
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            current = conn.execute(
+                "SELECT window_started_at, window_seconds, action_count "
+                "FROM community_action_rate_windows WHERE user_id = ? AND action = ?",
+                (user_id, action),
+            ).fetchone()
+            if (
+                current is not None
+                and current["window_started_at"] == window_started_at
+                and current["window_seconds"] == window_seconds
+            ):
+                action_count = current["action_count"] + 1
+                conn.execute(
+                    "UPDATE community_action_rate_windows "
+                    "SET action_count = ?, updated_at = ? WHERE user_id = ? AND action = ?",
+                    (action_count, now, user_id, action),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO community_action_rate_windows(
+                        user_id, action, window_started_at, window_seconds, action_count, updated_at
+                    ) VALUES (?, ?, ?, ?, 1, ?)
+                    ON CONFLICT(user_id, action) DO UPDATE SET
+                        window_started_at = excluded.window_started_at,
+                        window_seconds = excluded.window_seconds,
+                        action_count = 1,
+                        updated_at = excluded.updated_at
+                    """,
+                    (user_id, action, window_started_at, window_seconds, now),
+                )
+            outcome = "limited" if action_count > limit else "allowed"
+            conn.execute(
+                """
+                INSERT INTO community_activity_metrics(
+                    bucket_started_at, action, outcome, attempt_count, updated_at
+                ) VALUES (?, ?, ?, 1, ?)
+                ON CONFLICT(bucket_started_at, action, outcome) DO UPDATE SET
+                    attempt_count = attempt_count + 1,
+                    updated_at = excluded.updated_at
+                """,
+                (metric_bucket, action, outcome, now),
+            )
+        if action_count > limit:
+            retry_after_seconds = max(
+                1,
+                (window_started_at + window_ms - now + 999) // 1000,
+            )
+            raise CommunityRateLimitError(retry_after_seconds)
 
     def create_private_draft(
         self,
@@ -775,6 +884,7 @@ class CommunityService:
         clean_reporter_id = self._validated_id(reporter_user_id, "reporter_user_id")
         clean_post_id = self._validated_id(post_id, "post_id")
         category, reason = self._validated_report(report)
+        self._consume_action_attempt(clean_reporter_id, "report")
         now = int(time.time() * 1000)
         with self._connect() as conn:
             post = conn.execute(
@@ -818,6 +928,7 @@ class CommunityService:
     def toggle_like(self, user_id: str, post_id: str) -> dict:
         clean_user_id = self._validated_id(user_id, "user_id")
         clean_post_id = self._validated_id(post_id, "post_id")
+        self._consume_action_attempt(clean_user_id, "interaction")
         with self._connect() as conn:
             self._approved_post(conn, clean_post_id)
             existing = conn.execute(
@@ -844,6 +955,7 @@ class CommunityService:
     def toggle_bookmark(self, user_id: str, post_id: str) -> dict:
         clean_user_id = self._validated_id(user_id, "user_id")
         clean_post_id = self._validated_id(post_id, "post_id")
+        self._consume_action_attempt(clean_user_id, "interaction")
         with self._connect() as conn:
             self._approved_post(conn, clean_post_id)
             existing = conn.execute(
@@ -886,6 +998,7 @@ class CommunityService:
             raise CommunityError("评论内容不能超过 1000 个字符")
         if PRECISE_COORDINATE_PAIR_PATTERN.search(clean_content) or COORDINATE_FIELD_PATTERN.search(clean_content):
             raise CommunityError("评论不能包含精确位置")
+        self._consume_action_attempt(clean_user_id, "comment")
         now = int(time.time() * 1000)
         comment_id = uuid.uuid4().hex
         with self._connect() as conn:
@@ -981,6 +1094,7 @@ class CommunityService:
         clean_reporter_id = self._validated_id(reporter_user_id, "reporter_user_id")
         clean_comment_id = self._validated_id(comment_id, "comment_id")
         category, reason = self._validated_report(report)
+        self._consume_action_attempt(clean_reporter_id, "report")
         now = int(time.time() * 1000)
         with self._connect() as conn:
             comment = conn.execute(
@@ -1208,6 +1322,53 @@ class CommunityService:
             "next_cursor": self._encode_cursor(visible_rows[-1], "published_at")
             if has_more and visible_rows
             else None,
+        }
+
+    def activity_summary(self, *, hours: int = 24) -> dict:
+        if hours < 1 or hours > 168:
+            raise CommunityError("运行摘要时间范围必须在 1 到 168 小时之间")
+        now = self._now_ms()
+        hour_ms = 60 * 60 * 1000
+        current_bucket = now - (now % hour_ms)
+        cutoff = current_bucket - ((hours - 1) * hour_ms)
+        with self._connect() as conn:
+            metric_rows = conn.execute(
+                """
+                SELECT outcome, COALESCE(SUM(attempt_count), 0) AS total
+                FROM community_activity_metrics
+                WHERE bucket_started_at >= ?
+                GROUP BY outcome
+                """,
+                (cutoff,),
+            ).fetchall()
+            metrics = {row["outcome"]: row["total"] for row in metric_rows}
+            pending_posts = conn.execute(
+                """
+                SELECT COUNT(*) AS total
+                FROM community_posts p
+                LEFT JOIN community_moderation m ON m.post_id = p.id
+                WHERE p.status = 'published' AND m.post_id IS NULL
+                """
+            ).fetchone()["total"]
+            reported_posts = conn.execute(
+                """
+                SELECT COUNT(DISTINCT r.post_id) AS total
+                FROM community_reports r
+                JOIN community_posts p ON p.id = r.post_id
+                WHERE r.status = 'open' AND p.status = 'published'
+                """
+            ).fetchone()["total"]
+            open_comment_reports = conn.execute(
+                "SELECT COUNT(*) AS total FROM community_comment_reports WHERE status = 'open'"
+            ).fetchone()["total"]
+        return {
+            "window_hours": hours,
+            "generated_at": now,
+            "allowed_action_count": metrics.get("allowed", 0),
+            "limited_action_count": metrics.get("limited", 0),
+            "pending_post_count": pending_posts,
+            "reported_post_count": reported_posts,
+            "open_comment_report_count": open_comment_reports,
         }
 
     def list_public_posts(

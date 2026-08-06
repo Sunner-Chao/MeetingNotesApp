@@ -20,6 +20,7 @@ from community_service import (
     CommunityMediaManifestInput,
     CommunityNotFoundError,
     CommunityPermissionError,
+    CommunityRateLimitError,
     CommunityReportInput,
     CommunityService,
 )
@@ -292,6 +293,18 @@ class CommunityServiceTests(unittest.TestCase):
         self.assertEqual(len(second_ids), 1)
         self.assertIsNone(second_page["next_cursor"])
 
+        moderation_first = self.service.list_moderation_queue(status="all", limit=2)
+        moderation_second = self.service.list_moderation_queue(
+            status="all",
+            cursor=moderation_first["next_cursor"],
+            limit=2,
+        )
+        moderation_first_ids = {item["id"] for item in moderation_first["items"]}
+        moderation_second_ids = {item["id"] for item in moderation_second["items"]}
+        self.assertEqual(len(moderation_first_ids), 2)
+        self.assertEqual(len(moderation_second_ids), 1)
+        self.assertTrue(moderation_first_ids.isdisjoint(moderation_second_ids))
+
     def test_interactions_are_idempotent_scoped_and_comment_deletion_is_soft(self) -> None:
         created, _ = self.service.create_private_draft(self.owner_id, self.snapshot())
         self.service.publish(self.owner_id, created["id"])
@@ -333,6 +346,47 @@ class CommunityServiceTests(unittest.TestCase):
         with self.assertRaises(CommunityNotFoundError):
             self.service.toggle_like(self.owner_id, created["id"])
 
+    def test_action_rate_limits_persist_and_summary_remains_aggregate_only(self) -> None:
+        created, _ = self.service.create_private_draft(self.owner_id, self.snapshot())
+        self.service.publish(self.owner_id, created["id"])
+        self.service.review_post(
+            created["id"],
+            decision="approved",
+            reason="",
+            reviewed_by=self.other_id,
+        )
+        now = [1_786_000_000_000]
+        limited_service = CommunityService(
+            self.db_path,
+            action_rate_limits={"comment": (2, 60)},
+            now_ms_provider=lambda: now[0],
+        )
+        limited_service.initialize()
+
+        limited_service.create_comment(self.owner_id, created["id"], "第一条")
+        limited_service.create_comment(self.owner_id, created["id"], "第二条")
+        with self.assertRaises(CommunityRateLimitError) as raised:
+            limited_service.create_comment(self.owner_id, created["id"], "第三条")
+        self.assertGreaterEqual(raised.exception.retry_after_seconds, 1)
+        self.assertLessEqual(raised.exception.retry_after_seconds, 60)
+
+        summary = limited_service.activity_summary(hours=1)
+        self.assertEqual(summary["allowed_action_count"], 2)
+        self.assertEqual(summary["limited_action_count"], 1)
+        self.assertNotIn("user_id", summary)
+        with limited_service._connect() as conn:
+            metric_columns = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(community_activity_metrics)").fetchall()
+            }
+        self.assertNotIn("user_id", metric_columns)
+
+        now[0] += 60_000
+        limited_service.create_comment(self.owner_id, created["id"], "新窗口")
+        refreshed = limited_service.activity_summary(hours=1)
+        self.assertEqual(refreshed["allowed_action_count"], 3)
+        self.assertEqual(refreshed["limited_action_count"], 1)
+
     def test_bookmarks_and_comment_reports_have_public_gates_and_admin_resolution(self) -> None:
         created, _ = self.service.create_private_draft(self.owner_id, self.snapshot())
         self.service.publish(self.owner_id, created["id"])
@@ -370,6 +424,14 @@ class CommunityServiceTests(unittest.TestCase):
         self.assertEqual(len(queue["items"]), 2)
         self.assertTrue(all(item["comment_id"] == comment["id"] for item in queue["items"]))
         self.assertTrue(all("reporter_user_id" not in item for item in queue["items"]))
+        report_first = self.service.list_comment_reports(limit=1)
+        report_second = self.service.list_comment_reports(
+            cursor=report_first["next_cursor"],
+            limit=1,
+        )
+        self.assertIsNotNone(report_first["next_cursor"])
+        self.assertNotEqual(report_first["items"][0]["id"], report_second["items"][0]["id"])
+        self.assertIsNone(report_second["next_cursor"])
 
         resolved = self.service.resolve_comment_report(
             report["id"],

@@ -309,6 +309,50 @@ class CommunityRouteTests(unittest.TestCase):
             self.assertEqual(resolved.status_code, 200)
             self.assertEqual(resolved.json()["status"], "resolved")
 
+    def test_comment_rate_limit_returns_retry_after_and_admin_summary(self) -> None:
+        owner_headers = {"Authorization": "Bearer owner-token"}
+        admin_headers = {"Authorization": "Bearer admin-token"}
+        with TestClient(self.app) as client:
+            created = client.post(
+                "/api/account/community/drafts", headers=owner_headers, json=self.payload()
+            )
+            post_id = created.json()["id"]
+            client.post(f"/api/account/community/posts/{post_id}/publish", headers=owner_headers)
+            client.post(
+                f"/api/account/community/moderation/{post_id}",
+                headers=admin_headers,
+                json={"decision": "approved", "reason": ""},
+            )
+            for index in range(10):
+                response = client.post(
+                    f"/api/account/community/posts/{post_id}/comments",
+                    headers=owner_headers,
+                    json={"content": f"灰度评论 {index}"},
+                )
+                self.assertEqual(response.status_code, 201)
+
+            limited = client.post(
+                f"/api/account/community/posts/{post_id}/comments",
+                headers=owner_headers,
+                json={"content": "超过窗口"},
+            )
+            self.assertEqual(limited.status_code, 429)
+            self.assertGreater(int(limited.headers["Retry-After"]), 0)
+            self.assertIn("操作过于频繁", limited.json()["detail"])
+
+            self.assertEqual(
+                client.get("/api/account/community/operations-summary", headers=owner_headers).status_code,
+                403,
+            )
+            summary = client.get(
+                "/api/account/community/operations-summary?hours=1",
+                headers=admin_headers,
+            )
+            self.assertEqual(summary.status_code, 200)
+            self.assertEqual(summary.json()["allowed_action_count"], 10)
+            self.assertEqual(summary.json()["limited_action_count"], 1)
+            self.assertNotIn("user_id", summary.json())
+
     def test_media_manifest_and_chunk_routes_require_owner_then_public_review(self) -> None:
         owner_headers = {"Authorization": "Bearer owner-token"}
         original = b"\x89PNG\r\n\x1a\n" + b"not-a-real-image"

@@ -16,6 +16,7 @@ from community_service import (
     CommunityError,
     CommunityMediaManifestInput,
     CommunityPermissionError,
+    CommunityRateLimitError,
     CommunityReportInput,
     CommunityService,
 )
@@ -84,7 +85,10 @@ CONTENT_RANGE_PATTERN = re.compile(r"^bytes (\d+)-(\d+)/(\d+)$")
 
 
 def community_http_error(exc: CommunityError) -> HTTPException:
-    return HTTPException(status_code=exc.status_code, detail=str(exc))
+    headers = None
+    if isinstance(exc, CommunityRateLimitError):
+        headers = {"Retry-After": str(exc.retry_after_seconds)}
+    return HTTPException(status_code=exc.status_code, detail=str(exc), headers=headers)
 
 
 def build_community_router(
@@ -378,6 +382,18 @@ def build_community_router(
                 decision=payload.decision,
                 reviewed_by=principal.user_id,
             )
+        except CommunityError as exc:
+            raise community_http_error(exc) from exc
+
+    @router.get("/operations-summary")
+    def get_community_operations_summary(
+        hours: int = Query(default=24, ge=1, le=168),
+        principal: Any = Depends(account_principal_dependency),
+    ) -> dict:
+        if not bool(getattr(principal, "is_admin", False)):
+            raise community_http_error(CommunityPermissionError("需要管理员权限"))
+        try:
+            return service().activity_summary(hours=hours)
         except CommunityError as exc:
             raise community_http_error(exc) from exc
 
