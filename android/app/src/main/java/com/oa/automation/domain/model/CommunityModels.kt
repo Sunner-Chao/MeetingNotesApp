@@ -2,6 +2,11 @@ package com.oa.automation.domain.model
 
 import com.google.gson.annotations.SerializedName
 
+data class CommunityAvailability(
+    @SerializedName("read_enabled") val readEnabled: Boolean = true,
+    @SerializedName("write_enabled") val writeEnabled: Boolean = true
+)
+
 data class CommunityReview(
     val status: String = "pending",
     val reason: String = "",

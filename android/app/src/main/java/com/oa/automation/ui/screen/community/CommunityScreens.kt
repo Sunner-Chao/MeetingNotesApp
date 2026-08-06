@@ -129,6 +129,9 @@ fun CommunityScreen(
                     icon = { Icon(Icons.Default.BookmarkBorder, contentDescription = null) }
                 )
             }
+            if (!uiState.availability.writeEnabled) {
+                CommunityReadOnlyNotice()
+            }
             CommunityContent(
                 state = uiState,
                 onOpenPost = onOpenPost,
@@ -144,6 +147,23 @@ fun CommunityScreen(
                 onLoadMore = viewModel::loadMore
             )
         }
+    }
+}
+
+@Composable
+private fun CommunityReadOnlyNotice() {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surfaceVariant
+    ) {
+        Text(
+            text = "社区暂时只读",
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 
@@ -644,6 +664,9 @@ fun CommunityPostDetailScreen(
                 CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 3.dp)
             }
             post != null -> Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+                if (!uiState.availability.writeEnabled) {
+                    CommunityReadOnlyNotice()
+                }
                 uiState.reportMessage?.let { message ->
                     Text(
                         text = message,
@@ -660,6 +683,7 @@ fun CommunityPostDetailScreen(
                     isLoadingComments = uiState.isLoadingComments,
                     isInteracting = uiState.isInteracting,
                     isSubmittingComment = uiState.isSubmittingComment,
+                    writeEnabled = uiState.availability.writeEnabled,
                     commentDraft = uiState.commentDraft,
                     mediaBaseUrl = uiState.mediaBaseUrl,
                     modifier = Modifier.weight(1f),
@@ -820,6 +844,7 @@ private fun CommunityPostDetail(
     isLoadingComments: Boolean,
     isInteracting: Boolean,
     isSubmittingComment: Boolean,
+    writeEnabled: Boolean,
     commentDraft: String,
     mediaBaseUrl: String,
     modifier: Modifier = Modifier,
@@ -858,6 +883,7 @@ private fun CommunityPostDetail(
         CommunityInteractionBar(
             interaction = interaction,
             isBusy = isInteracting,
+            writeEnabled = writeEnabled,
             onToggleLike = onToggleLike,
             onToggleBookmark = onToggleBookmark
         )
@@ -867,6 +893,7 @@ private fun CommunityPostDetail(
             comments = comments,
             isLoading = isLoadingComments,
             isSubmitting = isSubmittingComment,
+            writeEnabled = writeEnabled,
             draft = commentDraft,
             onDraftChange = onCommentDraftChange,
             onSubmit = onSubmitComment,
@@ -883,6 +910,7 @@ private fun CommunityPostDetail(
 private fun CommunityInteractionBar(
     interaction: CommunityInteractionState?,
     isBusy: Boolean,
+    writeEnabled: Boolean,
     onToggleLike: () -> Unit,
     onToggleBookmark: () -> Unit
 ) {
@@ -891,7 +919,7 @@ private fun CommunityInteractionBar(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        IconButton(onClick = onToggleLike, enabled = !isBusy) {
+        IconButton(onClick = onToggleLike, enabled = writeEnabled && !isBusy) {
             Icon(
                 imageVector = if (interaction?.liked == true) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                 contentDescription = if (interaction?.liked == true) "取消点赞" else "点赞",
@@ -902,7 +930,7 @@ private fun CommunityInteractionBar(
         Icon(Icons.Default.ChatBubbleOutline, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 10.dp).size(18.dp))
         Text((interaction?.commentCount ?: 0).toString(), style = MaterialTheme.typography.labelMedium)
         Spacer(Modifier.weight(1f))
-        IconButton(onClick = onToggleBookmark, enabled = !isBusy) {
+        IconButton(onClick = onToggleBookmark, enabled = writeEnabled && !isBusy) {
             Icon(
                 imageVector = if (interaction?.bookmarked == true) Icons.Default.Bookmark else Icons.Default.BookmarkBorder,
                 contentDescription = if (interaction?.bookmarked == true) "取消收藏" else "收藏",
@@ -917,6 +945,7 @@ private fun CommunityComments(
     comments: List<CommunityComment>,
     isLoading: Boolean,
     isSubmitting: Boolean,
+    writeEnabled: Boolean,
     draft: String,
     onDraftChange: (String) -> Unit,
     onSubmit: () -> Unit,
@@ -970,11 +999,15 @@ private fun CommunityComments(
             value = draft,
             onValueChange = onDraftChange,
             modifier = Modifier.fillMaxWidth(),
+            enabled = writeEnabled && !isSubmitting,
             minLines = 2,
             maxLines = 4,
             placeholder = { Text("写下你的观察") },
             trailingIcon = {
-                IconButton(onClick = onSubmit, enabled = draft.isNotBlank() && !isSubmitting) {
+                IconButton(
+                    onClick = onSubmit,
+                    enabled = writeEnabled && draft.isNotBlank() && !isSubmitting
+                ) {
                     if (isSubmitting) {
                         CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
                     } else {

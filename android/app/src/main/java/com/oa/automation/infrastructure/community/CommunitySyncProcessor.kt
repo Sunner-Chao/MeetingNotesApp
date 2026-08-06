@@ -125,7 +125,7 @@ class CommunitySyncProcessor(
             val message = error.message?.take(500).orEmpty().ifBlank { "社区同步失败" }
             val attempt = outbox.attemptCount + 1
             outboxDao.markFailed(postId, attempt, message, System.currentTimeMillis())
-            if (runAttemptCount < MAX_RETRIES && message.isRetryable()) {
+            if (runAttemptCount < MAX_RETRIES && isCommunitySyncRetryable(message)) {
                 ProcessingResult.Retry
             } else {
                 ProcessingResult.Failure(message)
@@ -296,18 +296,19 @@ class CommunitySyncProcessor(
         return ProcessingResult.Failure(message)
     }
 
-    private fun String.isRetryable(): Boolean {
-        val value = lowercase()
-        return value.contains("timeout") || value.contains("timed out") ||
-            value.contains("network") || value.contains("connection") ||
-            value.contains("请求失败") || value.contains("暂时不可用") ||
-            value.contains("503") || value.contains("502")
-    }
-
     companion object {
         private const val MAX_RETRIES = 5
         private const val CHUNK_BYTES = 512 * 1024
     }
+}
+
+internal fun isCommunitySyncRetryable(message: String): Boolean {
+    if (message.contains("社区写入暂时关闭")) return false
+    val value = message.lowercase()
+    return value.contains("timeout") || value.contains("timed out") ||
+        value.contains("network") || value.contains("connection") ||
+        value.contains("请求失败") || value.contains("暂时不可用") ||
+        value.contains("503") || value.contains("502")
 }
 
 sealed interface ProcessingResult {

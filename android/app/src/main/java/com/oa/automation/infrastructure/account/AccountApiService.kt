@@ -11,6 +11,7 @@ import com.oa.automation.domain.model.RechargeOrder
 import com.oa.automation.domain.model.SocialAuthProvider
 import com.oa.automation.domain.model.PublishedPost
 import com.oa.automation.domain.model.CommunityPostPage
+import com.oa.automation.domain.model.CommunityAvailability
 import com.oa.automation.domain.model.CommunityModerationItem
 import com.oa.automation.domain.model.CommunityReport
 import com.oa.automation.domain.model.CommunityComment
@@ -55,6 +56,14 @@ class AccountApiService(
         @com.google.gson.annotations.SerializedName("thumbnail_total_bytes") val thumbnailTotalBytes: Long,
         val status: String
     )
+
+    suspend fun communityAvailability(
+        endpoint: String
+    ): Result<CommunityAvailability> = request(
+        endpoint = endpoint,
+        path = "community/status",
+        method = "GET"
+    ) { body -> gson.fromJson(body, CommunityAvailability::class.java) }
 
     suspend fun createCommunityDraft(
         endpoint: String,
@@ -705,7 +714,7 @@ private fun Response.toAccountError(body: String): String {
             retryAfter?.let { "操作太频繁，请在 $it 秒后重试" } ?: "操作太频繁，请稍后重试"
         }
         422 -> detail.ifBlank { "社区快照字段不符合要求" }
-        503 -> "账户服务暂时不可用"
+        503 -> detail.ifBlank { "账户服务暂时不可用" }
         else -> detail.ifBlank { "账户服务请求失败（HTTP $code）" }
     }
 }

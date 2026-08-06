@@ -27,6 +27,42 @@ class CommunityApiServiceTest {
     }
 
     @Test
+    fun availabilityReportsReadOnlyRolloutState() = runBlocking {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody("""{"read_enabled":true,"write_enabled":false}""")
+        )
+
+        val availability = service.communityAvailability(
+            server.url("/api").toString()
+        ).getOrThrow()
+
+        assertTrue(availability.readEnabled)
+        assertEquals(false, availability.writeEnabled)
+        assertEquals("/api/community/status", server.takeRequest().path)
+    }
+
+    @Test
+    fun serviceUnavailablePreservesCommunityWriteDisabledDetail() = runBlocking {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(503)
+                .setHeader("Content-Type", "application/json")
+                .setBody("""{"detail":"社区写入暂时关闭，本地内容已保留"}""")
+        )
+
+        val error = service.toggleCommunityLike(
+            server.url("/api").toString(),
+            "session-token",
+            "post-1"
+        ).exceptionOrNull()
+
+        assertEquals("社区写入暂时关闭，本地内容已保留", error?.message)
+    }
+
+    @Test
     fun createDraftUsesLocalPostIdAsIdempotencyKey() = runBlocking {
         server.enqueue(
             MockResponse()

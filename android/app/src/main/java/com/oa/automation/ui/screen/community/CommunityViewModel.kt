@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.oa.automation.data.local.ConfigDataStore
 import com.oa.automation.domain.model.MyCommunityPost
+import com.oa.automation.domain.model.CommunityAvailability
 import com.oa.automation.domain.model.CommunityFacets
 import com.oa.automation.domain.model.CommunityComment
 import com.oa.automation.domain.model.CommunityInteractionState
@@ -32,6 +33,7 @@ data class CommunityUiState(
     val hasMediaOnly: Boolean = false,
     val facets: CommunityFacets = CommunityFacets(),
     val mediaBaseUrl: String = "",
+    val availability: CommunityAvailability = CommunityAvailability(),
     val isLoading: Boolean = false,
     val isLoadingMore: Boolean = false,
     val nextPublicCursor: String? = null,
@@ -68,6 +70,8 @@ class CommunityViewModel(
                     error = null
                 )
             }
+            val endpoint = configDataStore.accountEndpointFlow.first()
+            loadAvailability(endpoint)
             if (_uiState.value.tab == CommunityTab.DISCOVER) {
                 loadPublicPosts(cursor = null, append = false)
             } else if (_uiState.value.tab == CommunityTab.MINE) {
@@ -75,6 +79,12 @@ class CommunityViewModel(
             } else {
                 loadSavedPosts(cursor = null, append = false)
             }
+        }
+    }
+
+    private suspend fun loadAvailability(endpoint: String) {
+        accountApiService.communityAvailability(endpoint).onSuccess { availability ->
+            _uiState.update { it.copy(availability = availability) }
         }
     }
 
@@ -271,6 +281,7 @@ data class CommunityPostDetailUiState(
     val comments: List<CommunityComment> = emptyList(),
     val commentsNextCursor: String? = null,
     val mediaBaseUrl: String = "",
+    val availability: CommunityAvailability = CommunityAvailability(),
     val isLoading: Boolean = true,
     val isLoadingComments: Boolean = false,
     val isInteracting: Boolean = false,
@@ -297,6 +308,9 @@ class CommunityPostDetailViewModel(
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, error = null) }
             val endpoint = configDataStore.accountEndpointFlow.first()
+            accountApiService.communityAvailability(endpoint).onSuccess { availability ->
+                _uiState.update { it.copy(availability = availability) }
+            }
             accountApiService.publicCommunityPost(endpoint, postId).fold(
                 onSuccess = { post ->
                     _uiState.update {
@@ -341,6 +355,10 @@ class CommunityPostDetailViewModel(
     private fun toggleInteraction(
         action: suspend (String, String) -> Result<CommunityInteractionState>
     ) {
+        if (!_uiState.value.availability.writeEnabled) {
+            _uiState.update { it.copy(reportMessage = "社区暂时只读") }
+            return
+        }
         if (_uiState.value.isInteracting) return
         viewModelScope.launch {
             val session = configDataStore.authSessionFlow.first()
@@ -431,6 +449,10 @@ class CommunityPostDetailViewModel(
     }
 
     fun submitComment(postId: String) {
+        if (!_uiState.value.availability.writeEnabled) {
+            _uiState.update { it.copy(reportMessage = "社区暂时只读") }
+            return
+        }
         val content = _uiState.value.commentDraft.trim()
         if (content.isBlank() || _uiState.value.isSubmittingComment) return
         viewModelScope.launch {
