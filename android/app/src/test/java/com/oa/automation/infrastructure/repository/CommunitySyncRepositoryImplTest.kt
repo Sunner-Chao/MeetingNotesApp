@@ -92,6 +92,15 @@ class CommunitySyncRepositoryImplTest {
         override fun observeLatest(journeyId: String): Flow<PublishedPostEntity?> = MutableStateFlow(value)
         override suspend fun findById(id: String): PublishedPostEntity? = value.takeIf { it.id == id }
         override suspend fun updateReview(id: String, privacyReviewed: Boolean, rightsConfirmed: Boolean, updatedAt: Long): Int = 0
+        override suspend fun updateMetadata(
+            id: String,
+            destination: String,
+            travelDate: String,
+            travelDays: Int,
+            tags: List<String>,
+            pois: List<String>,
+            updatedAt: Long
+        ): Int = 0
         override suspend fun markReady(id: String, readyAt: Long): Int = 0
         override suspend fun markWithdrawn(id: String, withdrawnAt: Long): Int = 0
     }

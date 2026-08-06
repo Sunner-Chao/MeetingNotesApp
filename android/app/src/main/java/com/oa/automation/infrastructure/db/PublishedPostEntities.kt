@@ -48,7 +48,13 @@ data class PublishedPostEntity(
     val createdAt: Long,
     val updatedAt: Long,
     val readyAt: Long?,
-    val withdrawnAt: Long?
+    val withdrawnAt: Long?,
+    val destination: String = "",
+    val travelDate: String = "",
+    val travelDays: Int = 0,
+    val stageTitles: List<String> = emptyList(),
+    val tags: List<String> = emptyList(),
+    val pois: List<String> = emptyList()
 )
 
 fun PublishedPostEntity.toDomain() = PublishedPost(
@@ -68,7 +74,13 @@ fun PublishedPostEntity.toDomain() = PublishedPost(
     createdAt = createdAt,
     updatedAt = updatedAt,
     readyAt = readyAt,
-    withdrawnAt = withdrawnAt
+    withdrawnAt = withdrawnAt,
+    destination = destination,
+    travelDate = travelDate,
+    travelDays = travelDays,
+    stageTitles = stageTitles,
+    tags = tags,
+    pois = pois
 )
 
 fun PublishedPost.toEntity() = PublishedPostEntity(
@@ -88,5 +100,11 @@ fun PublishedPost.toEntity() = PublishedPostEntity(
     createdAt = createdAt,
     updatedAt = updatedAt,
     readyAt = readyAt,
-    withdrawnAt = withdrawnAt
+    withdrawnAt = withdrawnAt,
+    destination = destination,
+    travelDate = travelDate,
+    travelDays = travelDays,
+    stageTitles = stageTitles,
+    tags = tags,
+    pois = pois
 )

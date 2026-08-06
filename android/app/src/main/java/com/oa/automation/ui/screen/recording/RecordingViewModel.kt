@@ -1598,6 +1598,51 @@ class RecordingViewModel(
         }
     }
 
+    fun updatePublishedPostMetadata(
+        destination: String,
+        travelDate: String,
+        travelDays: Int,
+        tags: List<String>,
+        pois: List<String>
+    ) {
+        val post = _uiState.value.latestPublishedPost ?: return
+        if (post.status != PublishedPostStatus.REVIEW || _uiState.value.isSavingPublishedPost) return
+        val meetingId = currentMeetingId
+        _uiState.update { it.copy(isSavingPublishedPost = true, error = null) }
+        viewModelScope.launch {
+            publishedPostRepository.updateMetadata(
+                id = post.id,
+                destination = destination,
+                travelDate = travelDate,
+                travelDays = travelDays,
+                tags = tags,
+                pois = pois
+            ).fold(
+                onSuccess = { saved ->
+                    if (isCurrentMeeting(meetingId)) {
+                        _uiState.update {
+                            it.copy(
+                                isSavingPublishedPost = false,
+                                latestPublishedPost = saved,
+                                journeyStatusMessage = "发布元数据已保存"
+                            )
+                        }
+                    }
+                },
+                onFailure = { error ->
+                    if (isCurrentMeeting(meetingId)) {
+                        _uiState.update {
+                            it.copy(
+                                isSavingPublishedPost = false,
+                                error = "保存发布元数据失败: ${error.message ?: "未知错误"}"
+                            )
+                        }
+                    }
+                }
+            )
+        }
+    }
+
     fun markPublishedPostReady(privacyReviewed: Boolean, rightsConfirmed: Boolean) {
         val post = _uiState.value.latestPublishedPost ?: return
         if (post.status != PublishedPostStatus.REVIEW) return

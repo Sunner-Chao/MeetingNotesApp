@@ -70,7 +70,13 @@ class AccountApiService(
                 "ai_assisted" to post.aiAssisted,
                 "redacted_coordinate_count" to post.redactedCoordinateCount,
                 "privacy_reviewed" to post.privacyReviewed,
-                "rights_confirmed" to post.rightsConfirmed
+                "rights_confirmed" to post.rightsConfirmed,
+                "destination" to post.destination,
+                "travel_date" to post.travelDate,
+                "travel_days" to post.travelDays,
+                "stage_titles" to post.stageTitles,
+                "tags" to post.tags,
+                "pois" to post.pois
             )
         )
     ) { body -> gson.fromJson(body, CommunityPostResponse::class.java) }
@@ -102,10 +108,27 @@ class AccountApiService(
     suspend fun publicCommunityPosts(
         endpoint: String,
         cursor: String? = null,
-        limit: Int = 20
+        limit: Int = 20,
+        query: String = "",
+        destination: String = "",
+        tag: String = "",
+        poi: String = "",
+        minDays: Int = 0,
+        maxDays: Int = 0,
+        hasMedia: Boolean = false
     ): Result<CommunityPostPage<PublicCommunityPost>> = request(
         endpoint = endpoint,
-        path = communityListPath("community/posts", cursor, limit),
+        path = communityPublicListPath(
+            cursor = cursor,
+            limit = limit,
+            query = query,
+            destination = destination,
+            tag = tag,
+            poi = poi,
+            minDays = minDays,
+            maxDays = maxDays,
+            hasMedia = hasMedia
+        ),
         method = "GET"
     ) { body ->
         gson.fromJson(
@@ -415,6 +438,34 @@ class AccountApiService(
         }.orEmpty()
         return "$basePath?limit=$boundedLimit$cursorQuery"
     }
+
+    private fun communityPublicListPath(
+        cursor: String?,
+        limit: Int,
+        query: String,
+        destination: String,
+        tag: String,
+        poi: String,
+        minDays: Int,
+        maxDays: Int,
+        hasMedia: Boolean
+    ): String {
+        val suffix = buildList {
+            query.trim().takeIf { it.isNotEmpty() }?.let { add("q=${encodeQueryValue(it)}") }
+            destination.trim().takeIf { it.isNotEmpty() }?.let { add("destination=${encodeQueryValue(it)}") }
+            tag.trim().takeIf { it.isNotEmpty() }?.let { add("tag=${encodeQueryValue(it)}") }
+            poi.trim().takeIf { it.isNotEmpty() }?.let { add("poi=${encodeQueryValue(it)}") }
+            minDays.coerceIn(0, 31).takeIf { it > 0 }?.let { add("min_days=$it") }
+            maxDays.coerceIn(0, 31).takeIf { it > 0 }?.let { add("max_days=$it") }
+            if (hasMedia) add("has_media=true")
+        }.joinToString("&")
+        return communityListPath("community/posts", cursor, limit).let {
+            if (suffix.isEmpty()) it else "$it&$suffix"
+        }
+    }
+
+    private fun encodeQueryValue(value: String): String =
+        URLEncoder.encode(value, Charsets.UTF_8.name())
 
     private suspend fun <T> request(
         endpoint: String,

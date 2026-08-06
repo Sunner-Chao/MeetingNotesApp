@@ -14,13 +14,41 @@ import java.util.UUID
 class PublishedPostRepositoryImpl(
     private val dao: PublishedPostDao
 ) : PublishedPostRepository {
-    override suspend fun createReviewSnapshot(
+    suspend fun createReviewSnapshot(
         journeyId: String,
         journeyEditionId: String,
         sourceEditionVersion: Int,
         title: String,
         content: String,
         redactedCoordinateCount: Int
+    ): Result<PublishedPost> = createReviewSnapshot(
+        journeyId = journeyId,
+        journeyEditionId = journeyEditionId,
+        sourceEditionVersion = sourceEditionVersion,
+        title = title,
+        content = content,
+        redactedCoordinateCount = redactedCoordinateCount,
+        destination = "",
+        travelDate = "",
+        travelDays = 0,
+        stageTitles = emptyList(),
+        tags = emptyList(),
+        pois = emptyList()
+    )
+
+    override suspend fun createReviewSnapshot(
+        journeyId: String,
+        journeyEditionId: String,
+        sourceEditionVersion: Int,
+        title: String,
+        content: String,
+        redactedCoordinateCount: Int,
+        destination: String,
+        travelDate: String,
+        travelDays: Int,
+        stageTitles: List<String>,
+        tags: List<String>,
+        pois: List<String>
     ): Result<PublishedPost> = runCatching {
         require(journeyId.isNotBlank()) { "Journey id must not be blank" }
         require(journeyEditionId.isNotBlank()) { "Journey edition id must not be blank" }
@@ -42,6 +70,12 @@ class PublishedPostRepositoryImpl(
             visibility = PublishedPostVisibility.PRIVATE_PREVIEW,
             aiAssisted = true,
             redactedCoordinateCount = redactedCoordinateCount.coerceAtLeast(0),
+            destination = destination.trim(),
+            travelDate = travelDate.trim(),
+            travelDays = travelDays.coerceIn(0, 31),
+            stageTitles = stageTitles.map(String::trim).filter(String::isNotBlank).distinct().take(50),
+            tags = tags.map(String::trim).filter(String::isNotBlank).distinct().take(50),
+            pois = pois.map(String::trim).filter(String::isNotBlank).distinct().take(50),
             createdAt = now,
             updatedAt = now
         )
@@ -69,6 +103,38 @@ class PublishedPostRepositoryImpl(
                 updatedAt = System.currentTimeMillis()
             ) == 1
         ) { "Published post is no longer reviewable" }
+        dao.findById(id)?.toDomain() ?: error("Published post disappeared: $id")
+    }
+
+    override suspend fun updateMetadata(
+        id: String,
+        destination: String,
+        travelDate: String,
+        travelDays: Int,
+        tags: List<String>,
+        pois: List<String>
+    ): Result<PublishedPost> = runCatching {
+        val existing = dao.findById(id) ?: error("Published post not found: $id")
+        require(existing.status == PublishedPostStatus.REVIEW.name) {
+            "Only review snapshots can update metadata"
+        }
+        require(destination.length <= 120) { "Destination is too long" }
+        require(travelDate.isBlank() || Regex("\\d{4}-\\d{2}-\\d{2}").matches(travelDate)) {
+            "Travel date must use YYYY-MM-DD"
+        }
+        require(travelDays in 0..31) { "Travel days must be between 0 and 31" }
+        fun normalize(values: List<String>) = values.map(String::trim)
+            .filter(String::isNotBlank).distinctBy(String::lowercase).take(50)
+        val now = System.currentTimeMillis()
+        check(dao.updateMetadata(
+            id = id,
+            destination = destination.trim(),
+            travelDate = travelDate.trim(),
+            travelDays = travelDays,
+            tags = normalize(tags),
+            pois = normalize(pois),
+            updatedAt = now
+        ) == 1) { "Published post metadata is no longer editable" }
         dao.findById(id)?.toDomain() ?: error("Published post disappeared: $id")
     }
 

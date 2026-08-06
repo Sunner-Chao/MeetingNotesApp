@@ -25,6 +25,10 @@ class CreatePublishedPostSnapshotUseCase(
         if (edition.status != JourneyEditionStatus.CONFIRMED) {
             return Result.failure(IllegalStateException("请先确认总游记"))
         }
+        val confirmedStages = stageDraftRepository.findLatestConfirmedByJourneyId(journey.id)
+            .getOrElse { return Result.failure(it) }
+            .filter { it.draft.id in edition.sourceStageDraftIds }
+            .sortedBy { it.sequenceNumber }
         val sanitized = PreciseCoordinateSanitizer.sanitize(edition.content)
         val post = publishedPostRepository.createReviewSnapshot(
             journeyId = journey.id,
@@ -32,7 +36,11 @@ class CreatePublishedPostSnapshotUseCase(
             sourceEditionVersion = edition.versionNumber,
             title = journey.title.ifBlank { "研学考察" },
             content = sanitized.content,
-            redactedCoordinateCount = sanitized.redactedCount
+            redactedCoordinateCount = sanitized.redactedCount,
+            destination = journey.title.trim(),
+            stageTitles = confirmedStages.map { it.stageTitle },
+            tags = PublishMetadataExtractor.tags(sanitized.content),
+            pois = PublishMetadataExtractor.pois(sanitized.content)
         ).getOrElse { return Result.failure(it) }
         val sourceDrafts = stageDraftRepository.findByIds(edition.sourceStageDraftIds)
             .getOrElse { return Result.failure(it) }
@@ -44,6 +52,27 @@ class CreatePublishedPostSnapshotUseCase(
         publishedPostMediaStore.prepare(post.id, attachments)
         return Result.success(post)
     }
+}
+
+private object PublishMetadataExtractor {
+    private val tagPattern = Regex("(?<!\\w)#([\\p{L}\\p{N}_-]{1,40})")
+    private val poiPattern = Regex(
+        "(?m)^\\s*(?:地点|景点|POI)\\s*[:：]\\s*([^\\n#]{1,80})"
+    )
+
+    fun tags(content: String): List<String> = tagPattern.findAll(content)
+        .map { it.groupValues[1].trim() }
+        .filter(String::isNotBlank)
+        .distinctBy(String::lowercase)
+        .take(50)
+        .toList()
+
+    fun pois(content: String): List<String> = poiPattern.findAll(content)
+        .map { it.groupValues[1].trim().trimEnd('。', '.', '；', ';', ',') }
+        .filter(String::isNotBlank)
+        .distinctBy(String::lowercase)
+        .take(50)
+        .toList()
 }
 
 internal data class SanitizedPublishContent(

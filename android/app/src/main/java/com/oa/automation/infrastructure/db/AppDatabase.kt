@@ -21,7 +21,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         CommunitySyncOutboxEntity::class,
         PublishedPostMediaEntity::class
     ],
-    version = 12,
+    version = 13,
     exportSchema = false
 )
 @TypeConverters(DbConverters::class)
@@ -361,6 +361,17 @@ abstract class AppDatabase : RoomDatabase() {
                     "CREATE INDEX IF NOT EXISTS index_published_post_media_status " +
                         "ON published_post_media(status)"
                 )
+            }
+        }
+
+        val MIGRATION_12_13 = object : Migration(12, 13) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE published_posts ADD COLUMN destination TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE published_posts ADD COLUMN travelDate TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE published_posts ADD COLUMN travelDays INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE published_posts ADD COLUMN stageTitles TEXT NOT NULL DEFAULT '[]'")
+                db.execSQL("ALTER TABLE published_posts ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'")
+                db.execSQL("ALTER TABLE published_posts ADD COLUMN pois TEXT NOT NULL DEFAULT '[]'")
             }
         }
     }

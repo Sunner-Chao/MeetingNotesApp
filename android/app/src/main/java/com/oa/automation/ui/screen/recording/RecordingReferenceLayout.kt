@@ -312,6 +312,7 @@ internal fun RecordingReferenceScaffold(
     onCreatePublishedPost: () -> Unit,
     onOpenPublishedPost: () -> Unit,
     onSavePublishedPostReview: (Boolean, Boolean) -> Unit,
+    onUpdatePublishedPostMetadata: (String, String, Int, List<String>, List<String>) -> Unit,
     onSetPublishedPostMediaIncluded: (String, Boolean) -> Unit,
     onMarkPublishedPostReady: (Boolean, Boolean) -> Unit,
     onPublishPublishedPost: () -> Unit,
@@ -487,6 +488,7 @@ internal fun RecordingReferenceScaffold(
             media = uiState.publishedPostMedia,
             isSaving = uiState.isSavingPublishedPost,
             onSaveReview = onSavePublishedPostReview,
+            onUpdateMetadata = onUpdatePublishedPostMetadata,
             onSetMediaIncluded = onSetPublishedPostMediaIncluded,
             onMarkReady = onMarkPublishedPostReady,
             onPublish = onPublishPublishedPost,
@@ -844,6 +846,7 @@ private fun PublishedPostReviewDialog(
     media: List<PublishedPostMediaSummary>,
     isSaving: Boolean,
     onSaveReview: (Boolean, Boolean) -> Unit,
+    onUpdateMetadata: (String, String, Int, List<String>, List<String>) -> Unit,
     onSetMediaIncluded: (String, Boolean) -> Unit,
     onMarkReady: (Boolean, Boolean) -> Unit,
     onPublish: () -> Unit,
@@ -857,6 +860,11 @@ private fun PublishedPostReviewDialog(
     var rightsConfirmed by remember(post.id, post.updatedAt) {
         mutableStateOf(post.rightsConfirmed)
     }
+    var destination by remember(post.id, post.updatedAt) { mutableStateOf(post.destination) }
+    var travelDate by remember(post.id, post.updatedAt) { mutableStateOf(post.travelDate) }
+    var travelDaysText by remember(post.id, post.updatedAt) { mutableStateOf(post.travelDays.takeIf { it > 0 }?.toString() ?: "") }
+    var tagsText by remember(post.id, post.updatedAt) { mutableStateOf(post.tags.joinToString(", ") ) }
+    var poisText by remember(post.id, post.updatedAt) { mutableStateOf(post.pois.joinToString(", ") ) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
@@ -888,6 +896,54 @@ private fun PublishedPostReviewDialog(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.primary
                 )
+                if (reviewable) {
+                    Text("发布检索信息", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                    OutlinedTextField(
+                        value = destination,
+                        onValueChange = { destination = it.take(120) },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        label = { Text("目的地") },
+                        enabled = !isSaving
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = travelDate,
+                            onValueChange = { travelDate = it.take(10) },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            label = { Text("日期") },
+                            placeholder = { Text("YYYY-MM-DD") },
+                            enabled = !isSaving
+                        )
+                        OutlinedTextField(
+                            value = travelDaysText,
+                            onValueChange = { travelDaysText = it.filter(Char::isDigit).take(2) },
+                            modifier = Modifier.width(92.dp),
+                            singleLine = true,
+                            label = { Text("天数") },
+                            enabled = !isSaving
+                        )
+                    }
+                    OutlinedTextField(
+                        value = tagsText,
+                        onValueChange = { tagsText = it.take(500) },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        label = { Text("主题标签") },
+                        placeholder = { Text("用逗号分隔") },
+                        enabled = !isSaving
+                    )
+                    OutlinedTextField(
+                        value = poisText,
+                        onValueChange = { poisText = it.take(500) },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        label = { Text("地点/POI") },
+                        placeholder = { Text("用逗号分隔，不填写精确坐标") },
+                        enabled = !isSaving
+                    )
+                }
                 if (media.isNotEmpty()) {
                     val includedCount = media.count { it.included }
                     Text(
@@ -1005,6 +1061,18 @@ private fun PublishedPostReviewDialog(
             when (post.status) {
                 PublishedPostStatus.REVIEW -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     TextButton(onClick = onDismiss, enabled = !isSaving) { Text("取消") }
+                    TextButton(
+                        onClick = {
+                            onUpdateMetadata(
+                                destination,
+                                travelDate,
+                                travelDaysText.toIntOrNull() ?: 0,
+                                tagsText.split(',', '，').map(String::trim),
+                                poisText.split(',', '，').map(String::trim)
+                            )
+                        },
+                        enabled = !isSaving
+                    ) { Text("保存元数据") }
                     TextButton(
                         onClick = { onSaveReview(privacyReviewed, rightsConfirmed) },
                         enabled = !isSaving

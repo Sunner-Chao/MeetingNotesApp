@@ -16,7 +16,13 @@ data class PublicCommunityPost(
     @SerializedName("redacted_coordinate_count") val redactedCoordinateCount: Int = 0,
     @SerializedName("published_at") val publishedAt: Long,
     @SerializedName("author_label") val authorLabel: String = "研学同行者",
-    val media: List<PublicCommunityMedia> = emptyList()
+    val media: List<PublicCommunityMedia> = emptyList(),
+    val destination: String = "",
+    @SerializedName("travel_date") val travelDate: String = "",
+    @SerializedName("travel_days") val travelDays: Int = 0,
+    val stages: List<String> = emptyList(),
+    val tags: List<String> = emptyList(),
+    val pois: List<String> = emptyList()
 )
 
 data class PublicCommunityMedia(
@@ -39,7 +45,14 @@ data class MyCommunityPost(
 
 data class CommunityPostPage<T>(
     val items: List<T> = emptyList(),
-    @SerializedName("next_cursor") val nextCursor: String? = null
+    @SerializedName("next_cursor") val nextCursor: String? = null,
+    val facets: CommunityFacets? = null
+)
+
+data class CommunityFacets(
+    val destinations: List<String> = emptyList(),
+    val tags: List<String> = emptyList(),
+    val pois: List<String> = emptyList()
 )
 
 data class CommunityReport(

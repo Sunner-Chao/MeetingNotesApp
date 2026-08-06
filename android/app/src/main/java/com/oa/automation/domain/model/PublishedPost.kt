@@ -38,5 +38,11 @@ data class PublishedPost(
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = createdAt,
     val readyAt: Long? = null,
-    val withdrawnAt: Long? = null
+    val withdrawnAt: Long? = null,
+    val destination: String = "",
+    val travelDate: String = "",
+    val travelDays: Int = 0,
+    val stageTitles: List<String> = emptyList(),
+    val tags: List<String> = emptyList(),
+    val pois: List<String> = emptyList()
 )

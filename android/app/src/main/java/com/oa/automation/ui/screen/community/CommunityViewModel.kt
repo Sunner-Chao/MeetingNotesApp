@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.oa.automation.data.local.ConfigDataStore
 import com.oa.automation.domain.model.MyCommunityPost
+import com.oa.automation.domain.model.CommunityFacets
 import com.oa.automation.domain.model.PublicCommunityPost
 import com.oa.automation.infrastructure.account.AccountApiService
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -19,6 +20,11 @@ data class CommunityUiState(
     val tab: CommunityTab = CommunityTab.DISCOVER,
     val publicPosts: List<PublicCommunityPost> = emptyList(),
     val myPosts: List<MyCommunityPost> = emptyList(),
+    val searchQuery: String = "",
+    val destinationFilter: String = "",
+    val tagFilter: String = "",
+    val hasMediaOnly: Boolean = false,
+    val facets: CommunityFacets = CommunityFacets(),
     val mediaBaseUrl: String = "",
     val isLoading: Boolean = false,
     val error: String? = null
@@ -51,13 +57,55 @@ class CommunityViewModel(
         }
     }
 
+    fun updateSearchQuery(value: String) {
+        _uiState.update { it.copy(searchQuery = value.take(100), error = null) }
+    }
+
+    fun search() = refresh()
+
+    fun selectDestination(value: String) {
+        _uiState.update { it.copy(destinationFilter = value, error = null) }
+        refresh()
+    }
+
+    fun selectTag(value: String) {
+        _uiState.update { it.copy(tagFilter = value, error = null) }
+        refresh()
+    }
+
+    fun toggleHasMedia() {
+        _uiState.update { it.copy(hasMediaOnly = !it.hasMediaOnly, error = null) }
+        refresh()
+    }
+
+    fun clearFilters() {
+        _uiState.update {
+            it.copy(
+                searchQuery = "",
+                destinationFilter = "",
+                tagFilter = "",
+                hasMediaOnly = false,
+                error = null
+            )
+        }
+        refresh()
+    }
+
     private suspend fun loadPublicPosts() {
         val endpoint = configDataStore.accountEndpointFlow.first()
-        accountApiService.publicCommunityPosts(endpoint).fold(
+        val filters = _uiState.value
+        accountApiService.publicCommunityPosts(
+            endpoint = endpoint,
+            query = filters.searchQuery,
+            destination = filters.destinationFilter,
+            tag = filters.tagFilter,
+            hasMedia = filters.hasMediaOnly
+        ).fold(
             onSuccess = { page ->
                 _uiState.update {
                     it.copy(
                         publicPosts = page.items,
+                        facets = page.facets ?: CommunityFacets(),
                         mediaBaseUrl = communityMediaBaseUrl(endpoint),
                         isLoading = false
                     )

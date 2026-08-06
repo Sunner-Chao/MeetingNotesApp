@@ -46,7 +46,13 @@ class CommunityApiServiceTest {
             content = "脱敏后的正文",
             privacyReviewed = true,
             rightsConfirmed = true,
-            redactedCoordinateCount = 1
+            redactedCoordinateCount = 1,
+            destination = "苏州",
+            travelDate = "2026-08-06",
+            travelDays = 2,
+            stageTitles = listOf("园林研学"),
+            tags = listOf("建筑"),
+            pois = listOf("拙政园")
         )
 
         val result = service.createCommunityDraft(
@@ -58,7 +64,11 @@ class CommunityApiServiceTest {
 
         assertEquals("/api/account/community/drafts", request.path)
         assertEquals("Bearer session-token", request.getHeader("Authorization"))
-        assertTrue(request.body.readUtf8().contains("\"client_snapshot_id\":\"local-1\""))
+        val requestBody = request.body.readUtf8()
+        assertTrue(requestBody.contains("\"client_snapshot_id\":\"local-1\""))
+        assertTrue(requestBody.contains("\"destination\":\"苏州\""))
+        assertTrue(requestBody.contains("\"travel_days\":2"))
+        assertTrue(requestBody.contains("\"stage_titles\":[\"园林研学\"]"))
         assertEquals("remote-1", result.id)
         assertEquals("private_draft", result.status)
     }
@@ -105,6 +115,33 @@ class CommunityApiServiceTest {
         val myRequest = server.takeRequest()
         assertEquals("/api/account/community/posts?limit=20", myRequest.path)
         assertEquals("Bearer session-token", myRequest.getHeader("Authorization"))
+    }
+
+    @Test
+    fun publicListEncodesStructuredSearchFilters() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"items":[],"next_cursor":null,"facets":{"destinations":["苏州"],"tags":["园林"],"pois":["拙政园"]}}"""))
+
+        val page = service.publicCommunityPosts(
+            endpoint = server.url("/api").toString(),
+            query = "园林 研学",
+            destination = "苏州",
+            tag = "园林",
+            poi = "拙政园",
+            minDays = 1,
+            maxDays = 3,
+            hasMedia = true
+        ).getOrThrow()
+
+        val path = server.takeRequest().path.orEmpty()
+        assertTrue(path.startsWith("/api/community/posts?"))
+        assertTrue(path.contains("q=%E5%9B%AD%E6%9E%97+%E7%A0%94%E5%AD%A6"))
+        assertTrue(path.contains("destination=%E8%8B%8F%E5%B7%9E"))
+        assertTrue(path.contains("tag=%E5%9B%AD%E6%9E%97"))
+        assertTrue(path.contains("poi=%E6%8B%99%E6%94%BF%E5%9B%AD"))
+        assertTrue(path.contains("min_days=1"))
+        assertTrue(path.contains("max_days=3"))
+        assertTrue(path.contains("has_media=true"))
+        assertEquals(listOf("苏州"), page.facets?.destinations)
     }
 
     @Test

@@ -27,6 +27,9 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.Flag
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.FilterAlt
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material3.AlertDialog
@@ -46,11 +49,15 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
@@ -108,7 +115,13 @@ fun CommunityScreen(
             CommunityContent(
                 state = uiState,
                 onOpenPost = onOpenPost,
-                onRefresh = viewModel::refresh
+                onRefresh = viewModel::refresh,
+                onSearchQueryChange = viewModel::updateSearchQuery,
+                onSearch = viewModel::search,
+                onDestinationSelect = viewModel::selectDestination,
+                onTagSelect = viewModel::selectTag,
+                onToggleHasMedia = viewModel::toggleHasMedia,
+                onClearFilters = viewModel::clearFilters
             )
         }
     }
@@ -118,10 +131,27 @@ fun CommunityScreen(
 private fun CommunityContent(
     state: CommunityUiState,
     onOpenPost: (String) -> Unit,
-    onRefresh: () -> Unit
+    onRefresh: () -> Unit,
+    onSearchQueryChange: (String) -> Unit,
+    onSearch: () -> Unit,
+    onDestinationSelect: (String) -> Unit,
+    onTagSelect: (String) -> Unit,
+    onToggleHasMedia: () -> Unit,
+    onClearFilters: () -> Unit
 ) {
     val isDiscover = state.tab == CommunityTab.DISCOVER
     val isEmpty = if (isDiscover) state.publicPosts.isEmpty() else state.myPosts.isEmpty()
+    if (isDiscover) {
+        CommunityDiscoverFilters(
+            state = state,
+            onSearchQueryChange = onSearchQueryChange,
+            onSearch = onSearch,
+            onDestinationSelect = onDestinationSelect,
+            onTagSelect = onTagSelect,
+            onToggleHasMedia = onToggleHasMedia,
+            onClearFilters = onClearFilters
+        )
+    }
     when {
         state.isLoading && isEmpty -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 3.dp)
@@ -149,6 +179,103 @@ private fun CommunityContent(
                 }
             } else {
                 items(state.myPosts, key = { it.id }) { post -> MyPostCard(post) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CommunityDiscoverFilters(
+    state: CommunityUiState,
+    onSearchQueryChange: (String) -> Unit,
+    onSearch: () -> Unit,
+    onDestinationSelect: (String) -> Unit,
+    onTagSelect: (String) -> Unit,
+    onToggleHasMedia: () -> Unit,
+    onClearFilters: () -> Unit
+) {
+    var destinationExpanded by androidx.compose.runtime.remember { mutableStateOf(false) }
+    var tagExpanded by androidx.compose.runtime.remember { mutableStateOf(false) }
+    val hasFilters = state.searchQuery.isNotBlank() || state.destinationFilter.isNotBlank() ||
+        state.tagFilter.isNotBlank() || state.hasMediaOnly
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        OutlinedTextField(
+            value = state.searchQuery,
+            onValueChange = onSearchQueryChange,
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+            trailingIcon = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (state.searchQuery.isNotBlank()) {
+                        IconButton(onClick = { onSearchQueryChange("") }) {
+                            Icon(Icons.Default.Close, contentDescription = "清除搜索")
+                        }
+                    }
+                    IconButton(onClick = onSearch) {
+                        Icon(Icons.Default.Search, contentDescription = "搜索")
+                    }
+                }
+            },
+            placeholder = { Text("搜索标题、地点或关键词") },
+            shape = RoundedCornerShape(8.dp)
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box {
+                Surface(
+                    onClick = { destinationExpanded = true },
+                    shape = RoundedCornerShape(7.dp),
+                    color = if (state.destinationFilter.isBlank()) MaterialTheme.colorScheme.surface
+                    else MaterialTheme.colorScheme.primaryContainer,
+                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                ) {
+                    Row(Modifier.padding(horizontal = 10.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.FilterAlt, contentDescription = null, modifier = Modifier.size(15.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text(state.destinationFilter.ifBlank { "目的地" }, style = MaterialTheme.typography.labelMedium, maxLines = 1)
+                    }
+                }
+                DropdownMenu(expanded = destinationExpanded, onDismissRequest = { destinationExpanded = false }) {
+                    DropdownMenuItem(text = { Text("全部目的地") }, onClick = { destinationExpanded = false; onDestinationSelect("") })
+                    state.facets.destinations.forEach { value ->
+                        DropdownMenuItem(text = { Text(value) }, onClick = { destinationExpanded = false; onDestinationSelect(value) })
+                    }
+                }
+            }
+            Box {
+                Surface(
+                    onClick = { tagExpanded = true },
+                    shape = RoundedCornerShape(7.dp),
+                    color = if (state.tagFilter.isBlank()) MaterialTheme.colorScheme.surface
+                    else MaterialTheme.colorScheme.primaryContainer,
+                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                ) {
+                    Text("主题：${state.tagFilter.ifBlank { "全部" }}", modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp), style = MaterialTheme.typography.labelMedium, maxLines = 1)
+                }
+                DropdownMenu(expanded = tagExpanded, onDismissRequest = { tagExpanded = false }) {
+                    DropdownMenuItem(text = { Text("全部主题") }, onClick = { tagExpanded = false; onTagSelect("") })
+                    state.facets.tags.forEach { value ->
+                        DropdownMenuItem(text = { Text("#$value") }, onClick = { tagExpanded = false; onTagSelect(value) })
+                    }
+                }
+            }
+            Surface(
+                onClick = onToggleHasMedia,
+                shape = RoundedCornerShape(7.dp),
+                color = if (state.hasMediaOnly) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
+                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+            ) {
+                Text("仅看图片", modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp), style = MaterialTheme.typography.labelMedium)
+            }
+            if (hasFilters) {
+                TextButton(onClick = onClearFilters, contentPadding = PaddingValues(horizontal = 4.dp)) { Text("清除") }
             }
         }
     }
@@ -198,6 +325,7 @@ private fun PublicPostCard(
                 )
             }
             Text(post.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            CommunityPostMetadata(post)
             Text(
                 post.content,
                 style = MaterialTheme.typography.bodyMedium,
@@ -274,6 +402,24 @@ private fun MyPostCard(post: MyCommunityPost) {
                 color = MaterialTheme.colorScheme.outline
             )
         }
+    }
+}
+
+@Composable
+private fun CommunityPostMetadata(post: PublicCommunityPost) {
+    val details = buildList {
+        if (post.destination.isNotBlank()) add(post.destination)
+        if (post.travelDays > 0) add("${post.travelDays} 天")
+        if (post.stages.isNotEmpty()) add("${post.stages.size} 段行程")
+    }
+    if (details.isNotEmpty() || post.tags.isNotEmpty()) {
+        Text(
+            text = (details + post.tags.take(3).map { "#$it" }).joinToString("  ·  "),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.primary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 
@@ -468,7 +614,7 @@ private fun CommunityPostDetail(
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Default.Verified, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
             Spacer(Modifier.width(6.dp))
-            Text(post.authorLabel, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(post.authorLabel, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.width(10.dp))
             Text(formatCommunityDate(post.publishedAt), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
         }
@@ -483,6 +629,7 @@ private fun CommunityPostDetail(
                 }
             }
         }
+        CommunityPostMetadata(post)
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         Text(post.content, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface)
     }

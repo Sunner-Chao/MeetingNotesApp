@@ -45,6 +45,37 @@ class PublishedPostRepositoryImplTest {
         assertEquals(withdrawn, repository.observeLatest("journey-1").first())
     }
 
+    @Test
+    fun `metadata can be corrected during review and locks after ready`() = runBlocking {
+        val repository = PublishedPostRepositoryImpl(FakePublishedPostDao())
+        val post = repository.createReviewSnapshot(
+            journeyId = "journey-2",
+            journeyEditionId = "edition-2",
+            sourceEditionVersion = 1,
+            title = "研学考察",
+            content = "发布预览",
+            redactedCoordinateCount = 0
+        ).getOrThrow()
+
+        val corrected = repository.updateMetadata(
+            id = post.id,
+            destination = "苏州",
+            travelDate = "2026-08-06",
+            travelDays = 2,
+            tags = listOf("园林", "园林", "建筑"),
+            pois = listOf("拙政园")
+        ).getOrThrow()
+        assertEquals("苏州", corrected.destination)
+        assertEquals(2, corrected.travelDays)
+        assertEquals(listOf("园林", "建筑"), corrected.tags)
+
+        repository.saveReview(post.id, true, true).getOrThrow()
+        repository.markReady(post.id).getOrThrow()
+        assertTrue(
+            repository.updateMetadata(post.id, "杭州", "", 0, emptyList(), emptyList()).isFailure
+        )
+    }
+
     private class FakePublishedPostDao : PublishedPostDao {
         private val values = linkedMapOf<String, PublishedPostEntity>()
 
@@ -71,6 +102,28 @@ class PublishedPostRepositoryImplTest {
             values[id] = existing.copy(
                 privacyReviewed = privacyReviewed,
                 rightsConfirmed = rightsConfirmed,
+                updatedAt = updatedAt
+            )
+            return 1
+        }
+
+        override suspend fun updateMetadata(
+            id: String,
+            destination: String,
+            travelDate: String,
+            travelDays: Int,
+            tags: List<String>,
+            pois: List<String>,
+            updatedAt: Long
+        ): Int {
+            val existing = values[id] ?: return 0
+            if (existing.status != "REVIEW") return 0
+            values[id] = existing.copy(
+                destination = destination,
+                travelDate = travelDate,
+                travelDays = travelDays,
+                tags = tags,
+                pois = pois,
                 updatedAt = updatedAt
             )
             return 1

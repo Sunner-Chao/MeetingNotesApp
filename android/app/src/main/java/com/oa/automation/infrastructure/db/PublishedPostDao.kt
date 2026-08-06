@@ -39,6 +39,21 @@ interface PublishedPostDao {
     ): Int
 
     @Query(
+        "UPDATE published_posts SET destination = :destination, travelDate = :travelDate, " +
+            "travelDays = :travelDays, tags = :tags, pois = :pois, updatedAt = :updatedAt " +
+            "WHERE id = :id AND status = 'REVIEW'"
+    )
+    suspend fun updateMetadata(
+        id: String,
+        destination: String,
+        travelDate: String,
+        travelDays: Int,
+        tags: List<String>,
+        pois: List<String>,
+        updatedAt: Long
+    ): Int
+
+    @Query(
         "UPDATE published_posts SET status = 'READY', readyAt = :readyAt, updatedAt = :readyAt " +
             "WHERE id = :id AND status = 'REVIEW' AND privacyReviewed = 1 AND rightsConfirmed = 1"
     )
