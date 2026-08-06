@@ -41,6 +41,16 @@ finally:
     target.close()
     source.close()
 PY
+  MEDIA_ROOT="$STATE_ROOT/backend/community-media"
+  MANIFEST_PATH="$STAGE/var/lib/meetingnotes-stt/backend/community-media-manifest.json"
+  install -d "$STAGE/var/lib/meetingnotes-stt/backend/community-media"
+  if [[ -d "$MEDIA_ROOT" ]]; then
+    cp -a "$MEDIA_ROOT/." "$STAGE/var/lib/meetingnotes-stt/backend/community-media/"
+  fi
+  python3.11 "$APP_ROOT/current/scripts/verify_community_backup.py" \
+    "$STAGE/var/lib/meetingnotes-stt/backend/meeting_notes.db" \
+    --media-root "$STAGE/var/lib/meetingnotes-stt/backend/community-media" \
+    --write-manifest "$MANIFEST_PATH" >/dev/null
   INCLUDES+=("var/lib/meetingnotes-stt/backend")
 fi
 if [[ ${#INCLUDES[@]} -eq 0 ]]; then

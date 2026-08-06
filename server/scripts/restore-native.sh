@@ -35,6 +35,18 @@ if [[ -d "$STATE_ROOT/backend" ]]; then
   chown -R "$APP_USER":"$APP_GROUP" "$STATE_ROOT/backend"
   chmod 0750 "$STATE_ROOT/backend"
 fi
+MEDIA_ROOT="${STATE_ROOT}/backend/community-media"
+MEDIA_MANIFEST="${STATE_ROOT}/backend/community-media-manifest.json"
+if [[ -e "$MEDIA_ROOT" || -e "$MEDIA_MANIFEST" ]]; then
+  [[ -d "$MEDIA_ROOT" && -f "$MEDIA_MANIFEST" ]] || {
+    echo "Community media backup is incomplete: manifest and media directory are both required." >&2
+    exit 1
+  }
+  python3.11 "/opt/meetingnotes-stt/current/scripts/verify_community_backup.py" \
+    "$STATE_ROOT/backend/meeting_notes.db" \
+    --media-root "$MEDIA_ROOT" \
+    --manifest "$MEDIA_MANIFEST" >/dev/null
+fi
 
 systemctl restart meetingnotes-stt.service
 if [[ "$BACKEND_ENABLED" -eq 1 ]]; then
