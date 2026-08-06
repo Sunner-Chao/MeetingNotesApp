@@ -198,6 +198,85 @@ class CommunityRouteTests(unittest.TestCase):
             )
             self.assertEqual(client.get("/api/account/community/media-quota", headers=owner_headers).status_code, 200)
 
+    def test_report_and_admin_queue_do_not_expose_reporter(self) -> None:
+        owner_headers = {"Authorization": "Bearer owner-token"}
+        other_headers = {"Authorization": "Bearer admin-token"}
+        with TestClient(self.app) as client:
+            created = client.post(
+                "/api/account/community/drafts", headers=owner_headers, json=self.payload()
+            )
+            post_id = created.json()["id"]
+            client.post(
+                f"/api/account/community/posts/{post_id}/publish", headers=owner_headers
+            )
+            self.assertEqual(
+                client.post(
+                    f"/api/account/community/posts/{post_id}/report",
+                    headers=owner_headers,
+                    json={"category": "spam", "reason": "不能举报自己的内容"},
+                ).status_code,
+                404,
+            )
+            self.assertEqual(
+                client.get(
+                    "/api/account/community/moderation", headers=owner_headers
+                ).status_code,
+                403,
+            )
+            approved = client.post(
+                f"/api/account/community/moderation/{post_id}",
+                headers=other_headers,
+                json={"decision": "approved"},
+            )
+            self.assertEqual(approved.status_code, 200)
+            self.assertEqual(
+                client.post(
+                    f"/api/account/community/posts/{post_id}/report",
+                    headers=owner_headers,
+                    json={"category": "spam"},
+                ).status_code,
+                403,
+            )
+
+            reported = client.post(
+                f"/api/account/community/posts/{post_id}/report",
+                headers=other_headers,
+                json={"category": "privacy", "reason": "位置描述需要复核"},
+            )
+            self.assertEqual(reported.status_code, 201)
+            self.assertNotIn("reporter_user_id", reported.json())
+            repeated = client.post(
+                f"/api/account/community/posts/{post_id}/report",
+                headers=other_headers,
+                json={"category": "spam", "reason": "再次点击"},
+            )
+            self.assertEqual(repeated.status_code, 200)
+            self.assertEqual(repeated.json()["id"], reported.json()["id"])
+
+            queue = client.get(
+                "/api/account/community/moderation?status=reported",
+                headers=other_headers,
+            )
+            self.assertEqual(queue.status_code, 200)
+            item = queue.json()["items"][0]
+            self.assertEqual(item["open_report_count"], 1)
+            self.assertNotIn("reporter_user_id", item)
+            self.assertNotIn("reporter_user_id", item["reports"][0])
+
+            rejected = client.post(
+                f"/api/account/community/moderation/{post_id}",
+                headers=other_headers,
+                json={"decision": "rejected", "reason": "请补充来源说明"},
+            )
+            self.assertEqual(rejected.status_code, 200)
+            self.assertEqual(
+                client.get(
+                    "/api/account/community/moderation?status=reported",
+                    headers=other_headers,
+                ).json()["items"],
+                [],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

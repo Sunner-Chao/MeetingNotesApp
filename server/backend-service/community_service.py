@@ -20,6 +20,7 @@ from community_media import CommunityMediaFormatError, sanitize_image_bytes
 POST_STATUSES = frozenset({"private_draft", "published", "withdrawn"})
 MODERATION_STATUSES = frozenset({"not_submitted", "pending"})
 REVIEW_DECISIONS = frozenset({"approved", "rejected"})
+REPORT_CATEGORIES = frozenset({"privacy", "copyright", "safety", "spam", "other"})
 MEDIA_MIME_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
 MEDIA_VARIANTS = frozenset({"original", "thumbnail"})
 ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
@@ -74,6 +75,12 @@ class CommunityMediaManifestInput:
     original_sha256: str
     thumbnail_bytes: int
     thumbnail_sha256: str
+
+
+@dataclass(frozen=True)
+class CommunityReportInput:
+    category: str
+    reason: str = ""
 
 
 class CommunityService:
@@ -193,6 +200,27 @@ class CommunityService:
                     ON community_post_media(post_id, created_at ASC);
                 CREATE INDEX IF NOT EXISTS idx_community_post_media_owner
                     ON community_post_media(user_id, status, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS community_reports (
+                    id TEXT PRIMARY KEY,
+                    post_id TEXT NOT NULL,
+                    reporter_user_id TEXT NOT NULL,
+                    category TEXT NOT NULL
+                        CHECK(category IN ('privacy', 'copyright', 'safety', 'spam', 'other')),
+                    reason TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'open'
+                        CHECK(status IN ('open', 'resolved')),
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    UNIQUE(post_id, reporter_user_id),
+                    FOREIGN KEY(post_id) REFERENCES community_posts(id) ON DELETE CASCADE,
+                    FOREIGN KEY(reporter_user_id) REFERENCES users(id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_community_reports_post_status
+                    ON community_reports(post_id, status, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_community_reports_status_created
+                    ON community_reports(status, created_at DESC, id DESC);
                 """
             )
 
@@ -576,6 +604,14 @@ class CommunityService:
                 """,
                 (clean_post_id, clean_decision, clean_reason, clean_reviewer_id, now),
             )
+            conn.execute(
+                """
+                UPDATE community_reports
+                SET status = 'resolved', updated_at = ?
+                WHERE post_id = ? AND status = 'open'
+                """,
+                (now, clean_post_id),
+            )
             reviewed = conn.execute(
                 """
                 SELECT p.*, m.decision AS review_decision, m.reason AS review_reason,
@@ -587,6 +623,100 @@ class CommunityService:
                 (clean_post_id,),
             ).fetchone()
             return self._post_payload(reviewed)
+
+    def report_post(
+        self,
+        reporter_user_id: str,
+        post_id: str,
+        report: CommunityReportInput,
+    ) -> tuple[dict, bool]:
+        clean_reporter_id = self._validated_id(reporter_user_id, "reporter_user_id")
+        clean_post_id = self._validated_id(post_id, "post_id")
+        category, reason = self._validated_report(report)
+        now = int(time.time() * 1000)
+        with self._connect() as conn:
+            post = conn.execute(
+                """
+                SELECT p.id, p.user_id, p.status, m.decision AS review_decision
+                FROM community_posts p
+                LEFT JOIN community_moderation m ON m.post_id = p.id
+                WHERE p.id = ?
+                """,
+                (clean_post_id,),
+            ).fetchone()
+            if post is None or post["status"] != "published" or post["review_decision"] != "approved":
+                raise CommunityNotFoundError("社区内容不存在或暂不可举报")
+            if post["user_id"] == clean_reporter_id:
+                raise CommunityPermissionError("不能举报自己的社区内容")
+            existing = conn.execute(
+                """
+                SELECT * FROM community_reports
+                WHERE post_id = ? AND reporter_user_id = ?
+                """,
+                (clean_post_id, clean_reporter_id),
+            ).fetchone()
+            if existing is not None:
+                return self._report_payload(existing), False
+            report_id = uuid.uuid4().hex
+            conn.execute(
+                """
+                INSERT INTO community_reports (
+                    id, post_id, reporter_user_id, category, reason, status,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 'open', ?, ?)
+                """,
+                (report_id, clean_post_id, clean_reporter_id, category, reason, now, now),
+            )
+            created = conn.execute(
+                "SELECT * FROM community_reports WHERE id = ?",
+                (report_id,),
+            ).fetchone()
+            return self._report_payload(created), True
+
+    def list_moderation_queue(
+        self,
+        *,
+        status: str = "pending",
+        cursor: str | None = None,
+        limit: int = 20,
+    ) -> dict:
+        clean_status = status.strip().lower()
+        if clean_status not in {"pending", "reported", "all"}:
+            raise CommunityError("审核队列筛选无效")
+        normalized_limit = self._normalized_limit(limit)
+        cursor_published_at, cursor_id = self._decode_cursor(cursor)
+        query = """
+            SELECT p.*, m.decision AS review_decision, m.reason AS review_reason,
+                   m.reviewed_at AS review_reviewed_at,
+                   COALESCE(SUM(CASE WHEN r.status = 'open' THEN 1 ELSE 0 END), 0)
+                       AS open_report_count
+            FROM community_posts p
+            LEFT JOIN community_moderation m ON m.post_id = p.id
+            LEFT JOIN community_reports r ON r.post_id = p.id
+            WHERE p.status = 'published'
+        """
+        params: list[object] = []
+        if cursor_published_at is not None and cursor_id is not None:
+            query += " AND (p.published_at < ? OR (p.published_at = ? AND p.id < ?))"
+            params.extend([cursor_published_at, cursor_published_at, cursor_id])
+        query += " GROUP BY p.id"
+        if clean_status == "pending":
+            query += " HAVING m.decision IS NULL"
+        elif clean_status == "reported":
+            query += " HAVING open_report_count > 0"
+        query += " ORDER BY p.published_at DESC, p.id DESC LIMIT ?"
+        params.append(normalized_limit + 1)
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+            has_more = len(rows) > normalized_limit
+            visible_rows = rows[:normalized_limit]
+            items = [self._moderation_queue_payload(conn, row) for row in visible_rows]
+        return {
+            "items": items,
+            "next_cursor": self._encode_cursor(visible_rows[-1], "published_at")
+            if has_more and visible_rows
+            else None,
+        }
 
     def list_public_posts(
         self,
@@ -730,6 +860,16 @@ class CommunityService:
         }
 
     @staticmethod
+    def _validated_report(report: CommunityReportInput) -> tuple[str, str]:
+        category = report.category.strip().lower()
+        if category not in REPORT_CATEGORIES:
+            raise CommunityError("举报类别无效")
+        reason = report.reason.strip()
+        if len(reason) > 1000:
+            raise CommunityError("举报说明不能超过 1000 个字符")
+        return category, reason
+
+    @staticmethod
     def _validated_id(value: str, field_name: str) -> str:
         clean = value.strip()
         if not ID_PATTERN.fullmatch(clean):
@@ -850,6 +990,34 @@ class CommunityService:
         payload["media"] = self._owner_media_payloads(conn, payload["id"])
         return payload
 
+    def _moderation_queue_payload(self, conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
+        payload = self._post_payload(row)
+        reports = conn.execute(
+            """
+            SELECT category, reason, created_at
+            FROM community_reports
+            WHERE post_id = ? AND status = 'open'
+            ORDER BY created_at ASC, id ASC
+            """,
+            (row["id"],),
+        ).fetchall()
+        return {
+            "id": payload["id"],
+            "title": payload["title"],
+            "content": payload["content"],
+            "published_at": payload["published_at"],
+            "review": payload["review"],
+            "open_report_count": int(row["open_report_count"]),
+            "reports": [
+                {
+                    "category": report["category"],
+                    "reason": report["reason"],
+                    "created_at": report["created_at"],
+                }
+                for report in reports
+            ],
+        }
+
     @staticmethod
     def _encode_cursor(row: sqlite3.Row, timestamp_field: str) -> str:
         timestamp = row[timestamp_field]
@@ -904,6 +1072,20 @@ class CommunityService:
             else None,
         }
         return payload
+
+    @staticmethod
+    def _report_payload(row: sqlite3.Row | None) -> dict:
+        if row is None:
+            raise CommunityNotFoundError("举报记录不存在")
+        return {
+            "id": row["id"],
+            "post_id": row["post_id"],
+            "category": row["category"],
+            "reason": row["reason"],
+            "status": row["status"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
 
     @classmethod
     def _public_post_payload(cls, row: sqlite3.Row, media: list[dict]) -> dict:

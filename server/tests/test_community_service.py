@@ -19,6 +19,8 @@ from community_service import (
     CommunityError,
     CommunityMediaManifestInput,
     CommunityNotFoundError,
+    CommunityPermissionError,
+    CommunityReportInput,
     CommunityService,
 )
 
@@ -297,6 +299,71 @@ class CommunityServiceTests(unittest.TestCase):
                 created["id"],
                 self.media_manifest("quota-media", original, thumbnail),
             )
+
+    def test_reports_are_anonymous_idempotent_and_close_after_review(self) -> None:
+        created, _ = self.service.create_private_draft(self.owner_id, self.snapshot())
+        self.service.publish(self.owner_id, created["id"])
+        with self.assertRaises(CommunityNotFoundError):
+            self.service.report_post(
+                self.other_id,
+                created["id"],
+                CommunityReportInput(category="spam", reason="待审核内容"),
+            )
+        self.service.review_post(
+            created["id"], decision="approved", reason="", reviewed_by="reviewer-01"
+        )
+
+        with self.assertRaises(CommunityPermissionError):
+            self.service.report_post(
+                self.owner_id,
+                created["id"],
+                CommunityReportInput(category="spam"),
+            )
+        with self.assertRaises(CommunityError):
+            self.service.report_post(
+                self.other_id,
+                created["id"],
+                CommunityReportInput(category="invalid"),
+            )
+        with self.assertRaises(CommunityError):
+            self.service.report_post(
+                self.other_id,
+                created["id"],
+                CommunityReportInput(category="other", reason="x" * 1001),
+            )
+
+        report, first = self.service.report_post(
+            self.other_id,
+            created["id"],
+            CommunityReportInput(category="privacy", reason="公开内容包含不应出现的信息"),
+        )
+        repeated, second = self.service.report_post(
+            self.other_id,
+            created["id"],
+            CommunityReportInput(category="spam", reason="重复提交"),
+        )
+        self.assertTrue(first)
+        self.assertFalse(second)
+        self.assertEqual(report["id"], repeated["id"])
+        self.assertNotIn("reporter_user_id", report)
+
+        queue = self.service.list_moderation_queue(status="reported")
+        self.assertEqual(queue["items"][0]["open_report_count"], 1)
+        self.assertEqual(queue["items"][0]["reports"][0]["category"], "privacy")
+        self.assertNotIn("reporter_user_id", queue["items"][0]["reports"][0])
+
+        self.service.review_post(
+            created["id"],
+            decision="rejected",
+            reason="请补充隐私处理说明",
+            reviewed_by="reviewer-01",
+        )
+        self.assertEqual(self.service.list_moderation_queue(status="reported")["items"], [])
+        with self.service._connect() as conn:
+            status = conn.execute(
+                "SELECT status FROM community_reports WHERE id = ?", (report["id"],)
+            ).fetchone()["status"]
+        self.assertEqual(status, "resolved")
 
 
 if __name__ == "__main__":
