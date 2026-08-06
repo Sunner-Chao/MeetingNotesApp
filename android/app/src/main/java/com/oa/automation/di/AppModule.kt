@@ -2,10 +2,12 @@ package com.oa.automation.di
 
 import androidx.room.Room
 import com.oa.automation.application.usecase.GenerateReportUseCase
+import com.oa.automation.application.usecase.GenerateJourneyEditionUseCase
 import com.oa.automation.application.usecase.StartRecordingUseCase
 import com.oa.automation.application.usecase.StopRecordingUseCase
 import com.oa.automation.data.local.ConfigDataStore
 import com.oa.automation.domain.repository.JourneyRepository
+import com.oa.automation.domain.repository.JourneyEditionRepository
 import com.oa.automation.domain.repository.MeetingRepository
 import com.oa.automation.domain.repository.ReportRepository
 import com.oa.automation.domain.repository.ScheduledMeetingRepository
@@ -25,6 +27,7 @@ import com.oa.automation.infrastructure.location.DeviceLocationProvider
 import com.oa.automation.infrastructure.notification.ScheduledMeetingNotificationScheduler
 import com.oa.automation.infrastructure.repository.MeetingRepositoryImpl
 import com.oa.automation.infrastructure.repository.JourneyRepositoryImpl
+import com.oa.automation.infrastructure.repository.JourneyEditionRepositoryImpl
 import com.oa.automation.infrastructure.repository.ReportRepositoryImpl
 import com.oa.automation.infrastructure.repository.ScheduledMeetingRepositoryImpl
 import com.oa.automation.infrastructure.repository.StageDraftRepositoryImpl
@@ -61,6 +64,7 @@ val appModule = module {
             .addMigrations(AppDatabase.MIGRATION_5_6)
             .addMigrations(AppDatabase.MIGRATION_6_7)
             .addMigrations(AppDatabase.MIGRATION_7_8)
+            .addMigrations(AppDatabase.MIGRATION_8_9)
             .build()
     }
     single { get<AppDatabase>().meetingDao() }
@@ -68,11 +72,13 @@ val appModule = module {
     single { get<AppDatabase>().scheduledMeetingDao() }
     single { get<AppDatabase>().journeyDao() }
     single { get<AppDatabase>().stageDraftDao() }
+    single { get<AppDatabase>().journeyEditionDao() }
 
     // Infrastructure
     single<MeetingRepository> { MeetingRepositoryImpl(get()) }
     single<JourneyRepository> { JourneyRepositoryImpl(get()) }
     single<StageDraftRepository> { StageDraftRepositoryImpl(get()) }
+    single<JourneyEditionRepository> { JourneyEditionRepositoryImpl(get()) }
     single { DeviceLocationProvider(androidContext()) }
     single { MeetingAttachmentStore(androidContext(), get(), get()) }
     single<ReportRepository> { ReportRepositoryImpl(get()) }
@@ -98,13 +104,14 @@ val appModule = module {
     factory { StopRecordingUseCase(get(), get(), get()) }
     factory { GenerateReportUseCase(get(), get(), get(), get()) }
     factory { GenerateStageDraftUseCase(get(), get(), get(), get()) }
+    factory { GenerateJourneyEditionUseCase(get(), get(), get()) }
 
     // ViewModels
     viewModel { LoginViewModel(get(), get()) }
     viewModel { RegisterViewModel(get(), get()) }
     viewModel { HomeViewModel(get(), get(), get(), get(), get(), get(), get(), get()) }
     viewModel { AccountViewModel(get(), get(), get(), get(), get()) }
-    viewModel { RecordingViewModel(get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), androidContext()) }
+    viewModel { RecordingViewModel(get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), androidContext()) }
     viewModel { ReportViewModel(get(), get(), get(), get(), get(), get(), get()) }
     viewModel { SettingsViewModel(get(), get(), get()) }
     viewModel { VipViewModel(get(), get(), get(), get(), get()) }

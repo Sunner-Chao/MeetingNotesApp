@@ -1,5 +1,6 @@
 package com.oa.automation.infrastructure.repository
 
+import com.oa.automation.domain.model.ConfirmedJourneyStageDraft
 import com.oa.automation.domain.model.StageDraftStatus
 import com.oa.automation.domain.model.StageDraftVersion
 import com.oa.automation.domain.repository.StageDraftRepository
@@ -40,6 +41,32 @@ class StageDraftRepositoryImpl(
 
     override fun observeLatest(stageId: String): Flow<StageDraftVersion?> =
         dao.observeLatest(stageId).map { it?.toDomain() }
+
+    override suspend fun findLatestConfirmedByJourneyId(
+        journeyId: String
+    ): Result<List<ConfirmedJourneyStageDraft>> = runCatching {
+        require(journeyId.isNotBlank()) { "Journey id must not be blank" }
+        dao.findLatestConfirmedByJourneyId(journeyId).map { row ->
+            ConfirmedJourneyStageDraft(
+                stageId = row.stageId,
+                sequenceNumber = row.sequenceNumber,
+                stageTitle = row.stageTitle,
+                stageSavedAt = row.stageSavedAt,
+                draft = StageDraftVersion(
+                    id = row.draftId,
+                    stageId = row.stageId,
+                    versionNumber = row.versionNumber,
+                    content = row.content,
+                    status = StageDraftStatus.fromStorage(row.status),
+                    evidenceTranscriptCount = row.evidenceTranscriptCount,
+                    evidenceAttachmentCount = row.evidenceAttachmentCount,
+                    createdAt = row.createdAt,
+                    updatedAt = row.updatedAt,
+                    confirmedAt = row.confirmedAt
+                )
+            )
+        }
+    }
 
     override suspend fun saveDraft(id: String, content: String): Result<StageDraftVersion> = runCatching {
         require(content.isNotBlank()) { "Stage draft content must not be blank" }

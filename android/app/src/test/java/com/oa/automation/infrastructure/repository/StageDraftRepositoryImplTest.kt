@@ -57,6 +57,10 @@ class StageDraftRepositoryImplTest {
         override fun observeLatest(stageId: String): Flow<StageDraftVersionEntity?> =
             MutableStateFlow(values.values.filter { it.stageId == stageId }.maxByOrNull { it.versionNumber })
 
+        override suspend fun findLatestConfirmedByJourneyId(
+            journeyId: String
+        ): List<com.oa.automation.infrastructure.db.ConfirmedJourneyStageDraftRow> = emptyList()
+
         override suspend fun findById(id: String): StageDraftVersionEntity? = values[id]
 
         override suspend fun updateDraftContent(id: String, content: String, updatedAt: Long): Int {

@@ -134,6 +134,8 @@ import com.oa.automation.domain.model.MeetingAttachment
 import com.oa.automation.domain.model.PresetReportTemplate
 import com.oa.automation.domain.model.StageDraftStatus
 import com.oa.automation.domain.model.StageDraftVersion
+import com.oa.automation.domain.model.JourneyEdition
+import com.oa.automation.domain.model.JourneyEditionStatus
 import com.oa.automation.domain.model.STTEngineType
 import com.oa.automation.domain.model.STTLanguage
 import com.oa.automation.infrastructure.audio.ArchivedMeetingAudio
@@ -298,6 +300,11 @@ internal fun RecordingReferenceScaffold(
     onSaveStageDraftContent: (String) -> Unit,
     onConfirmStageDraft: (String) -> Unit,
     onDismissStageDraftEditor: () -> Unit,
+    onGenerateJourneyEdition: () -> Unit,
+    onOpenJourneyEdition: () -> Unit,
+    onSaveJourneyEditionContent: (String) -> Unit,
+    onConfirmJourneyEdition: (String) -> Unit,
+    onDismissJourneyEditionEditor: () -> Unit,
     onAbandonRecording: () -> Unit,
     onGenerateReport: () -> Unit,
     onCancelTranscription: () -> Unit,
@@ -452,6 +459,16 @@ internal fun RecordingReferenceScaffold(
         )
     }
 
+    uiState.latestJourneyEdition?.takeIf { uiState.journeyEditionEditorVisible }?.let { edition ->
+        JourneyEditionEditorDialog(
+            edition = edition,
+            isSaving = uiState.isSavingJourneyEdition,
+            onSave = onSaveJourneyEditionContent,
+            onConfirm = onConfirmJourneyEdition,
+            onDismiss = onDismissJourneyEditionEditor
+        )
+    }
+
     FlowingProgressBorder(
         active = uiState.isTranscribing || uiState.isGeneratingReport,
         modifier = Modifier.fillMaxSize(),
@@ -600,6 +617,8 @@ internal fun RecordingReferenceScaffold(
                     onContinueJourney = onContinueJourney,
                     onGenerateStageDraft = onGenerateStageDraft,
                     onOpenStageDraft = onOpenStageDraft,
+                    onGenerateJourneyEdition = onGenerateJourneyEdition,
+                    onOpenJourneyEdition = onOpenJourneyEdition,
                     onGenerateReport = onGenerateReport,
                     onCancelTranscription = onCancelTranscription,
                     onCancelReport = onCancelReport,
@@ -690,6 +709,85 @@ private fun StageDraftEditorDialog(
                         Spacer(Modifier.width(6.dp))
                     }
                     Text("确认阶段")
+                }
+            } else {
+                TextButton(onClick = onDismiss) { Text("关闭") }
+            }
+        },
+        dismissButton = {
+            if (editable) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = onDismiss, enabled = !isSaving) { Text("取消") }
+                    TextButton(
+                        onClick = { onSave(content) },
+                        enabled = content.isNotBlank() && !isSaving
+                    ) { Text("保存修改") }
+                }
+            }
+        },
+        shape = RoundedCornerShape(18.dp)
+    )
+}
+
+@Composable
+private fun JourneyEditionEditorDialog(
+    edition: JourneyEdition,
+    isSaving: Boolean,
+    onSave: (String) -> Unit,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val editable = edition.status == JourneyEditionStatus.DRAFT
+    var content by remember(edition.id, edition.updatedAt) { mutableStateOf(edition.content) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text("总游记")
+                Text(
+                    text = "版本 ${edition.versionNumber} · 已合并 ${edition.sourceStageCount} 个阶段",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier.heightIn(max = 460.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (!editable) {
+                    Text(
+                        text = "已确认版本，仅供查看。新的阶段稿确认后，可生成新的总游记版本。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                OutlinedTextField(
+                    value = content,
+                    onValueChange = { content = it },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 220.dp, max = 380.dp),
+                    readOnly = !editable,
+                    enabled = !isSaving,
+                    label = { Text("Markdown 总游记") },
+                    minLines = 9,
+                    maxLines = 15
+                )
+            }
+        },
+        confirmButton = {
+            if (editable) {
+                Button(
+                    onClick = { onConfirm(content) },
+                    enabled = content.isNotBlank() && !isSaving
+                ) {
+                    if (isSaving) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    Text("确认总游记")
                 }
             } else {
                 TextButton(onClick = onDismiss) { Text("关闭") }

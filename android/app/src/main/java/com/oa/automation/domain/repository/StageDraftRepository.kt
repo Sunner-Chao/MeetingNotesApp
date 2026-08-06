@@ -1,5 +1,6 @@
 package com.oa.automation.domain.repository
 
+import com.oa.automation.domain.model.ConfirmedJourneyStageDraft
 import com.oa.automation.domain.model.StageDraftVersion
 import kotlinx.coroutines.flow.Flow
 
@@ -12,6 +13,10 @@ interface StageDraftRepository {
     ): Result<StageDraftVersion>
 
     fun observeLatest(stageId: String): Flow<StageDraftVersion?>
+
+    suspend fun findLatestConfirmedByJourneyId(
+        journeyId: String
+    ): Result<List<ConfirmedJourneyStageDraft>>
 
     suspend fun saveDraft(id: String, content: String): Result<StageDraftVersion>
 

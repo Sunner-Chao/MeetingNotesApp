@@ -96,6 +96,8 @@ import com.oa.automation.domain.model.JourneyStage
 import com.oa.automation.domain.model.JourneyStatus
 import com.oa.automation.domain.model.StageDraftStatus
 import com.oa.automation.domain.model.StageDraftVersion
+import com.oa.automation.domain.model.JourneyEdition
+import com.oa.automation.domain.model.JourneyEditionStatus
 import com.oa.automation.domain.model.STTLanguage
 import kotlin.math.PI
 import kotlin.math.sin
@@ -168,6 +170,8 @@ internal fun SiriRecorderContent(
     onContinueJourney: () -> Unit,
     onGenerateStageDraft: () -> Unit,
     onOpenStageDraft: () -> Unit,
+    onGenerateJourneyEdition: () -> Unit,
+    onOpenJourneyEdition: () -> Unit,
     onGenerateReport: () -> Unit,
     onCancelTranscription: () -> Unit,
     onCancelReport: () -> Unit,
@@ -221,6 +225,8 @@ internal fun SiriRecorderContent(
                 latestSavedJourneyStage = uiState.latestSavedJourneyStage,
                 latestStageDraft = uiState.latestStageDraft,
                 isGeneratingStageDraft = uiState.isGeneratingStageDraft,
+                latestJourneyEdition = uiState.latestJourneyEdition,
+                isGeneratingJourneyEdition = uiState.isGeneratingJourneyEdition,
                 selectedTemplateName = uiState.reportTemplate.selectedName,
                 journeyActionEnabled = !uiState.isJourneyActionPending &&
                     !uiState.isRecording &&
@@ -232,7 +238,9 @@ internal fun SiriRecorderContent(
                 onPauseJourney = onPauseJourney,
                 onContinueJourney = onContinueJourney,
                 onGenerateStageDraft = onGenerateStageDraft,
-                onOpenStageDraft = onOpenStageDraft
+                onOpenStageDraft = onOpenStageDraft,
+                onGenerateJourneyEdition = onGenerateJourneyEdition,
+                onOpenJourneyEdition = onOpenJourneyEdition
             )
             if (uiState.journey != null) {
                 Spacer(Modifier.height(6.dp))
@@ -241,6 +249,7 @@ internal fun SiriRecorderContent(
                     currentStage = uiState.currentJourneyStage,
                     latestSavedStage = uiState.latestSavedJourneyStage,
                     latestStageDraft = uiState.latestStageDraft,
+                    latestJourneyEdition = uiState.latestJourneyEdition,
                     statusMessage = uiState.journeyStatusMessage,
                     palette = palette
                 )
@@ -327,6 +336,8 @@ private fun SiriTopBar(
     latestSavedJourneyStage: JourneyStage?,
     latestStageDraft: StageDraftVersion?,
     isGeneratingStageDraft: Boolean,
+    latestJourneyEdition: JourneyEdition?,
+    isGeneratingJourneyEdition: Boolean,
     selectedTemplateName: String,
     journeyActionEnabled: Boolean,
     onStartJourney: () -> Unit,
@@ -334,7 +345,9 @@ private fun SiriTopBar(
     onPauseJourney: () -> Unit,
     onContinueJourney: () -> Unit,
     onGenerateStageDraft: () -> Unit,
-    onOpenStageDraft: () -> Unit
+    onOpenStageDraft: () -> Unit,
+    onGenerateJourneyEdition: () -> Unit,
+    onOpenJourneyEdition: () -> Unit
 ) {
     Row(
         modifier = Modifier.fillMaxWidth().height(40.dp),
@@ -479,6 +492,48 @@ private fun SiriTopBar(
                             }
                         }
                     }
+                    when {
+                        isGeneratingJourneyEdition -> SiriMenuItem(
+                            icon = Icons.Default.AutoAwesome,
+                            text = "正在生成总游记",
+                            onClick = {},
+                            onExpandedChange = onMenuExpandedChange,
+                            enabled = false
+                        )
+
+                        latestJourneyEdition == null -> SiriMenuItem(
+                            icon = Icons.Default.Summarize,
+                            text = "生成总游记",
+                            onClick = onGenerateJourneyEdition,
+                            onExpandedChange = onMenuExpandedChange,
+                            enabled = journeyActionEnabled
+                        )
+
+                        latestJourneyEdition.status == JourneyEditionStatus.DRAFT -> SiriMenuItem(
+                            icon = Icons.Default.Edit,
+                            text = "编辑总游记",
+                            onClick = onOpenJourneyEdition,
+                            onExpandedChange = onMenuExpandedChange,
+                            enabled = !isGeneratingJourneyEdition
+                        )
+
+                        else -> {
+                            SiriMenuItem(
+                                icon = Icons.Default.Description,
+                                text = "查看总游记",
+                                onClick = onOpenJourneyEdition,
+                                onExpandedChange = onMenuExpandedChange,
+                                enabled = !isGeneratingJourneyEdition
+                            )
+                            SiriMenuItem(
+                                icon = Icons.Default.AutoAwesome,
+                                text = "生成总游记新版本",
+                                onClick = onGenerateJourneyEdition,
+                                onExpandedChange = onMenuExpandedChange,
+                                enabled = journeyActionEnabled
+                            )
+                        }
+                    }
                 }
                 if (canGenerate) {
                     SiriMenuItem(Icons.Default.Summarize, "生成会议纪要", onGenerateReport, onMenuExpandedChange)
@@ -519,9 +574,15 @@ private fun SiriJourneyStrip(
     currentStage: JourneyStage?,
     latestSavedStage: JourneyStage?,
     latestStageDraft: StageDraftVersion?,
+    latestJourneyEdition: JourneyEdition?,
     statusMessage: String,
     palette: SiriRecorderPalette
 ) {
+    val editionProgressLabel = when (latestJourneyEdition?.status) {
+        JourneyEditionStatus.DRAFT -> "总游记待编辑"
+        JourneyEditionStatus.CONFIRMED -> "总游记已确认"
+        null -> null
+    }
     val draftProgressLabel = latestSavedStage?.let { stage ->
         when (latestStageDraft?.status) {
             StageDraftStatus.DRAFT -> "${stage.title} · 阶段笔记待编辑"
@@ -529,7 +590,7 @@ private fun SiriJourneyStrip(
             null -> null
         }
     }
-    val progressLabel = draftProgressLabel ?: statusMessage.ifBlank {
+    val progressLabel = editionProgressLabel ?: draftProgressLabel ?: statusMessage.ifBlank {
         when (journey.status) {
             JourneyStatus.PAUSED -> "旅程已暂停"
             JourneyStatus.COMPLETED -> "旅程已完成"

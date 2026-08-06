@@ -4,6 +4,8 @@ import com.oa.automation.domain.model.Journey
 import com.oa.automation.domain.model.JourneyStage
 import com.oa.automation.domain.model.StageDraftStatus
 import com.oa.automation.domain.model.StageDraftVersion
+import com.oa.automation.domain.model.JourneyEdition
+import com.oa.automation.domain.model.JourneyEditionStatus
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -62,6 +64,18 @@ class RecordingUiStateTest {
             isGeneratingStageDraft = true,
             isSavingStageDraft = true,
             stageDraftEditorVisible = true,
+            latestJourneyEdition = JourneyEdition(
+                id = "edition-1",
+                journeyId = "journey-1",
+                versionNumber = 1,
+                content = "总游记",
+                status = JourneyEditionStatus.DRAFT,
+                sourceStageDraftIds = listOf("draft-1"),
+                sourceStageCount = 1
+            ),
+            isGeneratingJourneyEdition = true,
+            isSavingJourneyEdition = true,
+            journeyEditionEditorVisible = true,
             journeyStageCount = 1,
             isJourneyActionPending = true,
             journeyStatusMessage = "第 1 段已暂存",
@@ -95,6 +109,10 @@ class RecordingUiStateTest {
         assertFalse(next.isGeneratingStageDraft)
         assertFalse(next.isSavingStageDraft)
         assertFalse(next.stageDraftEditorVisible)
+        assertNull(next.latestJourneyEdition)
+        assertFalse(next.isGeneratingJourneyEdition)
+        assertFalse(next.isSavingJourneyEdition)
+        assertFalse(next.journeyEditionEditorVisible)
         assertEquals(0, next.journeyStageCount)
         assertFalse(next.isJourneyActionPending)
         assertEquals("", next.journeyStatusMessage)

@@ -16,12 +16,16 @@ import com.oa.automation.domain.model.JourneyStageStatus
 import com.oa.automation.domain.model.JourneyStatus
 import com.oa.automation.domain.model.StageDraftStatus
 import com.oa.automation.domain.model.StageDraftVersion
+import com.oa.automation.domain.model.JourneyEdition
+import com.oa.automation.domain.model.JourneyEditionStatus
 import com.oa.automation.domain.model.ReportTemplateConfig
 import com.oa.automation.domain.repository.JourneyRepository
 import com.oa.automation.domain.repository.MeetingRepository
 import com.oa.automation.domain.repository.ReportRepository
 import com.oa.automation.domain.repository.StageDraftRepository
+import com.oa.automation.domain.repository.JourneyEditionRepository
 import com.oa.automation.application.usecase.GenerateStageDraftUseCase
+import com.oa.automation.application.usecase.GenerateJourneyEditionUseCase
 import com.oa.automation.domain.model.Transcript
 import com.oa.automation.domain.model.MeetingAttachment
 import com.oa.automation.domain.model.STTConfig
@@ -94,6 +98,10 @@ data class RecordingUiState(
     val isGeneratingStageDraft: Boolean = false,
     val isSavingStageDraft: Boolean = false,
     val stageDraftEditorVisible: Boolean = false,
+    val latestJourneyEdition: JourneyEdition? = null,
+    val isGeneratingJourneyEdition: Boolean = false,
+    val isSavingJourneyEdition: Boolean = false,
+    val journeyEditionEditorVisible: Boolean = false,
     val journeyStageCount: Int = 0,
     val isJourneyActionPending: Boolean = false,
     val journeyStatusMessage: String = "",
@@ -162,6 +170,10 @@ internal fun RecordingUiState.resetForMeetingChange(): RecordingUiState = copy(
     isGeneratingStageDraft = false,
     isSavingStageDraft = false,
     stageDraftEditorVisible = false,
+    latestJourneyEdition = null,
+    isGeneratingJourneyEdition = false,
+    isSavingJourneyEdition = false,
+    journeyEditionEditorVisible = false,
     journeyStageCount = 0,
     isJourneyActionPending = false,
     journeyStatusMessage = "",
@@ -205,6 +217,7 @@ class RecordingViewModel(
     private val meetingRepository: MeetingRepository,
     private val journeyRepository: JourneyRepository,
     private val stageDraftRepository: StageDraftRepository,
+    private val journeyEditionRepository: JourneyEditionRepository,
     private val reportRepository: ReportRepository,
     private val attachmentStore: MeetingAttachmentStore,
     private val recordingController: RecordingSessionController,
@@ -214,6 +227,7 @@ class RecordingViewModel(
     private val audioArchiveService: MeetingAudioArchiveService,
     private val importedAudioStore: ImportedAudioStore,
     private val generateStageDraftUseCase: GenerateStageDraftUseCase,
+    private val generateJourneyEditionUseCase: GenerateJourneyEditionUseCase,
     context: Context
 ) : ViewModel() {
 
@@ -233,6 +247,7 @@ class RecordingViewModel(
     private var journeyCollectionJob: Job? = null
     private var journeyStageCollectionJob: Job? = null
     private var stageDraftCollectionJob: Job? = null
+    private var journeyEditionCollectionJob: Job? = null
     private var transcriptionCollectionJob: Job? = null
     private var reportCollectionJob: Job? = null
     private var pendingRecordingStartJob: Job? = null
@@ -381,6 +396,8 @@ class RecordingViewModel(
             journeyStageCollectionJob = null
             stageDraftCollectionJob?.cancel()
             stageDraftCollectionJob = null
+            journeyEditionCollectionJob?.cancel()
+            journeyEditionCollectionJob = null
             resetStreamingPreviewState()
             _uiState.value = _uiState.value.resetForMeetingChange()
         }
@@ -460,6 +477,8 @@ class RecordingViewModel(
         journeyStageCollectionJob = null
         stageDraftCollectionJob?.cancel()
         stageDraftCollectionJob = null
+        journeyEditionCollectionJob?.cancel()
+        journeyEditionCollectionJob = null
         journeyCollectionJob = viewModelScope.launch {
             journeyRepository.observeByMeetingId(meetingId).collect journeyUpdate@ { journey ->
                 if (!isCurrentMeeting(meetingId)) return@journeyUpdate
@@ -470,6 +489,12 @@ class RecordingViewModel(
                         latestSavedJourneyStage = null,
                         latestStageDraft = null,
                         stageDraftEditorVisible = false,
+                        isGeneratingStageDraft = false,
+                        isSavingStageDraft = false,
+                        latestJourneyEdition = null,
+                        isGeneratingJourneyEdition = false,
+                        isSavingJourneyEdition = false,
+                        journeyEditionEditorVisible = false,
                         journeyStageCount = if (journey == null) 0 else state.journeyStageCount
                     )
                 }
@@ -478,6 +503,14 @@ class RecordingViewModel(
                 if (journey == null) return@journeyUpdate
 
                 val journeyId = journey.id
+                journeyEditionCollectionJob?.cancel()
+                journeyEditionCollectionJob = viewModelScope.launch {
+                    journeyEditionRepository.observeLatest(journeyId).collect { edition ->
+                        if (isCurrentMeeting(meetingId) && _uiState.value.journey?.id == journeyId) {
+                            _uiState.update { it.copy(latestJourneyEdition = edition) }
+                        }
+                    }
+                }
                 journeyStageCollectionJob = viewModelScope.launch {
                     journeyRepository.observeStages(journeyId).collect stageUpdate@ { stages ->
                         if (!isCurrentMeeting(meetingId)) return@stageUpdate
@@ -1169,6 +1202,148 @@ class RecordingViewModel(
         }
     }
 
+    fun generateJourneyEdition() {
+        val state = _uiState.value
+        val journey = state.journey ?: run {
+            _uiState.update { it.copy(error = "请先开始研学旅程") }
+            return
+        }
+        when {
+            state.reportTemplate.selectedName != STUDY_JOURNEY_TEMPLATE_NAME -> {
+                _uiState.update { it.copy(error = "请先选择研学考察模板") }
+            }
+            state.isGeneratingJourneyEdition || state.isSavingJourneyEdition -> Unit
+            state.latestJourneyEdition?.status == JourneyEditionStatus.DRAFT -> {
+                _uiState.update { it.copy(journeyEditionEditorVisible = true, error = null) }
+            }
+            else -> {
+                val meetingId = currentMeetingId
+                _uiState.update {
+                    it.copy(
+                        isGeneratingJourneyEdition = true,
+                        journeyStatusMessage = "正在生成总游记",
+                        error = null
+                    )
+                }
+                viewModelScope.launch {
+                    generateJourneyEditionUseCase(journey).fold(
+                        onSuccess = { edition ->
+                            if (isCurrentMeeting(meetingId)) {
+                                _uiState.update {
+                                    it.copy(
+                                        isGeneratingJourneyEdition = false,
+                                        latestJourneyEdition = edition,
+                                        journeyEditionEditorVisible = true,
+                                        journeyStatusMessage = "总游记已生成"
+                                    )
+                                }
+                            }
+                        },
+                        onFailure = { error ->
+                            if (isCurrentMeeting(meetingId)) {
+                                _uiState.update {
+                                    it.copy(
+                                        isGeneratingJourneyEdition = false,
+                                        error = "生成总游记失败: ${error.message ?: "未知错误"}"
+                                    )
+                                }
+                            }
+                        }
+                    )
+                }
+            }
+        }
+    }
+
+    fun openLatestJourneyEdition() {
+        if (_uiState.value.latestJourneyEdition == null) {
+            _uiState.update { it.copy(error = "当前还没有总游记") }
+            return
+        }
+        _uiState.update { it.copy(journeyEditionEditorVisible = true, error = null) }
+    }
+
+    fun dismissJourneyEditionEditor() {
+        _uiState.update { it.copy(journeyEditionEditorVisible = false) }
+    }
+
+    fun saveJourneyEditionContent(content: String) {
+        val edition = _uiState.value.latestJourneyEdition ?: return
+        if (edition.status != JourneyEditionStatus.DRAFT) {
+            _uiState.update { it.copy(error = "已确认的总游记不可修改") }
+            return
+        }
+        if (_uiState.value.isSavingJourneyEdition) return
+        val meetingId = currentMeetingId
+        _uiState.update { it.copy(isSavingJourneyEdition = true, error = null) }
+        viewModelScope.launch {
+            journeyEditionRepository.saveEdition(edition.id, content).fold(
+                onSuccess = { saved ->
+                    if (isCurrentMeeting(meetingId)) {
+                        _uiState.update {
+                            it.copy(
+                                isSavingJourneyEdition = false,
+                                latestJourneyEdition = saved,
+                                journeyStatusMessage = "总游记修改已保存"
+                            )
+                        }
+                    }
+                },
+                onFailure = { error ->
+                    if (isCurrentMeeting(meetingId)) {
+                        _uiState.update {
+                            it.copy(
+                                isSavingJourneyEdition = false,
+                                error = "保存总游记失败: ${error.message ?: "未知错误"}"
+                            )
+                        }
+                    }
+                }
+            )
+        }
+    }
+
+    fun confirmJourneyEdition(content: String) {
+        val edition = _uiState.value.latestJourneyEdition ?: return
+        if (edition.status != JourneyEditionStatus.DRAFT) {
+            _uiState.update { it.copy(error = "总游记已经确认") }
+            return
+        }
+        if (_uiState.value.isSavingJourneyEdition) return
+        val meetingId = currentMeetingId
+        _uiState.update { it.copy(isSavingJourneyEdition = true, error = null) }
+        viewModelScope.launch {
+            val result = journeyEditionRepository.saveEdition(edition.id, content).fold(
+                onSuccess = { saved -> journeyEditionRepository.confirmEdition(saved.id) },
+                onFailure = { error -> Result.failure(error) }
+            )
+            result.fold(
+                onSuccess = { confirmed ->
+                    if (isCurrentMeeting(meetingId)) {
+                        _uiState.update {
+                            it.copy(
+                                isSavingJourneyEdition = false,
+                                latestJourneyEdition = confirmed,
+                                journeyEditionEditorVisible = false,
+                                journeyStatusMessage = "总游记已确认"
+                            )
+                        }
+                    }
+                },
+                onFailure = { error ->
+                    if (isCurrentMeeting(meetingId)) {
+                        _uiState.update {
+                            it.copy(
+                                isSavingJourneyEdition = false,
+                                error = "确认总游记失败: ${error.message ?: "未知错误"}"
+                            )
+                        }
+                    }
+                }
+            )
+        }
+    }
+
     private fun saveJourneyLifecycle(journey: Journey, statusMessage: String) {
         _uiState.update { it.copy(isJourneyActionPending = true, error = null) }
         viewModelScope.launch {
@@ -1818,6 +1993,7 @@ class RecordingViewModel(
         journeyCollectionJob?.cancel()
         journeyStageCollectionJob?.cancel()
         stageDraftCollectionJob?.cancel()
+        journeyEditionCollectionJob?.cancel()
         transcriptionCollectionJob?.cancel()
         reportCollectionJob?.cancel()
         audioRefreshJob?.cancel()

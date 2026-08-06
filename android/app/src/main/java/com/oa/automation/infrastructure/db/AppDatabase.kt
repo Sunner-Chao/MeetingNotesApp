@@ -15,9 +15,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ScheduledMeetingEntity::class,
         JourneyEntity::class,
         JourneyStageEntity::class,
-        StageDraftVersionEntity::class
+        StageDraftVersionEntity::class,
+        JourneyEditionEntity::class
     ],
-    version = 8,
+    version = 9,
     exportSchema = false
 )
 @TypeConverters(DbConverters::class)
@@ -27,6 +28,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun scheduledMeetingDao(): ScheduledMeetingDao
     abstract fun journeyDao(): JourneyDao
     abstract fun stageDraftDao(): StageDraftDao
+    abstract fun journeyEditionDao(): JourneyEditionDao
 
     companion object {
         val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -191,6 +193,42 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL(
                     "CREATE INDEX IF NOT EXISTS index_stage_draft_versions_stageId_status " +
                         "ON stage_draft_versions(stageId, status)"
+                )
+            }
+        }
+
+        val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS journey_editions (
+                        id TEXT NOT NULL,
+                        journeyId TEXT NOT NULL,
+                        versionNumber INTEGER NOT NULL,
+                        content TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        sourceStageDraftIds TEXT NOT NULL,
+                        sourceStageCount INTEGER NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        updatedAt INTEGER NOT NULL,
+                        confirmedAt INTEGER,
+                        PRIMARY KEY(id),
+                        FOREIGN KEY(journeyId) REFERENCES journeys(id)
+                            ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_journey_editions_journeyId " +
+                        "ON journey_editions(journeyId)"
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS index_journey_editions_journeyId_versionNumber " +
+                        "ON journey_editions(journeyId, versionNumber)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_journey_editions_journeyId_status " +
+                        "ON journey_editions(journeyId, status)"
                 )
             }
         }
