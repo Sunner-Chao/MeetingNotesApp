@@ -123,6 +123,7 @@ class CommunityApiServiceTest {
 
         val page = service.publicCommunityPosts(
             endpoint = server.url("/api").toString(),
+            cursor = "cursor-1",
             query = "园林 研学",
             destination = "苏州",
             tag = "园林",
@@ -134,6 +135,7 @@ class CommunityApiServiceTest {
 
         val path = server.takeRequest().path.orEmpty()
         assertTrue(path.startsWith("/api/community/posts?"))
+        assertTrue(path.contains("limit=20&cursor=cursor-1"))
         assertTrue(path.contains("q=%E5%9B%AD%E6%9E%97+%E7%A0%94%E5%AD%A6"))
         assertTrue(path.contains("destination=%E8%8B%8F%E5%B7%9E"))
         assertTrue(path.contains("tag=%E5%9B%AD%E6%9E%97"))

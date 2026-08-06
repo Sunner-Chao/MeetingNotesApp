@@ -23,10 +23,15 @@ data class CommunityUiState(
     val searchQuery: String = "",
     val destinationFilter: String = "",
     val tagFilter: String = "",
+    val poiFilter: String = "",
+    val minDaysFilter: Int = 0,
+    val maxDaysFilter: Int = 0,
     val hasMediaOnly: Boolean = false,
     val facets: CommunityFacets = CommunityFacets(),
     val mediaBaseUrl: String = "",
     val isLoading: Boolean = false,
+    val isLoadingMore: Boolean = false,
+    val nextPublicCursor: String? = null,
     val error: String? = null
 )
 
@@ -48,9 +53,16 @@ class CommunityViewModel(
     fun refresh() {
         if (_uiState.value.isLoading) return
         viewModelScope.launch {
-            _uiState.update { it.copy(isLoading = true, error = null) }
+            _uiState.update {
+                it.copy(
+                    isLoading = true,
+                    isLoadingMore = false,
+                    nextPublicCursor = null,
+                    error = null
+                )
+            }
             if (_uiState.value.tab == CommunityTab.DISCOVER) {
-                loadPublicPosts()
+                loadPublicPosts(cursor = null, append = false)
             } else {
                 loadMyPosts()
             }
@@ -73,6 +85,22 @@ class CommunityViewModel(
         refresh()
     }
 
+    fun selectPoi(value: String) {
+        _uiState.update { it.copy(poiFilter = value, error = null) }
+        refresh()
+    }
+
+    fun selectDays(minDays: Int, maxDays: Int) {
+        _uiState.update {
+            it.copy(
+                minDaysFilter = minDays.coerceIn(0, 31),
+                maxDaysFilter = maxDays.coerceIn(0, 31),
+                error = null
+            )
+        }
+        refresh()
+    }
+
     fun toggleHasMedia() {
         _uiState.update { it.copy(hasMediaOnly = !it.hasMediaOnly, error = null) }
         refresh()
@@ -84,6 +112,9 @@ class CommunityViewModel(
                 searchQuery = "",
                 destinationFilter = "",
                 tagFilter = "",
+                poiFilter = "",
+                minDaysFilter = 0,
+                maxDaysFilter = 0,
                 hasMediaOnly = false,
                 error = null
             )
@@ -91,23 +122,43 @@ class CommunityViewModel(
         refresh()
     }
 
-    private suspend fun loadPublicPosts() {
+    fun loadMore() {
+        val state = _uiState.value
+        if (state.tab != CommunityTab.DISCOVER || state.isLoading || state.isLoadingMore) return
+        val cursor = state.nextPublicCursor ?: return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLoadingMore = true, error = null) }
+            loadPublicPosts(cursor = cursor, append = true)
+        }
+    }
+
+    private suspend fun loadPublicPosts(cursor: String?, append: Boolean) {
         val endpoint = configDataStore.accountEndpointFlow.first()
         val filters = _uiState.value
         accountApiService.publicCommunityPosts(
             endpoint = endpoint,
+            cursor = cursor,
             query = filters.searchQuery,
             destination = filters.destinationFilter,
             tag = filters.tagFilter,
+            poi = filters.poiFilter,
+            minDays = filters.minDaysFilter,
+            maxDays = filters.maxDaysFilter,
             hasMedia = filters.hasMediaOnly
         ).fold(
             onSuccess = { page ->
                 _uiState.update {
                     it.copy(
-                        publicPosts = page.items,
+                        publicPosts = if (append) {
+                            (it.publicPosts + page.items).distinctBy(PublicCommunityPost::id)
+                        } else {
+                            page.items
+                        },
                         facets = page.facets ?: CommunityFacets(),
                         mediaBaseUrl = communityMediaBaseUrl(endpoint),
-                        isLoading = false
+                        isLoading = false,
+                        isLoadingMore = false,
+                        nextPublicCursor = page.nextCursor
                     )
                 }
             },
@@ -115,6 +166,7 @@ class CommunityViewModel(
                 _uiState.update {
                     it.copy(
                         isLoading = false,
+                        isLoadingMore = false,
                         error = error.message ?: "研学社区加载失败"
                     )
                 }

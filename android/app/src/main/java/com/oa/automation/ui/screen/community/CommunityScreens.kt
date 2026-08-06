@@ -2,6 +2,7 @@ package com.oa.automation.ui.screen.community
 
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -30,6 +31,7 @@ import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FilterAlt
+import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material3.AlertDialog
@@ -120,8 +122,11 @@ fun CommunityScreen(
                 onSearch = viewModel::search,
                 onDestinationSelect = viewModel::selectDestination,
                 onTagSelect = viewModel::selectTag,
+                onPoiSelect = viewModel::selectPoi,
+                onDaysSelect = viewModel::selectDays,
                 onToggleHasMedia = viewModel::toggleHasMedia,
-                onClearFilters = viewModel::clearFilters
+                onClearFilters = viewModel::clearFilters,
+                onLoadMore = viewModel::loadMore
             )
         }
     }
@@ -136,8 +141,11 @@ private fun CommunityContent(
     onSearch: () -> Unit,
     onDestinationSelect: (String) -> Unit,
     onTagSelect: (String) -> Unit,
+    onPoiSelect: (String) -> Unit,
+    onDaysSelect: (Int, Int) -> Unit,
     onToggleHasMedia: () -> Unit,
-    onClearFilters: () -> Unit
+    onClearFilters: () -> Unit,
+    onLoadMore: () -> Unit
 ) {
     val isDiscover = state.tab == CommunityTab.DISCOVER
     val isEmpty = if (isDiscover) state.publicPosts.isEmpty() else state.myPosts.isEmpty()
@@ -148,6 +156,8 @@ private fun CommunityContent(
             onSearch = onSearch,
             onDestinationSelect = onDestinationSelect,
             onTagSelect = onTagSelect,
+            onPoiSelect = onPoiSelect,
+            onDaysSelect = onDaysSelect,
             onToggleHasMedia = onToggleHasMedia,
             onClearFilters = onClearFilters
         )
@@ -177,6 +187,14 @@ private fun CommunityContent(
                         onClick = { onOpenPost(post.id) }
                     )
                 }
+                if (state.nextPublicCursor != null) {
+                    item {
+                        CommunityLoadMore(
+                            isLoading = state.isLoadingMore,
+                            onLoadMore = onLoadMore
+                        )
+                    }
+                }
             } else {
                 items(state.myPosts, key = { it.id }) { post -> MyPostCard(post) }
             }
@@ -191,13 +209,18 @@ private fun CommunityDiscoverFilters(
     onSearch: () -> Unit,
     onDestinationSelect: (String) -> Unit,
     onTagSelect: (String) -> Unit,
+    onPoiSelect: (String) -> Unit,
+    onDaysSelect: (Int, Int) -> Unit,
     onToggleHasMedia: () -> Unit,
     onClearFilters: () -> Unit
 ) {
     var destinationExpanded by androidx.compose.runtime.remember { mutableStateOf(false) }
     var tagExpanded by androidx.compose.runtime.remember { mutableStateOf(false) }
+    var poiExpanded by androidx.compose.runtime.remember { mutableStateOf(false) }
+    var daysExpanded by androidx.compose.runtime.remember { mutableStateOf(false) }
     val hasFilters = state.searchQuery.isNotBlank() || state.destinationFilter.isNotBlank() ||
-        state.tagFilter.isNotBlank() || state.hasMediaOnly
+        state.tagFilter.isNotBlank() || state.poiFilter.isNotBlank() ||
+        state.minDaysFilter > 0 || state.maxDaysFilter > 0 || state.hasMediaOnly
     Column(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -224,7 +247,7 @@ private fun CommunityDiscoverFilters(
             shape = RoundedCornerShape(8.dp)
         )
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -266,6 +289,44 @@ private fun CommunityDiscoverFilters(
                     }
                 }
             }
+            Box {
+                Surface(
+                    onClick = { poiExpanded = true },
+                    shape = RoundedCornerShape(7.dp),
+                    color = if (state.poiFilter.isBlank()) MaterialTheme.colorScheme.surface
+                    else MaterialTheme.colorScheme.primaryContainer,
+                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                ) {
+                    Text("地点：${state.poiFilter.ifBlank { "全部" }}", modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp), style = MaterialTheme.typography.labelMedium, maxLines = 1)
+                }
+                DropdownMenu(expanded = poiExpanded, onDismissRequest = { poiExpanded = false }) {
+                    DropdownMenuItem(text = { Text("全部地点") }, onClick = { poiExpanded = false; onPoiSelect("") })
+                    state.facets.pois.forEach { value ->
+                        DropdownMenuItem(text = { Text(value) }, onClick = { poiExpanded = false; onPoiSelect(value) })
+                    }
+                }
+            }
+            Box {
+                Surface(
+                    onClick = { daysExpanded = true },
+                    shape = RoundedCornerShape(7.dp),
+                    color = if (state.minDaysFilter == 0 && state.maxDaysFilter == 0) MaterialTheme.colorScheme.surface
+                    else MaterialTheme.colorScheme.primaryContainer,
+                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                ) {
+                    Row(Modifier.padding(horizontal = 10.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.CalendarMonth, contentDescription = null, modifier = Modifier.size(15.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text(communityDaysLabel(state.minDaysFilter, state.maxDaysFilter), style = MaterialTheme.typography.labelMedium, maxLines = 1)
+                    }
+                }
+                DropdownMenu(expanded = daysExpanded, onDismissRequest = { daysExpanded = false }) {
+                    DropdownMenuItem(text = { Text("全部天数") }, onClick = { daysExpanded = false; onDaysSelect(0, 0) })
+                    DropdownMenuItem(text = { Text("1-3 天") }, onClick = { daysExpanded = false; onDaysSelect(1, 3) })
+                    DropdownMenuItem(text = { Text("4-7 天") }, onClick = { daysExpanded = false; onDaysSelect(4, 7) })
+                    DropdownMenuItem(text = { Text("8 天以上") }, onClick = { daysExpanded = false; onDaysSelect(8, 31) })
+                }
+            }
             Surface(
                 onClick = onToggleHasMedia,
                 shape = RoundedCornerShape(7.dp),
@@ -279,6 +340,29 @@ private fun CommunityDiscoverFilters(
             }
         }
     }
+}
+
+@Composable
+private fun CommunityLoadMore(
+    isLoading: Boolean,
+    onLoadMore: () -> Unit
+) {
+    Box(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), contentAlignment = Alignment.Center) {
+        TextButton(onClick = onLoadMore, enabled = !isLoading) {
+            if (isLoading) {
+                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                Spacer(Modifier.width(6.dp))
+            }
+            Text(if (isLoading) "加载中" else "加载更多")
+        }
+    }
+}
+
+private fun communityDaysLabel(minDays: Int, maxDays: Int): String = when {
+    minDays == 1 && maxDays == 3 -> "1-3 天"
+    minDays == 4 && maxDays == 7 -> "4-7 天"
+    minDays == 8 && maxDays == 31 -> "8 天以上"
+    else -> "天数"
 }
 
 @Composable
