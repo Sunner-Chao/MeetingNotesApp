@@ -3,9 +3,10 @@
 
 from __future__ import annotations
 
+import os
+import re
 from pathlib import Path
 from typing import Any, Callable
-import re
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse
@@ -19,7 +20,13 @@ from community_service import (
     CommunityRateLimitError,
     CommunityReportInput,
     CommunityService,
+    CommunityWriteDisabledError,
 )
+
+
+def community_writes_enabled_from_env() -> bool:
+    value = os.getenv("COMMUNITY_WRITE_ENABLED", "true").strip().lower()
+    return value not in {"0", "false", "no", "off"}
 
 
 class CommunityDraftPayload(BaseModel):
@@ -94,8 +101,14 @@ def community_http_error(exc: CommunityError) -> HTTPException:
 def build_community_router(
     db_path_provider: Callable[[], Path],
     account_principal_dependency: Callable[..., Any],
+    write_enabled_provider: Callable[[], bool] | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/api/account/community", tags=["community"])
+    is_write_enabled = write_enabled_provider or community_writes_enabled_from_env
+
+    def ensure_user_writes_enabled() -> None:
+        if not is_write_enabled():
+            raise community_http_error(CommunityWriteDisabledError())
 
     def service() -> CommunityService:
         current = CommunityService(db_path_provider())
@@ -108,6 +121,7 @@ def build_community_router(
         response: Response,
         principal: Any = Depends(account_principal_dependency),
     ) -> dict:
+        ensure_user_writes_enabled()
         try:
             post, created = service().create_private_draft(
                 principal.user_id,
@@ -169,6 +183,7 @@ def build_community_router(
         response: Response,
         principal: Any = Depends(account_principal_dependency),
     ) -> dict:
+        ensure_user_writes_enabled()
         try:
             media, created = service().create_media_manifest(
                 principal.user_id,
@@ -190,6 +205,7 @@ def build_community_router(
         chunk_sha256: str | None = Header(default=None, alias="X-Chunk-SHA256"),
         principal: Any = Depends(account_principal_dependency),
     ) -> dict:
+        ensure_user_writes_enabled()
         match = CONTENT_RANGE_PATTERN.fullmatch((content_range or "").strip())
         if match is None:
             raise HTTPException(status_code=400, detail="Content-Range 格式无效")
@@ -216,6 +232,7 @@ def build_community_router(
         post_id: str,
         principal: Any = Depends(account_principal_dependency),
     ) -> dict:
+        ensure_user_writes_enabled()
         try:
             return service().publish(principal.user_id, post_id)
         except CommunityError as exc:
@@ -264,6 +281,7 @@ def build_community_router(
         post_id: str,
         principal: Any = Depends(account_principal_dependency),
     ) -> dict:
+        ensure_user_writes_enabled()
         try:
             return service().toggle_like(principal.user_id, post_id)
         except CommunityError as exc:
@@ -274,6 +292,7 @@ def build_community_router(
         post_id: str,
         principal: Any = Depends(account_principal_dependency),
     ) -> dict:
+        ensure_user_writes_enabled()
         try:
             return service().toggle_bookmark(principal.user_id, post_id)
         except CommunityError as exc:
@@ -302,6 +321,7 @@ def build_community_router(
         payload: CommunityCommentPayload,
         principal: Any = Depends(account_principal_dependency),
     ) -> dict:
+        ensure_user_writes_enabled()
         try:
             return service().create_comment(principal.user_id, post_id, payload.content)
         except CommunityError as exc:
@@ -436,13 +456,21 @@ def build_community_router(
     return router
 
 
-def build_public_community_router(db_path_provider: Callable[[], Path]) -> APIRouter:
+def build_public_community_router(
+    db_path_provider: Callable[[], Path],
+    write_enabled_provider: Callable[[], bool] | None = None,
+) -> APIRouter:
     router = APIRouter(prefix="/api/community", tags=["community"])
+    is_write_enabled = write_enabled_provider or community_writes_enabled_from_env
 
     def service() -> CommunityService:
         current = CommunityService(db_path_provider())
         current.initialize()
         return current
+
+    @router.get("/status")
+    def community_status() -> dict:
+        return {"read_enabled": True, "write_enabled": bool(is_write_enabled())}
 
     @router.get("/posts")
     def list_public_community_posts(

@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.testclient import TestClient
@@ -48,11 +49,21 @@ class CommunityRouteTests(unittest.TestCase):
                 return TestPrincipal(self.admin_id, is_admin=True)
             raise HTTPException(status_code=401, detail="unauthorized")
 
+        self.write_enabled = True
         self.app = FastAPI()
         self.app.include_router(
-            build_community_router(lambda: self.db_path, require_principal)
+            build_community_router(
+                lambda: self.db_path,
+                require_principal,
+                lambda: self.write_enabled,
+            )
         )
-        self.app.include_router(build_public_community_router(lambda: self.db_path))
+        self.app.include_router(
+            build_public_community_router(
+                lambda: self.db_path,
+                lambda: self.write_enabled,
+            )
+        )
 
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
@@ -111,6 +122,77 @@ class CommunityRouteTests(unittest.TestCase):
                 headers=headers,
             )
             self.assertEqual(withdrawn.json()["status"], "withdrawn")
+
+    def test_read_only_rollout_blocks_new_writes_but_keeps_safety_actions(self) -> None:
+        owner_headers = {"Authorization": "Bearer owner-token"}
+        admin_headers = {"Authorization": "Bearer admin-token"}
+        with TestClient(self.app) as client:
+            self.assertEqual(
+                client.get("/api/community/status").json(),
+                {"read_enabled": True, "write_enabled": True},
+            )
+            created = client.post(
+                "/api/account/community/drafts",
+                headers=owner_headers,
+                json=self.payload(),
+            )
+            post_id = created.json()["id"]
+            client.post(
+                f"/api/account/community/posts/{post_id}/publish",
+                headers=owner_headers,
+            )
+
+            self.write_enabled = False
+            self.assertEqual(
+                client.get("/api/community/status").json(),
+                {"read_enabled": True, "write_enabled": False},
+            )
+            disabled = client.post(
+                "/api/account/community/drafts",
+                headers=owner_headers,
+                json={**self.payload(), "client_snapshot_id": "disabled-snapshot"},
+            )
+            self.assertEqual(disabled.status_code, 503)
+            self.assertEqual(disabled.json()["detail"], "社区写入暂时关闭，本地内容已保留")
+
+            approved = client.post(
+                f"/api/account/community/moderation/{post_id}",
+                headers=admin_headers,
+                json={"decision": "approved", "reason": ""},
+            )
+            self.assertEqual(approved.status_code, 200)
+            self.assertEqual(client.get("/api/community/posts").status_code, 200)
+            self.assertEqual(
+                client.post(
+                    f"/api/account/community/posts/{post_id}/like",
+                    headers=owner_headers,
+                ).status_code,
+                503,
+            )
+            self.assertEqual(
+                client.post(
+                    f"/api/account/community/posts/{post_id}/comments",
+                    headers=owner_headers,
+                    json={"content": "灰度期间不应写入"},
+                ).status_code,
+                503,
+            )
+            withdrawn = client.post(
+                f"/api/account/community/posts/{post_id}/withdraw",
+                headers=owner_headers,
+            )
+            self.assertEqual(withdrawn.status_code, 200)
+            self.assertEqual(withdrawn.json()["status"], "withdrawn")
+
+    def test_default_rollout_provider_reads_environment_flag(self) -> None:
+        app = FastAPI()
+        app.include_router(build_public_community_router(lambda: self.db_path))
+        with patch.dict("os.environ", {"COMMUNITY_WRITE_ENABLED": "off"}):
+            status = TestClient(app).get("/api/community/status")
+        self.assertEqual(
+            status.json(),
+            {"read_enabled": True, "write_enabled": False},
+        )
 
     def test_rejects_unknown_payload_fields_including_raw_resource_data(self) -> None:
         response = TestClient(self.app).post(

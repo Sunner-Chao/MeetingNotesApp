@@ -34,6 +34,11 @@ def _env(name: str, default: str) -> str:
     return value or default
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    fallback = "true" if default else "false"
+    return _env(name, fallback).lower() not in {"0", "false", "no", "off"}
+
+
 HOST = _env("WEB_BACKEND_HOST", "0.0.0.0")
 PORT = int(_env("WEB_BACKEND_PORT", "8090"))
 DB_PATH = Path(_env("WEB_BACKEND_DB_PATH", "./data/meeting_notes.db")).resolve()
@@ -44,6 +49,7 @@ STT_API_TOKEN = os.getenv("STT_API_TOKEN", "").strip()
 STT_SWITCH_TIMEOUT_SEC = float(_env("STT_SWITCH_TIMEOUT_SEC", "900"))
 WEB_API_TOKEN = os.getenv("WEB_API_TOKEN", "").strip()
 WEB_API_USERNAME = _env("WEB_API_USERNAME", "admin")
+COMMUNITY_WRITE_ENABLED = _env_bool("COMMUNITY_WRITE_ENABLED", True)
 SERVER_ROOT = Path(__file__).resolve().parent.parent
 DASHBOARD_TEMPLATE_PATH = Path(__file__).with_name("dashboard.html")
 
@@ -246,7 +252,13 @@ def index() -> str:
 def health() -> dict:
     with db_conn() as conn:
         conn.execute("SELECT 1").fetchone()
-    return {"status": "ok", "version": SERVER_VERSION, "release": SERVER_RELEASE, "port": PORT}
+    return {
+        "status": "ok",
+        "version": SERVER_VERSION,
+        "release": SERVER_RELEASE,
+        "port": PORT,
+        "community_write_enabled": COMMUNITY_WRITE_ENABLED,
+    }
 
 
 @app.get("/api/agent/health")

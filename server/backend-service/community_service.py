@@ -66,6 +66,13 @@ class CommunityRateLimitError(CommunityError):
         super().__init__(f"操作过于频繁，请在 {self.retry_after_seconds} 秒后重试")
 
 
+class CommunityWriteDisabledError(CommunityError):
+    status_code = 503
+
+    def __init__(self) -> None:
+        super().__init__("社区写入暂时关闭，本地内容已保留")
+
+
 @dataclass(frozen=True)
 class CommunityDraftInput:
     client_snapshot_id: str
