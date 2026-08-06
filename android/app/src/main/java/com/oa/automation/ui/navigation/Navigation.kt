@@ -27,6 +27,7 @@ import com.oa.automation.data.local.ConfigDataStore
 import com.oa.automation.ui.screen.account.AccountProfileScreen
 import com.oa.automation.ui.screen.account.AccountQuotaDetailsScreen
 import com.oa.automation.ui.screen.account.AccountUserManagementScreen
+import com.oa.automation.ui.screen.community.CommunityPostDetailScreen
 import com.oa.automation.ui.screen.login.LoginScreen
 import com.oa.automation.ui.screen.login.LoginViewModel
 import com.oa.automation.ui.screen.login.RegisterScreen
@@ -165,6 +166,9 @@ fun OAAutomationNavHost(
                     onNavigateToAccountUsers = {
                         navController.navigate(AccountUsers)
                     },
+                    onNavigateToCommunityPost = { postId ->
+                        navController.navigate(CommunityPost(postId))
+                    },
                     onLogout = {
                         navController.navigate(AuthGraph) {
                             popUpTo<MainGraph> { inclusive = true }
@@ -220,6 +224,14 @@ fun OAAutomationNavHost(
                     onNavigateToRecording = { meetingId ->
                         navController.navigate(Recording(meetingId))
                     }
+                )
+            }
+
+            composable<CommunityPost> { backStackEntry ->
+                val route: CommunityPost = backStackEntry.toRoute()
+                CommunityPostDetailScreen(
+                    postId = route.postId,
+                    onNavigateBack = { navController.popBackStack() }
                 )
             }
 

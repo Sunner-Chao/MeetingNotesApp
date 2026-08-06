@@ -12,7 +12,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.outlined.Explore
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -35,12 +37,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.oa.automation.ui.screen.account.AccountScreen
+import com.oa.automation.ui.screen.community.CommunityScreen
 import com.oa.automation.ui.screen.home.HomeLaunchAction
 import com.oa.automation.ui.screen.home.HomeScreen
 import com.oa.automation.ui.theme.BrandBlue
 
 private enum class MainDestination {
     HOME,
+    COMMUNITY,
     ACCOUNT
 }
 
@@ -53,6 +57,7 @@ fun MainWorkspaceScreen(
     onNavigateToAccountProfile: () -> Unit,
     onNavigateToAccountQuota: () -> Unit,
     onNavigateToAccountUsers: () -> Unit,
+    onNavigateToCommunityPost: (String) -> Unit,
     onLogout: () -> Unit
 ) {
     var destination by rememberSaveable { mutableStateOf(MainDestination.HOME) }
@@ -66,11 +71,7 @@ fun MainWorkspaceScreen(
         containerColor = MaterialTheme.colorScheme.background,
         bottomBar = {
             MainNavigationBar(
-                selected = if (destination == MainDestination.HOME) {
-                    MainDestination.HOME
-                } else {
-                    MainDestination.ACCOUNT
-                },
+                selected = destination,
                 onSelect = { destination = it }
             )
         }
@@ -94,6 +95,10 @@ fun MainWorkspaceScreen(
                             onNavigateToNotifications = onNavigateToNotifications
                         )
 
+                        MainDestination.COMMUNITY -> CommunityScreen(
+                            onOpenPost = onNavigateToCommunityPost
+                        )
+
                         MainDestination.ACCOUNT -> AccountScreen(
                             onNavigateToProfile = onNavigateToAccountProfile,
                             onNavigateToQuotaDetails = onNavigateToAccountQuota,
@@ -113,11 +118,7 @@ private fun MainNavigationBar(
     selected: MainDestination,
     onSelect: (MainDestination) -> Unit
 ) {
-    val selectedTint = if (selected == MainDestination.ACCOUNT) {
-        MaterialTheme.colorScheme.primary
-    } else {
-        BrandBlue
-    }
+    val selectedTint = if (selected == MainDestination.HOME) BrandBlue else MaterialTheme.colorScheme.primary
     val unselectedTint = MaterialTheme.colorScheme.onSurfaceVariant
     Surface(
         shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
@@ -130,6 +131,25 @@ private fun MainNavigationBar(
             onClick = { onSelect(MainDestination.HOME) },
             icon = { MeetingNavigationIcon(selected = selected == MainDestination.HOME) },
             label = { Text("会议") },
+            colors = NavigationBarItemDefaults.colors(
+                selectedIconColor = selectedTint,
+                selectedTextColor = selectedTint,
+                unselectedIconColor = unselectedTint,
+                unselectedTextColor = unselectedTint,
+                indicatorColor = Color.Transparent
+            )
+        )
+        NavigationBarItem(
+            selected = selected == MainDestination.COMMUNITY,
+            onClick = { onSelect(MainDestination.COMMUNITY) },
+            icon = {
+                Icon(
+                    if (selected == MainDestination.COMMUNITY) Icons.Filled.Explore else Icons.Outlined.Explore,
+                    contentDescription = null,
+                    modifier = Modifier.size(30.dp)
+                )
+            },
+            label = { Text("研学") },
             colors = NavigationBarItemDefaults.colors(
                 selectedIconColor = selectedTint,
                 selectedTextColor = selectedTint,

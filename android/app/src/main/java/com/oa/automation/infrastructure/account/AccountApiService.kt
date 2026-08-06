@@ -10,7 +10,11 @@ import com.oa.automation.domain.model.AuthSession
 import com.oa.automation.domain.model.RechargeOrder
 import com.oa.automation.domain.model.SocialAuthProvider
 import com.oa.automation.domain.model.PublishedPost
+import com.oa.automation.domain.model.CommunityPostPage
+import com.oa.automation.domain.model.MyCommunityPost
+import com.oa.automation.domain.model.PublicCommunityPost
 import java.io.IOException
+import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -82,6 +86,47 @@ class AccountApiService(
         method = "POST",
         jsonBody = "{}"
     ) { body -> gson.fromJson(body, CommunityPostResponse::class.java) }
+
+    suspend fun publicCommunityPosts(
+        endpoint: String,
+        cursor: String? = null,
+        limit: Int = 20
+    ): Result<CommunityPostPage<PublicCommunityPost>> = request(
+        endpoint = endpoint,
+        path = communityListPath("community/posts", cursor, limit),
+        method = "GET"
+    ) { body ->
+        gson.fromJson(
+            body,
+            object : TypeToken<CommunityPostPage<PublicCommunityPost>>() {}.type
+        )
+    }
+
+    suspend fun publicCommunityPost(
+        endpoint: String,
+        postId: String
+    ): Result<PublicCommunityPost> = request(
+        endpoint = endpoint,
+        path = "community/posts/$postId",
+        method = "GET"
+    ) { body -> gson.fromJson(body, PublicCommunityPost::class.java) }
+
+    suspend fun myCommunityPosts(
+        endpoint: String,
+        token: String,
+        cursor: String? = null,
+        limit: Int = 20
+    ): Result<CommunityPostPage<MyCommunityPost>> = request(
+        endpoint = endpoint,
+        path = communityListPath("account/community/posts", cursor, limit),
+        token = token,
+        method = "GET"
+    ) { body ->
+        gson.fromJson(
+            body,
+            object : TypeToken<CommunityPostPage<MyCommunityPost>>() {}.type
+        )
+    }
 
     suspend fun login(endpoint: String, username: String, password: String): Result<AuthSession> =
         postCredentials(endpoint, "auth/login", username, password)
@@ -254,6 +299,14 @@ class AccountApiService(
         method = "POST",
         jsonBody = gson.toJson(mapOf("username" to username, "password" to password))
     ) { body -> gson.fromJson(body, AuthSession::class.java) }
+
+    private fun communityListPath(basePath: String, cursor: String?, limit: Int): String {
+        val boundedLimit = limit.coerceIn(1, 50)
+        val cursorQuery = cursor?.takeIf { it.isNotBlank() }?.let {
+            "&cursor=${URLEncoder.encode(it, Charsets.UTF_8.name())}"
+        }.orEmpty()
+        return "$basePath?limit=$boundedLimit$cursorQuery"
+    }
 
     private suspend fun <T> request(
         endpoint: String,

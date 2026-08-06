@@ -82,4 +82,28 @@ class CommunityApiServiceTest {
         assertEquals("/api/account/community/posts/remote-1/publish", server.takeRequest().path)
         assertEquals("/api/account/community/posts/remote-1/withdraw", server.takeRequest().path)
     }
+
+    @Test
+    fun publicAndMyPostListsUseSeparatedVisibilityRoutes() = runBlocking {
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """{"items":[{"id":"public-1","title":"研学笔记","content":"已审核正文","ai_assisted":true,"redacted_coordinate_count":1,"published_at":10,"author_label":"研学同行者"}],"next_cursor":null}"""
+            )
+        )
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """{"items":[{"id":"mine-1","title":"我的笔记","content":"待审正文","status":"published","moderation_status":"pending","review":{"status":"pending","reason":""},"updated_at":11,"published_at":10}],"next_cursor":null}"""
+            )
+        )
+        val endpoint = server.url("/api").toString()
+        val publicPosts = service.publicCommunityPosts(endpoint).getOrThrow()
+        val myPosts = service.myCommunityPosts(endpoint, "session-token").getOrThrow()
+
+        assertEquals("研学笔记", publicPosts.items.single().title)
+        assertEquals("/api/community/posts?limit=20", server.takeRequest().path)
+        assertEquals("pending", myPosts.items.single().review.status)
+        val myRequest = server.takeRequest()
+        assertEquals("/api/account/community/posts?limit=20", myRequest.path)
+        assertEquals("Bearer session-token", myRequest.getHeader("Authorization"))
+    }
 }
