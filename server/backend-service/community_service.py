@@ -21,6 +21,7 @@ POST_STATUSES = frozenset({"private_draft", "published", "withdrawn"})
 MODERATION_STATUSES = frozenset({"not_submitted", "pending"})
 REVIEW_DECISIONS = frozenset({"approved", "rejected"})
 REPORT_CATEGORIES = frozenset({"privacy", "copyright", "safety", "spam", "other"})
+MAX_METADATA_ITEMS = 50
 MEDIA_MIME_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
 MEDIA_VARIANTS = frozenset({"original", "thumbnail"})
 ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
@@ -64,6 +65,12 @@ class CommunityDraftInput:
     redacted_coordinate_count: int
     privacy_reviewed: bool
     rights_confirmed: bool
+    destination: str = ""
+    travel_date: str = ""
+    travel_days: int = 0
+    stage_titles: tuple[str, ...] = ()
+    tags: tuple[str, ...] = ()
+    pois: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -221,6 +228,52 @@ class CommunityService:
                     ON community_reports(post_id, status, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_community_reports_status_created
                     ON community_reports(status, created_at DESC, id DESC);
+
+                CREATE TABLE IF NOT EXISTS community_post_index (
+                    post_id TEXT PRIMARY KEY,
+                    destination TEXT NOT NULL DEFAULT '',
+                    travel_date TEXT NOT NULL DEFAULT '',
+                    travel_days INTEGER NOT NULL DEFAULT 0
+                        CHECK(travel_days >= 0 AND travel_days <= 31),
+                    updated_at INTEGER NOT NULL,
+                    FOREIGN KEY(post_id) REFERENCES community_posts(id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_community_post_index_destination
+                    ON community_post_index(destination, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_community_post_index_travel
+                    ON community_post_index(travel_date, travel_days, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS community_post_stages (
+                    post_id TEXT NOT NULL,
+                    sequence_number INTEGER NOT NULL CHECK(sequence_number > 0),
+                    title TEXT NOT NULL,
+                    PRIMARY KEY(post_id, sequence_number),
+                    FOREIGN KEY(post_id) REFERENCES community_posts(id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_community_post_stages_title
+                    ON community_post_stages(title, post_id);
+
+                CREATE TABLE IF NOT EXISTS community_post_tags (
+                    post_id TEXT NOT NULL,
+                    tag TEXT NOT NULL,
+                    PRIMARY KEY(post_id, tag),
+                    FOREIGN KEY(post_id) REFERENCES community_posts(id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_community_post_tags_tag
+                    ON community_post_tags(tag, post_id);
+
+                CREATE TABLE IF NOT EXISTS community_post_pois (
+                    post_id TEXT NOT NULL,
+                    poi_name TEXT NOT NULL,
+                    PRIMARY KEY(post_id, poi_name),
+                    FOREIGN KEY(post_id) REFERENCES community_posts(id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_community_post_pois_name
+                    ON community_post_pois(poi_name, post_id);
                 """
             )
 
@@ -281,6 +334,7 @@ class CommunityService:
                 "SELECT * FROM community_posts WHERE id = ?",
                 (post_id,),
             ).fetchone()
+            self._replace_post_index(conn, post_id, normalized, now)
             return self._post_payload(row), True
 
     def get_post(self, user_id: str, post_id: str) -> dict:
@@ -723,23 +777,96 @@ class CommunityService:
         *,
         cursor: str | None = None,
         limit: int = 20,
+        search_query: str = "",
+        destination: str = "",
+        tag: str = "",
+        poi: str = "",
+        min_days: int = 0,
+        max_days: int = 0,
+        has_media: bool = False,
     ) -> dict:
         normalized_limit = self._normalized_limit(limit)
+        clean_query = search_query.strip()
+        if len(clean_query) > 100:
+            raise CommunityError("搜索关键词不能超过 100 个字符")
+        clean_destination = destination.strip()
+        clean_tag = tag.strip()
+        clean_poi = poi.strip()
+        if len(clean_destination) > 120 or len(clean_tag) > 80 or len(clean_poi) > 80:
+            raise CommunityError("搜索筛选条件过长")
+        if min_days < 0 or min_days > 31 or max_days < 0 or max_days > 31:
+            raise CommunityError("行程天数筛选必须在 0 到 31 之间")
+        if max_days and min_days and max_days < min_days:
+            raise CommunityError("行程天数筛选范围无效")
         cursor_published_at, cursor_id = self._decode_cursor(cursor)
         query = """
             SELECT p.*, m.decision AS review_decision, m.reason AS review_reason,
                    m.reviewed_at AS review_reviewed_at
             FROM community_posts p
             JOIN community_moderation m ON m.post_id = p.id
+            LEFT JOIN community_post_index i ON i.post_id = p.id
             WHERE p.status = 'published' AND m.decision = 'approved'
         """
         params: list[object] = []
+        if clean_query:
+            like_query = f"%{clean_query.casefold()}%"
+            query += """
+                AND (
+                    LOWER(p.title) LIKE ? OR LOWER(p.content) LIKE ?
+                    OR LOWER(COALESCE(i.destination, '')) LIKE ?
+                    OR EXISTS (
+                        SELECT 1 FROM community_post_tags t
+                        WHERE t.post_id = p.id AND LOWER(t.tag) LIKE ?
+                    )
+                    OR EXISTS (
+                        SELECT 1 FROM community_post_pois x
+                        WHERE x.post_id = p.id AND LOWER(x.poi_name) LIKE ?
+                    )
+                    OR EXISTS (
+                        SELECT 1 FROM community_post_stages s
+                        WHERE s.post_id = p.id AND LOWER(s.title) LIKE ?
+                    )
+                )
+            """
+            params.extend([like_query] * 6)
+        if clean_destination:
+            query += " AND LOWER(COALESCE(i.destination, '')) = LOWER(?)"
+            params.append(clean_destination)
+        if clean_tag:
+            query += """
+                AND EXISTS (
+                    SELECT 1 FROM community_post_tags t
+                    WHERE t.post_id = p.id AND LOWER(t.tag) = LOWER(?)
+                )
+            """
+            params.append(clean_tag)
+        if clean_poi:
+            query += """
+                AND EXISTS (
+                    SELECT 1 FROM community_post_pois x
+                    WHERE x.post_id = p.id AND LOWER(x.poi_name) = LOWER(?)
+                )
+            """
+            params.append(clean_poi)
+        if min_days:
+            query += " AND COALESCE(i.travel_days, 0) >= ?"
+            params.append(min_days)
+        if max_days:
+            query += " AND COALESCE(i.travel_days, 0) <= ? AND COALESCE(i.travel_days, 0) > 0"
+            params.append(max_days)
+        if has_media:
+            query += """
+                AND EXISTS (
+                    SELECT 1 FROM community_post_media media
+                    WHERE media.post_id = p.id AND media.status = 'ready'
+                )
+            """
         if cursor_published_at is not None and cursor_id is not None:
             query += """
                 AND (p.published_at < ? OR (p.published_at = ? AND p.id < ?))
             """
             params.extend([cursor_published_at, cursor_published_at, cursor_id])
-        query += "ORDER BY p.published_at DESC, p.id DESC LIMIT ?"
+        query += " ORDER BY p.published_at DESC, p.id DESC LIMIT ?"
         params.append(normalized_limit + 1)
         with self._connect() as conn:
             rows = conn.execute(query, params).fetchall()
@@ -747,16 +874,26 @@ class CommunityService:
                 row["id"]: self._public_media_payloads(conn, row["id"])
                 for row in rows[:normalized_limit]
             }
+            index_by_post = {
+                row["id"]: self._public_index_payload(conn, row["id"])
+                for row in rows[:normalized_limit]
+            }
+            facets = self._public_facets(conn)
         has_more = len(rows) > normalized_limit
         visible_rows = rows[:normalized_limit]
         return {
             "items": [
-                self._public_post_payload(row, media_by_post[row["id"]])
+                self._public_post_payload(
+                    row,
+                    media_by_post[row["id"]],
+                    index_by_post[row["id"]],
+                )
                 for row in visible_rows
             ],
             "next_cursor": self._encode_cursor(visible_rows[-1], "published_at")
             if has_more and visible_rows
             else None,
+            "facets": facets,
         }
 
     def get_public_post(self, post_id: str) -> dict:
@@ -774,7 +911,11 @@ class CommunityService:
             ).fetchone()
             if row is None:
                 raise CommunityNotFoundError("社区内容不存在或暂不可查看")
-            return self._public_post_payload(row, self._public_media_payloads(conn, row["id"]))
+            return self._public_post_payload(
+                row,
+                self._public_media_payloads(conn, row["id"]),
+                self._public_index_payload(conn, row["id"]),
+            )
 
     def _owned_post(
         self,
@@ -819,6 +960,39 @@ class CommunityService:
             raise CommunityError("坐标脱敏数量不能为负数")
         if PRECISE_COORDINATE_PAIR_PATTERN.search(content) or COORDINATE_FIELD_PATTERN.search(content):
             raise CommunityError("正文仍包含精确坐标，请先完成位置脱敏")
+        destination = snapshot.destination.strip()
+        if len(destination) > 120:
+            raise CommunityError("目的地不能超过 120 个字符")
+        travel_date = snapshot.travel_date.strip()
+        if travel_date:
+            try:
+                parsed_date = time.strptime(travel_date, "%Y-%m-%d")
+            except ValueError as exc:
+                raise CommunityError("行程日期必须使用 YYYY-MM-DD 格式") from exc
+            if time.strftime("%Y-%m-%d", parsed_date) != travel_date:
+                raise CommunityError("行程日期必须使用 YYYY-MM-DD 格式")
+        if snapshot.travel_days < 0 or snapshot.travel_days > 31:
+            raise CommunityError("行程天数必须在 0 到 31 之间")
+
+        def normalized_items(values: tuple[str, ...], field_name: str) -> list[str]:
+            if len(values) > MAX_METADATA_ITEMS:
+                raise CommunityError(f"{field_name}数量不能超过 {MAX_METADATA_ITEMS} 个")
+            result: list[str] = []
+            seen: set[str] = set()
+            for value in values:
+                clean = str(value).strip()
+                if not clean:
+                    continue
+                if len(clean) > 80:
+                    raise CommunityError(f"{field_name}单项不能超过 80 个字符")
+                if clean.casefold() not in seen:
+                    result.append(clean)
+                    seen.add(clean.casefold())
+            return result
+
+        stage_titles = normalized_items(snapshot.stage_titles, "行程段")
+        tags = normalized_items(snapshot.tags, "主题标签")
+        pois = normalized_items(snapshot.pois, "POI")
         return {
             "client_snapshot_id": self._validated_id(
                 snapshot.client_snapshot_id,
@@ -836,6 +1010,12 @@ class CommunityService:
             "redacted_coordinate_count": snapshot.redacted_coordinate_count,
             "privacy_reviewed": 1,
             "rights_confirmed": 1,
+            "destination": destination,
+            "travel_date": travel_date,
+            "travel_days": snapshot.travel_days,
+            "stage_titles": stage_titles,
+            "tags": tags,
+            "pois": pois,
         }
 
     def _validated_media_manifest(self, media: CommunityMediaManifestInput) -> dict:
@@ -933,6 +1113,78 @@ class CommunityService:
             (post_id,),
         ).fetchall()
         return [self._media_payload(row) for row in rows]
+
+    @staticmethod
+    def _replace_post_index(
+        conn: sqlite3.Connection,
+        post_id: str,
+        normalized: dict,
+        updated_at: int,
+    ) -> None:
+        conn.execute(
+            """
+            INSERT INTO community_post_index (
+                post_id, destination, travel_date, travel_days, updated_at
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(post_id) DO UPDATE SET
+                destination = excluded.destination,
+                travel_date = excluded.travel_date,
+                travel_days = excluded.travel_days,
+                updated_at = excluded.updated_at
+            """,
+            (
+                post_id,
+                normalized["destination"],
+                normalized["travel_date"],
+                normalized["travel_days"],
+                updated_at,
+            ),
+        )
+        conn.execute("DELETE FROM community_post_stages WHERE post_id = ?", (post_id,))
+        conn.execute("DELETE FROM community_post_tags WHERE post_id = ?", (post_id,))
+        conn.execute("DELETE FROM community_post_pois WHERE post_id = ?", (post_id,))
+        conn.executemany(
+            "INSERT INTO community_post_stages (post_id, sequence_number, title) VALUES (?, ?, ?)",
+            [(post_id, index, title) for index, title in enumerate(normalized["stage_titles"], 1)],
+        )
+        conn.executemany(
+            "INSERT INTO community_post_tags (post_id, tag) VALUES (?, ?)",
+            [(post_id, tag) for tag in normalized["tags"]],
+        )
+        conn.executemany(
+            "INSERT INTO community_post_pois (post_id, poi_name) VALUES (?, ?)",
+            [(post_id, poi) for poi in normalized["pois"]],
+        )
+
+    @staticmethod
+    def _public_index_payload(conn: sqlite3.Connection, post_id: str) -> dict:
+        index = conn.execute(
+            "SELECT destination, travel_date, travel_days FROM community_post_index WHERE post_id = ?",
+            (post_id,),
+        ).fetchone()
+        stages = conn.execute(
+            """
+            SELECT title FROM community_post_stages
+            WHERE post_id = ? ORDER BY sequence_number ASC
+            """,
+            (post_id,),
+        ).fetchall()
+        tags = conn.execute(
+            "SELECT tag FROM community_post_tags WHERE post_id = ? ORDER BY tag ASC",
+            (post_id,),
+        ).fetchall()
+        pois = conn.execute(
+            "SELECT poi_name FROM community_post_pois WHERE post_id = ? ORDER BY poi_name ASC",
+            (post_id,),
+        ).fetchall()
+        return {
+            "destination": index["destination"] if index else "",
+            "travel_date": index["travel_date"] if index else "",
+            "travel_days": int(index["travel_days"]) if index else 0,
+            "stages": [row["title"] for row in stages],
+            "tags": [row["tag"] for row in tags],
+            "pois": [row["poi_name"] for row in pois],
+        }
 
     def _public_media_payloads(self, conn: sqlite3.Connection, post_id: str) -> list[dict]:
         rows = conn.execute(
@@ -1087,8 +1339,52 @@ class CommunityService:
             "updated_at": row["updated_at"],
         }
 
+    @staticmethod
+    def _public_facets(conn: sqlite3.Connection) -> dict:
+        destinations = conn.execute(
+            """
+            SELECT DISTINCT i.destination AS value
+            FROM community_post_index i
+            JOIN community_posts p ON p.id = i.post_id
+            JOIN community_moderation m ON m.post_id = p.id
+            WHERE p.status = 'published' AND m.decision = 'approved'
+                AND i.destination != ''
+            ORDER BY i.destination ASC LIMIT 50
+            """
+        ).fetchall()
+        tags = conn.execute(
+            """
+            SELECT DISTINCT t.tag AS value
+            FROM community_post_tags t
+            JOIN community_posts p ON p.id = t.post_id
+            JOIN community_moderation m ON m.post_id = p.id
+            WHERE p.status = 'published' AND m.decision = 'approved'
+            ORDER BY t.tag ASC LIMIT 50
+            """
+        ).fetchall()
+        pois = conn.execute(
+            """
+            SELECT DISTINCT x.poi_name AS value
+            FROM community_post_pois x
+            JOIN community_posts p ON p.id = x.post_id
+            JOIN community_moderation m ON m.post_id = p.id
+            WHERE p.status = 'published' AND m.decision = 'approved'
+            ORDER BY x.poi_name ASC LIMIT 50
+            """
+        ).fetchall()
+        return {
+            "destinations": [row["value"] for row in destinations],
+            "tags": [row["value"] for row in tags],
+            "pois": [row["value"] for row in pois],
+        }
+
     @classmethod
-    def _public_post_payload(cls, row: sqlite3.Row, media: list[dict]) -> dict:
+    def _public_post_payload(
+        cls,
+        row: sqlite3.Row,
+        media: list[dict],
+        index: dict,
+    ) -> dict:
         payload = cls._post_payload(row)
         return {
             "id": payload["id"],
@@ -1099,4 +1395,5 @@ class CommunityService:
             "published_at": payload["published_at"],
             "author_label": "研学同行者",
             "media": media,
+            **index,
         }

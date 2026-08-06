@@ -156,6 +156,42 @@ class CommunityRouteTests(unittest.TestCase):
             self.assertEqual(mine.status_code, 200)
             self.assertEqual(mine.json()["items"][0]["review"]["status"], "approved")
 
+    def test_public_search_exposes_only_confirmed_coarse_metadata(self) -> None:
+        owner_headers = {"Authorization": "Bearer owner-token"}
+        admin_headers = {"Authorization": "Bearer admin-token"}
+        payload = {
+            **self.payload(),
+            "destination": "北京",
+            "travel_date": "2026-08-06",
+            "travel_days": 2,
+            "stage_titles": ["展馆参观", "小组讨论"],
+            "tags": ["历史", "研学"],
+            "pois": ["中国国家博物馆"],
+        }
+        with TestClient(self.app) as client:
+            created = client.post(
+                "/api/account/community/drafts", headers=owner_headers, json=payload
+            )
+            self.assertEqual(created.status_code, 201)
+            post_id = created.json()["id"]
+            client.post(
+                f"/api/account/community/posts/{post_id}/publish", headers=owner_headers
+            )
+            client.post(
+                f"/api/account/community/moderation/{post_id}",
+                headers=admin_headers,
+                json={"decision": "approved"},
+            )
+            result = client.get(
+                "/api/community/posts?q=国家博物馆&destination=北京&tag=历史&poi=中国国家博物馆"
+            )
+            self.assertEqual(result.status_code, 200)
+            item = result.json()["items"][0]
+            self.assertEqual(item["destination"], "北京")
+            self.assertEqual(item["stages"], ["展馆参观", "小组讨论"])
+            self.assertNotIn("journey_id", item)
+            self.assertNotIn("client_snapshot_id", item)
+
     def test_media_manifest_and_chunk_routes_require_owner_then_public_review(self) -> None:
         owner_headers = {"Authorization": "Bearer owner-token"}
         original = b"\x89PNG\r\n\x1a\n" + b"not-a-real-image"

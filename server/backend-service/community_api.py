@@ -34,6 +34,12 @@ class CommunityDraftPayload(BaseModel):
     redacted_coordinate_count: int = Field(default=0, ge=0)
     privacy_reviewed: bool
     rights_confirmed: bool
+    destination: str = Field(default="", max_length=120)
+    travel_date: str = Field(default="", max_length=10)
+    travel_days: int = Field(default=0, ge=0, le=31)
+    stage_titles: list[str] = Field(default_factory=list, max_length=50)
+    tags: list[str] = Field(default_factory=list, max_length=50)
+    pois: list[str] = Field(default_factory=list, max_length=50)
 
 
 class CommunityModerationPayload(BaseModel):
@@ -278,9 +284,26 @@ def build_public_community_router(db_path_provider: Callable[[], Path]) -> APIRo
     def list_public_community_posts(
         cursor: str | None = None,
         limit: int = Query(default=20, ge=1, le=50),
+        q: str = Query(default="", max_length=100),
+        destination: str = Query(default="", max_length=120),
+        tag: str = Query(default="", max_length=80),
+        poi: str = Query(default="", max_length=80),
+        min_days: int = Query(default=0, ge=0, le=31),
+        max_days: int = Query(default=0, ge=0, le=31),
+        has_media: bool = False,
     ) -> dict:
         try:
-            return service().list_public_posts(cursor=cursor, limit=limit)
+            return service().list_public_posts(
+                cursor=cursor,
+                limit=limit,
+                search_query=q,
+                destination=destination,
+                tag=tag,
+                poi=poi,
+                min_days=min_days,
+                max_days=max_days,
+                has_media=has_media,
+            )
         except CommunityError as exc:
             raise community_http_error(exc) from exc
 

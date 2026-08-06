@@ -199,6 +199,56 @@ class CommunityServiceTests(unittest.TestCase):
         self.assertEqual(mine["items"][0]["review"]["reason"], "需去除未授权人物信息")
         self.assertEqual(self.service.list_owner_posts(self.other_id)["items"], [])
 
+    def test_public_search_filters_confirmed_index_metadata(self) -> None:
+        first, _ = self.service.create_private_draft(
+            self.owner_id,
+            self.snapshot(
+                destination="上海",
+                travel_date="2026-08-06",
+                travel_days=2,
+                stage_titles=("能源站参观", "小组复盘"),
+                tags=("科普", "团队学习"),
+                pois=("上海科技馆",),
+            ),
+        )
+        self.service.publish(self.owner_id, first["id"])
+        self.service.review_post(first["id"], decision="approved", reason="", reviewed_by="reviewer-01")
+
+        second, _ = self.service.create_private_draft(
+            self.owner_id,
+            self.snapshot(
+                client_snapshot_id="snapshot-02",
+                destination="苏州",
+                travel_days=1,
+                tags=("园林",),
+                pois=("拙政园",),
+            ),
+        )
+        self.service.publish(self.owner_id, second["id"])
+        self.service.review_post(second["id"], decision="approved", reason="", reviewed_by="reviewer-01")
+
+        filtered = self.service.list_public_posts(
+            search_query="科技馆",
+            destination="上海",
+            tag="科普",
+            poi="上海科技馆",
+            min_days=2,
+            max_days=2,
+        )
+        self.assertEqual([item["id"] for item in filtered["items"]], [first["id"]])
+        item = filtered["items"][0]
+        self.assertEqual(item["destination"], "上海")
+        self.assertEqual(item["travel_days"], 2)
+        self.assertEqual(item["stages"], ["能源站参观", "小组复盘"])
+        self.assertEqual(sorted(item["tags"]), sorted(["科普", "团队学习"]))
+        self.assertEqual(item["pois"], ["上海科技馆"])
+        self.assertIn("上海", filtered["facets"]["destinations"])
+        self.assertIn("拙政园", filtered["facets"]["pois"])
+        self.assertEqual(
+            self.service.list_public_posts(has_media=True)["items"],
+            [],
+        )
+
     def test_resumable_media_is_sanitized_and_public_only_after_review(self) -> None:
         created, _ = self.service.create_private_draft(self.owner_id, self.snapshot())
         self.service.publish(self.owner_id, created["id"])
