@@ -89,6 +89,30 @@ data class CommunityDeleteResult(
     val status: String
 )
 
+data class CommunityCommentReport(
+    val id: String,
+    @SerializedName("comment_id") val commentId: String,
+    val category: String,
+    val reason: String = "",
+    val status: String = "open",
+    @SerializedName("created_at") val createdAt: Long = 0,
+    @SerializedName("updated_at") val updatedAt: Long = 0
+)
+
+data class CommunityCommentReportQueueItem(
+    val id: String,
+    @SerializedName("comment_id") val commentId: String,
+    @SerializedName("post_id") val postId: String,
+    @SerializedName("post_title") val postTitle: String,
+    val content: String,
+    @SerializedName("comment_status") val commentStatus: String,
+    val category: String,
+    val reason: String = "",
+    val status: String = "open",
+    @SerializedName("created_at") val createdAt: Long = 0,
+    @SerializedName("updated_at") val updatedAt: Long = 0
+)
+
 data class CommunityModerationReport(
     val category: String,
     val reason: String = "",

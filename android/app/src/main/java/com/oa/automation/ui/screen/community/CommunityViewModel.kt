@@ -16,12 +16,13 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-enum class CommunityTab { DISCOVER, MINE }
+enum class CommunityTab { DISCOVER, MINE, SAVED }
 
 data class CommunityUiState(
     val tab: CommunityTab = CommunityTab.DISCOVER,
     val publicPosts: List<PublicCommunityPost> = emptyList(),
     val myPosts: List<MyCommunityPost> = emptyList(),
+    val savedPosts: List<PublicCommunityPost> = emptyList(),
     val searchQuery: String = "",
     val destinationFilter: String = "",
     val tagFilter: String = "",
@@ -34,6 +35,7 @@ data class CommunityUiState(
     val isLoading: Boolean = false,
     val isLoadingMore: Boolean = false,
     val nextPublicCursor: String? = null,
+    val nextSavedCursor: String? = null,
     val error: String? = null
 )
 
@@ -49,6 +51,8 @@ class CommunityViewModel(
         _uiState.update { it.copy(tab = tab, error = null) }
         if (tab == CommunityTab.MINE && _uiState.value.myPosts.isEmpty()) {
             refresh()
+        } else if (tab == CommunityTab.SAVED && _uiState.value.savedPosts.isEmpty()) {
+            refresh()
         }
     }
 
@@ -60,13 +64,16 @@ class CommunityViewModel(
                     isLoading = true,
                     isLoadingMore = false,
                     nextPublicCursor = null,
+                    nextSavedCursor = null,
                     error = null
                 )
             }
             if (_uiState.value.tab == CommunityTab.DISCOVER) {
                 loadPublicPosts(cursor = null, append = false)
-            } else {
+            } else if (_uiState.value.tab == CommunityTab.MINE) {
                 loadMyPosts()
+            } else {
+                loadSavedPosts(cursor = null, append = false)
             }
         }
     }
@@ -126,11 +133,21 @@ class CommunityViewModel(
 
     fun loadMore() {
         val state = _uiState.value
-        if (state.tab != CommunityTab.DISCOVER || state.isLoading || state.isLoadingMore) return
-        val cursor = state.nextPublicCursor ?: return
+        if ((state.tab != CommunityTab.DISCOVER && state.tab != CommunityTab.SAVED) ||
+            state.isLoading || state.isLoadingMore
+        ) return
+        val cursor = if (state.tab == CommunityTab.DISCOVER) {
+            state.nextPublicCursor
+        } else {
+            state.nextSavedCursor
+        } ?: return
         viewModelScope.launch {
             _uiState.update { it.copy(isLoadingMore = true, error = null) }
-            loadPublicPosts(cursor = cursor, append = true)
+            if (_uiState.value.tab == CommunityTab.DISCOVER) {
+                loadPublicPosts(cursor = cursor, append = true)
+            } else {
+                loadSavedPosts(cursor = cursor, append = true)
+            }
         }
     }
 
@@ -199,6 +216,48 @@ class CommunityViewModel(
             }
         )
     }
+
+    private suspend fun loadSavedPosts(cursor: String?, append: Boolean) {
+        val session = configDataStore.authSessionFlow.first()
+        if (session == null) {
+            _uiState.update {
+                it.copy(isLoading = false, isLoadingMore = false, error = "登录后可查看收藏")
+            }
+            return
+        }
+        val endpoint = configDataStore.accountEndpointFlow.first()
+        accountApiService.bookmarkedCommunityPosts(
+            endpoint = endpoint,
+            token = session.accessToken,
+            cursor = cursor
+        ).fold(
+            onSuccess = { page ->
+                _uiState.update {
+                    it.copy(
+                        savedPosts = if (append) {
+                            (it.savedPosts + page.items).distinctBy(PublicCommunityPost::id)
+                        } else {
+                            page.items
+                        },
+                        nextSavedCursor = page.nextCursor,
+                        isLoading = false,
+                        isLoadingMore = false,
+                        mediaBaseUrl = communityMediaBaseUrl(endpoint),
+                        error = null
+                    )
+                }
+            },
+            onFailure = { error ->
+                _uiState.update {
+                    it.copy(
+                        isLoading = false,
+                        isLoadingMore = false,
+                        error = error.message ?: "收藏加载失败"
+                    )
+                }
+            }
+        )
+    }
 }
 
 private fun communityMediaBaseUrl(endpoint: String): String {
@@ -222,6 +281,8 @@ data class CommunityPostDetailUiState(
     val reportCategory: String = "privacy",
     val reportReason: String = "",
     val isReporting: Boolean = false,
+    val showCommentReportDialog: Boolean = false,
+    val commentReportId: String = "",
     val reportMessage: String? = null
 )
 
@@ -334,6 +395,37 @@ class CommunityPostDetailViewModel(
         )
     }
 
+    fun loadMoreComments(postId: String) {
+        val cursor = _uiState.value.commentsNextCursor ?: return
+        if (_uiState.value.isLoadingComments) return
+        viewModelScope.launch {
+            val endpoint = configDataStore.accountEndpointFlow.first()
+            val session = configDataStore.authSessionFlow.first()
+            _uiState.update { it.copy(isLoadingComments = true, reportMessage = null) }
+            val result = if (session == null) {
+                accountApiService.publicCommunityComments(endpoint, postId, cursor)
+            } else {
+                accountApiService.accountCommunityComments(endpoint, session.accessToken, postId, cursor)
+            }
+            result.fold(
+                onSuccess = { page ->
+                    _uiState.update { state ->
+                        state.copy(
+                            comments = (state.comments + page.items).distinctBy(CommunityComment::id),
+                            commentsNextCursor = page.nextCursor,
+                            isLoadingComments = false
+                        )
+                    }
+                },
+                onFailure = { error ->
+                    _uiState.update {
+                        it.copy(isLoadingComments = false, reportMessage = error.message ?: "更多评论加载失败")
+                    }
+                }
+            )
+        }
+    }
+
     fun updateCommentDraft(value: String) {
         _uiState.update { it.copy(commentDraft = value.take(1000), reportMessage = null) }
     }
@@ -392,6 +484,63 @@ class CommunityPostDetailViewModel(
                 onFailure = { error ->
                     _uiState.update {
                         it.copy(isSubmittingComment = false, reportMessage = error.message ?: "评论删除失败")
+                    }
+                }
+            )
+        }
+    }
+
+    fun openCommentReportDialog(commentId: String) {
+        _uiState.update {
+            it.copy(
+                showCommentReportDialog = true,
+                commentReportId = commentId,
+                reportCategory = "privacy",
+                reportReason = "",
+                reportMessage = null
+            )
+        }
+    }
+
+    fun dismissCommentReportDialog() {
+        if (_uiState.value.isReporting) return
+        _uiState.update {
+            it.copy(showCommentReportDialog = false, commentReportId = "", reportReason = "")
+        }
+    }
+
+    fun submitCommentReport() {
+        val state = _uiState.value
+        if (state.commentReportId.isBlank() || state.isReporting) return
+        viewModelScope.launch {
+            val session = configDataStore.authSessionFlow.first()
+            if (session == null) {
+                _uiState.update { it.copy(reportMessage = "登录后可举报评论") }
+                return@launch
+            }
+            val endpoint = configDataStore.accountEndpointFlow.first()
+            _uiState.update { it.copy(isReporting = true, reportMessage = null) }
+            accountApiService.reportCommunityComment(
+                endpoint = endpoint,
+                token = session.accessToken,
+                commentId = state.commentReportId,
+                category = state.reportCategory,
+                reason = state.reportReason
+            ).fold(
+                onSuccess = {
+                    _uiState.update {
+                        it.copy(
+                            showCommentReportDialog = false,
+                            commentReportId = "",
+                            isReporting = false,
+                            reportReason = "",
+                            reportMessage = "已提交评论举报"
+                        )
+                    }
+                },
+                onFailure = { error ->
+                    _uiState.update {
+                        it.copy(isReporting = false, reportMessage = error.message ?: "评论举报提交失败")
                     }
                 }
             )

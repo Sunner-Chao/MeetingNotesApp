@@ -16,6 +16,8 @@ import com.oa.automation.domain.model.CommunityReport
 import com.oa.automation.domain.model.CommunityComment
 import com.oa.automation.domain.model.CommunityDeleteResult
 import com.oa.automation.domain.model.CommunityInteractionState
+import com.oa.automation.domain.model.CommunityCommentReport
+import com.oa.automation.domain.model.CommunityCommentReportQueueItem
 import com.oa.automation.domain.model.MyCommunityPost
 import com.oa.automation.domain.model.PublicCommunityPost
 import java.io.IOException
@@ -265,6 +267,63 @@ class AccountApiService(
         path = "account/community/comments/$commentId",
         token = token,
         method = "DELETE"
+    ) { body -> gson.fromJson(body, CommunityDeleteResult::class.java) }
+
+    suspend fun reportCommunityComment(
+        endpoint: String,
+        token: String,
+        commentId: String,
+        category: String,
+        reason: String = ""
+    ): Result<CommunityCommentReport> = request(
+        endpoint = endpoint,
+        path = "account/community/comments/$commentId/report",
+        token = token,
+        method = "POST",
+        jsonBody = gson.toJson(mapOf("category" to category, "reason" to reason))
+    ) { body -> gson.fromJson(body, CommunityCommentReport::class.java) }
+
+    suspend fun bookmarkedCommunityPosts(
+        endpoint: String,
+        token: String,
+        cursor: String? = null,
+        limit: Int = 20
+    ): Result<CommunityPostPage<PublicCommunityPost>> = request(
+        endpoint = endpoint,
+        path = communityListPath("account/community/bookmarks", cursor, limit),
+        token = token,
+        method = "GET"
+    ) { body ->
+        gson.fromJson(body, object : TypeToken<CommunityPostPage<PublicCommunityPost>>() {}.type)
+    }
+
+    suspend fun adminCommunityCommentReports(
+        endpoint: String,
+        token: String,
+        status: String = "open",
+        cursor: String? = null,
+        limit: Int = 20
+    ): Result<CommunityPostPage<CommunityCommentReportQueueItem>> = request(
+        endpoint = endpoint,
+        path = communityListPath("account/community/comment-reports", cursor, limit) +
+            "&status=" + URLEncoder.encode(status, Charsets.UTF_8.name()),
+        token = token,
+        method = "GET"
+    ) { body ->
+        gson.fromJson(body, object : TypeToken<CommunityPostPage<CommunityCommentReportQueueItem>>() {}.type)
+    }
+
+    suspend fun resolveCommunityCommentReport(
+        endpoint: String,
+        token: String,
+        reportId: String,
+        decision: String
+    ): Result<CommunityDeleteResult> = request(
+        endpoint = endpoint,
+        path = "account/community/comment-reports/$reportId",
+        token = token,
+        method = "POST",
+        jsonBody = gson.toJson(mapOf("decision" to decision))
     ) { body -> gson.fromJson(body, CommunityDeleteResult::class.java) }
 
     suspend fun adminCommunityModerationQueue(

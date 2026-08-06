@@ -122,6 +122,12 @@ fun CommunityScreen(
                     text = { Text("我的发布") },
                     icon = { Icon(Icons.Default.AutoStories, contentDescription = null) }
                 )
+                Tab(
+                    selected = uiState.tab == CommunityTab.SAVED,
+                    onClick = { viewModel.selectTab(CommunityTab.SAVED) },
+                    text = { Text("收藏") },
+                    icon = { Icon(Icons.Default.BookmarkBorder, contentDescription = null) }
+                )
             }
             CommunityContent(
                 state = uiState,
@@ -157,7 +163,12 @@ private fun CommunityContent(
     onLoadMore: () -> Unit
 ) {
     val isDiscover = state.tab == CommunityTab.DISCOVER
-    val isEmpty = if (isDiscover) state.publicPosts.isEmpty() else state.myPosts.isEmpty()
+    val isSaved = state.tab == CommunityTab.SAVED
+    val isEmpty = when {
+        isDiscover -> state.publicPosts.isEmpty()
+        isSaved -> state.savedPosts.isEmpty()
+        else -> state.myPosts.isEmpty()
+    }
     if (isDiscover) {
         CommunityDiscoverFilters(
             state = state,
@@ -176,7 +187,11 @@ private fun CommunityContent(
             CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 3.dp)
         }
         isEmpty -> CommunityEmptyState(
-            message = state.error ?: if (isDiscover) "暂无已通过审核的研学记录" else "暂无已同步的发布记录",
+            message = state.error ?: when {
+                isDiscover -> "暂无已通过审核的研学记录"
+                isSaved -> "暂无收藏内容"
+                else -> "暂无已同步的发布记录"
+            },
             isError = state.error != null,
             onRefresh = onRefresh
         )
@@ -197,6 +212,22 @@ private fun CommunityContent(
                     )
                 }
                 if (state.nextPublicCursor != null) {
+                    item {
+                        CommunityLoadMore(
+                            isLoading = state.isLoadingMore,
+                            onLoadMore = onLoadMore
+                        )
+                    }
+                }
+            } else if (isSaved) {
+                items(state.savedPosts, key = { it.id }) { post ->
+                    PublicPostCard(
+                        post = post,
+                        mediaBaseUrl = state.mediaBaseUrl,
+                        onClick = { onOpenPost(post.id) }
+                    )
+                }
+                if (state.nextSavedCursor != null) {
                     item {
                         CommunityLoadMore(
                             isLoading = state.isLoadingMore,
@@ -578,6 +609,18 @@ fun CommunityPostDetailScreen(
             onSubmit = { viewModel.submitReport(postId) }
         )
     }
+    if (uiState.showCommentReportDialog) {
+        CommunityCommentReportDialog(
+            category = uiState.reportCategory,
+            reason = uiState.reportReason,
+            isSubmitting = uiState.isReporting,
+            error = uiState.reportMessage,
+            onCategoryChange = viewModel::selectReportCategory,
+            onReasonChange = viewModel::updateReportReason,
+            onDismiss = viewModel::dismissCommentReportDialog,
+            onSubmit = viewModel::submitCommentReport
+        )
+    }
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
@@ -613,6 +656,7 @@ fun CommunityPostDetailScreen(
                     post = post,
                     interaction = uiState.interaction,
                     comments = uiState.comments,
+                    commentsNextCursor = uiState.commentsNextCursor,
                     isLoadingComments = uiState.isLoadingComments,
                     isInteracting = uiState.isInteracting,
                     isSubmittingComment = uiState.isSubmittingComment,
@@ -623,7 +667,9 @@ fun CommunityPostDetailScreen(
                     onToggleBookmark = { viewModel.toggleBookmark(postId) },
                     onCommentDraftChange = viewModel::updateCommentDraft,
                     onSubmitComment = { viewModel.submitComment(postId) },
-                    onDeleteComment = viewModel::deleteComment
+                    onDeleteComment = viewModel::deleteComment,
+                    onLoadMoreComments = { viewModel.loadMoreComments(postId) },
+                    onReportComment = viewModel::openCommentReportDialog
                 )
             }
             else -> CommunityEmptyState(
@@ -705,10 +751,72 @@ private fun CommunityReportDialog(
 }
 
 @Composable
+private fun CommunityCommentReportDialog(
+    category: String,
+    reason: String,
+    isSubmitting: Boolean,
+    error: String?,
+    onCategoryChange: (String) -> Unit,
+    onReasonChange: (String) -> Unit,
+    onDismiss: () -> Unit,
+    onSubmit: () -> Unit
+) {
+    val categories = listOf(
+        "privacy" to "隐私信息",
+        "copyright" to "版权问题",
+        "safety" to "安全风险",
+        "spam" to "广告或垃圾内容",
+        "other" to "其他"
+    )
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("举报这条评论") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                categories.forEach { (value, label) ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth().clickable { onCategoryChange(value) },
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(selected = category == value, onClick = { onCategoryChange(value) })
+                        Text(label, style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+                OutlinedTextField(
+                    value = reason,
+                    onValueChange = onReasonChange,
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    label = { Text("补充说明（可选）") },
+                    minLines = 2,
+                    maxLines = 4,
+                    enabled = !isSubmitting
+                )
+                error?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = onSubmit, enabled = !isSubmitting) {
+                if (isSubmitting) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(8.dp))
+                }
+                Text("提交")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !isSubmitting) { Text("取消") }
+        }
+    )
+}
+
+@Composable
 private fun CommunityPostDetail(
     post: PublicCommunityPost,
     interaction: CommunityInteractionState?,
     comments: List<CommunityComment>,
+    commentsNextCursor: String?,
     isLoadingComments: Boolean,
     isInteracting: Boolean,
     isSubmittingComment: Boolean,
@@ -719,7 +827,9 @@ private fun CommunityPostDetail(
     onToggleBookmark: () -> Unit,
     onCommentDraftChange: (String) -> Unit,
     onSubmitComment: () -> Unit,
-    onDeleteComment: (String) -> Unit
+    onDeleteComment: (String) -> Unit,
+    onLoadMoreComments: () -> Unit,
+    onReportComment: (String) -> Unit
 ) {
     Column(
         modifier = modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
@@ -760,8 +870,11 @@ private fun CommunityPostDetail(
             draft = commentDraft,
             onDraftChange = onCommentDraftChange,
             onSubmit = onSubmitComment,
-            onDelete = onDeleteComment,
-            commentCount = interaction?.commentCount ?: post.commentCount
+           onDelete = onDeleteComment,
+            commentCount = interaction?.commentCount ?: post.commentCount,
+            nextCursor = commentsNextCursor,
+            onLoadMore = onLoadMoreComments,
+            onReport = onReportComment
         )
     }
 }
@@ -808,7 +921,10 @@ private fun CommunityComments(
     onDraftChange: (String) -> Unit,
     onSubmit: () -> Unit,
     onDelete: (String) -> Unit,
-    commentCount: Int
+    commentCount: Int,
+    nextCursor: String?,
+    onLoadMore: () -> Unit,
+    onReport: (String) -> Unit
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("评论 $commentCount", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
@@ -834,10 +950,20 @@ private fun CommunityComments(
                             IconButton(onClick = { onDelete(comment.id) }, enabled = !isSubmitting, modifier = Modifier.size(28.dp)) {
                                 Icon(Icons.Default.DeleteOutline, contentDescription = "删除评论", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.outline)
                             }
+                        } else {
+                            Spacer(Modifier.weight(1f))
+                            IconButton(onClick = { onReport(comment.id) }, enabled = !isSubmitting, modifier = Modifier.size(28.dp)) {
+                                Icon(Icons.Default.Flag, contentDescription = "举报评论", modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.outline)
+                            }
                         }
                     }
                     Text(comment.content, style = MaterialTheme.typography.bodyMedium)
                 }
+            }
+        }
+        if (nextCursor != null) {
+            TextButton(onClick = onLoadMore, enabled = !isLoading && !isSubmitting) {
+                Text("加载更多评论")
             }
         }
         OutlinedTextField(

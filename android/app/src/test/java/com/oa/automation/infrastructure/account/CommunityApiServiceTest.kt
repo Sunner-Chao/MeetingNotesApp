@@ -175,6 +175,118 @@ class CommunityApiServiceTest {
     }
 
     @Test
+    fun commentPagingReportsBookmarksAndAdminResolutionUseScopedRoutes() = runBlocking {
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """{"items":[{"id":"comment-1","post_id":"post-1","content":"第一段","created_at":20,"can_delete":false}],"next_cursor":"comment-cursor"}"""
+            )
+        )
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """{"items":[{"id":"comment-2","post_id":"post-1","content":"第二段","created_at":10,"can_delete":false}],"next_cursor":null}"""
+            )
+        )
+        server.enqueue(
+            MockResponse().setResponseCode(201).setBody(
+                """{"id":"comment-report-1","comment_id":"comment-2","category":"safety","reason":"需要核查","status":"open"}"""
+            )
+        )
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """{"items":[{"id":"post-1","title":"收藏笔记","content":"公开正文","published_at":30}],"next_cursor":"bookmark-cursor"}"""
+            )
+        )
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """{"items":[{"id":"comment-report-1","comment_id":"comment-2","post_id":"post-1","post_title":"收藏笔记","content":"第二段","comment_status":"visible","category":"safety","reason":"需要核查","status":"open"}],"next_cursor":null}"""
+            )
+        )
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """{"id":"comment-report-1","status":"resolved"}"""
+            )
+        )
+
+        val endpoint = server.url("/api").toString()
+        val firstPage = service.accountCommunityComments(endpoint, "session-token", "post-1", limit = 10).getOrThrow()
+        assertEquals("comment-1", firstPage.items.single().id)
+        assertEquals("comment-cursor", firstPage.nextCursor)
+        val firstPageRequest = server.takeRequest()
+        assertEquals("/api/account/community/posts/post-1/comments?limit=10", firstPageRequest.path)
+        assertEquals("Bearer session-token", firstPageRequest.getHeader("Authorization"))
+
+        val secondPage = service.accountCommunityComments(
+            endpoint,
+            "session-token",
+            "post-1",
+            cursor = firstPage.nextCursor,
+            limit = 10
+        ).getOrThrow()
+        assertEquals("comment-2", secondPage.items.single().id)
+        val secondPageRequest = server.takeRequest()
+        assertEquals(
+            "/api/account/community/posts/post-1/comments?limit=10&cursor=comment-cursor",
+            secondPageRequest.path
+        )
+        assertEquals("Bearer session-token", secondPageRequest.getHeader("Authorization"))
+
+        val report = service.reportCommunityComment(
+            endpoint,
+            "session-token",
+            "comment-2",
+            category = "safety",
+            reason = "需要核查"
+        ).getOrThrow()
+        assertEquals("comment-report-1", report.id)
+        val reportRequest = server.takeRequest()
+        assertEquals("/api/account/community/comments/comment-2/report", reportRequest.path)
+        assertEquals("Bearer session-token", reportRequest.getHeader("Authorization"))
+        assertTrue(reportRequest.body.readUtf8().contains("\"category\":\"safety\""))
+
+        val bookmarks = service.bookmarkedCommunityPosts(
+            endpoint,
+            "session-token",
+            cursor = "bookmark-cursor",
+            limit = 5
+        ).getOrThrow()
+        assertEquals("post-1", bookmarks.items.single().id)
+        assertEquals("bookmark-cursor", bookmarks.nextCursor)
+        val bookmarkRequest = server.takeRequest()
+        assertEquals(
+            "/api/account/community/bookmarks?limit=5&cursor=bookmark-cursor",
+            bookmarkRequest.path
+        )
+        assertEquals("Bearer session-token", bookmarkRequest.getHeader("Authorization"))
+
+        val reports = service.adminCommunityCommentReports(
+            endpoint,
+            "admin-token",
+            status = "open",
+            cursor = "report-cursor",
+            limit = 7
+        ).getOrThrow()
+        assertEquals("comment-report-1", reports.items.single().id)
+        val queueRequest = server.takeRequest()
+        assertEquals(
+            "/api/account/community/comment-reports?limit=7&cursor=report-cursor&status=open",
+            queueRequest.path
+        )
+        assertEquals("Bearer admin-token", queueRequest.getHeader("Authorization"))
+
+        val resolved = service.resolveCommunityCommentReport(
+            endpoint,
+            "admin-token",
+            "comment-report-1",
+            decision = "delete"
+        ).getOrThrow()
+        assertEquals("resolved", resolved.status)
+        val resolveRequest = server.takeRequest()
+        assertEquals("/api/account/community/comment-reports/comment-report-1", resolveRequest.path)
+        assertEquals("Bearer admin-token", resolveRequest.getHeader("Authorization"))
+        assertTrue(resolveRequest.body.readUtf8().contains("\"decision\":\"delete\""))
+    }
+
+    @Test
     fun createMediaAndUploadChunkUseAuthenticatedResumableProtocol() = runBlocking {
         server.enqueue(
             MockResponse().setResponseCode(201).setBody(
