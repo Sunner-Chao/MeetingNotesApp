@@ -116,6 +116,55 @@ class CommunityServiceTests(unittest.TestCase):
                 with self.assertRaises(CommunityError):
                     self.service.create_private_draft(self.owner_id, snapshot)
 
+    def test_public_visibility_requires_approval_and_withdrawal_removes_it(self) -> None:
+        created, _ = self.service.create_private_draft(self.owner_id, self.snapshot())
+        self.service.publish(self.owner_id, created["id"])
+
+        self.assertEqual(self.service.list_public_posts()["items"], [])
+        with self.assertRaises(CommunityNotFoundError):
+            self.service.get_public_post(created["id"])
+
+        approved = self.service.review_post(
+            created["id"],
+            decision="approved",
+            reason="",
+            reviewed_by="reviewer-01",
+        )
+        self.assertEqual(approved["review"]["status"], "approved")
+        self.assertEqual(
+            self.service.get_post(self.owner_id, created["id"])["review"]["status"],
+            "approved",
+        )
+        public = self.service.list_public_posts()
+        self.assertEqual([item["id"] for item in public["items"]], [created["id"]])
+        self.assertEqual(public["items"][0]["author_label"], "研学同行者")
+        self.assertNotIn("journey_id", public["items"][0])
+
+        self.service.withdraw(self.owner_id, created["id"])
+        self.assertEqual(self.service.list_public_posts()["items"], [])
+
+    def test_rejected_post_stays_private_and_owner_list_includes_review(self) -> None:
+        created, _ = self.service.create_private_draft(self.owner_id, self.snapshot())
+        self.service.publish(self.owner_id, created["id"])
+        with self.assertRaises(CommunityError):
+            self.service.review_post(
+                created["id"],
+                decision="rejected",
+                reason="",
+                reviewed_by="reviewer-01",
+            )
+        reviewed = self.service.review_post(
+            created["id"],
+            decision="rejected",
+            reason="需去除未授权人物信息",
+            reviewed_by="reviewer-01",
+        )
+        self.assertEqual(reviewed["review"]["status"], "rejected")
+        self.assertEqual(self.service.list_public_posts()["items"], [])
+        mine = self.service.list_owner_posts(self.owner_id)
+        self.assertEqual(mine["items"][0]["review"]["reason"], "需去除未授权人物信息")
+        self.assertEqual(self.service.list_owner_posts(self.other_id)["items"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

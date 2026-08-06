@@ -17,6 +17,7 @@ from typing import Iterator
 
 POST_STATUSES = frozenset({"private_draft", "published", "withdrawn"})
 MODERATION_STATUSES = frozenset({"not_submitted", "pending"})
+REVIEW_DECISIONS = frozenset({"approved", "rejected"})
 ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 PRECISE_COORDINATE_PAIR_PATTERN = re.compile(
     r"(?<![\d.])"
@@ -40,6 +41,10 @@ class CommunityConflictError(CommunityError):
 
 class CommunityNotFoundError(CommunityError):
     status_code = 404
+
+
+class CommunityPermissionError(CommunityError):
+    status_code = 403
 
 
 @dataclass(frozen=True)
@@ -117,6 +122,21 @@ class CommunityService:
 
                 CREATE INDEX IF NOT EXISTS idx_community_posts_owner_updated
                     ON community_posts(user_id, updated_at DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_community_posts_public_published
+                    ON community_posts(status, published_at DESC, id DESC);
+
+                CREATE TABLE IF NOT EXISTS community_moderation (
+                    post_id TEXT PRIMARY KEY,
+                    decision TEXT NOT NULL CHECK(decision IN ('approved', 'rejected')),
+                    reason TEXT NOT NULL DEFAULT '',
+                    reviewed_by TEXT NOT NULL,
+                    reviewed_at INTEGER NOT NULL,
+                    FOREIGN KEY(post_id) REFERENCES community_posts(id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_community_moderation_decision
+                    ON community_moderation(decision, reviewed_at DESC);
                 """
             )
 
@@ -183,6 +203,42 @@ class CommunityService:
         with self._connect() as conn:
             return self._post_payload(self._owned_post(conn, user_id, post_id))
 
+    def list_owner_posts(
+        self,
+        user_id: str,
+        *,
+        cursor: str | None = None,
+        limit: int = 20,
+    ) -> dict:
+        clean_user_id = self._validated_id(user_id, "user_id")
+        normalized_limit = self._normalized_limit(limit)
+        cursor_updated_at, cursor_id = self._decode_cursor(cursor)
+        query = """
+            SELECT p.*, m.decision AS review_decision, m.reason AS review_reason,
+                   m.reviewed_at AS review_reviewed_at
+            FROM community_posts p
+            LEFT JOIN community_moderation m ON m.post_id = p.id
+            WHERE p.user_id = ?
+        """
+        params: list[object] = [clean_user_id]
+        if cursor_updated_at is not None and cursor_id is not None:
+            query += """
+                AND (p.updated_at < ? OR (p.updated_at = ? AND p.id < ?))
+            """
+            params.extend([cursor_updated_at, cursor_updated_at, cursor_id])
+        query += "ORDER BY p.updated_at DESC, p.id DESC LIMIT ?"
+        params.append(normalized_limit + 1)
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        has_more = len(rows) > normalized_limit
+        visible_rows = rows[:normalized_limit]
+        return {
+            "items": [self._post_payload(row) for row in visible_rows],
+            "next_cursor": self._encode_cursor(visible_rows[-1], "updated_at")
+            if has_more and visible_rows
+            else None,
+        }
+
     def publish(self, user_id: str, post_id: str) -> dict:
         now = int(time.time() * 1000)
         with self._connect() as conn:
@@ -218,6 +274,110 @@ class CommunityService:
                 row = self._owned_post(conn, user_id, post_id)
             return self._post_payload(row)
 
+    def review_post(
+        self,
+        post_id: str,
+        *,
+        decision: str,
+        reason: str,
+        reviewed_by: str,
+    ) -> dict:
+        clean_post_id = self._validated_id(post_id, "post_id")
+        clean_reviewer_id = self._validated_id(reviewed_by, "reviewed_by")
+        clean_decision = decision.strip().lower()
+        if clean_decision not in REVIEW_DECISIONS:
+            raise CommunityError("审核结论无效")
+        clean_reason = reason.strip()
+        if len(clean_reason) > 500:
+            raise CommunityError("审核说明不能超过 500 个字符")
+        if clean_decision == "rejected" and not clean_reason:
+            raise CommunityError("拒绝发布时必须填写审核说明")
+        now = int(time.time() * 1000)
+        with self._connect() as conn:
+            post = conn.execute(
+                "SELECT * FROM community_posts WHERE id = ?",
+                (clean_post_id,),
+            ).fetchone()
+            if post is None:
+                raise CommunityNotFoundError("社区内容不存在")
+            if post["status"] != "published":
+                raise CommunityConflictError("只有已发布内容可以审核")
+            conn.execute(
+                """
+                INSERT INTO community_moderation (
+                    post_id, decision, reason, reviewed_by, reviewed_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(post_id) DO UPDATE SET
+                    decision = excluded.decision,
+                    reason = excluded.reason,
+                    reviewed_by = excluded.reviewed_by,
+                    reviewed_at = excluded.reviewed_at
+                """,
+                (clean_post_id, clean_decision, clean_reason, clean_reviewer_id, now),
+            )
+            reviewed = conn.execute(
+                """
+                SELECT p.*, m.decision AS review_decision, m.reason AS review_reason,
+                       m.reviewed_at AS review_reviewed_at
+                FROM community_posts p
+                JOIN community_moderation m ON m.post_id = p.id
+                WHERE p.id = ?
+                """,
+                (clean_post_id,),
+            ).fetchone()
+            return self._post_payload(reviewed)
+
+    def list_public_posts(
+        self,
+        *,
+        cursor: str | None = None,
+        limit: int = 20,
+    ) -> dict:
+        normalized_limit = self._normalized_limit(limit)
+        cursor_published_at, cursor_id = self._decode_cursor(cursor)
+        query = """
+            SELECT p.*, m.decision AS review_decision, m.reason AS review_reason,
+                   m.reviewed_at AS review_reviewed_at
+            FROM community_posts p
+            JOIN community_moderation m ON m.post_id = p.id
+            WHERE p.status = 'published' AND m.decision = 'approved'
+        """
+        params: list[object] = []
+        if cursor_published_at is not None and cursor_id is not None:
+            query += """
+                AND (p.published_at < ? OR (p.published_at = ? AND p.id < ?))
+            """
+            params.extend([cursor_published_at, cursor_published_at, cursor_id])
+        query += "ORDER BY p.published_at DESC, p.id DESC LIMIT ?"
+        params.append(normalized_limit + 1)
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        has_more = len(rows) > normalized_limit
+        visible_rows = rows[:normalized_limit]
+        return {
+            "items": [self._public_post_payload(row) for row in visible_rows],
+            "next_cursor": self._encode_cursor(visible_rows[-1], "published_at")
+            if has_more and visible_rows
+            else None,
+        }
+
+    def get_public_post(self, post_id: str) -> dict:
+        clean_post_id = self._validated_id(post_id, "post_id")
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT p.*, m.decision AS review_decision, m.reason AS review_reason,
+                       m.reviewed_at AS review_reviewed_at
+                FROM community_posts p
+                JOIN community_moderation m ON m.post_id = p.id
+                WHERE p.id = ? AND p.status = 'published' AND m.decision = 'approved'
+                """,
+                (clean_post_id,),
+            ).fetchone()
+            if row is None:
+                raise CommunityNotFoundError("社区内容不存在或暂不可查看")
+            return self._public_post_payload(row)
+
     def _owned_post(
         self,
         conn: sqlite3.Connection,
@@ -227,7 +387,13 @@ class CommunityService:
         clean_user_id = self._validated_id(user_id, "user_id")
         clean_post_id = self._validated_id(post_id, "post_id")
         row = conn.execute(
-            "SELECT * FROM community_posts WHERE id = ? AND user_id = ?",
+            """
+            SELECT p.*, m.decision AS review_decision, m.reason AS review_reason,
+                   m.reviewed_at AS review_reviewed_at
+            FROM community_posts p
+            LEFT JOIN community_moderation m ON m.post_id = p.id
+            WHERE p.id = ? AND p.user_id = ?
+            """,
             (clean_post_id, clean_user_id),
         ).fetchone()
         if row is None:
@@ -282,6 +448,35 @@ class CommunityService:
         return clean
 
     @staticmethod
+    def _normalized_limit(limit: int) -> int:
+        if limit < 1 or limit > 50:
+            raise CommunityError("每页数量应在 1 到 50 之间")
+        return limit
+
+    def _decode_cursor(
+        self,
+        cursor: str | None,
+    ) -> tuple[int | None, str | None]:
+        if cursor is None or not cursor.strip():
+            return None, None
+        value = cursor.strip()
+        timestamp_value, separator, post_id = value.partition(":")
+        if not separator or not timestamp_value.isdigit():
+            raise CommunityError("分页游标无效")
+        self._validated_id(post_id, "cursor")
+        timestamp = int(timestamp_value)
+        if timestamp < 0:
+            raise CommunityError("分页游标无效")
+        return timestamp, post_id
+
+    @staticmethod
+    def _encode_cursor(row: sqlite3.Row, timestamp_field: str) -> str:
+        timestamp = row[timestamp_field]
+        if timestamp is None:
+            raise CommunityError("分页游标无效")
+        return f"{timestamp}:{row['id']}"
+
+    @staticmethod
     def _request_hash(values: dict) -> str:
         canonical = json.dumps(
             values,
@@ -299,7 +494,7 @@ class CommunityService:
         moderation_status = str(row["moderation_status"])
         if status not in POST_STATUSES or moderation_status not in MODERATION_STATUSES:
             raise CommunityError("社区内容状态无效")
-        return {
+        payload = {
             "id": row["id"],
             "client_snapshot_id": row["client_snapshot_id"],
             "journey_id": row["journey_id"],
@@ -317,4 +512,27 @@ class CommunityService:
             "updated_at": row["updated_at"],
             "published_at": row["published_at"],
             "withdrawn_at": row["withdrawn_at"],
+        }
+        row_keys = set(row.keys())
+        review_decision = row["review_decision"] if "review_decision" in row_keys else None
+        payload["review"] = {
+            "status": review_decision or moderation_status,
+            "reason": row["review_reason"] if "review_reason" in row_keys else "",
+            "reviewed_at": row["review_reviewed_at"]
+            if "review_reviewed_at" in row_keys
+            else None,
+        }
+        return payload
+
+    @classmethod
+    def _public_post_payload(cls, row: sqlite3.Row) -> dict:
+        payload = cls._post_payload(row)
+        return {
+            "id": payload["id"],
+            "title": payload["title"],
+            "content": payload["content"],
+            "ai_assisted": payload["ai_assisted"],
+            "redacted_coordinate_count": payload["redacted_coordinate_count"],
+            "published_at": payload["published_at"],
+            "author_label": "研学同行者",
         }

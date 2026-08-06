@@ -14,12 +14,13 @@ from fastapi.testclient import TestClient
 BACKEND_DIR = Path(__file__).resolve().parents[1] / "backend-service"
 sys.path.insert(0, str(BACKEND_DIR))
 
-from community_api import build_community_router
+from community_api import build_community_router, build_public_community_router
 
 
 @dataclass(frozen=True)
 class TestPrincipal:
     user_id: str
+    is_admin: bool = False
 
 
 class CommunityRouteTests(unittest.TestCase):
@@ -27,23 +28,30 @@ class CommunityRouteTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.db_path = Path(self.temp_dir.name) / "routes.db"
         self.owner_id = "route-owner"
+        self.admin_id = "route-admin"
         conn = sqlite3.connect(self.db_path)
         try:
             conn.execute("CREATE TABLE users (id TEXT PRIMARY KEY)")
-            conn.execute("INSERT INTO users(id) VALUES (?)", (self.owner_id,))
+            conn.executemany(
+                "INSERT INTO users(id) VALUES (?)",
+                ((self.owner_id,), (self.admin_id,)),
+            )
             conn.commit()
         finally:
             conn.close()
 
         def require_principal(authorization: str | None = Header(default=None)) -> TestPrincipal:
-            if authorization != "Bearer owner-token":
-                raise HTTPException(status_code=401, detail="unauthorized")
-            return TestPrincipal(self.owner_id)
+            if authorization == "Bearer owner-token":
+                return TestPrincipal(self.owner_id)
+            if authorization == "Bearer admin-token":
+                return TestPrincipal(self.admin_id, is_admin=True)
+            raise HTTPException(status_code=401, detail="unauthorized")
 
         self.app = FastAPI()
         self.app.include_router(
             build_community_router(lambda: self.db_path, require_principal)
         )
+        self.app.include_router(build_public_community_router(lambda: self.db_path))
 
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
@@ -110,6 +118,42 @@ class CommunityRouteTests(unittest.TestCase):
             json={**self.payload(), "raw_audio": "base64-data"},
         )
         self.assertEqual(response.status_code, 422)
+
+    def test_public_browsing_requires_approved_review_and_moderation_is_admin_only(self) -> None:
+        owner_headers = {"Authorization": "Bearer owner-token"}
+        with TestClient(self.app) as client:
+            created = client.post(
+                "/api/account/community/drafts",
+                headers=owner_headers,
+                json=self.payload(),
+            )
+            post_id = created.json()["id"]
+            client.post(
+                f"/api/account/community/posts/{post_id}/publish",
+                headers=owner_headers,
+            )
+            self.assertEqual(client.get("/api/community/posts").json()["items"], [])
+            self.assertEqual(
+                client.post(
+                    f"/api/account/community/moderation/{post_id}",
+                    headers=owner_headers,
+                    json={"decision": "approved"},
+                ).status_code,
+                403,
+            )
+            approved = client.post(
+                f"/api/account/community/moderation/{post_id}",
+                headers={"Authorization": "Bearer admin-token"},
+                json={"decision": "approved", "reason": ""},
+            )
+            self.assertEqual(approved.status_code, 200)
+            public = client.get("/api/community/posts")
+            self.assertEqual(public.status_code, 200)
+            self.assertEqual(public.json()["items"][0]["id"], post_id)
+            self.assertEqual(client.get(f"/api/community/posts/{post_id}").status_code, 200)
+            mine = client.get("/api/account/community/posts", headers=owner_headers)
+            self.assertEqual(mine.status_code, 200)
+            self.assertEqual(mine.json()["items"][0]["review"]["status"], "approved")
 
 
 if __name__ == "__main__":
