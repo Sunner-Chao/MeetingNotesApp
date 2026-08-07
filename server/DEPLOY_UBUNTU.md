@@ -131,6 +131,19 @@ sudo systemctl list-timers meetingnotes-community-media-cleanup.timer
 
 预检会对两个 unit 运行 `systemd-analyze verify`，确认已安装文件与当前 release 一致、timer 已启用且处于活动状态；`--run-dry-run` 额外启动一次只读清理预演并输出隔离区聚合统计。该过程不带 `--apply`，不会移动或删除媒体。实际清理必须先完成 P4-B13 的备份/只读窗口步骤；恢复演练应在隔离环境完成，不能用唯一线上数据库直接验证。
 
+隔离区不可逆处置不接入 timer。先由工具生成待审批请求，并由外部工单/IAM 流程补齐两名不同审核人的批准记录：
+
+```bash
+sudo -u meetingnotes /opt/meetingnotes-stt/current-venv/bin/python \
+  /opt/meetingnotes-stt/current/scripts/purge_community_media_quarantine.py \
+  /var/lib/meetingnotes-stt/backend/community-media-quarantine \
+  --backup-archive /var/backups/meetingnotes-stt/verified-backup.tar.gz \
+  --prepare-request /var/lib/meetingnotes-stt/backend/community-media-purge-request.json \
+  --restore-drill-id restore-drill-2026-08-07
+```
+
+审批文件由两名不同审核人确认后，先不带 `--apply` 验证库存和备份摘要；只有维护窗口已设置 `COMMUNITY_WRITE_ENABLED=false`、请求 ID 已人工核对且恢复/备份证据仍有效时，才允许执行 `--apply`。工具会在 `community-media-purge-receipts/` 保存不含媒体路径的清除收据。该 JSON 流程本身不提供密码学身份认证，生产环境必须由外部工单或 IAM 记录审核人身份，不能只靠本地 root 编辑 reviewer 字段。
+
 Backend 控制台进程监听 `127.0.0.1:8090`，由 Nginx HTTPS 反向代理提供公网访问。当前公网地址为 `https://118.25.43.185/web`。SSH 隧道仍可用于本机维护：
 
 ```powershell
