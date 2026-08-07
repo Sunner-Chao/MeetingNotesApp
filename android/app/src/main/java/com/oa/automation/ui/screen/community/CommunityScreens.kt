@@ -78,7 +78,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.oa.automation.domain.model.MyCommunityPost
 import com.oa.automation.domain.model.CommunityComment
 import com.oa.automation.domain.model.CommunityInteractionState
-import com.oa.automation.domain.model.CommunityCollection
 import com.oa.automation.domain.model.PublicCommunityPost
 import java.text.SimpleDateFormat
 import java.net.URL
@@ -138,6 +137,9 @@ fun CommunityScreen(
                 state = uiState,
                 onOpenPost = onOpenPost,
                 onOpenCollection = onOpenCollection,
+                onCollectionDestinationSelect = viewModel::selectCollectionDestination,
+                onCollectionThemeSelect = viewModel::selectCollectionTheme,
+                onClearCollectionFilters = viewModel::clearCollectionFilters,
                 onRefresh = viewModel::refresh,
                 onSearchQueryChange = viewModel::updateSearchQuery,
                 onSearch = viewModel::search,
@@ -175,6 +177,9 @@ private fun CommunityContent(
     state: CommunityUiState,
     onOpenPost: (String) -> Unit,
     onOpenCollection: (String) -> Unit,
+    onCollectionDestinationSelect: (String) -> Unit,
+    onCollectionThemeSelect: (String) -> Unit,
+    onClearCollectionFilters: () -> Unit,
     onRefresh: () -> Unit,
     onSearchQueryChange: (String) -> Unit,
     onSearch: () -> Unit,
@@ -194,11 +199,17 @@ private fun CommunityContent(
         else -> state.myPosts.isEmpty()
     }
     if (isDiscover) {
-        if (state.collections.isNotEmpty()) {
+        if (state.collections.isNotEmpty() || state.collectionDestinationFilter.isNotBlank() ||
+            state.collectionThemeFilter.isNotBlank() || state.collectionFacets.destinations.isNotEmpty() ||
+            state.collectionFacets.themes.isNotEmpty()
+        ) {
             CommunityCollectionStrip(
-                collections = state.collections,
+                state = state,
                 mediaBaseUrl = state.mediaBaseUrl,
-                onOpenCollection = onOpenCollection
+                onOpenCollection = onOpenCollection,
+                onDestinationSelect = onCollectionDestinationSelect,
+                onThemeSelect = onCollectionThemeSelect,
+                onClearFilters = onClearCollectionFilters
             )
         }
         CommunityDiscoverFilters(
@@ -275,10 +286,17 @@ private fun CommunityContent(
 
 @Composable
 private fun CommunityCollectionStrip(
-    collections: List<CommunityCollection>,
+    state: CommunityUiState,
     mediaBaseUrl: String,
-    onOpenCollection: (String) -> Unit
+    onOpenCollection: (String) -> Unit,
+    onDestinationSelect: (String) -> Unit,
+    onThemeSelect: (String) -> Unit,
+    onClearFilters: () -> Unit
 ) {
+    var destinationExpanded by androidx.compose.runtime.remember { mutableStateOf(false) }
+    var themeExpanded by androidx.compose.runtime.remember { mutableStateOf(false) }
+    val hasFilters = state.collectionDestinationFilter.isNotBlank() ||
+        state.collectionThemeFilter.isNotBlank()
     Column(
         modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -290,32 +308,127 @@ private fun CommunityCollectionStrip(
             Text("编辑专题", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.weight(1f))
             Text(
-                "按人工编排浏览",
+                "精选路线",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box {
+                Surface(
+                    onClick = { destinationExpanded = true },
+                    shape = RoundedCornerShape(7.dp),
+                    color = if (state.collectionDestinationFilter.isBlank()) {
+                        MaterialTheme.colorScheme.surface
+                    } else {
+                        MaterialTheme.colorScheme.primaryContainer
+                    },
+                    border = androidx.compose.foundation.BorderStroke(
+                        1.dp, MaterialTheme.colorScheme.outlineVariant
+                    )
+                ) {
+                    Text(
+                        "目的地：${state.collectionDestinationFilter.ifBlank { "全部" }}",
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                        style = MaterialTheme.typography.labelMedium,
+                        maxLines = 1
+                    )
+                }
+                DropdownMenu(
+                    expanded = destinationExpanded,
+                    onDismissRequest = { destinationExpanded = false }
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("全部目的地") },
+                        onClick = { destinationExpanded = false; onDestinationSelect("") }
+                    )
+                    state.collectionFacets.destinations.forEach { value ->
+                        DropdownMenuItem(
+                            text = { Text(value) },
+                            onClick = { destinationExpanded = false; onDestinationSelect(value) }
+                        )
+                    }
+                }
+            }
+            Box {
+                Surface(
+                    onClick = { themeExpanded = true },
+                    shape = RoundedCornerShape(7.dp),
+                    color = if (state.collectionThemeFilter.isBlank()) {
+                        MaterialTheme.colorScheme.surface
+                    } else {
+                        MaterialTheme.colorScheme.primaryContainer
+                    },
+                    border = androidx.compose.foundation.BorderStroke(
+                        1.dp, MaterialTheme.colorScheme.outlineVariant
+                    )
+                ) {
+                    Text(
+                        "主题：${state.collectionThemeFilter.ifBlank { "全部" }}",
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                        style = MaterialTheme.typography.labelMedium,
+                        maxLines = 1
+                    )
+                }
+                DropdownMenu(
+                    expanded = themeExpanded,
+                    onDismissRequest = { themeExpanded = false }
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("全部主题") },
+                        onClick = { themeExpanded = false; onThemeSelect("") }
+                    )
+                    state.collectionFacets.themes.forEach { value ->
+                        DropdownMenuItem(
+                            text = { Text(value) },
+                            onClick = { themeExpanded = false; onThemeSelect(value) }
+                        )
+                    }
+                }
+            }
+            if (hasFilters) {
+                TextButton(onClick = onClearFilters) { Text("清除") }
+            }
         }
         LazyRow(
             contentPadding = PaddingValues(horizontal = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            items(collections, key = { it.id }) { collection ->
+            items(state.collections, key = { it.id }) { collection ->
                 Card(
-                    modifier = Modifier.width(214.dp).clickable { onOpenCollection(collection.id) },
+                    modifier = Modifier.width(214.dp).height(238.dp)
+                        .clickable { onOpenCollection(collection.id) },
                     shape = RoundedCornerShape(8.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                     elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
                 ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                        if (collection.coverThumbnailUrl.isNotBlank()) {
+                    Column {
+                        Box(
+                            modifier = Modifier.fillMaxWidth().height(92.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (collection.coverThumbnailUrl.isNotBlank()) {
                             CommunityThumbnail(
                                 url = "$mediaBaseUrl${collection.coverThumbnailUrl}",
                                 contentDescription = "专题封面",
-                                modifier = Modifier.fillMaxWidth().height(92.dp)
+                                    modifier = Modifier.fillMaxSize()
                             )
+                            } else {
+                                Icon(
+                                    Icons.Default.AutoStories,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.outline,
+                                    modifier = Modifier.size(28.dp)
+                                )
+                            }
                         }
                         Column(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
                             verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             Text(
@@ -343,6 +456,15 @@ private fun CommunityCollectionStrip(
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            collection.previewPosts.firstOrNull()?.let { preview ->
+                                Text(
+                                    "预览 · ${preview.title}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
                             }

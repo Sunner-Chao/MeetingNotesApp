@@ -21,7 +21,11 @@ import com.oa.automation.domain.model.CommunityCommentReport
 import com.oa.automation.domain.model.CommunityCommentReportQueueItem
 import com.oa.automation.domain.model.CommunityOperationsSummary
 import com.oa.automation.domain.model.CommunityCollection
+import com.oa.automation.domain.model.CommunityCollectionAdminDetail
+import com.oa.automation.domain.model.CommunityCollectionBatchResult
 import com.oa.automation.domain.model.CommunityCollectionDetail
+import com.oa.automation.domain.model.CommunityCollectionOperationsSummary
+import com.oa.automation.domain.model.CommunityCollectionPage
 import com.oa.automation.domain.model.CommunityCollectionPost
 import com.oa.automation.domain.model.CommunityCollectionRemoval
 import com.oa.automation.domain.model.MyCommunityPost
@@ -159,13 +163,22 @@ class AccountApiService(
     suspend fun publicCommunityCollections(
         endpoint: String,
         cursor: String? = null,
-        limit: Int = 20
-    ): Result<CommunityPostPage<CommunityCollection>> = request(
+        limit: Int = 20,
+        destination: String = "",
+        theme: String = ""
+    ): Result<CommunityCollectionPage> = request(
         endpoint = endpoint,
-        path = communityListPath("community/collections", cursor, limit),
+        path = communityListPath("community/collections", cursor, limit) + buildString {
+            destination.trim().takeIf { it.isNotEmpty() }?.let {
+                append("&destination=${encodeQueryValue(it)}")
+            }
+            theme.trim().takeIf { it.isNotEmpty() }?.let {
+                append("&theme=${encodeQueryValue(it)}")
+            }
+        },
         method = "GET"
     ) { body ->
-        gson.fromJson(body, object : TypeToken<CommunityPostPage<CommunityCollection>>() {}.type)
+        gson.fromJson(body, CommunityCollectionPage::class.java)
     }
 
     suspend fun publicCommunityCollection(
@@ -408,6 +421,27 @@ class AccountApiService(
         gson.fromJson(body, object : TypeToken<CommunityPostPage<CommunityCollection>>() {}.type)
     }
 
+    suspend fun adminCommunityCollection(
+        endpoint: String,
+        token: String,
+        collectionId: String
+    ): Result<CommunityCollectionAdminDetail> = request(
+        endpoint = endpoint,
+        path = "account/community/collections/$collectionId",
+        token = token,
+        method = "GET"
+    ) { body -> gson.fromJson(body, CommunityCollectionAdminDetail::class.java) }
+
+    suspend fun adminCommunityCollectionOperationsSummary(
+        endpoint: String,
+        token: String
+    ): Result<CommunityCollectionOperationsSummary> = request(
+        endpoint = endpoint,
+        path = "account/community/collection-operations-summary",
+        token = token,
+        method = "GET"
+    ) { body -> gson.fromJson(body, CommunityCollectionOperationsSummary::class.java) }
+
     suspend fun createCommunityCollection(
         endpoint: String,
         token: String,
@@ -486,6 +520,42 @@ class AccountApiService(
             mapOf("position" to position, "curation_note" to curationNote)
         )
     ) { body -> gson.fromJson(body, CommunityCollectionPost::class.java) }
+
+    suspend fun batchAddCommunityCollectionPosts(
+        endpoint: String,
+        token: String,
+        collectionId: String,
+        assignments: List<Triple<String, Int, String>>
+    ): Result<CommunityCollectionBatchResult> = request(
+        endpoint = endpoint,
+        path = "account/community/collections/$collectionId/posts/batch",
+        token = token,
+        method = "PUT",
+        jsonBody = gson.toJson(
+            mapOf(
+                "items" to assignments.map { (postId, position, note) ->
+                    mapOf(
+                        "post_id" to postId,
+                        "position" to position,
+                        "curation_note" to note
+                    )
+                }
+            )
+        )
+    ) { body -> gson.fromJson(body, CommunityCollectionBatchResult::class.java) }
+
+    suspend fun setCommunityCollectionCover(
+        endpoint: String,
+        token: String,
+        collectionId: String,
+        postId: String?
+    ): Result<CommunityCollection> = request(
+        endpoint = endpoint,
+        path = "account/community/collections/$collectionId/cover",
+        token = token,
+        method = "PUT",
+        jsonBody = gson.toJson(mapOf("post_id" to postId))
+    ) { body -> gson.fromJson(body, CommunityCollection::class.java) }
 
     suspend fun removeCommunityCollectionPost(
         endpoint: String,

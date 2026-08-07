@@ -9,6 +9,7 @@ import com.oa.automation.domain.model.CommunityFacets
 import com.oa.automation.domain.model.CommunityComment
 import com.oa.automation.domain.model.CommunityInteractionState
 import com.oa.automation.domain.model.CommunityCollection
+import com.oa.automation.domain.model.CommunityCollectionFacets
 import com.oa.automation.domain.model.PublicCommunityPost
 import com.oa.automation.infrastructure.account.AccountApiService
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -26,6 +27,9 @@ data class CommunityUiState(
     val myPosts: List<MyCommunityPost> = emptyList(),
     val savedPosts: List<PublicCommunityPost> = emptyList(),
     val collections: List<CommunityCollection> = emptyList(),
+    val collectionDestinationFilter: String = "",
+    val collectionThemeFilter: String = "",
+    val collectionFacets: CommunityCollectionFacets = CommunityCollectionFacets(),
     val searchQuery: String = "",
     val destinationFilter: String = "",
     val tagFilter: String = "",
@@ -96,6 +100,23 @@ class CommunityViewModel(
     }
 
     fun search() = refresh()
+
+    fun selectCollectionDestination(value: String) {
+        _uiState.update { it.copy(collectionDestinationFilter = value, error = null) }
+        refresh()
+    }
+
+    fun selectCollectionTheme(value: String) {
+        _uiState.update { it.copy(collectionThemeFilter = value, error = null) }
+        refresh()
+    }
+
+    fun clearCollectionFilters() {
+        _uiState.update {
+            it.copy(collectionDestinationFilter = "", collectionThemeFilter = "", error = null)
+        }
+        refresh()
+    }
 
     fun selectDestination(value: String) {
         _uiState.update { it.copy(destinationFilter = value, error = null) }
@@ -208,10 +229,17 @@ class CommunityViewModel(
 
     private suspend fun loadPublicCollections() {
         val endpoint = configDataStore.accountEndpointFlow.first()
-        accountApiService.publicCommunityCollections(endpoint, limit = 20).onSuccess { page ->
+        val filters = _uiState.value
+        accountApiService.publicCommunityCollections(
+            endpoint = endpoint,
+            limit = 20,
+            destination = filters.collectionDestinationFilter,
+            theme = filters.collectionThemeFilter
+        ).onSuccess { page ->
             _uiState.update {
                 it.copy(
                     collections = page.items,
+                    collectionFacets = page.facets,
                     mediaBaseUrl = communityMediaBaseUrl(endpoint)
                 )
             }

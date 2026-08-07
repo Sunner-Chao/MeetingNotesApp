@@ -5,6 +5,8 @@ import androidx.lifecycle.viewModelScope
 import com.oa.automation.data.local.ConfigDataStore
 import com.oa.automation.domain.model.CommunityCommentReportQueueItem
 import com.oa.automation.domain.model.CommunityCollection
+import com.oa.automation.domain.model.CommunityCollectionOperationsSummary
+import com.oa.automation.domain.model.CommunityCollectionPost
 import com.oa.automation.domain.model.CommunityModerationItem
 import com.oa.automation.domain.model.CommunityOperationsSummary
 import com.oa.automation.infrastructure.account.AccountApiService
@@ -23,6 +25,7 @@ data class CommunityModerationUiState(
     val items: List<CommunityModerationItem> = emptyList(),
     val commentReports: List<CommunityCommentReportQueueItem> = emptyList(),
     val collections: List<CommunityCollection> = emptyList(),
+    val collectionSummary: CommunityCollectionOperationsSummary? = null,
     val summary: CommunityOperationsSummary? = null,
     val nextPostCursor: String? = null,
     val nextCommentReportCursor: String? = null,
@@ -46,7 +49,12 @@ data class CommunityModerationUiState(
     val curatePostId: String? = null,
     val curateCollectionId: String = "",
     val curationNote: String = "",
-    val curationPosition: String = "0"
+    val curationPosition: String = "0",
+    val selectedPostIds: Set<String> = emptySet(),
+    val showBatchCurate: Boolean = false,
+    val coverCollectionId: String? = null,
+    val coverCandidates: List<CommunityCollectionPost> = emptyList(),
+    val coverPostId: String = ""
 )
 
 class CommunityModerationViewModel(
@@ -125,6 +133,7 @@ class CommunityModerationViewModel(
                                     page.items
                                 },
                                 nextPostCursor = page.nextCursor,
+                                selectedPostIds = if (append) current.selectedPostIds else emptySet(),
                                 isLoading = false,
                                 isLoadingMore = false
                             )
@@ -207,11 +216,20 @@ class CommunityModerationViewModel(
                 )
             }
             if (!append && loadedSuccessfully) {
-                accountApiService.adminCommunityOperationsSummary(
-                    endpoint = endpoint,
-                    token = session.accessToken
-                ).onSuccess { summary ->
-                    _uiState.update { it.copy(summary = summary) }
+                if (section == CommunityModerationSection.COLLECTIONS) {
+                    accountApiService.adminCommunityCollectionOperationsSummary(
+                        endpoint = endpoint,
+                        token = session.accessToken
+                    ).onSuccess { summary ->
+                        _uiState.update { it.copy(collectionSummary = summary) }
+                    }
+                } else {
+                    accountApiService.adminCommunityOperationsSummary(
+                        endpoint = endpoint,
+                        token = session.accessToken
+                    ).onSuccess { summary ->
+                        _uiState.update { it.copy(summary = summary) }
+                    }
                 }
             }
         }
@@ -438,6 +456,181 @@ class CommunityModerationViewModel(
                 onFailure = { error ->
                     _uiState.update {
                         it.copy(processingCollectionId = null, error = error.message ?: "专题收录失败")
+                    }
+                }
+            )
+        }
+    }
+
+    fun togglePostSelection(postId: String) {
+        val item = _uiState.value.items.firstOrNull { it.id == postId }
+        if (item?.review?.status != "approved") return
+        _uiState.update {
+            val selected = it.selectedPostIds.toMutableSet()
+            if (!selected.add(postId)) selected.remove(postId)
+            it.copy(selectedPostIds = selected)
+        }
+    }
+
+    fun openBatchCurate() {
+        if (_uiState.value.selectedPostIds.isEmpty()) return
+        _uiState.update {
+            it.copy(
+                showBatchCurate = true,
+                curateCollectionId = it.curateCollectionId.ifBlank {
+                    it.collections.firstOrNull()?.id.orEmpty()
+                },
+                curationNote = "",
+                curationPosition = "0",
+                error = null
+            )
+        }
+        if (_uiState.value.collections.isEmpty()) loadCollectionsForCuration()
+    }
+
+    fun dismissBatchCurate() {
+        if (_uiState.value.processingCollectionId == null) {
+            _uiState.update { it.copy(showBatchCurate = false) }
+        }
+    }
+
+    fun batchCuratePosts() {
+        val state = _uiState.value
+        val collectionId = state.curateCollectionId
+        val orderedPostIds = state.items.map(CommunityModerationItem::id)
+            .filter(state.selectedPostIds::contains)
+        if (collectionId.isBlank() || orderedPostIds.isEmpty() ||
+            state.processingCollectionId != null
+        ) return
+        val startPosition = state.curationPosition.toIntOrNull() ?: 0
+        if (startPosition + orderedPostIds.size - 1 > 9999) {
+            _uiState.update { it.copy(error = "批量顺序不能超过 9999") }
+            return
+        }
+        viewModelScope.launch {
+            val session = configDataStore.authSessionFlow.first()
+            if (session?.user?.isAdmin != true) {
+                _uiState.update { it.copy(error = "仅管理员可批量收录专题") }
+                return@launch
+            }
+            val endpoint = configDataStore.accountEndpointFlow.first()
+            _uiState.update { it.copy(processingCollectionId = collectionId, error = null) }
+            accountApiService.batchAddCommunityCollectionPosts(
+                endpoint = endpoint,
+                token = session.accessToken,
+                collectionId = collectionId,
+                assignments = orderedPostIds.mapIndexed { index, postId ->
+                    Triple(postId, startPosition + index, state.curationNote)
+                }
+            ).fold(
+                onSuccess = { result ->
+                    _uiState.update {
+                        it.copy(
+                            showBatchCurate = false,
+                            selectedPostIds = emptySet(),
+                            processingCollectionId = null,
+                            message = "已批量收录 ${result.items.size} 篇笔记"
+                        )
+                    }
+                },
+                onFailure = { error ->
+                    _uiState.update {
+                        it.copy(processingCollectionId = null, error = error.message ?: "批量收录失败")
+                    }
+                }
+            )
+        }
+    }
+
+    fun openCollectionCover(collectionId: String) {
+        if (_uiState.value.processingCollectionId != null) return
+        _uiState.update {
+            it.copy(
+                coverCollectionId = collectionId,
+                coverCandidates = emptyList(),
+                coverPostId = "",
+                processingCollectionId = collectionId,
+                error = null
+            )
+        }
+        viewModelScope.launch {
+            val session = configDataStore.authSessionFlow.first()
+            if (session?.user?.isAdmin != true) {
+                _uiState.update {
+                    it.copy(coverCollectionId = null, processingCollectionId = null)
+                }
+                return@launch
+            }
+            val endpoint = configDataStore.accountEndpointFlow.first()
+            accountApiService.adminCommunityCollection(
+                endpoint, session.accessToken, collectionId
+            ).fold(
+                onSuccess = { detail ->
+                    val candidates = detail.posts.filter { post -> post.visible && post.hasMedia }
+                    _uiState.update {
+                        it.copy(
+                            coverCandidates = candidates,
+                            coverPostId = detail.coverPostId.takeIf { selected ->
+                                candidates.any { candidate -> candidate.postId == selected }
+                            }.orEmpty(),
+                            processingCollectionId = null
+                        )
+                    }
+                },
+                onFailure = { error ->
+                    _uiState.update {
+                        it.copy(
+                            coverCollectionId = null,
+                            processingCollectionId = null,
+                            error = error.message ?: "封面候选加载失败"
+                        )
+                    }
+                }
+            )
+        }
+    }
+
+    fun selectCoverPost(postId: String) {
+        _uiState.update { it.copy(coverPostId = postId) }
+    }
+
+    fun dismissCollectionCover() {
+        if (_uiState.value.processingCollectionId == null) {
+            _uiState.update { it.copy(coverCollectionId = null, coverCandidates = emptyList()) }
+        }
+    }
+
+    fun saveCollectionCover() {
+        val state = _uiState.value
+        val collectionId = state.coverCollectionId ?: return
+        if (state.processingCollectionId != null) return
+        viewModelScope.launch {
+            val session = configDataStore.authSessionFlow.first()
+            if (session?.user?.isAdmin != true) return@launch
+            val endpoint = configDataStore.accountEndpointFlow.first()
+            _uiState.update { it.copy(processingCollectionId = collectionId, error = null) }
+            accountApiService.setCommunityCollectionCover(
+                endpoint,
+                session.accessToken,
+                collectionId,
+                state.coverPostId.takeIf(String::isNotBlank)
+            ).fold(
+                onSuccess = { updated ->
+                    _uiState.update {
+                        it.copy(
+                            collections = it.collections.map { item ->
+                                if (item.id == updated.id) updated else item
+                            },
+                            coverCollectionId = null,
+                            coverCandidates = emptyList(),
+                            processingCollectionId = null,
+                            message = if (state.coverPostId.isBlank()) "已恢复自动封面" else "专题封面已更新"
+                        )
+                    }
+                },
+                onFailure = { error ->
+                    _uiState.update {
+                        it.copy(processingCollectionId = null, error = error.message ?: "封面更新失败")
                     }
                 }
             )

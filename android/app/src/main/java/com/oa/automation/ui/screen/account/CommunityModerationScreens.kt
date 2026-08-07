@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -27,6 +28,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -34,6 +36,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
@@ -54,6 +57,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.oa.automation.domain.model.CommunityCommentReportQueueItem
 import com.oa.automation.domain.model.CommunityCollection
+import com.oa.automation.domain.model.CommunityCollectionOperationsSummary
 import com.oa.automation.domain.model.CommunityModerationItem
 import com.oa.automation.domain.model.CommunityOperationsSummary
 import java.text.SimpleDateFormat
@@ -245,6 +249,126 @@ fun CommunityModerationScreen(
         )
     }
 
+    if (state.showBatchCurate) {
+        var collectionMenuExpanded by remember { mutableStateOf(false) }
+        val selected = state.collections.firstOrNull { it.id == state.curateCollectionId }
+        AlertDialog(
+            onDismissRequest = viewModel::dismissBatchCurate,
+            title = { Text("批量收录 ${state.selectedPostIds.size} 篇") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Box {
+                        OutlinedButton(
+                            onClick = { collectionMenuExpanded = true },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                selected?.title ?: "选择专题",
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = collectionMenuExpanded,
+                            onDismissRequest = { collectionMenuExpanded = false }
+                        ) {
+                            state.collections.forEach { collection ->
+                                DropdownMenuItem(
+                                    text = { Text(collection.title) },
+                                    onClick = {
+                                        viewModel.selectCurateCollection(collection.id)
+                                        collectionMenuExpanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    OutlinedTextField(
+                        value = state.curationNote,
+                        onValueChange = viewModel::updateCurationNote,
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("统一收录说明") },
+                        minLines = 2,
+                        maxLines = 4
+                    )
+                    OutlinedTextField(
+                        value = state.curationPosition,
+                        onValueChange = viewModel::updateCurationPosition,
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("起始顺序") },
+                        singleLine = true
+                    )
+                    state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = viewModel::batchCuratePosts,
+                    enabled = state.curateCollectionId.isNotBlank() &&
+                        state.processingCollectionId == null
+                ) { Text("批量收录") }
+            },
+            dismissButton = {
+                TextButton(onClick = viewModel::dismissBatchCurate) { Text("取消") }
+            }
+        )
+    }
+
+    state.coverCollectionId?.let {
+        AlertDialog(
+            onDismissRequest = viewModel::dismissCollectionCover,
+            title = { Text("选择专题封面") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(
+                            selected = state.coverPostId.isBlank(),
+                            onClick = { viewModel.selectCoverPost("") }
+                        )
+                        Text("自动选择首篇可用图片")
+                    }
+                    if (state.processingCollectionId != null) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                    } else if (state.coverCandidates.isEmpty()) {
+                        Text(
+                            "专题内暂无已通过且包含图片的笔记",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        LazyColumn(modifier = Modifier.heightIn(max = 280.dp)) {
+                            items(state.coverCandidates, key = { it.postId }) { candidate ->
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    RadioButton(
+                                        selected = state.coverPostId == candidate.postId,
+                                        onClick = { viewModel.selectCoverPost(candidate.postId) }
+                                    )
+                                    Text(
+                                        candidate.title,
+                                        modifier = Modifier.weight(1f),
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = viewModel::saveCollectionCover,
+                    enabled = state.processingCollectionId == null
+                ) { Text("保存") }
+            },
+            dismissButton = {
+                TextButton(onClick = viewModel::dismissCollectionCover) { Text("取消") }
+            }
+        )
+    }
+
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
@@ -290,6 +414,9 @@ fun CommunityModerationScreen(
                 )
             }
             if (!isCollectionSection) state.summary?.let { ModerationSummary(it) }
+            if (isCollectionSection) {
+                state.collectionSummary?.let { CollectionOperationsSummary(it) }
+            }
             if (isPostSection) {
                 TabRow(selectedTabIndex = moderationFilters.indexOf(state.filter).coerceAtLeast(0)) {
                     moderationFilters.forEach { filter ->
@@ -307,12 +434,26 @@ fun CommunityModerationScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        "人工编排，不使用热度排序",
+                        "专题概览",
                         modifier = Modifier.weight(1f),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Button(onClick = viewModel::openCreateCollection) { Text("新建专题") }
+                }
+            }
+            if (isPostSection && state.filter == "all" && state.selectedPostIds.isNotEmpty()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "已选 ${state.selectedPostIds.size} 篇",
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Button(onClick = viewModel::openBatchCurate) { Text("批量收录") }
                 }
             }
             when {
@@ -342,7 +483,10 @@ fun CommunityModerationScreen(
                                 processing = state.processingPostId == item.id,
                                 onApprove = { viewModel.approve(item.id) },
                                 onReject = { viewModel.openReject(item.id) },
-                                onCurate = { viewModel.openCurate(item.id) }
+                                onCurate = { viewModel.openCurate(item.id) },
+                                selectionEnabled = state.filter == "all",
+                                selected = state.selectedPostIds.contains(item.id),
+                                onToggleSelection = { viewModel.togglePostSelection(item.id) }
                             )
                         }
                     } else if (isCommentSection) {
@@ -359,7 +503,8 @@ fun CommunityModerationScreen(
                             ModerationCollectionCard(
                                 collection = collection,
                                 processing = state.processingCollectionId == collection.id,
-                                onToggle = { viewModel.toggleCollection(collection) }
+                                onToggle = { viewModel.toggleCollection(collection) },
+                                onCover = { viewModel.openCollectionCover(collection.id) }
                             )
                         }
                     }
@@ -409,6 +554,21 @@ private fun ModerationSummary(summary: CommunityOperationsSummary) {
 }
 
 @Composable
+private fun CollectionOperationsSummary(summary: CommunityCollectionOperationsSummary) {
+    Row(
+        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        horizontalArrangement = Arrangement.spacedBy(20.dp)
+    ) {
+        ModerationSummaryMetric("专题", summary.totalCollectionCount)
+        ModerationSummaryMetric("已发布", summary.publishedCollectionCount)
+        ModerationSummaryMetric("公开笔记", summary.visiblePostCount)
+        ModerationSummaryMetric("失效收录", summary.hiddenAssignmentCount)
+        ModerationSummaryMetric("空专题", summary.publishedEmptyCount)
+    }
+}
+
+@Composable
 private fun ModerationSummaryMetric(label: String, value: Int) {
     Column(modifier = Modifier.width(72.dp)) {
         Text(
@@ -439,7 +599,10 @@ private fun ModerationPostCard(
     processing: Boolean,
     onApprove: () -> Unit,
     onReject: () -> Unit,
-    onCurate: () -> Unit
+    onCurate: () -> Unit,
+    selectionEnabled: Boolean,
+    selected: Boolean,
+    onToggleSelection: () -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -452,6 +615,10 @@ private fun ModerationPostCard(
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
+                if (selectionEnabled && item.review.status == "approved") {
+                    Checkbox(checked = selected, onCheckedChange = { onToggleSelection() })
+                    Spacer(Modifier.width(4.dp))
+                }
                 Text(
                     item.title,
                     modifier = Modifier.weight(1f),
@@ -503,7 +670,8 @@ private fun ModerationPostCard(
 private fun ModerationCollectionCard(
     collection: CommunityCollection,
     processing: Boolean,
-    onToggle: () -> Unit
+    onToggle: () -> Unit,
+    onCover: () -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -557,7 +725,10 @@ private fun ModerationCollectionCard(
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 OutlinedButton(
                     onClick = onToggle,
                     enabled = !processing &&
@@ -565,6 +736,10 @@ private fun ModerationCollectionCard(
                 ) {
                     Text(if (collection.status == "published") "下线" else "发布")
                 }
+                OutlinedButton(
+                    onClick = onCover,
+                    enabled = !processing && collection.visiblePostCount > 0
+                ) { Text("选择封面") }
                 if (processing) {
                     Spacer(Modifier.width(8.dp))
                     CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)

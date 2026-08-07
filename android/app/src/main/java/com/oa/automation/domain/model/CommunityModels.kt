@@ -75,10 +75,31 @@ data class CommunityCollection(
     @SerializedName("assigned_post_count") val assignedPostCount: Int = 0,
     @SerializedName("visible_post_count") val visiblePostCount: Int = 0,
     @SerializedName("post_count") val postCount: Int = 0,
+    @SerializedName("cover_post_id") val coverPostId: String = "",
     @SerializedName("cover_thumbnail_url") val coverThumbnailUrl: String = "",
+    @SerializedName("preview_posts") val previewPosts: List<CommunityCollectionPreview> = emptyList(),
     @SerializedName("created_at") val createdAt: Long = 0,
     @SerializedName("updated_at") val updatedAt: Long = 0,
     @SerializedName("published_at") val publishedAt: Long? = null
+)
+
+data class CommunityCollectionPreview(
+    val id: String,
+    val title: String,
+    val destination: String = "",
+    @SerializedName("curation_note") val curationNote: String = "",
+    @SerializedName("thumbnail_url") val thumbnailUrl: String = ""
+)
+
+data class CommunityCollectionFacets(
+    val destinations: List<String> = emptyList(),
+    val themes: List<String> = emptyList()
+)
+
+data class CommunityCollectionPage(
+    val items: List<CommunityCollection> = emptyList(),
+    @SerializedName("next_cursor") val nextCursor: String? = null,
+    val facets: CommunityCollectionFacets = CommunityCollectionFacets()
 )
 
 data class CommunityCollectionPost(
@@ -90,8 +111,40 @@ data class CommunityCollectionPost(
     @SerializedName("post_status") val postStatus: String = "published",
     @SerializedName("review_status") val reviewStatus: String = "pending",
     val visible: Boolean = false,
+    @SerializedName("has_media") val hasMedia: Boolean = false,
     @SerializedName("added_at") val addedAt: Long = 0,
     @SerializedName("updated_at") val updatedAt: Long = 0
+)
+
+data class CommunityCollectionBatchResult(
+    @SerializedName("collection_id") val collectionId: String,
+    val items: List<CommunityCollectionPost> = emptyList()
+)
+
+data class CommunityCollectionAdminDetail(
+    val id: String,
+    val title: String,
+    val description: String = "",
+    val destination: String = "",
+    val theme: String = "",
+    @SerializedName("display_order") val displayOrder: Int = 0,
+    val status: String = "draft",
+    @SerializedName("cover_post_id") val coverPostId: String = "",
+    @SerializedName("assigned_post_count") val assignedPostCount: Int = 0,
+    @SerializedName("visible_post_count") val visiblePostCount: Int = 0,
+    val posts: List<CommunityCollectionPost> = emptyList()
+)
+
+data class CommunityCollectionOperationsSummary(
+    @SerializedName("generated_at") val generatedAt: Long = 0,
+    @SerializedName("total_collection_count") val totalCollectionCount: Int = 0,
+    @SerializedName("draft_collection_count") val draftCollectionCount: Int = 0,
+    @SerializedName("published_collection_count") val publishedCollectionCount: Int = 0,
+    @SerializedName("unpublished_collection_count") val unpublishedCollectionCount: Int = 0,
+    @SerializedName("assigned_post_count") val assignedPostCount: Int = 0,
+    @SerializedName("visible_post_count") val visiblePostCount: Int = 0,
+    @SerializedName("hidden_assignment_count") val hiddenAssignmentCount: Int = 0,
+    @SerializedName("published_empty_count") val publishedEmptyCount: Int = 0
 )
 
 data class CommunityCollectionRemoval(
