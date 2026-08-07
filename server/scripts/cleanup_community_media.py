@@ -9,6 +9,7 @@ import os
 import sqlite3
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from posixpath import normpath
@@ -21,6 +22,46 @@ IMAGE_EXTENSIONS = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp
 
 class CommunityMediaCleanupError(RuntimeError):
     pass
+
+
+@contextmanager
+def _maintenance_lock(lock_path: Path):
+    """Serialize cleanup with backup/restore-adjacent maintenance processes."""
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as stream:
+        stream.seek(0, 2)
+        if stream.tell() == 0:
+            stream.write(b"0")
+            stream.flush()
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                stream.seek(0)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise CommunityMediaCleanupError(
+                "community media maintenance is already running"
+            ) from exc
+        try:
+            yield
+        finally:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+
+                    stream.seek(0)
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
 
 
 @dataclass(frozen=True)
@@ -189,6 +230,7 @@ def cleanup_community_media(
     withdrawn_retention_days: int = 30,
     apply: bool = False,
     now_ms: int | None = None,
+    lock_path: Path | None = None,
 ) -> dict:
     if partial_retention_days < 1 or withdrawn_retention_days < 1:
         raise CommunityMediaCleanupError("retention days must be positive")
@@ -199,6 +241,7 @@ def cleanup_community_media(
     database = db_path.expanduser().resolve()
     media = media_root.expanduser().resolve()
     quarantine = quarantine_root.expanduser().resolve()
+    lock = (lock_path or database.parent / "community-media-maintenance.lock").expanduser().resolve()
     if not database.is_file() or not media.is_dir():
         raise CommunityMediaCleanupError("community database or media directory does not exist")
     try:
@@ -207,84 +250,91 @@ def cleanup_community_media(
         pass
     else:
         raise CommunityMediaCleanupError("quarantine directory must be outside media root")
-
-    connection = sqlite3.connect(database, timeout=30)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA foreign_keys = ON")
-    moved_files: list[tuple[Path, Path]] = []
-    effective_now_ms = now_ms if now_ms is not None else int(time.time() * 1000)
-    run_root: Path | None = None
     try:
-        if apply:
-            connection.execute("BEGIN IMMEDIATE")
-        plan = _build_cleanup_plan(
-            connection,
-            media,
-            now_ms=effective_now_ms,
-            partial_retention_days=partial_retention_days,
-            withdrawn_retention_days=withdrawn_retention_days,
-        )
-        if apply:
-            run_root = quarantine / f"cleanup-{int(time.time())}-{uuid.uuid4().hex}"
-            for source in plan.files_to_quarantine:
-                relative_path = source.relative_to(media)
-                destination = run_root / relative_path
-                destination.parent.mkdir(parents=True, exist_ok=True)
+        lock.relative_to(media)
+    except ValueError:
+        pass
+    else:
+        raise CommunityMediaCleanupError("lock file must be outside media root")
+
+    with _maintenance_lock(lock):
+        connection = sqlite3.connect(database, timeout=30)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        moved_files: list[tuple[Path, Path]] = []
+        effective_now_ms = now_ms if now_ms is not None else int(time.time() * 1000)
+        run_root: Path | None = None
+        try:
+            if apply:
+                connection.execute("BEGIN IMMEDIATE")
+            plan = _build_cleanup_plan(
+                connection,
+                media,
+                now_ms=effective_now_ms,
+                partial_retention_days=partial_retention_days,
+                withdrawn_retention_days=withdrawn_retention_days,
+            )
+            if apply:
+                run_root = quarantine / f"cleanup-{int(time.time())}-{uuid.uuid4().hex}"
+                for source in plan.files_to_quarantine:
+                    relative_path = source.relative_to(media)
+                    destination = run_root / relative_path
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    if destination.exists():
+                        raise CommunityMediaCleanupError("quarantine destination already exists")
+                    source.replace(destination)
+                    moved_files.append((source, destination))
+                for reset in plan.partial_resets:
+                    other_variant = "thumbnail" if reset.variant == "original" else "original"
+                    connection.execute(
+                        f"""
+                        UPDATE community_post_media
+                        SET {reset.variant}_received_bytes = 0,
+                            status = CASE
+                                WHEN {other_variant}_received_bytes = 0 THEN 'pending'
+                                ELSE 'uploading'
+                            END,
+                            updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (effective_now_ms, reset.media_id),
+                    )
+                if plan.withdrawn_media_ids:
+                    placeholders = ",".join("?" for _ in plan.withdrawn_media_ids)
+                    connection.execute(
+                        f"DELETE FROM community_post_media WHERE id IN ({placeholders})",
+                        plan.withdrawn_media_ids,
+                    )
+                connection.commit()
+            return {
+                "status": "ok",
+                "dry_run": not apply,
+                "stale_partial_variant_count": len(plan.partial_resets),
+                "withdrawn_media_count": len(plan.withdrawn_media_ids),
+                "orphan_file_count": len(plan.orphan_files),
+                "planned_quarantine_file_count": len(plan.files_to_quarantine),
+                "quarantined_file_count": len(moved_files),
+            }
+        except Exception:
+            connection.rollback()
+            for source, destination in reversed(moved_files):
+                source.parent.mkdir(parents=True, exist_ok=True)
                 if destination.exists():
-                    raise CommunityMediaCleanupError("quarantine destination already exists")
-                source.replace(destination)
-                moved_files.append((source, destination))
-            for reset in plan.partial_resets:
-                other_variant = "thumbnail" if reset.variant == "original" else "original"
-                connection.execute(
-                    f"""
-                    UPDATE community_post_media
-                    SET {reset.variant}_received_bytes = 0,
-                        status = CASE
-                            WHEN {other_variant}_received_bytes = 0 THEN 'pending'
-                            ELSE 'uploading'
-                        END,
-                        updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (effective_now_ms, reset.media_id),
-                )
-            if plan.withdrawn_media_ids:
-                placeholders = ",".join("?" for _ in plan.withdrawn_media_ids)
-                connection.execute(
-                    f"DELETE FROM community_post_media WHERE id IN ({placeholders})",
-                    plan.withdrawn_media_ids,
-                )
-            connection.commit()
-        return {
-            "status": "ok",
-            "dry_run": not apply,
-            "stale_partial_variant_count": len(plan.partial_resets),
-            "withdrawn_media_count": len(plan.withdrawn_media_ids),
-            "orphan_file_count": len(plan.orphan_files),
-            "planned_quarantine_file_count": len(plan.files_to_quarantine),
-            "quarantined_file_count": len(moved_files),
-        }
-    except Exception:
-        connection.rollback()
-        for source, destination in reversed(moved_files):
-            source.parent.mkdir(parents=True, exist_ok=True)
-            if destination.exists():
-                destination.replace(source)
-        if run_root is not None and run_root.exists():
-            for path in sorted(run_root.rglob("*"), key=lambda item: len(item.parts), reverse=True):
-                if path.is_dir():
-                    try:
-                        path.rmdir()
-                    except OSError:
-                        pass
-            try:
-                run_root.rmdir()
-            except OSError:
-                pass
-        raise
-    finally:
-        connection.close()
+                    destination.replace(source)
+            if run_root is not None and run_root.exists():
+                for path in sorted(run_root.rglob("*"), key=lambda item: len(item.parts), reverse=True):
+                    if path.is_dir():
+                        try:
+                            path.rmdir()
+                        except OSError:
+                            pass
+                try:
+                    run_root.rmdir()
+                except OSError:
+                    pass
+            raise
+        finally:
+            connection.close()
 
 
 def _writes_enabled() -> bool:
@@ -299,6 +349,7 @@ def main() -> int:
     parser.add_argument("--quarantine-root", type=Path, required=True)
     parser.add_argument("--partial-retention-days", type=int, default=7)
     parser.add_argument("--withdrawn-retention-days", type=int, default=30)
+    parser.add_argument("--lock-file", type=Path)
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
     try:
@@ -313,6 +364,7 @@ def main() -> int:
             partial_retention_days=args.partial_retention_days,
             withdrawn_retention_days=args.withdrawn_retention_days,
             apply=args.apply,
+            lock_path=args.lock_file,
         )
     except (CommunityMediaCleanupError, OSError, sqlite3.Error) as exc:
         print(json.dumps({"status": "failed", "error": str(exc)}, ensure_ascii=False))

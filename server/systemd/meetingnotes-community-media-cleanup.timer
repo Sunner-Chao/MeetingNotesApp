@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily MeetingNotesApp Community Media Cleanup Dry Run
+
+[Timer]
+OnCalendar=*-*-* 03:40:00 UTC
+RandomizedDelaySec=15m
+Persistent=true
+Unit=meetingnotes-community-media-cleanup.service
+
+[Install]
+WantedBy=timers.target

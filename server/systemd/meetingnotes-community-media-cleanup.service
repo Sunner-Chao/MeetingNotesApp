@@ -1,0 +1,32 @@
+[Unit]
+Description=MeetingNotesApp Community Media Cleanup Dry Run
+After=network-online.target meetingnotes-backend.service
+Wants=network-online.target
+ConditionPathExists=/var/lib/meetingnotes-stt/backend/meeting_notes.db
+ConditionPathIsDirectory=/var/lib/meetingnotes-stt/backend/community-media
+
+[Service]
+Type=oneshot
+User=meetingnotes
+Group=meetingnotes
+WorkingDirectory=/opt/meetingnotes-stt/current
+EnvironmentFile=-/etc/meetingnotes-stt/stt.env
+Environment=COMMUNITY_WRITE_ENABLED=true
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/meetingnotes-stt/current-venv/bin/python -u /opt/meetingnotes-stt/current/scripts/cleanup_community_media.py /var/lib/meetingnotes-stt/backend/meeting_notes.db --media-root /var/lib/meetingnotes-stt/backend/community-media --quarantine-root /var/lib/meetingnotes-stt/backend/community-media-quarantine --lock-file /var/lib/meetingnotes-stt/backend/community-media-maintenance.lock
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/var/lib/meetingnotes-stt/backend
+UMask=0027
