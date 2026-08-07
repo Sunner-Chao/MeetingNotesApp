@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from community_service import (
+    CommunityCollectionInput,
     CommunityDraftInput,
     CommunityError,
     CommunityMediaManifestInput,
@@ -74,6 +75,29 @@ class CommunityCommentModerationPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     decision: str = Field(min_length=1, max_length=20)
+
+
+class CommunityCollectionPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=1000)
+    destination: str = Field(default="", max_length=120)
+    theme: str = Field(default="", max_length=80)
+    display_order: int = Field(default=0, ge=0, le=9999)
+
+
+class CommunityCollectionStatusPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: str = Field(pattern="^(published|unpublished)$")
+
+
+class CommunityCollectionPostPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    position: int = Field(default=0, ge=0, le=9999)
+    curation_note: str = Field(default="", max_length=200)
 
 
 class CommunityMediaManifestPayload(BaseModel):
@@ -453,6 +477,127 @@ def build_community_router(
         except CommunityError as exc:
             raise community_http_error(exc) from exc
 
+    @router.get("/collections")
+    def list_admin_community_collections(
+        status: str = Query(default="all"),
+        cursor: str | None = None,
+        limit: int = Query(default=20, ge=1, le=50),
+        principal: Any = Depends(account_principal_dependency),
+    ) -> dict:
+        if not bool(getattr(principal, "is_admin", False)):
+            raise community_http_error(CommunityPermissionError("需要管理员权限"))
+        try:
+            return service().list_admin_collections(
+                status=status,
+                cursor=cursor,
+                limit=limit,
+            )
+        except CommunityError as exc:
+            raise community_http_error(exc) from exc
+
+    @router.post("/collections", status_code=201)
+    def create_admin_community_collection(
+        payload: CommunityCollectionPayload,
+        principal: Any = Depends(account_principal_dependency),
+    ) -> dict:
+        if not bool(getattr(principal, "is_admin", False)):
+            raise community_http_error(CommunityPermissionError("需要管理员权限"))
+        ensure_user_writes_enabled()
+        try:
+            return service().create_collection(
+                principal.user_id,
+                CommunityCollectionInput(**payload.model_dump()),
+            )
+        except CommunityError as exc:
+            raise community_http_error(exc) from exc
+
+    @router.get("/collections/{collection_id}")
+    def get_admin_community_collection(
+        collection_id: str,
+        principal: Any = Depends(account_principal_dependency),
+    ) -> dict:
+        if not bool(getattr(principal, "is_admin", False)):
+            raise community_http_error(CommunityPermissionError("需要管理员权限"))
+        try:
+            return service().get_admin_collection(collection_id)
+        except CommunityError as exc:
+            raise community_http_error(exc) from exc
+
+    @router.put("/collections/{collection_id}")
+    def update_admin_community_collection(
+        collection_id: str,
+        payload: CommunityCollectionPayload,
+        principal: Any = Depends(account_principal_dependency),
+    ) -> dict:
+        if not bool(getattr(principal, "is_admin", False)):
+            raise community_http_error(CommunityPermissionError("需要管理员权限"))
+        ensure_user_writes_enabled()
+        try:
+            return service().update_collection(
+                collection_id,
+                principal.user_id,
+                CommunityCollectionInput(**payload.model_dump()),
+            )
+        except CommunityError as exc:
+            raise community_http_error(exc) from exc
+
+    @router.post("/collections/{collection_id}/status")
+    def set_admin_community_collection_status(
+        collection_id: str,
+        payload: CommunityCollectionStatusPayload,
+        principal: Any = Depends(account_principal_dependency),
+    ) -> dict:
+        if not bool(getattr(principal, "is_admin", False)):
+            raise community_http_error(CommunityPermissionError("需要管理员权限"))
+        ensure_user_writes_enabled()
+        try:
+            return service().set_collection_status(
+                collection_id,
+                status=payload.status,
+                updated_by=principal.user_id,
+            )
+        except CommunityError as exc:
+            raise community_http_error(exc) from exc
+
+    @router.put("/collections/{collection_id}/posts/{post_id}")
+    def add_admin_community_collection_post(
+        collection_id: str,
+        post_id: str,
+        payload: CommunityCollectionPostPayload,
+        principal: Any = Depends(account_principal_dependency),
+    ) -> dict:
+        if not bool(getattr(principal, "is_admin", False)):
+            raise community_http_error(CommunityPermissionError("需要管理员权限"))
+        ensure_user_writes_enabled()
+        try:
+            return service().add_collection_post(
+                collection_id,
+                post_id,
+                position=payload.position,
+                curation_note=payload.curation_note,
+                added_by=principal.user_id,
+            )
+        except CommunityError as exc:
+            raise community_http_error(exc) from exc
+
+    @router.delete("/collections/{collection_id}/posts/{post_id}")
+    def remove_admin_community_collection_post(
+        collection_id: str,
+        post_id: str,
+        principal: Any = Depends(account_principal_dependency),
+    ) -> dict:
+        if not bool(getattr(principal, "is_admin", False)):
+            raise community_http_error(CommunityPermissionError("需要管理员权限"))
+        ensure_user_writes_enabled()
+        try:
+            return service().remove_collection_post(
+                collection_id,
+                post_id,
+                removed_by=principal.user_id,
+            )
+        except CommunityError as exc:
+            raise community_http_error(exc) from exc
+
     return router
 
 
@@ -471,6 +616,31 @@ def build_public_community_router(
     @router.get("/status")
     def community_status() -> dict:
         return {"read_enabled": True, "write_enabled": bool(is_write_enabled())}
+
+    @router.get("/collections")
+    def list_public_community_collections(
+        cursor: str | None = None,
+        limit: int = Query(default=20, ge=1, le=50),
+    ) -> dict:
+        try:
+            return service().list_public_collections(cursor=cursor, limit=limit)
+        except CommunityError as exc:
+            raise community_http_error(exc) from exc
+
+    @router.get("/collections/{collection_id}")
+    def get_public_community_collection(
+        collection_id: str,
+        cursor: str | None = None,
+        limit: int = Query(default=20, ge=1, le=50),
+    ) -> dict:
+        try:
+            return service().get_public_collection(
+                collection_id,
+                cursor=cursor,
+                limit=limit,
+            )
+        except CommunityError as exc:
+            raise community_http_error(exc) from exc
 
     @router.get("/posts")
     def list_public_community_posts(

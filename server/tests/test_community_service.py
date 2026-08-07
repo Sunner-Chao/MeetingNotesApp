@@ -14,6 +14,7 @@ BACKEND_DIR = Path(__file__).resolve().parents[1] / "backend-service"
 sys.path.insert(0, str(BACKEND_DIR))
 
 from community_service import (
+    CommunityCollectionInput,
     CommunityConflictError,
     CommunityDraftInput,
     CommunityError,
@@ -304,6 +305,106 @@ class CommunityServiceTests(unittest.TestCase):
         self.assertEqual(len(moderation_first_ids), 2)
         self.assertEqual(len(moderation_second_ids), 1)
         self.assertTrue(moderation_first_ids.isdisjoint(moderation_second_ids))
+
+    def test_curated_collections_require_approved_posts_and_explain_manual_order(self) -> None:
+        collection = self.service.create_collection(
+            self.other_id,
+            CommunityCollectionInput(
+                title="上海能源研学",
+                description="编辑人工筛选的现场能源主题记录。",
+                destination="上海",
+                theme="能源科普",
+                display_order=2,
+            ),
+        )
+        self.assertEqual(collection["status"], "draft")
+        with self.assertRaises(CommunityConflictError):
+            self.service.set_collection_status(
+                collection["id"], status="published", updated_by=self.other_id
+            )
+
+        post, _ = self.service.create_private_draft(
+            self.owner_id,
+            self.snapshot(destination="上海", tags=("能源科普",)),
+        )
+        self.service.publish(self.owner_id, post["id"])
+        with self.assertRaises(CommunityNotFoundError):
+            self.service.add_collection_post(
+                collection["id"],
+                post["id"],
+                position=10,
+                curation_note="讲解结构完整",
+                added_by=self.other_id,
+            )
+
+        self.service.review_post(
+            post["id"], decision="approved", reason="", reviewed_by=self.other_id
+        )
+        assignment = self.service.add_collection_post(
+            collection["id"],
+            post["id"],
+            position=10,
+            curation_note="讲解结构完整，适合作为半日路线参考。",
+            added_by=self.other_id,
+        )
+        self.assertTrue(assignment["visible"])
+        published = self.service.set_collection_status(
+            collection["id"], status="published", updated_by=self.other_id
+        )
+        self.assertEqual(published["visible_post_count"], 1)
+
+        public_list = self.service.list_public_collections()
+        self.assertEqual([item["id"] for item in public_list["items"]], [collection["id"]])
+        self.assertEqual(public_list["items"][0]["post_count"], 1)
+        detail = self.service.get_public_collection(collection["id"])
+        self.assertEqual(detail["items"][0]["id"], post["id"])
+        self.assertEqual(detail["items"][0]["collection_position"], 10)
+        self.assertEqual(
+            detail["items"][0]["curation_note"],
+            "讲解结构完整，适合作为半日路线参考。",
+        )
+        self.assertNotIn("user_id", detail["items"][0])
+
+    def test_curated_collection_visibility_rechecks_post_state_and_supports_unpublish(self) -> None:
+        collection = self.service.create_collection(
+            self.other_id,
+            CommunityCollectionInput(title="园区观察", display_order=1),
+        )
+        post, _ = self.service.create_private_draft(self.owner_id, self.snapshot())
+        self.service.publish(self.owner_id, post["id"])
+        self.service.review_post(
+            post["id"], decision="approved", reason="", reviewed_by=self.other_id
+        )
+        self.service.add_collection_post(
+            collection["id"],
+            post["id"],
+            position=0,
+            curation_note="现场观察样本",
+            added_by=self.other_id,
+        )
+        self.service.set_collection_status(
+            collection["id"], status="published", updated_by=self.other_id
+        )
+
+        self.service.review_post(
+            post["id"],
+            decision="rejected",
+            reason="需要补充授权说明",
+            reviewed_by=self.other_id,
+        )
+        self.assertEqual(self.service.list_public_collections()["items"], [])
+        with self.assertRaises(CommunityNotFoundError):
+            self.service.get_public_collection(collection["id"])
+        admin = self.service.get_admin_collection(collection["id"])
+        self.assertEqual(admin["assigned_post_count"], 1)
+        self.assertFalse(admin["posts"][0]["visible"])
+
+        self.service.set_collection_status(
+            collection["id"], status="unpublished", updated_by=self.other_id
+        )
+        self.assertEqual(self.service.list_public_collections()["items"], [])
+        with self.assertRaises(CommunityNotFoundError):
+            self.service.get_public_collection(collection["id"])
 
     def test_interactions_are_idempotent_scoped_and_comment_deletion_is_soft(self) -> None:
         created, _ = self.service.create_private_draft(self.owner_id, self.snapshot())

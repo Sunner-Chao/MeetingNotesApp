@@ -274,6 +274,85 @@ class CommunityRouteTests(unittest.TestCase):
             self.assertNotIn("journey_id", item)
             self.assertNotIn("client_snapshot_id", item)
 
+    def test_admin_curates_public_collection_and_read_only_mode_blocks_changes(self) -> None:
+        owner_headers = {"Authorization": "Bearer owner-token"}
+        admin_headers = {"Authorization": "Bearer admin-token"}
+        with TestClient(self.app) as client:
+            self.assertEqual(
+                client.get("/api/account/community/collections", headers=owner_headers).status_code,
+                403,
+            )
+            created_collection = client.post(
+                "/api/account/community/collections",
+                headers=admin_headers,
+                json={
+                    "title": "上海科创研学",
+                    "description": "由编辑人工筛选的科创现场笔记。",
+                    "destination": "上海",
+                    "theme": "科技教育",
+                    "display_order": 1,
+                },
+            )
+            self.assertEqual(created_collection.status_code, 201)
+            collection_id = created_collection.json()["id"]
+            empty_publish = client.post(
+                f"/api/account/community/collections/{collection_id}/status",
+                headers=admin_headers,
+                json={"status": "published"},
+            )
+            self.assertEqual(empty_publish.status_code, 409)
+
+            post = client.post(
+                "/api/account/community/drafts", headers=owner_headers, json=self.payload()
+            ).json()
+            client.post(
+                f"/api/account/community/posts/{post['id']}/publish", headers=owner_headers
+            )
+            client.post(
+                f"/api/account/community/moderation/{post['id']}",
+                headers=admin_headers,
+                json={"decision": "approved", "reason": ""},
+            )
+            added = client.put(
+                f"/api/account/community/collections/{collection_id}/posts/{post['id']}",
+                headers=admin_headers,
+                json={"position": 5, "curation_note": "路线清晰，现场要点完整。"},
+            )
+            self.assertEqual(added.status_code, 200)
+            self.assertTrue(added.json()["visible"])
+            published = client.post(
+                f"/api/account/community/collections/{collection_id}/status",
+                headers=admin_headers,
+                json={"status": "published"},
+            )
+            self.assertEqual(published.status_code, 200)
+
+            public_list = client.get("/api/community/collections")
+            self.assertEqual(public_list.status_code, 200)
+            self.assertEqual(public_list.json()["items"][0]["id"], collection_id)
+            public_detail = client.get(f"/api/community/collections/{collection_id}")
+            self.assertEqual(public_detail.status_code, 200)
+            self.assertEqual(public_detail.json()["items"][0]["id"], post["id"])
+            self.assertEqual(
+                public_detail.json()["items"][0]["curation_note"],
+                "路线清晰，现场要点完整。",
+            )
+
+            self.write_enabled = False
+            blocked = client.put(
+                f"/api/account/community/collections/{collection_id}/posts/{post['id']}",
+                headers=admin_headers,
+                json={"position": 1, "curation_note": "调整顺序"},
+            )
+            self.assertEqual(blocked.status_code, 503)
+            self.assertEqual(
+                client.get(
+                    f"/api/account/community/collections/{collection_id}",
+                    headers=admin_headers,
+                ).status_code,
+                200,
+            )
+
     def test_interaction_and_comment_routes_require_approved_post_and_owner_delete(self) -> None:
         owner_headers = {"Authorization": "Bearer owner-token"}
         admin_headers = {"Authorization": "Bearer admin-token"}

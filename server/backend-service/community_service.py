@@ -20,6 +20,7 @@ from community_media import CommunityMediaFormatError, sanitize_image_bytes
 POST_STATUSES = frozenset({"private_draft", "published", "withdrawn"})
 MODERATION_STATUSES = frozenset({"not_submitted", "pending"})
 REVIEW_DECISIONS = frozenset({"approved", "rejected"})
+COLLECTION_STATUSES = frozenset({"draft", "published", "unpublished"})
 REPORT_CATEGORIES = frozenset({"privacy", "copyright", "safety", "spam", "other"})
 DEFAULT_ACTION_RATE_LIMITS: dict[str, tuple[int, int]] = {
     "interaction": (60, 60),
@@ -108,6 +109,15 @@ class CommunityMediaManifestInput:
 class CommunityReportInput:
     category: str
     reason: str = ""
+
+
+@dataclass(frozen=True)
+class CommunityCollectionInput:
+    title: str
+    description: str = ""
+    destination: str = ""
+    theme: str = ""
+    display_order: int = 0
 
 
 class CommunityService:
@@ -400,6 +410,49 @@ class CommunityService:
 
                 CREATE INDEX IF NOT EXISTS idx_community_post_pois_name
                     ON community_post_pois(poi_name, post_id);
+
+                CREATE TABLE IF NOT EXISTS community_collections (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
+                    destination TEXT NOT NULL DEFAULT '',
+                    theme TEXT NOT NULL DEFAULT '',
+                    display_order INTEGER NOT NULL DEFAULT 0
+                        CHECK(display_order >= 0 AND display_order <= 9999),
+                    status TEXT NOT NULL DEFAULT 'draft'
+                        CHECK(status IN ('draft', 'published', 'unpublished')),
+                    created_by TEXT NOT NULL,
+                    updated_by TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    published_at INTEGER
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_community_collections_public
+                    ON community_collections(status, display_order ASC, published_at DESC, id ASC);
+                CREATE INDEX IF NOT EXISTS idx_community_collections_admin
+                    ON community_collections(updated_at DESC, id DESC);
+
+                CREATE TABLE IF NOT EXISTS community_collection_posts (
+                    collection_id TEXT NOT NULL,
+                    post_id TEXT NOT NULL,
+                    position INTEGER NOT NULL DEFAULT 0
+                        CHECK(position >= 0 AND position <= 9999),
+                    curation_note TEXT NOT NULL DEFAULT '',
+                    added_by TEXT NOT NULL,
+                    added_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY(collection_id, post_id),
+                    FOREIGN KEY(collection_id) REFERENCES community_collections(id)
+                        ON DELETE CASCADE,
+                    FOREIGN KEY(post_id) REFERENCES community_posts(id)
+                        ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_community_collection_posts_order
+                    ON community_collection_posts(collection_id, position ASC, added_at ASC, post_id ASC);
+                CREATE INDEX IF NOT EXISTS idx_community_collection_posts_post
+                    ON community_collection_posts(post_id, collection_id);
                 """
             )
             self._ensure_comment_report_columns(conn)
@@ -1331,6 +1384,399 @@ class CommunityService:
             else None,
         }
 
+    def create_collection(
+        self,
+        created_by: str,
+        collection: CommunityCollectionInput,
+    ) -> dict:
+        clean_actor_id = self._validated_id(created_by, "created_by")
+        normalized = self._validated_collection(collection)
+        collection_id = uuid.uuid4().hex
+        now = self._now_ms()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO community_collections (
+                    id, title, description, destination, theme, display_order,
+                    status, created_by, updated_by, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?)
+                """,
+                (
+                    collection_id,
+                    normalized["title"],
+                    normalized["description"],
+                    normalized["destination"],
+                    normalized["theme"],
+                    normalized["display_order"],
+                    clean_actor_id,
+                    clean_actor_id,
+                    now,
+                    now,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM community_collections WHERE id = ?",
+                (collection_id,),
+            ).fetchone()
+            return self._admin_collection_payload(conn, row)
+
+    def update_collection(
+        self,
+        collection_id: str,
+        updated_by: str,
+        collection: CommunityCollectionInput,
+    ) -> dict:
+        clean_collection_id = self._validated_id(collection_id, "collection_id")
+        clean_actor_id = self._validated_id(updated_by, "updated_by")
+        normalized = self._validated_collection(collection)
+        now = self._now_ms()
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT 1 FROM community_collections WHERE id = ?",
+                (clean_collection_id,),
+            ).fetchone()
+            if existing is None:
+                raise CommunityNotFoundError("专题不存在")
+            conn.execute(
+                """
+                UPDATE community_collections
+                SET title = ?, description = ?, destination = ?, theme = ?,
+                    display_order = ?, updated_by = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    normalized["title"],
+                    normalized["description"],
+                    normalized["destination"],
+                    normalized["theme"],
+                    normalized["display_order"],
+                    clean_actor_id,
+                    now,
+                    clean_collection_id,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM community_collections WHERE id = ?",
+                (clean_collection_id,),
+            ).fetchone()
+            return self._admin_collection_payload(conn, row)
+
+    def set_collection_status(
+        self,
+        collection_id: str,
+        *,
+        status: str,
+        updated_by: str,
+    ) -> dict:
+        clean_collection_id = self._validated_id(collection_id, "collection_id")
+        clean_actor_id = self._validated_id(updated_by, "updated_by")
+        clean_status = status.strip().lower()
+        if clean_status not in {"published", "unpublished"}:
+            raise CommunityError("专题状态无效")
+        now = self._now_ms()
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT * FROM community_collections WHERE id = ?",
+                (clean_collection_id,),
+            ).fetchone()
+            if existing is None:
+                raise CommunityNotFoundError("专题不存在")
+            if clean_status == "published" and self._visible_collection_post_count(
+                conn, clean_collection_id
+            ) == 0:
+                raise CommunityConflictError("专题至少需要一篇已审核通过的公开笔记")
+            published_at = (
+                existing["published_at"]
+                if existing["published_at"] is not None
+                else now
+            )
+            conn.execute(
+                """
+                UPDATE community_collections
+                SET status = ?, updated_by = ?, updated_at = ?, published_at = ?
+                WHERE id = ?
+                """,
+                (
+                    clean_status,
+                    clean_actor_id,
+                    now,
+                    published_at,
+                    clean_collection_id,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM community_collections WHERE id = ?",
+                (clean_collection_id,),
+            ).fetchone()
+            return self._admin_collection_payload(conn, row)
+
+    def add_collection_post(
+        self,
+        collection_id: str,
+        post_id: str,
+        *,
+        position: int,
+        curation_note: str,
+        added_by: str,
+    ) -> dict:
+        clean_collection_id = self._validated_id(collection_id, "collection_id")
+        clean_post_id = self._validated_id(post_id, "post_id")
+        clean_actor_id = self._validated_id(added_by, "added_by")
+        if position < 0 or position > 9999:
+            raise CommunityError("专题内顺序必须在 0 到 9999 之间")
+        clean_note = curation_note.strip()
+        if len(clean_note) > 200:
+            raise CommunityError("收录说明不能超过 200 个字符")
+        now = self._now_ms()
+        with self._connect() as conn:
+            collection = conn.execute(
+                "SELECT 1 FROM community_collections WHERE id = ?",
+                (clean_collection_id,),
+            ).fetchone()
+            if collection is None:
+                raise CommunityNotFoundError("专题不存在")
+            self._approved_post(conn, clean_post_id)
+            conn.execute(
+                """
+                INSERT INTO community_collection_posts (
+                    collection_id, post_id, position, curation_note,
+                    added_by, added_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(collection_id, post_id) DO UPDATE SET
+                    position = excluded.position,
+                    curation_note = excluded.curation_note,
+                    added_by = excluded.added_by,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    clean_collection_id,
+                    clean_post_id,
+                    position,
+                    clean_note,
+                    clean_actor_id,
+                    now,
+                    now,
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE community_collections
+                SET updated_by = ?, updated_at = ? WHERE id = ?
+                """,
+                (clean_actor_id, now, clean_collection_id),
+            )
+            row = conn.execute(
+                """
+                SELECT cp.*, p.title, p.status AS post_status,
+                       m.decision AS review_decision
+                FROM community_collection_posts cp
+                JOIN community_posts p ON p.id = cp.post_id
+                LEFT JOIN community_moderation m ON m.post_id = p.id
+                WHERE cp.collection_id = ? AND cp.post_id = ?
+                """,
+                (clean_collection_id, clean_post_id),
+            ).fetchone()
+            return self._admin_collection_post_payload(row)
+
+    def remove_collection_post(
+        self,
+        collection_id: str,
+        post_id: str,
+        *,
+        removed_by: str,
+    ) -> dict:
+        clean_collection_id = self._validated_id(collection_id, "collection_id")
+        clean_post_id = self._validated_id(post_id, "post_id")
+        clean_actor_id = self._validated_id(removed_by, "removed_by")
+        now = self._now_ms()
+        with self._connect() as conn:
+            deleted = conn.execute(
+                """
+                DELETE FROM community_collection_posts
+                WHERE collection_id = ? AND post_id = ?
+                """,
+                (clean_collection_id, clean_post_id),
+            ).rowcount
+            if not deleted:
+                raise CommunityNotFoundError("专题收录记录不存在")
+            conn.execute(
+                """
+                UPDATE community_collections
+                SET updated_by = ?, updated_at = ? WHERE id = ?
+                """,
+                (clean_actor_id, now, clean_collection_id),
+            )
+        return {
+            "collection_id": clean_collection_id,
+            "post_id": clean_post_id,
+            "status": "removed",
+        }
+
+    def list_admin_collections(
+        self,
+        *,
+        status: str = "all",
+        cursor: str | None = None,
+        limit: int = 20,
+    ) -> dict:
+        clean_status = status.strip().lower()
+        if clean_status != "all" and clean_status not in COLLECTION_STATUSES:
+            raise CommunityError("专题筛选状态无效")
+        normalized_limit = self._normalized_limit(limit)
+        cursor_updated_at, cursor_id = self._decode_cursor(cursor)
+        query = "SELECT * FROM community_collections WHERE 1 = 1"
+        params: list[object] = []
+        if clean_status != "all":
+            query += " AND status = ?"
+            params.append(clean_status)
+        if cursor_updated_at is not None and cursor_id is not None:
+            query += " AND (updated_at < ? OR (updated_at = ? AND id < ?))"
+            params.extend([cursor_updated_at, cursor_updated_at, cursor_id])
+        query += " ORDER BY updated_at DESC, id DESC LIMIT ?"
+        params.append(normalized_limit + 1)
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+            visible_rows = rows[:normalized_limit]
+            items = [self._admin_collection_payload(conn, row) for row in visible_rows]
+        return {
+            "items": items,
+            "next_cursor": self._encode_cursor(visible_rows[-1], "updated_at")
+            if len(rows) > normalized_limit and visible_rows
+            else None,
+        }
+
+    def get_admin_collection(self, collection_id: str) -> dict:
+        clean_collection_id = self._validated_id(collection_id, "collection_id")
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM community_collections WHERE id = ?",
+                (clean_collection_id,),
+            ).fetchone()
+            if row is None:
+                raise CommunityNotFoundError("专题不存在")
+            assignments = conn.execute(
+                """
+                SELECT cp.*, p.title, p.status AS post_status,
+                       m.decision AS review_decision
+                FROM community_collection_posts cp
+                JOIN community_posts p ON p.id = cp.post_id
+                LEFT JOIN community_moderation m ON m.post_id = p.id
+                WHERE cp.collection_id = ?
+                ORDER BY cp.position ASC, cp.post_id ASC
+                """,
+                (clean_collection_id,),
+            ).fetchall()
+            payload = self._admin_collection_payload(conn, row)
+            payload["posts"] = [
+                self._admin_collection_post_payload(item) for item in assignments
+            ]
+            return payload
+
+    def list_public_collections(
+        self,
+        *,
+        cursor: str | None = None,
+        limit: int = 20,
+    ) -> dict:
+        normalized_limit = self._normalized_limit(limit)
+        cursor_order, cursor_id = self._decode_cursor(cursor)
+        query = """
+            SELECT * FROM community_collections
+            WHERE status = 'published'
+                AND EXISTS (
+                    SELECT 1
+                    FROM community_collection_posts cp
+                    JOIN community_posts p ON p.id = cp.post_id
+                    JOIN community_moderation m ON m.post_id = p.id
+                    WHERE cp.collection_id = community_collections.id
+                        AND p.status = 'published' AND m.decision = 'approved'
+                )
+        """
+        params: list[object] = []
+        if cursor_order is not None and cursor_id is not None:
+            query += " AND (display_order > ? OR (display_order = ? AND id > ?))"
+            params.extend([cursor_order, cursor_order, cursor_id])
+        query += " ORDER BY display_order ASC, id ASC LIMIT ?"
+        params.append(normalized_limit + 1)
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+            visible_rows = rows[:normalized_limit]
+            items = [self._public_collection_payload(conn, row) for row in visible_rows]
+        return {
+            "items": items,
+            "next_cursor": self._encode_cursor(visible_rows[-1], "display_order")
+            if len(rows) > normalized_limit and visible_rows
+            else None,
+        }
+
+    def get_public_collection(
+        self,
+        collection_id: str,
+        *,
+        cursor: str | None = None,
+        limit: int = 20,
+    ) -> dict:
+        clean_collection_id = self._validated_id(collection_id, "collection_id")
+        normalized_limit = self._normalized_limit(limit)
+        cursor_position, cursor_id = self._decode_cursor(cursor)
+        with self._connect() as conn:
+            collection = conn.execute(
+                """
+                SELECT * FROM community_collections
+                WHERE id = ? AND status = 'published'
+                    AND EXISTS (
+                        SELECT 1
+                        FROM community_collection_posts cp
+                        JOIN community_posts p ON p.id = cp.post_id
+                        JOIN community_moderation m ON m.post_id = p.id
+                        WHERE cp.collection_id = community_collections.id
+                            AND p.status = 'published' AND m.decision = 'approved'
+                    )
+                """,
+                (clean_collection_id,),
+            ).fetchone()
+            if collection is None:
+                raise CommunityNotFoundError("专题不存在或暂不可查看")
+            query = """
+                SELECT p.*, m.decision AS review_decision, m.reason AS review_reason,
+                       m.reviewed_at AS review_reviewed_at,
+                       cp.position AS collection_position,
+                       cp.curation_note AS curation_note
+                FROM community_collection_posts cp
+                JOIN community_posts p ON p.id = cp.post_id
+                JOIN community_moderation m ON m.post_id = p.id
+                WHERE cp.collection_id = ? AND p.status = 'published'
+                    AND m.decision = 'approved'
+            """
+            params: list[object] = [clean_collection_id]
+            if cursor_position is not None and cursor_id is not None:
+                query += " AND (cp.position > ? OR (cp.position = ? AND p.id > ?))"
+                params.extend([cursor_position, cursor_position, cursor_id])
+            query += " ORDER BY cp.position ASC, p.id ASC LIMIT ?"
+            params.append(normalized_limit + 1)
+            rows = conn.execute(query, params).fetchall()
+            visible_rows = rows[:normalized_limit]
+            items = []
+            for row in visible_rows:
+                post = self._public_post_payload(
+                    row,
+                    self._public_media_payloads(conn, row["id"]),
+                    self._public_index_payload(conn, row["id"]),
+                    self._interaction_payload(conn, row["id"]),
+                )
+                post["curation_note"] = row["curation_note"]
+                post["collection_position"] = row["collection_position"]
+                items.append(post)
+            return {
+                "collection": self._public_collection_payload(conn, collection),
+                "items": items,
+                "next_cursor": self._encode_cursor(
+                    visible_rows[-1], "collection_position"
+                )
+                if len(rows) > normalized_limit and visible_rows
+                else None,
+            }
+
     def activity_summary(self, *, hours: int = 24) -> dict:
         if hours < 1 or hours > 168:
             raise CommunityError("运行摘要时间范围必须在 1 到 168 小时之间")
@@ -1673,6 +2119,32 @@ class CommunityService:
         if len(reason) > 1000:
             raise CommunityError("举报说明不能超过 1000 个字符")
         return category, reason
+
+    @staticmethod
+    def _validated_collection(collection: CommunityCollectionInput) -> dict:
+        title = collection.title.strip()
+        description = collection.description.strip()
+        destination = collection.destination.strip()
+        theme = collection.theme.strip()
+        if not title:
+            raise CommunityError("专题标题不能为空")
+        if len(title) > 120:
+            raise CommunityError("专题标题不能超过 120 个字符")
+        if len(description) > 1000:
+            raise CommunityError("专题说明不能超过 1000 个字符")
+        if len(destination) > 120:
+            raise CommunityError("专题目的地不能超过 120 个字符")
+        if len(theme) > 80:
+            raise CommunityError("专题主题不能超过 80 个字符")
+        if collection.display_order < 0 or collection.display_order > 9999:
+            raise CommunityError("专题展示顺序必须在 0 到 9999 之间")
+        return {
+            "title": title,
+            "description": description,
+            "destination": destination,
+            "theme": theme,
+            "display_order": collection.display_order,
+        }
 
     @staticmethod
     def _validated_id(value: str, field_name: str) -> str:
@@ -2044,6 +2516,110 @@ class CommunityService:
             "resolution": row["resolution"],
             "reviewed_at": row["reviewed_at"],
             "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    @staticmethod
+    def _visible_collection_post_count(
+        conn: sqlite3.Connection,
+        collection_id: str,
+    ) -> int:
+        return int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM community_collection_posts cp
+                JOIN community_posts p ON p.id = cp.post_id
+                JOIN community_moderation m ON m.post_id = p.id
+                WHERE cp.collection_id = ? AND p.status = 'published'
+                    AND m.decision = 'approved'
+                """,
+                (collection_id,),
+            ).fetchone()[0]
+        )
+
+    @classmethod
+    def _admin_collection_payload(
+        cls,
+        conn: sqlite3.Connection,
+        row: sqlite3.Row | None,
+    ) -> dict:
+        if row is None:
+            raise CommunityNotFoundError("专题不存在")
+        assigned_post_count = int(
+            conn.execute(
+                """
+                SELECT COUNT(*) FROM community_collection_posts
+                WHERE collection_id = ?
+                """,
+                (row["id"],),
+            ).fetchone()[0]
+        )
+        return {
+            "id": row["id"],
+            "title": row["title"],
+            "description": row["description"],
+            "destination": row["destination"],
+            "theme": row["theme"],
+            "display_order": row["display_order"],
+            "status": row["status"],
+            "assigned_post_count": assigned_post_count,
+            "visible_post_count": cls._visible_collection_post_count(conn, row["id"]),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "published_at": row["published_at"],
+        }
+
+    @staticmethod
+    def _admin_collection_post_payload(row: sqlite3.Row | None) -> dict:
+        if row is None:
+            raise CommunityNotFoundError("专题收录记录不存在")
+        visible = row["post_status"] == "published" and row["review_decision"] == "approved"
+        return {
+            "collection_id": row["collection_id"],
+            "post_id": row["post_id"],
+            "title": row["title"],
+            "position": row["position"],
+            "curation_note": row["curation_note"],
+            "post_status": row["post_status"],
+            "review_status": row["review_decision"] or "pending",
+            "visible": visible,
+            "added_at": row["added_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    @classmethod
+    def _public_collection_payload(
+        cls,
+        conn: sqlite3.Connection,
+        row: sqlite3.Row,
+    ) -> dict:
+        cover = conn.execute(
+            """
+            SELECT media.id
+            FROM community_collection_posts cp
+            JOIN community_posts p ON p.id = cp.post_id
+            JOIN community_moderation moderation ON moderation.post_id = p.id
+            JOIN community_post_media media ON media.post_id = p.id
+            WHERE cp.collection_id = ? AND p.status = 'published'
+                AND moderation.decision = 'approved' AND media.status = 'ready'
+            ORDER BY cp.position ASC, p.id ASC, media.created_at ASC
+            LIMIT 1
+            """,
+            (row["id"],),
+        ).fetchone()
+        return {
+            "id": row["id"],
+            "title": row["title"],
+            "description": row["description"],
+            "destination": row["destination"],
+            "theme": row["theme"],
+            "display_order": row["display_order"],
+            "post_count": cls._visible_collection_post_count(conn, row["id"]),
+            "cover_thumbnail_url": (
+                f"/api/community/media/{cover['id']}/thumbnail" if cover else ""
+            ),
+            "published_at": row["published_at"],
             "updated_at": row["updated_at"],
         }
 
