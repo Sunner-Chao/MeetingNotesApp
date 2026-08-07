@@ -8,6 +8,7 @@ import com.oa.automation.domain.model.CommunityAvailability
 import com.oa.automation.domain.model.CommunityFacets
 import com.oa.automation.domain.model.CommunityComment
 import com.oa.automation.domain.model.CommunityInteractionState
+import com.oa.automation.domain.model.CommunityCollection
 import com.oa.automation.domain.model.PublicCommunityPost
 import com.oa.automation.infrastructure.account.AccountApiService
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -24,6 +25,7 @@ data class CommunityUiState(
     val publicPosts: List<PublicCommunityPost> = emptyList(),
     val myPosts: List<MyCommunityPost> = emptyList(),
     val savedPosts: List<PublicCommunityPost> = emptyList(),
+    val collections: List<CommunityCollection> = emptyList(),
     val searchQuery: String = "",
     val destinationFilter: String = "",
     val tagFilter: String = "",
@@ -73,6 +75,7 @@ class CommunityViewModel(
             val endpoint = configDataStore.accountEndpointFlow.first()
             loadAvailability(endpoint)
             if (_uiState.value.tab == CommunityTab.DISCOVER) {
+                loadPublicCollections()
                 loadPublicPosts(cursor = null, append = false)
             } else if (_uiState.value.tab == CommunityTab.MINE) {
                 loadMyPosts()
@@ -203,6 +206,18 @@ class CommunityViewModel(
         )
     }
 
+    private suspend fun loadPublicCollections() {
+        val endpoint = configDataStore.accountEndpointFlow.first()
+        accountApiService.publicCommunityCollections(endpoint, limit = 20).onSuccess { page ->
+            _uiState.update {
+                it.copy(
+                    collections = page.items,
+                    mediaBaseUrl = communityMediaBaseUrl(endpoint)
+                )
+            }
+        }
+    }
+
     private suspend fun loadMyPosts() {
         val session = configDataStore.authSessionFlow.first()
         if (session == null) {
@@ -273,6 +288,44 @@ class CommunityViewModel(
 private fun communityMediaBaseUrl(endpoint: String): String {
     val clean = endpoint.trim().trimEnd('/')
     return if (clean.endsWith("/api")) clean.removeSuffix("/api") else clean
+}
+
+data class CommunityCollectionDetailUiState(
+    val collection: CommunityCollection? = null,
+    val posts: List<PublicCommunityPost> = emptyList(),
+    val mediaBaseUrl: String = "",
+    val isLoading: Boolean = true,
+    val error: String? = null
+)
+
+class CommunityCollectionDetailViewModel(
+    private val configDataStore: ConfigDataStore,
+    private val accountApiService: AccountApiService
+) : ViewModel() {
+    private val _uiState = MutableStateFlow(CommunityCollectionDetailUiState())
+    val uiState: StateFlow<CommunityCollectionDetailUiState> = _uiState.asStateFlow()
+
+    fun load(collectionId: String) {
+        viewModelScope.launch {
+            val endpoint = configDataStore.accountEndpointFlow.first()
+            accountApiService.publicCommunityCollection(endpoint, collectionId, limit = 50).fold(
+                onSuccess = { detail ->
+                    _uiState.value = CommunityCollectionDetailUiState(
+                        collection = detail.collection,
+                        posts = detail.items,
+                        mediaBaseUrl = communityMediaBaseUrl(endpoint),
+                        isLoading = false
+                    )
+                },
+                onFailure = { error ->
+                    _uiState.value = CommunityCollectionDetailUiState(
+                        isLoading = false,
+                        error = error.message ?: "专题加载失败"
+                    )
+                }
+            )
+        }
+    }
 }
 
 data class CommunityPostDetailUiState(

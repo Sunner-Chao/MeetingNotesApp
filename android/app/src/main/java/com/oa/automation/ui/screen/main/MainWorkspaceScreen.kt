@@ -59,6 +59,7 @@ fun MainWorkspaceScreen(
     onNavigateToAccountUsers: () -> Unit,
     onNavigateToCommunityModeration: () -> Unit,
     onNavigateToCommunityPost: (String) -> Unit,
+    onNavigateToCommunityCollection: (String) -> Unit,
     onLogout: () -> Unit
 ) {
     var destination by rememberSaveable { mutableStateOf(MainDestination.HOME) }
@@ -97,7 +98,8 @@ fun MainWorkspaceScreen(
                         )
 
                         MainDestination.COMMUNITY -> CommunityScreen(
-                            onOpenPost = onNavigateToCommunityPost
+                            onOpenPost = onNavigateToCommunityPost,
+                            onOpenCollection = onNavigateToCommunityCollection
                         )
 
                         MainDestination.ACCOUNT -> AccountScreen(

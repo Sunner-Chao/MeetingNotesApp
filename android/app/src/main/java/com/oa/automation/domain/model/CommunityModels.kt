@@ -29,7 +29,9 @@ data class PublicCommunityPost(
     val tags: List<String> = emptyList(),
     val pois: List<String> = emptyList(),
     @SerializedName("like_count") val likeCount: Int = 0,
-    @SerializedName("comment_count") val commentCount: Int = 0
+    @SerializedName("comment_count") val commentCount: Int = 0,
+    @SerializedName("curation_note") val curationNote: String = "",
+    @SerializedName("collection_position") val collectionPosition: Int? = null
 )
 
 data class PublicCommunityMedia(
@@ -60,6 +62,49 @@ data class CommunityFacets(
     val destinations: List<String> = emptyList(),
     val tags: List<String> = emptyList(),
     val pois: List<String> = emptyList()
+)
+
+data class CommunityCollection(
+    val id: String,
+    val title: String,
+    val description: String = "",
+    val destination: String = "",
+    val theme: String = "",
+    @SerializedName("display_order") val displayOrder: Int = 0,
+    val status: String = "published",
+    @SerializedName("assigned_post_count") val assignedPostCount: Int = 0,
+    @SerializedName("visible_post_count") val visiblePostCount: Int = 0,
+    @SerializedName("post_count") val postCount: Int = 0,
+    @SerializedName("cover_thumbnail_url") val coverThumbnailUrl: String = "",
+    @SerializedName("created_at") val createdAt: Long = 0,
+    @SerializedName("updated_at") val updatedAt: Long = 0,
+    @SerializedName("published_at") val publishedAt: Long? = null
+)
+
+data class CommunityCollectionPost(
+    @SerializedName("collection_id") val collectionId: String,
+    @SerializedName("post_id") val postId: String,
+    val title: String,
+    val position: Int = 0,
+    @SerializedName("curation_note") val curationNote: String = "",
+    @SerializedName("post_status") val postStatus: String = "published",
+    @SerializedName("review_status") val reviewStatus: String = "pending",
+    val visible: Boolean = false,
+    @SerializedName("added_at") val addedAt: Long = 0,
+    @SerializedName("updated_at") val updatedAt: Long = 0
+)
+
+data class CommunityCollectionRemoval(
+    @SerializedName("collection_id") val collectionId: String,
+    @SerializedName("post_id") val postId: String,
+    val status: String
+)
+
+data class CommunityCollectionDetail(
+    val collection: CommunityCollection,
+    val items: List<PublicCommunityPost> = emptyList(),
+    @SerializedName("next_cursor") val nextCursor: String? = null,
+    val posts: List<CommunityCollectionPost> = emptyList()
 )
 
 data class CommunityReport(

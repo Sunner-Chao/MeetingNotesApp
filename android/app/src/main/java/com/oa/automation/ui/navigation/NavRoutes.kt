@@ -51,6 +51,9 @@ object AccountVip
 data class CommunityPost(val postId: String)
 
 @Serializable
+data class CommunityCollection(val collectionId: String)
+
+@Serializable
 data class Recording(
     val meetingId: String,
     val launchAction: String = "STANDARD"

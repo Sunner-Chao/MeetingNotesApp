@@ -20,6 +20,10 @@ import com.oa.automation.domain.model.CommunityInteractionState
 import com.oa.automation.domain.model.CommunityCommentReport
 import com.oa.automation.domain.model.CommunityCommentReportQueueItem
 import com.oa.automation.domain.model.CommunityOperationsSummary
+import com.oa.automation.domain.model.CommunityCollection
+import com.oa.automation.domain.model.CommunityCollectionDetail
+import com.oa.automation.domain.model.CommunityCollectionPost
+import com.oa.automation.domain.model.CommunityCollectionRemoval
 import com.oa.automation.domain.model.MyCommunityPost
 import com.oa.automation.domain.model.PublicCommunityPost
 import java.io.IOException
@@ -151,6 +155,29 @@ class AccountApiService(
             object : TypeToken<CommunityPostPage<PublicCommunityPost>>() {}.type
         )
     }
+
+    suspend fun publicCommunityCollections(
+        endpoint: String,
+        cursor: String? = null,
+        limit: Int = 20
+    ): Result<CommunityPostPage<CommunityCollection>> = request(
+        endpoint = endpoint,
+        path = communityListPath("community/collections", cursor, limit),
+        method = "GET"
+    ) { body ->
+        gson.fromJson(body, object : TypeToken<CommunityPostPage<CommunityCollection>>() {}.type)
+    }
+
+    suspend fun publicCommunityCollection(
+        endpoint: String,
+        collectionId: String,
+        cursor: String? = null,
+        limit: Int = 20
+    ): Result<CommunityCollectionDetail> = request(
+        endpoint = endpoint,
+        path = communityListPath("community/collections/$collectionId", cursor, limit),
+        method = "GET"
+    ) { body -> gson.fromJson(body, CommunityCollectionDetail::class.java) }
 
     suspend fun publicCommunityPost(
         endpoint: String,
@@ -364,6 +391,113 @@ class AccountApiService(
             object : TypeToken<CommunityPostPage<CommunityModerationItem>>() {}.type
         )
     }
+
+    suspend fun adminCommunityCollections(
+        endpoint: String,
+        token: String,
+        status: String = "all",
+        cursor: String? = null,
+        limit: Int = 20
+    ): Result<CommunityPostPage<CommunityCollection>> = request(
+        endpoint = endpoint,
+        path = communityListPath("account/community/collections", cursor, limit) +
+            "&status=" + URLEncoder.encode(status, Charsets.UTF_8.name()),
+        token = token,
+        method = "GET"
+    ) { body ->
+        gson.fromJson(body, object : TypeToken<CommunityPostPage<CommunityCollection>>() {}.type)
+    }
+
+    suspend fun createCommunityCollection(
+        endpoint: String,
+        token: String,
+        title: String,
+        description: String = "",
+        destination: String = "",
+        theme: String = "",
+        displayOrder: Int = 0
+    ): Result<CommunityCollection> = request(
+        endpoint = endpoint,
+        path = "account/community/collections",
+        token = token,
+        method = "POST",
+        jsonBody = gson.toJson(
+            mapOf(
+                "title" to title,
+                "description" to description,
+                "destination" to destination,
+                "theme" to theme,
+                "display_order" to displayOrder
+            )
+        )
+    ) { body -> gson.fromJson(body, CommunityCollection::class.java) }
+
+    suspend fun updateCommunityCollection(
+        endpoint: String,
+        token: String,
+        collectionId: String,
+        title: String,
+        description: String = "",
+        destination: String = "",
+        theme: String = "",
+        displayOrder: Int = 0
+    ): Result<CommunityCollection> = request(
+        endpoint = endpoint,
+        path = "account/community/collections/$collectionId",
+        token = token,
+        method = "PUT",
+        jsonBody = gson.toJson(
+            mapOf(
+                "title" to title,
+                "description" to description,
+                "destination" to destination,
+                "theme" to theme,
+                "display_order" to displayOrder
+            )
+        )
+    ) { body -> gson.fromJson(body, CommunityCollection::class.java) }
+
+    suspend fun setCommunityCollectionStatus(
+        endpoint: String,
+        token: String,
+        collectionId: String,
+        status: String
+    ): Result<CommunityCollection> = request(
+        endpoint = endpoint,
+        path = "account/community/collections/$collectionId/status",
+        token = token,
+        method = "POST",
+        jsonBody = gson.toJson(mapOf("status" to status))
+    ) { body -> gson.fromJson(body, CommunityCollection::class.java) }
+
+    suspend fun addCommunityCollectionPost(
+        endpoint: String,
+        token: String,
+        collectionId: String,
+        postId: String,
+        position: Int = 0,
+        curationNote: String = ""
+    ): Result<CommunityCollectionPost> = request(
+        endpoint = endpoint,
+        path = "account/community/collections/$collectionId/posts/$postId",
+        token = token,
+        method = "PUT",
+        jsonBody = gson.toJson(
+            mapOf("position" to position, "curation_note" to curationNote)
+        )
+    ) { body -> gson.fromJson(body, CommunityCollectionPost::class.java) }
+
+    suspend fun removeCommunityCollectionPost(
+        endpoint: String,
+        token: String,
+        collectionId: String,
+        postId: String
+    ): Result<CommunityCollectionRemoval> = request(
+        endpoint = endpoint,
+        path = "account/community/collections/$collectionId/posts/$postId",
+        token = token,
+        method = "DELETE"
+    ) { body -> gson.fromJson(body, CommunityCollectionRemoval::class.java) }
 
     suspend fun moderateCommunityPost(
         endpoint: String,
@@ -653,6 +787,9 @@ class AccountApiService(
             when (method) {
                 "GET" -> builder.get()
                 "POST" -> builder.post(
+                    (jsonBody ?: "{}").toRequestBody("application/json".toMediaType())
+                )
+                "PUT" -> builder.put(
                     (jsonBody ?: "{}").toRequestBody("application/json".toMediaType())
                 )
                 "PATCH" -> builder.patch(

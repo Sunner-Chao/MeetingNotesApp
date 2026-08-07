@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.oa.automation.data.local.ConfigDataStore
 import com.oa.automation.domain.model.CommunityCommentReportQueueItem
+import com.oa.automation.domain.model.CommunityCollection
 import com.oa.automation.domain.model.CommunityModerationItem
 import com.oa.automation.domain.model.CommunityOperationsSummary
 import com.oa.automation.infrastructure.account.AccountApiService
@@ -14,16 +15,18 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-enum class CommunityModerationSection { POSTS, COMMENTS }
+enum class CommunityModerationSection { POSTS, COMMENTS, COLLECTIONS }
 
 data class CommunityModerationUiState(
     val section: CommunityModerationSection = CommunityModerationSection.POSTS,
     val filter: String = "pending",
     val items: List<CommunityModerationItem> = emptyList(),
     val commentReports: List<CommunityCommentReportQueueItem> = emptyList(),
+    val collections: List<CommunityCollection> = emptyList(),
     val summary: CommunityOperationsSummary? = null,
     val nextPostCursor: String? = null,
     val nextCommentReportCursor: String? = null,
+    val nextCollectionCursor: String? = null,
     val isAdmin: Boolean = false,
     val isLoading: Boolean = false,
     val isLoadingMore: Boolean = false,
@@ -33,7 +36,17 @@ data class CommunityModerationUiState(
     val message: String? = null,
     val rejectPostId: String? = null,
     val rejectReason: String = "",
-    val deleteReportId: String? = null
+    val deleteReportId: String? = null,
+    val showCreateCollection: Boolean = false,
+    val collectionTitle: String = "",
+    val collectionDescription: String = "",
+    val collectionDestination: String = "",
+    val collectionTheme: String = "",
+    val processingCollectionId: String? = null,
+    val curatePostId: String? = null,
+    val curateCollectionId: String = "",
+    val curationNote: String = "",
+    val curationPosition: String = "0"
 )
 
 class CommunityModerationViewModel(
@@ -59,8 +72,10 @@ class CommunityModerationViewModel(
         if (state.isLoading || state.isLoadingMore) return
         val cursor = if (state.section == CommunityModerationSection.POSTS) {
             state.nextPostCursor
-        } else {
+        } else if (state.section == CommunityModerationSection.COMMENTS) {
             state.nextCommentReportCursor
+        } else {
+            state.nextCollectionCursor
         } ?: return
         loadPage(filter = state.filter, cursor = cursor, append = true)
     }
@@ -125,7 +140,7 @@ class CommunityModerationViewModel(
                         }
                     }
                 )
-            } else {
+            } else if (section == CommunityModerationSection.COMMENTS) {
                 accountApiService.adminCommunityCommentReports(
                     endpoint = endpoint,
                     token = session.accessToken,
@@ -153,6 +168,39 @@ class CommunityModerationViewModel(
                                 isLoading = false,
                                 isLoadingMore = false,
                                 error = error.message ?: "评论举报队列加载失败"
+                            )
+                        }
+                    }
+                )
+            } else {
+                accountApiService.adminCommunityCollections(
+                    endpoint = endpoint,
+                    token = session.accessToken,
+                    status = "all",
+                    cursor = cursor
+                ).fold(
+                    onSuccess = { page ->
+                        loadedSuccessfully = true
+                        _uiState.update { current ->
+                            current.copy(
+                                collections = if (append) {
+                                    (current.collections + page.items)
+                                        .distinctBy(CommunityCollection::id)
+                                } else {
+                                    page.items
+                                },
+                                nextCollectionCursor = page.nextCursor,
+                                isLoading = false,
+                                isLoadingMore = false
+                            )
+                        }
+                    },
+                    onFailure = { error ->
+                        _uiState.update {
+                            it.copy(
+                                isLoading = false,
+                                isLoadingMore = false,
+                                error = error.message ?: "专题加载失败"
                             )
                         }
                     }
@@ -216,6 +264,202 @@ class CommunityModerationViewModel(
     fun deleteReportedComment() {
         val reportId = _uiState.value.deleteReportId ?: return
         resolveCommentReport(reportId, "delete")
+    }
+
+    fun openCreateCollection() {
+        _uiState.update {
+            it.copy(
+                showCreateCollection = true,
+                collectionTitle = "",
+                collectionDescription = "",
+                collectionDestination = "",
+                collectionTheme = "",
+                error = null
+            )
+        }
+    }
+
+    fun dismissCreateCollection() {
+        if (_uiState.value.processingCollectionId == null) {
+            _uiState.update { it.copy(showCreateCollection = false) }
+        }
+    }
+
+    fun updateCollectionTitle(value: String) {
+        _uiState.update { it.copy(collectionTitle = value.take(120)) }
+    }
+
+    fun updateCollectionDescription(value: String) {
+        _uiState.update { it.copy(collectionDescription = value.take(1000)) }
+    }
+
+    fun updateCollectionDestination(value: String) {
+        _uiState.update { it.copy(collectionDestination = value.take(120)) }
+    }
+
+    fun updateCollectionTheme(value: String) {
+        _uiState.update { it.copy(collectionTheme = value.take(80)) }
+    }
+
+    fun createCollection() {
+        val state = _uiState.value
+        if (state.collectionTitle.isBlank() || state.processingCollectionId != null) return
+        viewModelScope.launch {
+            val session = configDataStore.authSessionFlow.first()
+            if (session?.user?.isAdmin != true) {
+                _uiState.update { it.copy(error = "仅管理员可创建专题") }
+                return@launch
+            }
+            val endpoint = configDataStore.accountEndpointFlow.first()
+            _uiState.update { it.copy(processingCollectionId = "new", error = null) }
+            accountApiService.createCommunityCollection(
+                endpoint = endpoint,
+                token = session.accessToken,
+                title = state.collectionTitle,
+                description = state.collectionDescription,
+                destination = state.collectionDestination,
+                theme = state.collectionTheme
+            ).fold(
+                onSuccess = { created ->
+                    _uiState.update {
+                        it.copy(
+                            collections = listOf(created) + it.collections,
+                            processingCollectionId = null,
+                            showCreateCollection = false,
+                            message = "专题已创建，请在帖子中收录内容"
+                        )
+                    }
+                },
+                onFailure = { error ->
+                    _uiState.update {
+                        it.copy(processingCollectionId = null, error = error.message ?: "专题创建失败")
+                    }
+                }
+            )
+        }
+    }
+
+    fun toggleCollection(collection: CommunityCollection) {
+        val targetStatus = if (collection.status == "published") "unpublished" else "published"
+        if (_uiState.value.processingCollectionId != null) return
+        viewModelScope.launch {
+            val session = configDataStore.authSessionFlow.first()
+            if (session?.user?.isAdmin != true) {
+                _uiState.update { it.copy(error = "仅管理员可维护专题") }
+                return@launch
+            }
+            val endpoint = configDataStore.accountEndpointFlow.first()
+            _uiState.update { it.copy(processingCollectionId = collection.id, error = null) }
+            accountApiService.setCommunityCollectionStatus(
+                endpoint, session.accessToken, collection.id, targetStatus
+            ).fold(
+                onSuccess = { updated ->
+                    _uiState.update {
+                        it.copy(
+                            collections = it.collections.map { item ->
+                                if (item.id == updated.id) updated else item
+                            },
+                            processingCollectionId = null,
+                            message = if (targetStatus == "published") "专题已发布" else "专题已下线"
+                        )
+                    }
+                },
+                onFailure = { error ->
+                    _uiState.update {
+                        it.copy(processingCollectionId = null, error = error.message ?: "专题状态更新失败")
+                    }
+                }
+            )
+        }
+    }
+
+    fun openCurate(postId: String) {
+        _uiState.update {
+            it.copy(
+                curatePostId = postId,
+                curateCollectionId = it.collections.firstOrNull()?.id.orEmpty(),
+                curationNote = "",
+                curationPosition = "0",
+                error = null
+            )
+        }
+        if (_uiState.value.collections.isEmpty()) loadCollectionsForCuration()
+    }
+
+    fun dismissCurate() {
+        if (_uiState.value.processingCollectionId == null) {
+            _uiState.update { it.copy(curatePostId = null) }
+        }
+    }
+
+    fun selectCurateCollection(id: String) {
+        _uiState.update { it.copy(curateCollectionId = id) }
+    }
+
+    fun updateCurationNote(value: String) {
+        _uiState.update { it.copy(curationNote = value.take(200)) }
+    }
+
+    fun updateCurationPosition(value: String) {
+        _uiState.update { it.copy(curationPosition = value.filter(Char::isDigit).take(4)) }
+    }
+
+    fun curatePost() {
+        val state = _uiState.value
+        val postId = state.curatePostId ?: return
+        val collectionId = state.curateCollectionId
+        if (collectionId.isBlank() || state.processingCollectionId != null) return
+        viewModelScope.launch {
+            val session = configDataStore.authSessionFlow.first()
+            if (session?.user?.isAdmin != true) {
+                _uiState.update { it.copy(error = "仅管理员可收录专题") }
+                return@launch
+            }
+            val endpoint = configDataStore.accountEndpointFlow.first()
+            _uiState.update { it.copy(processingCollectionId = collectionId, error = null) }
+            accountApiService.addCommunityCollectionPost(
+                endpoint,
+                session.accessToken,
+                collectionId,
+                postId,
+                state.curationPosition.toIntOrNull() ?: 0,
+                state.curationNote
+            ).fold(
+                onSuccess = {
+                    _uiState.update {
+                        it.copy(
+                            curatePostId = null,
+                            processingCollectionId = null,
+                            message = "已收录到专题"
+                        )
+                    }
+                    load("all")
+                },
+                onFailure = { error ->
+                    _uiState.update {
+                        it.copy(processingCollectionId = null, error = error.message ?: "专题收录失败")
+                    }
+                }
+            )
+        }
+    }
+
+    private fun loadCollectionsForCuration() {
+        viewModelScope.launch {
+            val session = configDataStore.authSessionFlow.first() ?: return@launch
+            if (!session.user.isAdmin) return@launch
+            val endpoint = configDataStore.accountEndpointFlow.first()
+            accountApiService.adminCommunityCollections(endpoint, session.accessToken).onSuccess { page ->
+                _uiState.update {
+                    it.copy(
+                        collections = page.items,
+                        curateCollectionId = it.curateCollectionId.ifBlank {
+                            page.items.firstOrNull()?.id.orEmpty()
+                        }
+                    )
+                }
+            }
+        }
     }
 
     private fun resolveCommentReport(reportId: String, decision: String) {

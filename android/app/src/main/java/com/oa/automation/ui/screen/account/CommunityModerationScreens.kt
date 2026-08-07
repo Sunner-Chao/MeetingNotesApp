@@ -27,6 +27,8 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -41,6 +43,9 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -48,6 +53,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.oa.automation.domain.model.CommunityCommentReportQueueItem
+import com.oa.automation.domain.model.CommunityCollection
 import com.oa.automation.domain.model.CommunityModerationItem
 import com.oa.automation.domain.model.CommunityOperationsSummary
 import java.text.SimpleDateFormat
@@ -122,6 +128,123 @@ fun CommunityModerationScreen(
         )
     }
 
+    if (state.showCreateCollection) {
+        AlertDialog(
+            onDismissRequest = viewModel::dismissCreateCollection,
+            title = { Text("新建专题") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = state.collectionTitle,
+                        onValueChange = viewModel::updateCollectionTitle,
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("专题标题") },
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = state.collectionDescription,
+                        onValueChange = viewModel::updateCollectionDescription,
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("专题说明") },
+                        minLines = 2,
+                        maxLines = 4
+                    )
+                    OutlinedTextField(
+                        value = state.collectionDestination,
+                        onValueChange = viewModel::updateCollectionDestination,
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("目的地") },
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = state.collectionTheme,
+                        onValueChange = viewModel::updateCollectionTheme,
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("主题") },
+                        singleLine = true
+                    )
+                    state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = viewModel::createCollection,
+                    enabled = state.collectionTitle.isNotBlank() && state.processingCollectionId == null
+                ) { Text("创建") }
+            },
+            dismissButton = {
+                TextButton(onClick = viewModel::dismissCreateCollection) { Text("取消") }
+            }
+        )
+    }
+
+    state.curatePostId?.let {
+        var collectionMenuExpanded by remember { mutableStateOf(false) }
+        val selected = state.collections.firstOrNull { it.id == state.curateCollectionId }
+        AlertDialog(
+            onDismissRequest = viewModel::dismissCurate,
+            title = { Text("收录专题") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Box {
+                        OutlinedButton(
+                            onClick = { collectionMenuExpanded = true },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                selected?.title ?: "选择专题",
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = collectionMenuExpanded,
+                            onDismissRequest = { collectionMenuExpanded = false }
+                        ) {
+                            state.collections.forEach { collection ->
+                                DropdownMenuItem(
+                                    text = { Text(collection.title) },
+                                    onClick = {
+                                        viewModel.selectCurateCollection(collection.id)
+                                        collectionMenuExpanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    OutlinedTextField(
+                        value = state.curationNote,
+                        onValueChange = viewModel::updateCurationNote,
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("收录说明") },
+                        minLines = 2,
+                        maxLines = 4
+                    )
+                    OutlinedTextField(
+                        value = state.curationPosition,
+                        onValueChange = viewModel::updateCurationPosition,
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("展示顺序") },
+                        singleLine = true
+                    )
+                    if (state.collections.isEmpty()) {
+                        Text("请先在专题页创建专题", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = viewModel::curatePost,
+                    enabled = state.curateCollectionId.isNotBlank() &&
+                        state.processingCollectionId == null
+                ) { Text("收录") }
+            },
+            dismissButton = { TextButton(onClick = viewModel::dismissCurate) { Text("取消") } }
+        )
+    }
+
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
@@ -142,7 +265,13 @@ fun CommunityModerationScreen(
     ) { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(padding)) {
             val isPostSection = state.section == CommunityModerationSection.POSTS
-            val hasItems = if (isPostSection) state.items.isNotEmpty() else state.commentReports.isNotEmpty()
+            val isCommentSection = state.section == CommunityModerationSection.COMMENTS
+            val isCollectionSection = state.section == CommunityModerationSection.COLLECTIONS
+            val hasItems = when (state.section) {
+                CommunityModerationSection.POSTS -> state.items.isNotEmpty()
+                CommunityModerationSection.COMMENTS -> state.commentReports.isNotEmpty()
+                CommunityModerationSection.COLLECTIONS -> state.collections.isNotEmpty()
+            }
             TabRow(selectedTabIndex = state.section.ordinal) {
                 Tab(
                     selected = isPostSection,
@@ -150,12 +279,17 @@ fun CommunityModerationScreen(
                     text = { Text("帖子") }
                 )
                 Tab(
-                    selected = !isPostSection,
+                    selected = isCommentSection,
                     onClick = { viewModel.selectSection(CommunityModerationSection.COMMENTS) },
                     text = { Text("评论") }
                 )
+                Tab(
+                    selected = isCollectionSection,
+                    onClick = { viewModel.selectSection(CommunityModerationSection.COLLECTIONS) },
+                    text = { Text("专题") }
+                )
             }
-            state.summary?.let { ModerationSummary(it) }
+            if (!isCollectionSection) state.summary?.let { ModerationSummary(it) }
             if (isPostSection) {
                 TabRow(selectedTabIndex = moderationFilters.indexOf(state.filter).coerceAtLeast(0)) {
                     moderationFilters.forEach { filter ->
@@ -167,6 +301,20 @@ fun CommunityModerationScreen(
                     }
                 }
             }
+            if (isCollectionSection) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "人工编排，不使用热度排序",
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Button(onClick = viewModel::openCreateCollection) { Text("新建专题") }
+                }
+            }
             when {
                 !state.isAdmin && !state.isLoading -> ModerationEmpty("仅管理员可访问审核工作台")
                 state.isLoading && !hasItems -> Box(
@@ -174,7 +322,11 @@ fun CommunityModerationScreen(
                     contentAlignment = Alignment.Center
                 ) { CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 3.dp) }
                 !hasItems -> ModerationEmpty(
-                    state.error ?: if (isPostSection) "当前没有需要处理的内容" else "当前没有待处理的评论举报"
+                    state.error ?: when (state.section) {
+                        CommunityModerationSection.POSTS -> "当前没有需要处理的内容"
+                        CommunityModerationSection.COMMENTS -> "当前没有待处理的评论举报"
+                        CommunityModerationSection.COLLECTIONS -> "尚未创建专题"
+                    }
                 )
                 else -> LazyColumn(
                     modifier = Modifier.fillMaxSize(),
@@ -189,10 +341,11 @@ fun CommunityModerationScreen(
                                 item = item,
                                 processing = state.processingPostId == item.id,
                                 onApprove = { viewModel.approve(item.id) },
-                                onReject = { viewModel.openReject(item.id) }
+                                onReject = { viewModel.openReject(item.id) },
+                                onCurate = { viewModel.openCurate(item.id) }
                             )
                         }
-                    } else {
+                    } else if (isCommentSection) {
                         items(state.commentReports, key = { it.id }) { report ->
                             ModerationCommentReportCard(
                                 report = report,
@@ -201,11 +354,19 @@ fun CommunityModerationScreen(
                                 onDelete = { viewModel.openDeleteComment(report.id) }
                             )
                         }
-                    }
-                    val nextCursor = if (isPostSection) {
-                        state.nextPostCursor
                     } else {
-                        state.nextCommentReportCursor
+                        items(state.collections, key = { it.id }) { collection ->
+                            ModerationCollectionCard(
+                                collection = collection,
+                                processing = state.processingCollectionId == collection.id,
+                                onToggle = { viewModel.toggleCollection(collection) }
+                            )
+                        }
+                    }
+                    val nextCursor = when (state.section) {
+                        CommunityModerationSection.POSTS -> state.nextPostCursor
+                        CommunityModerationSection.COMMENTS -> state.nextCommentReportCursor
+                        CommunityModerationSection.COLLECTIONS -> state.nextCollectionCursor
                     }
                     if (nextCursor != null) {
                         item {
@@ -277,7 +438,8 @@ private fun ModerationPostCard(
     item: CommunityModerationItem,
     processing: Boolean,
     onApprove: () -> Unit,
-    onReject: () -> Unit
+    onReject: () -> Unit,
+    onCurate: () -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -321,6 +483,9 @@ private fun ModerationPostCard(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = onApprove, enabled = !processing) { Text("通过") }
                 OutlinedButton(onClick = onReject, enabled = !processing) { Text("拒绝") }
+                if (item.review.status == "approved") {
+                    TextButton(onClick = onCurate, enabled = !processing) { Text("收录专题") }
+                }
                 if (processing) {
                     CircularProgressIndicator(modifier = Modifier.size(20.dp).align(Alignment.CenterVertically), strokeWidth = 2.dp)
                 }
@@ -330,6 +495,81 @@ private fun ModerationPostCard(
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.outline
             )
+        }
+    }
+}
+
+@Composable
+private fun ModerationCollectionCard(
+    collection: CommunityCollection,
+    processing: Boolean,
+    onToggle: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(8.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    collection.title,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    when (collection.status) {
+                        "published" -> "已发布"
+                        "unpublished" -> "已下线"
+                        else -> "草稿"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (collection.status == "published") {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    }
+                )
+            }
+            if (collection.description.isNotBlank()) {
+                Text(
+                    collection.description,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            val metadata = listOfNotNull(
+                collection.destination.takeIf { it.isNotBlank() },
+                collection.theme.takeIf { it.isNotBlank() },
+                "可见 ${collection.visiblePostCount} / 已收录 ${collection.assignedPostCount}"
+            ).joinToString("  ·  ")
+            Text(
+                metadata,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedButton(
+                    onClick = onToggle,
+                    enabled = !processing &&
+                        (collection.status == "published" || collection.visiblePostCount > 0)
+                ) {
+                    Text(if (collection.status == "published") "下线" else "发布")
+                }
+                if (processing) {
+                    Spacer(Modifier.width(8.dp))
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                }
+            }
         }
     }
 }

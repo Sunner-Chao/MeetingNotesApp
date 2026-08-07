@@ -49,6 +49,7 @@ import com.oa.automation.ui.screen.home.HomeViewModel
 import com.oa.automation.ui.screen.account.AccountViewModel
 import com.oa.automation.ui.screen.account.CommunityModerationViewModel
 import com.oa.automation.ui.screen.community.CommunityPostDetailViewModel
+import com.oa.automation.ui.screen.community.CommunityCollectionDetailViewModel
 import com.oa.automation.ui.screen.community.CommunityViewModel
 import com.oa.automation.ui.screen.login.LoginViewModel
 import com.oa.automation.ui.screen.login.RegisterViewModel
@@ -140,6 +141,7 @@ val appModule = module {
     viewModel { CommunityModerationViewModel(get(), get()) }
     viewModel { CommunityViewModel(get(), get()) }
     viewModel { CommunityPostDetailViewModel(get(), get()) }
+    viewModel { CommunityCollectionDetailViewModel(get(), get()) }
     viewModel { RecordingViewModel(get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), androidContext()) }
     viewModel { ReportViewModel(get(), get(), get(), get(), get(), get(), get()) }
     viewModel { SettingsViewModel(get(), get(), get()) }

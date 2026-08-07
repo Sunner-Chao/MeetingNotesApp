@@ -78,6 +78,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.oa.automation.domain.model.MyCommunityPost
 import com.oa.automation.domain.model.CommunityComment
 import com.oa.automation.domain.model.CommunityInteractionState
+import com.oa.automation.domain.model.CommunityCollection
 import com.oa.automation.domain.model.PublicCommunityPost
 import java.text.SimpleDateFormat
 import java.net.URL
@@ -90,6 +91,7 @@ import kotlinx.coroutines.withContext
 @Composable
 fun CommunityScreen(
     onOpenPost: (String) -> Unit,
+    onOpenCollection: (String) -> Unit,
     viewModel: CommunityViewModel = koinViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -135,6 +137,7 @@ fun CommunityScreen(
             CommunityContent(
                 state = uiState,
                 onOpenPost = onOpenPost,
+                onOpenCollection = onOpenCollection,
                 onRefresh = viewModel::refresh,
                 onSearchQueryChange = viewModel::updateSearchQuery,
                 onSearch = viewModel::search,
@@ -171,6 +174,7 @@ private fun CommunityReadOnlyNotice() {
 private fun CommunityContent(
     state: CommunityUiState,
     onOpenPost: (String) -> Unit,
+    onOpenCollection: (String) -> Unit,
     onRefresh: () -> Unit,
     onSearchQueryChange: (String) -> Unit,
     onSearch: () -> Unit,
@@ -190,6 +194,13 @@ private fun CommunityContent(
         else -> state.myPosts.isEmpty()
     }
     if (isDiscover) {
+        if (state.collections.isNotEmpty()) {
+            CommunityCollectionStrip(
+                collections = state.collections,
+                mediaBaseUrl = state.mediaBaseUrl,
+                onOpenCollection = onOpenCollection
+            )
+        }
         CommunityDiscoverFilters(
             state = state,
             onSearchQueryChange = onSearchQueryChange,
@@ -257,6 +268,87 @@ private fun CommunityContent(
                 }
             } else {
                 items(state.myPosts, key = { it.id }) { post -> MyPostCard(post) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CommunityCollectionStrip(
+    collections: List<CommunityCollection>,
+    mediaBaseUrl: String,
+    onOpenCollection: (String) -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("编辑专题", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.weight(1f))
+            Text(
+                "按人工编排浏览",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            items(collections, key = { it.id }) { collection ->
+                Card(
+                    modifier = Modifier.width(214.dp).clickable { onOpenCollection(collection.id) },
+                    shape = RoundedCornerShape(8.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                        if (collection.coverThumbnailUrl.isNotBlank()) {
+                            CommunityThumbnail(
+                                url = "$mediaBaseUrl${collection.coverThumbnailUrl}",
+                                contentDescription = "专题封面",
+                                modifier = Modifier.fillMaxWidth().height(92.dp)
+                            )
+                        }
+                        Column(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text(
+                                collection.title,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            val meta = listOfNotNull(
+                                collection.destination.takeIf { it.isNotBlank() },
+                                collection.theme.takeIf { it.isNotBlank() },
+                                "${collection.postCount} 篇"
+                            ).joinToString(" · ")
+                            Text(
+                                meta,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            if (collection.description.isNotBlank()) {
+                                Text(
+                                    collection.description,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -702,6 +794,85 @@ fun CommunityPostDetailScreen(
                 onRefresh = { viewModel.load(postId) },
                 modifier = Modifier.padding(padding)
             )
+        }
+    }
+}
+
+@Composable
+fun CommunityCollectionDetailScreen(
+    collectionId: String,
+    onOpenPost: (String) -> Unit,
+    onNavigateBack: () -> Unit,
+    viewModel: CommunityCollectionDetailViewModel = koinViewModel()
+) {
+    val state by viewModel.uiState.collectAsStateWithLifecycle()
+    LaunchedEffect(collectionId) { viewModel.load(collectionId) }
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        topBar = {
+            TopAppBar(
+                title = { Text(state.collection?.title ?: "专题", fontWeight = FontWeight.SemiBold) },
+                navigationIcon = {
+                    IconButton(onClick = onNavigateBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+                    }
+                }
+            )
+        }
+    ) { padding ->
+        when {
+            state.isLoading -> Box(
+                Modifier.fillMaxSize().padding(padding),
+                contentAlignment = Alignment.Center
+            ) { CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 3.dp) }
+            state.error != null -> CommunityEmptyState(
+                message = state.error ?: "专题暂不可查看",
+                isError = true,
+                onRefresh = { viewModel.load(collectionId) },
+                modifier = Modifier.fillMaxSize().padding(padding)
+            )
+            else -> LazyColumn(
+                modifier = Modifier.fillMaxSize().padding(padding),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                state.collection?.let { collection ->
+                    item {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text(
+                                collection.description.ifBlank { "人工编排的研学笔记集合" },
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            val meta = listOfNotNull(
+                                collection.destination.takeIf { it.isNotBlank() },
+                                collection.theme.takeIf { it.isNotBlank() },
+                                "${collection.postCount} 篇笔记"
+                            ).joinToString("  ·  ")
+                            Text(meta, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                }
+                if (state.posts.isEmpty()) {
+                    item { Text("专题中的笔记暂不可查看", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                } else {
+                    items(state.posts, key = { it.id }) { post ->
+                        if (post.curationNote.isNotBlank()) {
+                            Text(
+                                "收录说明：${post.curationNote}",
+                                modifier = Modifier.padding(horizontal = 4.dp),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        PublicPostCard(
+                            post = post,
+                            mediaBaseUrl = state.mediaBaseUrl,
+                            onClick = { onOpenPost(post.id) }
+                        )
+                    }
+                }
+            }
         }
     }
 }
