@@ -1,6 +1,7 @@
 package com.oa.automation.infrastructure.community
 
 import com.oa.automation.data.local.ConfigDataStore
+import com.oa.automation.domain.model.AuthSession
 import com.oa.automation.domain.model.CommunitySyncOperation
 import com.oa.automation.domain.model.CommunitySyncStatus
 import com.oa.automation.infrastructure.account.AccountApiService
@@ -13,13 +14,29 @@ import kotlinx.coroutines.flow.first
 import java.io.File
 import java.io.FileInputStream
 
-class CommunitySyncProcessor(
+class CommunitySyncProcessor internal constructor(
     private val outboxDao: CommunitySyncOutboxDao,
     private val publishedPostDao: PublishedPostDao,
     private val publishedPostMediaDao: PublishedPostMediaDao,
     private val accountApiService: AccountApiService,
-    private val configDataStore: ConfigDataStore
+    private val authSessionProvider: suspend () -> AuthSession?,
+    private val endpointProvider: suspend () -> String
 ) {
+    constructor(
+        outboxDao: CommunitySyncOutboxDao,
+        publishedPostDao: PublishedPostDao,
+        publishedPostMediaDao: PublishedPostMediaDao,
+        accountApiService: AccountApiService,
+        configDataStore: ConfigDataStore
+    ) : this(
+        outboxDao = outboxDao,
+        publishedPostDao = publishedPostDao,
+        publishedPostMediaDao = publishedPostMediaDao,
+        accountApiService = accountApiService,
+        authSessionProvider = { configDataStore.authSessionFlow.first() },
+        endpointProvider = { configDataStore.accountEndpointFlow.first() }
+    )
+
     suspend fun run(postId: String, runAttemptCount: Int): ProcessingResult {
         val outbox = outboxDao.findByPostId(postId) ?: return ProcessingResult.Success
         if (outbox.status == CommunitySyncStatus.PUBLISHED.name &&
@@ -31,8 +48,8 @@ class CommunitySyncProcessor(
 
         val post = publishedPostDao.findById(postId)
             ?: return fail(outbox, "发布快照不存在")
-        val session = configDataStore.authSessionFlow.first()
-        val endpoint = configDataStore.accountEndpointFlow.first()
+        val session = authSessionProvider()
+        val endpoint = endpointProvider()
         return try {
             when (CommunitySyncOperation.fromStorage(outbox.operation)) {
                 CommunitySyncOperation.UPLOAD -> {
