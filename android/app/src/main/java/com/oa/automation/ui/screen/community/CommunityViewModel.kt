@@ -10,6 +10,8 @@ import com.oa.automation.domain.model.CommunityComment
 import com.oa.automation.domain.model.CommunityInteractionState
 import com.oa.automation.domain.model.CommunityCollection
 import com.oa.automation.domain.model.CommunityCollectionFacets
+import com.oa.automation.domain.model.CommunityCollectionInteractionState
+import com.oa.automation.domain.model.CommunityCollectionShare
 import com.oa.automation.domain.model.PublicCommunityPost
 import com.oa.automation.infrastructure.account.AccountApiService
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -26,9 +28,12 @@ data class CommunityUiState(
     val publicPosts: List<PublicCommunityPost> = emptyList(),
     val myPosts: List<MyCommunityPost> = emptyList(),
     val savedPosts: List<PublicCommunityPost> = emptyList(),
+    val savedCollections: List<CommunityCollection> = emptyList(),
     val collections: List<CommunityCollection> = emptyList(),
     val collectionDestinationFilter: String = "",
     val collectionThemeFilter: String = "",
+    val collectionSort: String = "curated",
+    val collectionSortExplanation: String = "",
     val collectionFacets: CommunityCollectionFacets = CommunityCollectionFacets(),
     val searchQuery: String = "",
     val destinationFilter: String = "",
@@ -84,6 +89,7 @@ class CommunityViewModel(
             } else if (_uiState.value.tab == CommunityTab.MINE) {
                 loadMyPosts()
             } else {
+                loadSavedCollections()
                 loadSavedPosts(cursor = null, append = false)
             }
         }
@@ -108,6 +114,12 @@ class CommunityViewModel(
 
     fun selectCollectionTheme(value: String) {
         _uiState.update { it.copy(collectionThemeFilter = value, error = null) }
+        refresh()
+    }
+
+    fun selectCollectionSort(value: String) {
+        if (value !in setOf("curated", "recent", "richness")) return
+        _uiState.update { it.copy(collectionSort = value, error = null) }
         refresh()
     }
 
@@ -234,12 +246,15 @@ class CommunityViewModel(
             endpoint = endpoint,
             limit = 20,
             destination = filters.collectionDestinationFilter,
-            theme = filters.collectionThemeFilter
+            theme = filters.collectionThemeFilter,
+            sort = filters.collectionSort
         ).onSuccess { page ->
             _uiState.update {
                 it.copy(
                     collections = page.items,
                     collectionFacets = page.facets,
+                    collectionSort = page.sortMode,
+                    collectionSortExplanation = page.sortExplanation,
                     mediaBaseUrl = communityMediaBaseUrl(endpoint)
                 )
             }
@@ -311,6 +326,23 @@ class CommunityViewModel(
             }
         )
     }
+
+    private suspend fun loadSavedCollections() {
+        val session = configDataStore.authSessionFlow.first() ?: return
+        val endpoint = configDataStore.accountEndpointFlow.first()
+        accountApiService.bookmarkedCommunityCollections(
+            endpoint = endpoint,
+            token = session.accessToken,
+            limit = 50
+        ).onSuccess { page ->
+            _uiState.update {
+                it.copy(
+                    savedCollections = page.items,
+                    mediaBaseUrl = communityMediaBaseUrl(endpoint)
+                )
+            }
+        }
+    }
 }
 
 private fun communityMediaBaseUrl(endpoint: String): String {
@@ -321,9 +353,15 @@ private fun communityMediaBaseUrl(endpoint: String): String {
 data class CommunityCollectionDetailUiState(
     val collection: CommunityCollection? = null,
     val posts: List<PublicCommunityPost> = emptyList(),
+    val interaction: CommunityCollectionInteractionState? = null,
+    val share: CommunityCollectionShare? = null,
+    val shareUrl: String = "",
     val mediaBaseUrl: String = "",
+    val availability: CommunityAvailability = CommunityAvailability(),
     val isLoading: Boolean = true,
-    val error: String? = null
+    val isInteracting: Boolean = false,
+    val error: String? = null,
+    val actionMessage: String? = null
 )
 
 class CommunityCollectionDetailViewModel(
@@ -335,21 +373,81 @@ class CommunityCollectionDetailViewModel(
 
     fun load(collectionId: String) {
         viewModelScope.launch {
+            _uiState.update { it.copy(isLoading = true, error = null, actionMessage = null) }
             val endpoint = configDataStore.accountEndpointFlow.first()
+            val availability = accountApiService.communityAvailability(endpoint)
+                .getOrDefault(CommunityAvailability())
             accountApiService.publicCommunityCollection(endpoint, collectionId, limit = 50).fold(
                 onSuccess = { detail ->
+                    val session = configDataStore.authSessionFlow.first()
+                    val interaction = session?.let {
+                        accountApiService.communityCollectionInteraction(
+                            endpoint, it.accessToken, collectionId
+                        ).getOrNull()
+                    }
+                    val share = accountApiService.publicCommunityCollectionShare(
+                        endpoint, collectionId
+                    ).getOrNull()
                     _uiState.value = CommunityCollectionDetailUiState(
                         collection = detail.collection,
                         posts = detail.items,
+                        interaction = interaction,
+                        share = share,
+                        shareUrl = endpoint.trimEnd('/') + "/community/collections/$collectionId",
                         mediaBaseUrl = communityMediaBaseUrl(endpoint),
+                        availability = availability,
                         isLoading = false
                     )
                 },
                 onFailure = { error ->
                     _uiState.value = CommunityCollectionDetailUiState(
                         isLoading = false,
+                        availability = availability,
                         error = error.message ?: "专题加载失败"
                     )
+                }
+            )
+        }
+    }
+
+    fun toggleBookmark() {
+        val state = _uiState.value
+        val collectionId = state.collection?.id ?: return
+        if (state.isInteracting) return
+        if (!state.availability.writeEnabled) {
+            _uiState.update { it.copy(actionMessage = "社区暂时只读") }
+            return
+        }
+        viewModelScope.launch {
+            val session = configDataStore.authSessionFlow.first()
+            if (session == null) {
+                _uiState.update { it.copy(actionMessage = "登录后可收藏专题") }
+                return@launch
+            }
+            val endpoint = configDataStore.accountEndpointFlow.first()
+            _uiState.update { it.copy(isInteracting = true, actionMessage = null) }
+            accountApiService.toggleCommunityCollectionBookmark(
+                endpoint, session.accessToken, collectionId
+            ).fold(
+                onSuccess = { interaction ->
+                    _uiState.update { current ->
+                        current.copy(
+                            collection = current.collection?.copy(
+                                bookmarkCount = interaction.bookmarkCount
+                            ),
+                            interaction = interaction,
+                            isInteracting = false,
+                            actionMessage = if (interaction.bookmarked) "已收藏专题" else "已取消收藏"
+                        )
+                    }
+                },
+                onFailure = { error ->
+                    _uiState.update {
+                        it.copy(
+                            isInteracting = false,
+                            actionMessage = error.message ?: "专题收藏操作失败"
+                        )
+                    }
                 }
             )
         }

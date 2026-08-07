@@ -1,5 +1,7 @@
 package com.oa.automation.ui.screen.community
 
+import android.content.Context
+import android.content.Intent
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -40,6 +42,7 @@ import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -69,6 +72,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
@@ -77,6 +81,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.oa.automation.domain.model.MyCommunityPost
 import com.oa.automation.domain.model.CommunityComment
+import com.oa.automation.domain.model.CommunityCollection
 import com.oa.automation.domain.model.CommunityInteractionState
 import com.oa.automation.domain.model.PublicCommunityPost
 import java.text.SimpleDateFormat
@@ -139,6 +144,7 @@ fun CommunityScreen(
                 onOpenCollection = onOpenCollection,
                 onCollectionDestinationSelect = viewModel::selectCollectionDestination,
                 onCollectionThemeSelect = viewModel::selectCollectionTheme,
+                onCollectionSortSelect = viewModel::selectCollectionSort,
                 onClearCollectionFilters = viewModel::clearCollectionFilters,
                 onRefresh = viewModel::refresh,
                 onSearchQueryChange = viewModel::updateSearchQuery,
@@ -179,6 +185,7 @@ private fun CommunityContent(
     onOpenCollection: (String) -> Unit,
     onCollectionDestinationSelect: (String) -> Unit,
     onCollectionThemeSelect: (String) -> Unit,
+    onCollectionSortSelect: (String) -> Unit,
     onClearCollectionFilters: () -> Unit,
     onRefresh: () -> Unit,
     onSearchQueryChange: (String) -> Unit,
@@ -195,7 +202,7 @@ private fun CommunityContent(
     val isSaved = state.tab == CommunityTab.SAVED
     val isEmpty = when {
         isDiscover -> state.publicPosts.isEmpty()
-        isSaved -> state.savedPosts.isEmpty()
+        isSaved -> state.savedPosts.isEmpty() && state.savedCollections.isEmpty()
         else -> state.myPosts.isEmpty()
     }
     if (isDiscover) {
@@ -209,6 +216,7 @@ private fun CommunityContent(
                 onOpenCollection = onOpenCollection,
                 onDestinationSelect = onCollectionDestinationSelect,
                 onThemeSelect = onCollectionThemeSelect,
+                onSortSelect = onCollectionSortSelect,
                 onClearFilters = onClearCollectionFilters
             )
         }
@@ -222,6 +230,13 @@ private fun CommunityContent(
             onDaysSelect = onDaysSelect,
             onToggleHasMedia = onToggleHasMedia,
             onClearFilters = onClearFilters
+        )
+    }
+    if (isSaved && state.savedCollections.isNotEmpty()) {
+        CommunitySavedCollectionStrip(
+            collections = state.savedCollections,
+            mediaBaseUrl = state.mediaBaseUrl,
+            onOpenCollection = onOpenCollection
         )
     }
     when {
@@ -291,10 +306,12 @@ private fun CommunityCollectionStrip(
     onOpenCollection: (String) -> Unit,
     onDestinationSelect: (String) -> Unit,
     onThemeSelect: (String) -> Unit,
+    onSortSelect: (String) -> Unit,
     onClearFilters: () -> Unit
 ) {
     var destinationExpanded by androidx.compose.runtime.remember { mutableStateOf(false) }
     var themeExpanded by androidx.compose.runtime.remember { mutableStateOf(false) }
+    var sortExpanded by androidx.compose.runtime.remember { mutableStateOf(false) }
     val hasFilters = state.collectionDestinationFilter.isNotBlank() ||
         state.collectionThemeFilter.isNotBlank()
     Column(
@@ -391,6 +408,38 @@ private fun CommunityCollectionStrip(
                     }
                 }
             }
+            Box {
+                Surface(
+                    onClick = { sortExpanded = true },
+                    shape = RoundedCornerShape(7.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    border = androidx.compose.foundation.BorderStroke(
+                        1.dp, MaterialTheme.colorScheme.outlineVariant
+                    )
+                ) {
+                    Text(
+                        "排序：${collectionSortLabel(state.collectionSort)}",
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                        style = MaterialTheme.typography.labelMedium,
+                        maxLines = 1
+                    )
+                }
+                DropdownMenu(
+                    expanded = sortExpanded,
+                    onDismissRequest = { sortExpanded = false }
+                ) {
+                    listOf(
+                        "curated" to "人工顺序",
+                        "recent" to "最近发布",
+                        "richness" to "内容丰富度"
+                    ).forEach { (value, label) ->
+                        DropdownMenuItem(
+                            text = { Text(label) },
+                            onClick = { sortExpanded = false; onSortSelect(value) }
+                        )
+                    }
+                }
+            }
             if (hasFilters) {
                 TextButton(onClick = onClearFilters) { Text("清除") }
             }
@@ -468,6 +517,84 @@ private fun CommunityCollectionStrip(
                                     overflow = TextOverflow.Ellipsis
                                 )
                             }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun collectionSortLabel(sort: String): String = when (sort) {
+    "recent" -> "最近发布"
+    "richness" -> "内容丰富度"
+    else -> "人工顺序"
+}
+
+@Composable
+private fun CommunitySavedCollectionStrip(
+    collections: List<CommunityCollection>,
+    mediaBaseUrl: String,
+    onOpenCollection: (String) -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(
+            "收藏专题",
+            modifier = Modifier.padding(horizontal = 16.dp),
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold
+        )
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            items(collections, key = { "saved-${it.id}" }) { collection ->
+                Card(
+                    modifier = Modifier.width(230.dp).height(92.dp)
+                        .clickable { onOpenCollection(collection.id) },
+                    shape = RoundedCornerShape(8.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+                ) {
+                    Row(modifier = Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier.width(82.dp).height(92.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (collection.coverThumbnailUrl.isNotBlank()) {
+                                CommunityThumbnail(
+                                    url = "$mediaBaseUrl${collection.coverThumbnailUrl}",
+                                    contentDescription = "专题封面",
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            } else {
+                                Icon(
+                                    Icons.Default.AutoStories,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.outline
+                                )
+                            }
+                        }
+                        Column(
+                            modifier = Modifier.weight(1f).padding(horizontal = 10.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text(
+                                collection.title,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                "${collection.postCount} 篇 · ${collection.bookmarkCount} 收藏",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1
+                            )
                         }
                     }
                 }
@@ -928,6 +1055,7 @@ fun CommunityCollectionDetailScreen(
     viewModel: CommunityCollectionDetailViewModel = koinViewModel()
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
     LaunchedEffect(collectionId) { viewModel.load(collectionId) }
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -937,6 +1065,31 @@ fun CommunityCollectionDetailScreen(
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+                    }
+                },
+                actions = {
+                    IconButton(
+                        onClick = viewModel::toggleBookmark,
+                        enabled = !state.isInteracting && state.collection != null
+                    ) {
+                        Icon(
+                            if (state.interaction?.bookmarked == true) {
+                                Icons.Default.Bookmark
+                            } else {
+                                Icons.Default.BookmarkBorder
+                            },
+                            contentDescription = if (state.interaction?.bookmarked == true) {
+                                "取消收藏专题"
+                            } else {
+                                "收藏专题"
+                            }
+                        )
+                    }
+                    IconButton(
+                        onClick = { shareCommunityCollection(context, state) },
+                        enabled = state.collection != null
+                    ) {
+                        Icon(Icons.Default.Share, contentDescription = "分享专题")
                     }
                 }
             )
@@ -969,9 +1122,17 @@ fun CommunityCollectionDetailScreen(
                             val meta = listOfNotNull(
                                 collection.destination.takeIf { it.isNotBlank() },
                                 collection.theme.takeIf { it.isNotBlank() },
-                                "${collection.postCount} 篇笔记"
+                                "${collection.postCount} 篇笔记",
+                                "${collection.bookmarkCount} 收藏"
                             ).joinToString("  ·  ")
                             Text(meta, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                            state.actionMessage?.let { message ->
+                                Text(
+                                    message,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
                     }
                 }
@@ -997,6 +1158,37 @@ fun CommunityCollectionDetailScreen(
             }
         }
     }
+}
+
+private fun shareCommunityCollection(
+    context: Context,
+    state: CommunityCollectionDetailUiState
+) {
+    val collection = state.collection ?: return
+    val share = state.share
+    val meta = listOfNotNull(
+        collection.destination.takeIf(String::isNotBlank),
+        collection.theme.takeIf(String::isNotBlank),
+        "${collection.postCount} 篇笔记"
+    ).joinToString(" · ")
+    val text = buildString {
+        appendLine(share?.title ?: collection.title)
+        if (meta.isNotBlank()) appendLine(meta)
+        (share?.description ?: collection.description).takeIf(String::isNotBlank)?.let {
+            appendLine(it)
+        }
+        if (state.shareUrl.isNotBlank()) append(state.shareUrl)
+    }.trim()
+    context.startActivity(
+        Intent.createChooser(
+            Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_SUBJECT, collection.title)
+                putExtra(Intent.EXTRA_TEXT, text)
+            },
+            "分享专题"
+        )
+    )
 }
 
 @Composable

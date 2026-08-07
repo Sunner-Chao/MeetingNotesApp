@@ -22,12 +22,15 @@ import com.oa.automation.domain.model.CommunityCommentReportQueueItem
 import com.oa.automation.domain.model.CommunityOperationsSummary
 import com.oa.automation.domain.model.CommunityCollection
 import com.oa.automation.domain.model.CommunityCollectionAdminDetail
+import com.oa.automation.domain.model.CommunityCollectionAuditEntry
 import com.oa.automation.domain.model.CommunityCollectionBatchResult
 import com.oa.automation.domain.model.CommunityCollectionDetail
+import com.oa.automation.domain.model.CommunityCollectionInteractionState
 import com.oa.automation.domain.model.CommunityCollectionOperationsSummary
 import com.oa.automation.domain.model.CommunityCollectionPage
 import com.oa.automation.domain.model.CommunityCollectionPost
 import com.oa.automation.domain.model.CommunityCollectionRemoval
+import com.oa.automation.domain.model.CommunityCollectionShare
 import com.oa.automation.domain.model.MyCommunityPost
 import com.oa.automation.domain.model.PublicCommunityPost
 import java.io.IOException
@@ -165,7 +168,8 @@ class AccountApiService(
         cursor: String? = null,
         limit: Int = 20,
         destination: String = "",
-        theme: String = ""
+        theme: String = "",
+        sort: String = "curated"
     ): Result<CommunityCollectionPage> = request(
         endpoint = endpoint,
         path = communityListPath("community/collections", cursor, limit) + buildString {
@@ -175,6 +179,7 @@ class AccountApiService(
             theme.trim().takeIf { it.isNotEmpty() }?.let {
                 append("&theme=${encodeQueryValue(it)}")
             }
+            append("&sort=${encodeQueryValue(sort)}")
         },
         method = "GET"
     ) { body ->
@@ -191,6 +196,54 @@ class AccountApiService(
         path = communityListPath("community/collections/$collectionId", cursor, limit),
         method = "GET"
     ) { body -> gson.fromJson(body, CommunityCollectionDetail::class.java) }
+
+    suspend fun publicCommunityCollectionShare(
+        endpoint: String,
+        collectionId: String
+    ): Result<CommunityCollectionShare> = request(
+        endpoint = endpoint,
+        path = "community/collections/$collectionId/share",
+        method = "GET"
+    ) { body -> gson.fromJson(body, CommunityCollectionShare::class.java) }
+
+    suspend fun communityCollectionInteraction(
+        endpoint: String,
+        token: String,
+        collectionId: String
+    ): Result<CommunityCollectionInteractionState> = request(
+        endpoint = endpoint,
+        path = "account/community/collections/$collectionId/interaction",
+        token = token,
+        method = "GET"
+    ) { body -> gson.fromJson(body, CommunityCollectionInteractionState::class.java) }
+
+    suspend fun toggleCommunityCollectionBookmark(
+        endpoint: String,
+        token: String,
+        collectionId: String
+    ): Result<CommunityCollectionInteractionState> = request(
+        endpoint = endpoint,
+        path = "account/community/collections/$collectionId/bookmark",
+        token = token,
+        method = "POST"
+    ) { body -> gson.fromJson(body, CommunityCollectionInteractionState::class.java) }
+
+    suspend fun bookmarkedCommunityCollections(
+        endpoint: String,
+        token: String,
+        cursor: String? = null,
+        limit: Int = 20
+    ): Result<CommunityPostPage<CommunityCollection>> = request(
+        endpoint = endpoint,
+        path = communityListPath("account/community/collection-bookmarks", cursor, limit),
+        token = token,
+        method = "GET"
+    ) { body ->
+        gson.fromJson(
+            body,
+            object : TypeToken<CommunityPostPage<CommunityCollection>>() {}.type
+        )
+    }
 
     suspend fun publicCommunityPost(
         endpoint: String,
@@ -441,6 +494,27 @@ class AccountApiService(
         token = token,
         method = "GET"
     ) { body -> gson.fromJson(body, CommunityCollectionOperationsSummary::class.java) }
+
+    suspend fun adminCommunityCollectionAudit(
+        endpoint: String,
+        token: String,
+        collectionId: String? = null,
+        cursor: String? = null,
+        limit: Int = 20
+    ): Result<CommunityPostPage<CommunityCollectionAuditEntry>> = request(
+        endpoint = endpoint,
+        path = communityListPath("account/community/collection-audit", cursor, limit) +
+            collectionId?.takeIf(String::isNotBlank)?.let {
+                "&collection_id=${encodeQueryValue(it)}"
+            }.orEmpty(),
+        token = token,
+        method = "GET"
+    ) { body ->
+        gson.fromJson(
+            body,
+            object : TypeToken<CommunityPostPage<CommunityCollectionAuditEntry>>() {}.type
+        )
+    }
 
     suspend fun createCommunityCollection(
         endpoint: String,

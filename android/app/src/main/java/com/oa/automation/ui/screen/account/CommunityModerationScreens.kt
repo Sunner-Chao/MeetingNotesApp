@@ -57,6 +57,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.oa.automation.domain.model.CommunityCommentReportQueueItem
 import com.oa.automation.domain.model.CommunityCollection
+import com.oa.automation.domain.model.CommunityCollectionAuditEntry
 import com.oa.automation.domain.model.CommunityCollectionOperationsSummary
 import com.oa.automation.domain.model.CommunityModerationItem
 import com.oa.automation.domain.model.CommunityOperationsSummary
@@ -499,6 +500,18 @@ fun CommunityModerationScreen(
                             )
                         }
                     } else {
+                        if (state.collectionAudit.isNotEmpty()) {
+                            item {
+                                Text(
+                                    "最近操作",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                            items(state.collectionAudit, key = { "audit-${it.id}" }) { audit ->
+                                CollectionAuditRow(audit)
+                            }
+                        }
                         items(state.collections, key = { it.id }) { collection ->
                             ModerationCollectionCard(
                                 collection = collection,
@@ -563,9 +576,49 @@ private fun CollectionOperationsSummary(summary: CommunityCollectionOperationsSu
         ModerationSummaryMetric("专题", summary.totalCollectionCount)
         ModerationSummaryMetric("已发布", summary.publishedCollectionCount)
         ModerationSummaryMetric("公开笔记", summary.visiblePostCount)
+        ModerationSummaryMetric("专题收藏", summary.collectionBookmarkCount)
         ModerationSummaryMetric("失效收录", summary.hiddenAssignmentCount)
         ModerationSummaryMetric("空专题", summary.publishedEmptyCount)
     }
+}
+
+@Composable
+private fun CollectionAuditRow(entry: CommunityCollectionAuditEntry) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                collectionAuditLabel(entry.action),
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium
+            )
+            Text(
+                entry.detail,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        Text(
+            formatModerationDate(entry.createdAt),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+private fun collectionAuditLabel(action: String): String = when (action) {
+    "create" -> "创建专题"
+    "update" -> "更新专题"
+    "status" -> "更新状态"
+    "curate" -> "收录笔记"
+    "batch_curate" -> "批量收录"
+    "cover" -> "更新封面"
+    "remove" -> "移除笔记"
+    else -> "专题操作"
 }
 
 @Composable

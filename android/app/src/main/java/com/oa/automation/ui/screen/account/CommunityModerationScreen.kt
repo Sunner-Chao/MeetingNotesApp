@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.oa.automation.data.local.ConfigDataStore
 import com.oa.automation.domain.model.CommunityCommentReportQueueItem
 import com.oa.automation.domain.model.CommunityCollection
+import com.oa.automation.domain.model.CommunityCollectionAuditEntry
 import com.oa.automation.domain.model.CommunityCollectionOperationsSummary
 import com.oa.automation.domain.model.CommunityCollectionPost
 import com.oa.automation.domain.model.CommunityModerationItem
@@ -25,6 +26,7 @@ data class CommunityModerationUiState(
     val items: List<CommunityModerationItem> = emptyList(),
     val commentReports: List<CommunityCommentReportQueueItem> = emptyList(),
     val collections: List<CommunityCollection> = emptyList(),
+    val collectionAudit: List<CommunityCollectionAuditEntry> = emptyList(),
     val collectionSummary: CommunityCollectionOperationsSummary? = null,
     val summary: CommunityOperationsSummary? = null,
     val nextPostCursor: String? = null,
@@ -222,6 +224,13 @@ class CommunityModerationViewModel(
                         token = session.accessToken
                     ).onSuccess { summary ->
                         _uiState.update { it.copy(collectionSummary = summary) }
+                    }
+                    accountApiService.adminCommunityCollectionAudit(
+                        endpoint = endpoint,
+                        token = session.accessToken,
+                        limit = 5
+                    ).onSuccess { page ->
+                        _uiState.update { it.copy(collectionAudit = page.items) }
                     }
                 } else {
                     accountApiService.adminCommunityOperationsSummary(

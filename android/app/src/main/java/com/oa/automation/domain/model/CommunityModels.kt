@@ -75,6 +75,7 @@ data class CommunityCollection(
     @SerializedName("assigned_post_count") val assignedPostCount: Int = 0,
     @SerializedName("visible_post_count") val visiblePostCount: Int = 0,
     @SerializedName("post_count") val postCount: Int = 0,
+    @SerializedName("bookmark_count") val bookmarkCount: Int = 0,
     @SerializedName("cover_post_id") val coverPostId: String = "",
     @SerializedName("cover_thumbnail_url") val coverThumbnailUrl: String = "",
     @SerializedName("preview_posts") val previewPosts: List<CommunityCollectionPreview> = emptyList(),
@@ -99,7 +100,25 @@ data class CommunityCollectionFacets(
 data class CommunityCollectionPage(
     val items: List<CommunityCollection> = emptyList(),
     @SerializedName("next_cursor") val nextCursor: String? = null,
-    val facets: CommunityCollectionFacets = CommunityCollectionFacets()
+    val facets: CommunityCollectionFacets = CommunityCollectionFacets(),
+    @SerializedName("sort_mode") val sortMode: String = "curated",
+    @SerializedName("sort_explanation") val sortExplanation: String = ""
+)
+
+data class CommunityCollectionInteractionState(
+    @SerializedName("collection_id") val collectionId: String,
+    val bookmarked: Boolean = false,
+    @SerializedName("bookmark_count") val bookmarkCount: Int = 0
+)
+
+data class CommunityCollectionShare(
+    @SerializedName("collection_id") val collectionId: String,
+    val title: String,
+    val description: String = "",
+    val destination: String = "",
+    val theme: String = "",
+    @SerializedName("post_count") val postCount: Int = 0,
+    @SerializedName("canonical_path") val canonicalPath: String = ""
 )
 
 data class CommunityCollectionPost(
@@ -144,7 +163,18 @@ data class CommunityCollectionOperationsSummary(
     @SerializedName("assigned_post_count") val assignedPostCount: Int = 0,
     @SerializedName("visible_post_count") val visiblePostCount: Int = 0,
     @SerializedName("hidden_assignment_count") val hiddenAssignmentCount: Int = 0,
-    @SerializedName("published_empty_count") val publishedEmptyCount: Int = 0
+    @SerializedName("published_empty_count") val publishedEmptyCount: Int = 0,
+    @SerializedName("collection_bookmark_count") val collectionBookmarkCount: Int = 0
+)
+
+data class CommunityCollectionAuditEntry(
+    val id: String,
+    @SerializedName("collection_id") val collectionId: String,
+    @SerializedName("actor_user_id") val actorUserId: String,
+    val action: String,
+    @SerializedName("post_id") val postId: String = "",
+    val detail: String = "",
+    @SerializedName("created_at") val createdAt: Long = 0
 )
 
 data class CommunityCollectionRemoval(
