@@ -353,6 +353,106 @@ class CommunityRouteTests(unittest.TestCase):
                 200,
             )
 
+    def test_collection_batch_preview_filters_cover_and_summary_routes(self) -> None:
+        owner_headers = {"Authorization": "Bearer owner-token"}
+        admin_headers = {"Authorization": "Bearer admin-token"}
+        with TestClient(self.app) as client:
+            collection = client.post(
+                "/api/account/community/collections",
+                headers=admin_headers,
+                json={
+                    "title": "北京博物馆专题",
+                    "destination": "北京",
+                    "theme": "博物馆",
+                },
+            ).json()
+            posts = []
+            for index in range(2):
+                created = client.post(
+                    "/api/account/community/drafts",
+                    headers=owner_headers,
+                    json={
+                        **self.payload(),
+                        "client_snapshot_id": f"batch-route-{index}",
+                        "title": f"博物馆路线 {index + 1}",
+                        "destination": "北京",
+                    },
+                ).json()
+                client.post(
+                    f"/api/account/community/posts/{created['id']}/publish",
+                    headers=owner_headers,
+                )
+                client.post(
+                    f"/api/account/community/moderation/{created['id']}",
+                    headers=admin_headers,
+                    json={"decision": "approved", "reason": ""},
+                )
+                posts.append(created)
+
+            batch = client.put(
+                f"/api/account/community/collections/{collection['id']}/posts/batch",
+                headers=admin_headers,
+                json={
+                    "items": [
+                        {"post_id": posts[0]["id"], "position": 1, "curation_note": "第一站"},
+                        {"post_id": posts[1]["id"], "position": 2, "curation_note": "第二站"},
+                    ]
+                },
+            )
+            self.assertEqual(batch.status_code, 200)
+            self.assertEqual(len(batch.json()["items"]), 2)
+            self.assertEqual(
+                client.get(
+                    "/api/account/community/collection-operations-summary",
+                    headers=owner_headers,
+                ).status_code,
+                403,
+            )
+            summary = client.get(
+                "/api/account/community/collection-operations-summary",
+                headers=admin_headers,
+            )
+            self.assertEqual(summary.status_code, 200)
+            self.assertEqual(summary.json()["assigned_post_count"], 2)
+            self.assertNotIn("user_id", summary.json())
+
+            invalid_cover = client.put(
+                f"/api/account/community/collections/{collection['id']}/cover",
+                headers=admin_headers,
+                json={"post_id": posts[0]["id"]},
+            )
+            self.assertEqual(invalid_cover.status_code, 409)
+            cleared_cover = client.put(
+                f"/api/account/community/collections/{collection['id']}/cover",
+                headers=admin_headers,
+                json={"post_id": None},
+            )
+            self.assertEqual(cleared_cover.status_code, 200)
+            client.post(
+                f"/api/account/community/collections/{collection['id']}/status",
+                headers=admin_headers,
+                json={"status": "published"},
+            )
+            public_page = client.get(
+                "/api/community/collections?destination=北京&theme=博物馆"
+            )
+            self.assertEqual(public_page.status_code, 200)
+            self.assertEqual(public_page.json()["facets"]["destinations"], ["北京"])
+            self.assertEqual(len(public_page.json()["items"][0]["preview_posts"]), 2)
+            self.assertNotIn("content", public_page.json()["items"][0]["preview_posts"][0])
+            self.assertEqual(
+                client.get("/api/community/collections?destination=上海").json()["items"],
+                [],
+            )
+
+            self.write_enabled = False
+            blocked_batch = client.put(
+                f"/api/account/community/collections/{collection['id']}/posts/batch",
+                headers=admin_headers,
+                json={"items": [{"post_id": posts[0]["id"], "position": 9}]},
+            )
+            self.assertEqual(blocked_batch.status_code, 503)
+
     def test_interaction_and_comment_routes_require_approved_post_and_owner_delete(self) -> None:
         owner_headers = {"Authorization": "Bearer owner-token"}
         admin_headers = {"Authorization": "Bearer admin-token"}

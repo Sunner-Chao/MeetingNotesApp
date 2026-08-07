@@ -95,6 +95,28 @@ class CommunityServiceTests(unittest.TestCase):
             thumbnail_sha256=hashlib.sha256(thumbnail).hexdigest(),
         )
 
+    def add_ready_media(self, post_id: str, client_media_id: str = "cover-media") -> str:
+        original = self.png_with_metadata("cover")
+        thumbnail = self.png_with_metadata("thumbnail")
+        media, _ = self.service.create_media_manifest(
+            self.owner_id,
+            post_id,
+            self.media_manifest(client_media_id, original, thumbnail),
+        )
+        for variant, content in (("original", original), ("thumbnail", thumbnail)):
+            self.service.append_media_chunk(
+                self.owner_id,
+                post_id,
+                media["id"],
+                variant,
+                start=0,
+                end=len(content) - 1,
+                total=len(content),
+                data=content,
+                chunk_sha256=hashlib.sha256(content).hexdigest(),
+            )
+        return media["id"]
+
     def test_create_is_idempotent_and_rejects_key_reuse_with_changed_content(self) -> None:
         created, was_created = self.service.create_private_draft(
             self.owner_id,
@@ -405,6 +427,117 @@ class CommunityServiceTests(unittest.TestCase):
         self.assertEqual(self.service.list_public_collections()["items"], [])
         with self.assertRaises(CommunityNotFoundError):
             self.service.get_public_collection(collection["id"])
+
+    def test_batch_curation_is_atomic_and_operations_summary_is_aggregate_only(self) -> None:
+        collection = self.service.create_collection(
+            self.other_id,
+            CommunityCollectionInput(title="批量研学专题"),
+        )
+        approved_posts = []
+        for index in range(2):
+            post, _ = self.service.create_private_draft(
+                self.owner_id,
+                self.snapshot(client_snapshot_id=f"batch-approved-{index}"),
+            )
+            self.service.publish(self.owner_id, post["id"])
+            self.service.review_post(
+                post["id"], decision="approved", reason="", reviewed_by=self.other_id
+            )
+            approved_posts.append(post)
+        pending, _ = self.service.create_private_draft(
+            self.owner_id,
+            self.snapshot(client_snapshot_id="batch-pending"),
+        )
+        self.service.publish(self.owner_id, pending["id"])
+
+        result = self.service.batch_add_collection_posts(
+            collection["id"],
+            [
+                {"post_id": approved_posts[0]["id"], "position": 10, "curation_note": "首篇"},
+                {"post_id": approved_posts[1]["id"], "position": 20, "curation_note": "次篇"},
+            ],
+            added_by=self.other_id,
+        )
+        self.assertEqual([item["position"] for item in result["items"]], [10, 20])
+        with self.assertRaises(CommunityNotFoundError):
+            self.service.batch_add_collection_posts(
+                collection["id"],
+                [
+                    {"post_id": approved_posts[0]["id"], "position": 99},
+                    {"post_id": pending["id"], "position": 100},
+                ],
+                added_by=self.other_id,
+            )
+        detail = self.service.get_admin_collection(collection["id"])
+        self.assertEqual([item["position"] for item in detail["posts"]], [10, 20])
+
+        summary = self.service.collection_operations_summary()
+        self.assertEqual(summary["total_collection_count"], 1)
+        self.assertEqual(summary["draft_collection_count"], 1)
+        self.assertEqual(summary["assigned_post_count"], 2)
+        self.assertEqual(summary["visible_post_count"], 2)
+        self.assertEqual(summary["hidden_assignment_count"], 0)
+        self.assertNotIn("user_id", summary)
+
+    def test_selected_cover_preview_and_collection_facets_follow_public_gates(self) -> None:
+        collection = self.service.create_collection(
+            self.other_id,
+            CommunityCollectionInput(
+                title="上海工业研学",
+                destination="上海",
+                theme="工业遗产",
+            ),
+        )
+        post, _ = self.service.create_private_draft(
+            self.owner_id,
+            self.snapshot(
+                client_snapshot_id="cover-post",
+                destination="上海",
+                title="厂房更新路线",
+            ),
+        )
+        self.service.publish(self.owner_id, post["id"])
+        media_id = self.add_ready_media(post["id"])
+        self.service.review_post(
+            post["id"], decision="approved", reason="", reviewed_by=self.other_id
+        )
+        self.service.add_collection_post(
+            collection["id"],
+            post["id"],
+            position=1,
+            curation_note="适合作为工业遗产路线入口",
+            added_by=self.other_id,
+        )
+        selected = self.service.set_collection_cover(
+            collection["id"], post_id=post["id"], updated_by=self.other_id
+        )
+        self.assertEqual(selected["cover_post_id"], post["id"])
+        self.service.set_collection_status(
+            collection["id"], status="published", updated_by=self.other_id
+        )
+
+        page = self.service.list_public_collections(destination="上海", theme="工业遗产")
+        self.assertEqual([item["id"] for item in page["items"]], [collection["id"]])
+        self.assertEqual(page["facets"]["destinations"], ["上海"])
+        self.assertEqual(page["facets"]["themes"], ["工业遗产"])
+        self.assertEqual(
+            page["items"][0]["cover_thumbnail_url"],
+            f"/api/community/media/{media_id}/thumbnail",
+        )
+        preview = page["items"][0]["preview_posts"][0]
+        self.assertEqual(preview["title"], "厂房更新路线")
+        self.assertEqual(preview["destination"], "上海")
+        self.assertNotIn("content", preview)
+        self.assertEqual(
+            self.service.list_public_collections(destination="北京")["items"], []
+        )
+
+        self.service.remove_collection_post(
+            collection["id"], post["id"], removed_by=self.other_id
+        )
+        self.assertEqual(
+            self.service.get_admin_collection(collection["id"])["cover_post_id"], ""
+        )
 
     def test_interactions_are_idempotent_scoped_and_comment_deletion_is_soft(self) -> None:
         created, _ = self.service.create_private_draft(self.owner_id, self.snapshot())

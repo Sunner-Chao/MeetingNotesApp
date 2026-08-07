@@ -425,7 +425,8 @@ class CommunityService:
                     updated_by TEXT NOT NULL,
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL,
-                    published_at INTEGER
+                    published_at INTEGER,
+                    cover_post_id TEXT
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_community_collections_public
@@ -456,6 +457,7 @@ class CommunityService:
                 """
             )
             self._ensure_comment_report_columns(conn)
+            self._ensure_collection_columns(conn)
 
     @staticmethod
     def _ensure_comment_report_columns(conn: sqlite3.Connection) -> None:
@@ -475,6 +477,15 @@ class CommunityService:
             conn.execute(
                 "ALTER TABLE community_comment_reports ADD COLUMN reviewed_at INTEGER"
             )
+
+    @staticmethod
+    def _ensure_collection_columns(conn: sqlite3.Connection) -> None:
+        columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(community_collections)").fetchall()
+        }
+        if "cover_post_id" not in columns:
+            conn.execute("ALTER TABLE community_collections ADD COLUMN cover_post_id TEXT")
 
     def _consume_action_attempt(self, user_id: str, action: str) -> None:
         limit, window_seconds = self.action_rate_limits[action]
@@ -1568,7 +1579,11 @@ class CommunityService:
             row = conn.execute(
                 """
                 SELECT cp.*, p.title, p.status AS post_status,
-                       m.decision AS review_decision
+                       m.decision AS review_decision,
+                       EXISTS (
+                           SELECT 1 FROM community_post_media media
+                           WHERE media.post_id = p.id AND media.status = 'ready'
+                       ) AS has_media
                 FROM community_collection_posts cp
                 JOIN community_posts p ON p.id = cp.post_id
                 LEFT JOIN community_moderation m ON m.post_id = p.id
@@ -1577,6 +1592,152 @@ class CommunityService:
                 (clean_collection_id, clean_post_id),
             ).fetchone()
             return self._admin_collection_post_payload(row)
+
+    def batch_add_collection_posts(
+        self,
+        collection_id: str,
+        assignments: list[dict],
+        *,
+        added_by: str,
+    ) -> dict:
+        clean_collection_id = self._validated_id(collection_id, "collection_id")
+        clean_actor_id = self._validated_id(added_by, "added_by")
+        if not assignments or len(assignments) > 50:
+            raise CommunityError("批量收录数量必须在 1 到 50 篇之间")
+        normalized: list[tuple[str, int, str]] = []
+        seen_post_ids: set[str] = set()
+        for assignment in assignments:
+            post_id = self._validated_id(str(assignment.get("post_id", "")), "post_id")
+            if post_id in seen_post_ids:
+                raise CommunityError("批量收录不能包含重复笔记")
+            try:
+                position = int(assignment.get("position", 0))
+            except (TypeError, ValueError) as exc:
+                raise CommunityError("专题内顺序格式无效") from exc
+            if position < 0 or position > 9999:
+                raise CommunityError("专题内顺序必须在 0 到 9999 之间")
+            note = str(assignment.get("curation_note", "")).strip()
+            if len(note) > 200:
+                raise CommunityError("收录说明不能超过 200 个字符")
+            seen_post_ids.add(post_id)
+            normalized.append((post_id, position, note))
+
+        now = self._now_ms()
+        with self._connect() as conn:
+            collection = conn.execute(
+                "SELECT 1 FROM community_collections WHERE id = ?",
+                (clean_collection_id,),
+            ).fetchone()
+            if collection is None:
+                raise CommunityNotFoundError("专题不存在")
+            for post_id, _, _ in normalized:
+                self._approved_post(conn, post_id)
+            conn.executemany(
+                """
+                INSERT INTO community_collection_posts (
+                    collection_id, post_id, position, curation_note,
+                    added_by, added_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(collection_id, post_id) DO UPDATE SET
+                    position = excluded.position,
+                    curation_note = excluded.curation_note,
+                    added_by = excluded.added_by,
+                    updated_at = excluded.updated_at
+                """,
+                [
+                    (
+                        clean_collection_id,
+                        post_id,
+                        position,
+                        note,
+                        clean_actor_id,
+                        now,
+                        now,
+                    )
+                    for post_id, position, note in normalized
+                ],
+            )
+            conn.execute(
+                """
+                UPDATE community_collections
+                SET updated_by = ?, updated_at = ? WHERE id = ?
+                """,
+                (clean_actor_id, now, clean_collection_id),
+            )
+            rows = conn.execute(
+                f"""
+                SELECT cp.*, p.title, p.status AS post_status,
+                       m.decision AS review_decision,
+                       EXISTS (
+                           SELECT 1 FROM community_post_media media
+                           WHERE media.post_id = p.id AND media.status = 'ready'
+                       ) AS has_media
+                FROM community_collection_posts cp
+                JOIN community_posts p ON p.id = cp.post_id
+                LEFT JOIN community_moderation m ON m.post_id = p.id
+                WHERE cp.collection_id = ?
+                    AND cp.post_id IN ({','.join('?' for _ in normalized)})
+                ORDER BY cp.position ASC, cp.post_id ASC
+                """,
+                (clean_collection_id, *[item[0] for item in normalized]),
+            ).fetchall()
+            return {
+                "collection_id": clean_collection_id,
+                "items": [self._admin_collection_post_payload(row) for row in rows],
+            }
+
+    def set_collection_cover(
+        self,
+        collection_id: str,
+        *,
+        post_id: str | None,
+        updated_by: str,
+    ) -> dict:
+        clean_collection_id = self._validated_id(collection_id, "collection_id")
+        clean_actor_id = self._validated_id(updated_by, "updated_by")
+        clean_post_id = (
+            self._validated_id(post_id, "post_id")
+            if post_id is not None and post_id.strip()
+            else None
+        )
+        now = self._now_ms()
+        with self._connect() as conn:
+            collection = conn.execute(
+                "SELECT 1 FROM community_collections WHERE id = ?",
+                (clean_collection_id,),
+            ).fetchone()
+            if collection is None:
+                raise CommunityNotFoundError("专题不存在")
+            if clean_post_id is not None:
+                eligible = conn.execute(
+                    """
+                    SELECT 1
+                    FROM community_collection_posts cp
+                    JOIN community_posts p ON p.id = cp.post_id
+                    JOIN community_moderation moderation ON moderation.post_id = p.id
+                    JOIN community_post_media media ON media.post_id = p.id
+                    WHERE cp.collection_id = ? AND cp.post_id = ?
+                        AND p.status = 'published' AND moderation.decision = 'approved'
+                        AND media.status = 'ready'
+                    LIMIT 1
+                    """,
+                    (clean_collection_id, clean_post_id),
+                ).fetchone()
+                if eligible is None:
+                    raise CommunityConflictError("封面必须来自专题内仍公开且有图片的笔记")
+            conn.execute(
+                """
+                UPDATE community_collections
+                SET cover_post_id = ?, updated_by = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (clean_post_id, clean_actor_id, now, clean_collection_id),
+            )
+            row = conn.execute(
+                "SELECT * FROM community_collections WHERE id = ?",
+                (clean_collection_id,),
+            ).fetchone()
+            return self._admin_collection_payload(conn, row)
 
     def remove_collection_post(
         self,
@@ -1602,9 +1763,11 @@ class CommunityService:
             conn.execute(
                 """
                 UPDATE community_collections
-                SET updated_by = ?, updated_at = ? WHERE id = ?
+                SET updated_by = ?, updated_at = ?,
+                    cover_post_id = CASE WHEN cover_post_id = ? THEN NULL ELSE cover_post_id END
+                WHERE id = ?
                 """,
-                (clean_actor_id, now, clean_collection_id),
+                (clean_actor_id, now, clean_post_id, clean_collection_id),
             )
         return {
             "collection_id": clean_collection_id,
@@ -1657,7 +1820,11 @@ class CommunityService:
             assignments = conn.execute(
                 """
                 SELECT cp.*, p.title, p.status AS post_status,
-                       m.decision AS review_decision
+                       m.decision AS review_decision,
+                       EXISTS (
+                           SELECT 1 FROM community_post_media media
+                           WHERE media.post_id = p.id AND media.status = 'ready'
+                       ) AS has_media
                 FROM community_collection_posts cp
                 JOIN community_posts p ON p.id = cp.post_id
                 LEFT JOIN community_moderation m ON m.post_id = p.id
@@ -1672,13 +1839,70 @@ class CommunityService:
             ]
             return payload
 
+    def collection_operations_summary(self) -> dict:
+        with self._connect() as conn:
+            status_rows = conn.execute(
+                """
+                SELECT status, COUNT(*) AS total
+                FROM community_collections GROUP BY status
+                """
+            ).fetchall()
+            status_counts = {row["status"]: int(row["total"]) for row in status_rows}
+            assigned_count = int(
+                conn.execute("SELECT COUNT(*) FROM community_collection_posts").fetchone()[0]
+            )
+            visible_count = int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM community_collection_posts cp
+                    JOIN community_posts p ON p.id = cp.post_id
+                    JOIN community_moderation m ON m.post_id = p.id
+                    WHERE p.status = 'published' AND m.decision = 'approved'
+                    """
+                ).fetchone()[0]
+            )
+            published_empty_count = int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM community_collections collection
+                    WHERE collection.status = 'published' AND NOT EXISTS (
+                        SELECT 1
+                        FROM community_collection_posts cp
+                        JOIN community_posts p ON p.id = cp.post_id
+                        JOIN community_moderation m ON m.post_id = p.id
+                        WHERE cp.collection_id = collection.id
+                            AND p.status = 'published' AND m.decision = 'approved'
+                    )
+                    """
+                ).fetchone()[0]
+            )
+        return {
+            "generated_at": self._now_ms(),
+            "total_collection_count": sum(status_counts.values()),
+            "draft_collection_count": status_counts.get("draft", 0),
+            "published_collection_count": status_counts.get("published", 0),
+            "unpublished_collection_count": status_counts.get("unpublished", 0),
+            "assigned_post_count": assigned_count,
+            "visible_post_count": visible_count,
+            "hidden_assignment_count": max(0, assigned_count - visible_count),
+            "published_empty_count": published_empty_count,
+        }
+
     def list_public_collections(
         self,
         *,
         cursor: str | None = None,
         limit: int = 20,
+        destination: str = "",
+        theme: str = "",
     ) -> dict:
         normalized_limit = self._normalized_limit(limit)
+        clean_destination = destination.strip()
+        clean_theme = theme.strip()
+        if len(clean_destination) > 120 or len(clean_theme) > 80:
+            raise CommunityError("专题筛选条件过长")
         cursor_order, cursor_id = self._decode_cursor(cursor)
         query = """
             SELECT * FROM community_collections
@@ -1693,6 +1917,12 @@ class CommunityService:
                 )
         """
         params: list[object] = []
+        if clean_destination:
+            query += " AND LOWER(destination) = LOWER(?)"
+            params.append(clean_destination)
+        if clean_theme:
+            query += " AND LOWER(theme) = LOWER(?)"
+            params.append(clean_theme)
         if cursor_order is not None and cursor_id is not None:
             query += " AND (display_order > ? OR (display_order = ? AND id > ?))"
             params.extend([cursor_order, cursor_order, cursor_id])
@@ -1702,11 +1932,13 @@ class CommunityService:
             rows = conn.execute(query, params).fetchall()
             visible_rows = rows[:normalized_limit]
             items = [self._public_collection_payload(conn, row) for row in visible_rows]
+            facets = self._public_collection_facets(conn)
         return {
             "items": items,
             "next_cursor": self._encode_cursor(visible_rows[-1], "display_order")
             if len(rows) > normalized_limit and visible_rows
             else None,
+            "facets": facets,
         }
 
     def get_public_collection(
@@ -2565,6 +2797,7 @@ class CommunityService:
             "status": row["status"],
             "assigned_post_count": assigned_post_count,
             "visible_post_count": cls._visible_collection_post_count(conn, row["id"]),
+            "cover_post_id": row["cover_post_id"] or "",
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
             "published_at": row["published_at"],
@@ -2584,6 +2817,7 @@ class CommunityService:
             "post_status": row["post_status"],
             "review_status": row["review_decision"] or "pending",
             "visible": visible,
+            "has_media": bool(row["has_media"]) if "has_media" in row.keys() else False,
             "added_at": row["added_at"],
             "updated_at": row["updated_at"],
         }
@@ -2596,18 +2830,39 @@ class CommunityService:
     ) -> dict:
         cover = conn.execute(
             """
-            SELECT media.id
+            SELECT media.id, p.id AS post_id
             FROM community_collection_posts cp
             JOIN community_posts p ON p.id = cp.post_id
             JOIN community_moderation moderation ON moderation.post_id = p.id
             JOIN community_post_media media ON media.post_id = p.id
             WHERE cp.collection_id = ? AND p.status = 'published'
                 AND moderation.decision = 'approved' AND media.status = 'ready'
-            ORDER BY cp.position ASC, p.id ASC, media.created_at ASC
+            ORDER BY CASE WHEN p.id = ? THEN 0 ELSE 1 END,
+                     cp.position ASC, p.id ASC, media.created_at ASC
             LIMIT 1
             """,
-            (row["id"],),
+            (row["id"], row["cover_post_id"]),
         ).fetchone()
+        previews = conn.execute(
+            """
+            SELECT p.id, p.title, COALESCE(i.destination, '') AS destination,
+                   cp.curation_note,
+                   (
+                       SELECT media.id FROM community_post_media media
+                       WHERE media.post_id = p.id AND media.status = 'ready'
+                       ORDER BY media.created_at ASC LIMIT 1
+                   ) AS media_id
+            FROM community_collection_posts cp
+            JOIN community_posts p ON p.id = cp.post_id
+            JOIN community_moderation moderation ON moderation.post_id = p.id
+            LEFT JOIN community_post_index i ON i.post_id = p.id
+            WHERE cp.collection_id = ? AND p.status = 'published'
+                AND moderation.decision = 'approved'
+            ORDER BY cp.position ASC, p.id ASC
+            LIMIT 3
+            """,
+            (row["id"],),
+        ).fetchall()
         return {
             "id": row["id"],
             "title": row["title"],
@@ -2616,11 +2871,57 @@ class CommunityService:
             "theme": row["theme"],
             "display_order": row["display_order"],
             "post_count": cls._visible_collection_post_count(conn, row["id"]),
+            "cover_post_id": cover["post_id"] if cover else "",
             "cover_thumbnail_url": (
                 f"/api/community/media/{cover['id']}/thumbnail" if cover else ""
             ),
+            "preview_posts": [
+                {
+                    "id": preview["id"],
+                    "title": preview["title"],
+                    "destination": preview["destination"],
+                    "curation_note": preview["curation_note"],
+                    "thumbnail_url": (
+                        f"/api/community/media/{preview['media_id']}/thumbnail"
+                        if preview["media_id"]
+                        else ""
+                    ),
+                }
+                for preview in previews
+            ],
             "published_at": row["published_at"],
             "updated_at": row["updated_at"],
+        }
+
+    @staticmethod
+    def _public_collection_facets(conn: sqlite3.Connection) -> dict:
+        visible_clause = """
+            status = 'published' AND EXISTS (
+                SELECT 1
+                FROM community_collection_posts cp
+                JOIN community_posts p ON p.id = cp.post_id
+                JOIN community_moderation m ON m.post_id = p.id
+                WHERE cp.collection_id = community_collections.id
+                    AND p.status = 'published' AND m.decision = 'approved'
+            )
+        """
+        destinations = conn.execute(
+            f"""
+            SELECT DISTINCT destination AS value FROM community_collections
+            WHERE {visible_clause} AND destination != ''
+            ORDER BY destination ASC LIMIT 50
+            """
+        ).fetchall()
+        themes = conn.execute(
+            f"""
+            SELECT DISTINCT theme AS value FROM community_collections
+            WHERE {visible_clause} AND theme != ''
+            ORDER BY theme ASC LIMIT 50
+            """
+        ).fetchall()
+        return {
+            "destinations": [row["value"] for row in destinations],
+            "themes": [row["value"] for row in themes],
         }
 
     @staticmethod

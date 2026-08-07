@@ -100,6 +100,26 @@ class CommunityCollectionPostPayload(BaseModel):
     curation_note: str = Field(default="", max_length=200)
 
 
+class CommunityCollectionBatchPostItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    post_id: str = Field(min_length=1, max_length=128)
+    position: int = Field(default=0, ge=0, le=9999)
+    curation_note: str = Field(default="", max_length=200)
+
+
+class CommunityCollectionBatchPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[CommunityCollectionBatchPostItem] = Field(min_length=1, max_length=50)
+
+
+class CommunityCollectionCoverPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    post_id: str | None = Field(default=None, max_length=128)
+
+
 class CommunityMediaManifestPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -495,6 +515,17 @@ def build_community_router(
         except CommunityError as exc:
             raise community_http_error(exc) from exc
 
+    @router.get("/collection-operations-summary")
+    def get_community_collection_operations_summary(
+        principal: Any = Depends(account_principal_dependency),
+    ) -> dict:
+        if not bool(getattr(principal, "is_admin", False)):
+            raise community_http_error(CommunityPermissionError("需要管理员权限"))
+        try:
+            return service().collection_operations_summary()
+        except CommunityError as exc:
+            raise community_http_error(exc) from exc
+
     @router.post("/collections", status_code=201)
     def create_admin_community_collection(
         payload: CommunityCollectionPayload,
@@ -555,6 +586,42 @@ def build_community_router(
                 collection_id,
                 status=payload.status,
                 updated_by=principal.user_id,
+            )
+        except CommunityError as exc:
+            raise community_http_error(exc) from exc
+
+    @router.put("/collections/{collection_id}/cover")
+    def set_admin_community_collection_cover(
+        collection_id: str,
+        payload: CommunityCollectionCoverPayload,
+        principal: Any = Depends(account_principal_dependency),
+    ) -> dict:
+        if not bool(getattr(principal, "is_admin", False)):
+            raise community_http_error(CommunityPermissionError("需要管理员权限"))
+        ensure_user_writes_enabled()
+        try:
+            return service().set_collection_cover(
+                collection_id,
+                post_id=payload.post_id,
+                updated_by=principal.user_id,
+            )
+        except CommunityError as exc:
+            raise community_http_error(exc) from exc
+
+    @router.put("/collections/{collection_id}/posts/batch")
+    def batch_add_admin_community_collection_posts(
+        collection_id: str,
+        payload: CommunityCollectionBatchPayload,
+        principal: Any = Depends(account_principal_dependency),
+    ) -> dict:
+        if not bool(getattr(principal, "is_admin", False)):
+            raise community_http_error(CommunityPermissionError("需要管理员权限"))
+        ensure_user_writes_enabled()
+        try:
+            return service().batch_add_collection_posts(
+                collection_id,
+                [item.model_dump() for item in payload.items],
+                added_by=principal.user_id,
             )
         except CommunityError as exc:
             raise community_http_error(exc) from exc
@@ -621,9 +688,16 @@ def build_public_community_router(
     def list_public_community_collections(
         cursor: str | None = None,
         limit: int = Query(default=20, ge=1, le=50),
+        destination: str = Query(default="", max_length=120),
+        theme: str = Query(default="", max_length=80),
     ) -> dict:
         try:
-            return service().list_public_collections(cursor=cursor, limit=limit)
+            return service().list_public_collections(
+                cursor=cursor,
+                limit=limit,
+                destination=destination,
+                theme=theme,
+            )
         except CommunityError as exc:
             raise community_http_error(exc) from exc
 
