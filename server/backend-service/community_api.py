@@ -342,6 +342,42 @@ def build_community_router(
         except CommunityError as exc:
             raise community_http_error(exc) from exc
 
+    @router.post("/collections/{collection_id}/bookmark")
+    def toggle_community_collection_bookmark(
+        collection_id: str,
+        principal: Any = Depends(account_principal_dependency),
+    ) -> dict:
+        ensure_user_writes_enabled()
+        try:
+            return service().toggle_collection_bookmark(principal.user_id, collection_id)
+        except CommunityError as exc:
+            raise community_http_error(exc) from exc
+
+    @router.get("/collections/{collection_id}/interaction")
+    def get_community_collection_interaction(
+        collection_id: str,
+        principal: Any = Depends(account_principal_dependency),
+    ) -> dict:
+        try:
+            return service().get_collection_interaction(principal.user_id, collection_id)
+        except CommunityError as exc:
+            raise community_http_error(exc) from exc
+
+    @router.get("/collection-bookmarks")
+    def list_community_collection_bookmarks(
+        cursor: str | None = None,
+        limit: int = Query(default=20, ge=1, le=50),
+        principal: Any = Depends(account_principal_dependency),
+    ) -> dict:
+        try:
+            return service().list_collection_bookmarks(
+                principal.user_id,
+                cursor=cursor,
+                limit=limit,
+            )
+        except CommunityError as exc:
+            raise community_http_error(exc) from exc
+
     @router.get("/posts/{post_id}/comments")
     def list_account_community_comments(
         post_id: str,
@@ -526,6 +562,24 @@ def build_community_router(
         except CommunityError as exc:
             raise community_http_error(exc) from exc
 
+    @router.get("/collection-audit")
+    def list_admin_community_collection_audit(
+        collection_id: str | None = None,
+        cursor: str | None = None,
+        limit: int = Query(default=20, ge=1, le=50),
+        principal: Any = Depends(account_principal_dependency),
+    ) -> dict:
+        if not bool(getattr(principal, "is_admin", False)):
+            raise community_http_error(CommunityPermissionError("需要管理员权限"))
+        try:
+            return service().list_collection_audit(
+                collection_id=collection_id,
+                cursor=cursor,
+                limit=limit,
+            )
+        except CommunityError as exc:
+            raise community_http_error(exc) from exc
+
     @router.post("/collections", status_code=201)
     def create_admin_community_collection(
         payload: CommunityCollectionPayload,
@@ -690,6 +744,7 @@ def build_public_community_router(
         limit: int = Query(default=20, ge=1, le=50),
         destination: str = Query(default="", max_length=120),
         theme: str = Query(default="", max_length=80),
+        sort: str = Query(default="curated", max_length=20),
     ) -> dict:
         try:
             return service().list_public_collections(
@@ -697,6 +752,7 @@ def build_public_community_router(
                 limit=limit,
                 destination=destination,
                 theme=theme,
+                sort=sort,
             )
         except CommunityError as exc:
             raise community_http_error(exc) from exc
@@ -713,6 +769,13 @@ def build_public_community_router(
                 cursor=cursor,
                 limit=limit,
             )
+        except CommunityError as exc:
+            raise community_http_error(exc) from exc
+
+    @router.get("/collections/{collection_id}/share")
+    def get_public_community_collection_share(collection_id: str) -> dict:
+        try:
+            return service().get_public_collection_share(collection_id)
         except CommunityError as exc:
             raise community_http_error(exc) from exc
 

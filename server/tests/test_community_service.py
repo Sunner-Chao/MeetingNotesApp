@@ -539,6 +539,119 @@ class CommunityServiceTests(unittest.TestCase):
             self.service.get_admin_collection(collection["id"])["cover_post_id"], ""
         )
 
+    def test_collection_bookmarks_explainable_sort_share_and_audit(self) -> None:
+        collections = []
+        for collection_index, post_count in enumerate((1, 2), start=1):
+            collection = self.service.create_collection(
+                self.other_id,
+                CommunityCollectionInput(
+                    title=f"研学专题 {collection_index}",
+                    destination="上海",
+                    theme="城市观察",
+                    display_order=collection_index,
+                ),
+            )
+            for post_index in range(post_count):
+                post, _ = self.service.create_private_draft(
+                    self.owner_id,
+                    self.snapshot(
+                        client_snapshot_id=f"collection-sort-{collection_index}-{post_index}",
+                        title=f"专题 {collection_index} 笔记 {post_index + 1}",
+                    ),
+                )
+                self.service.publish(self.owner_id, post["id"])
+                self.service.review_post(
+                    post["id"],
+                    decision="approved",
+                    reason="",
+                    reviewed_by=self.other_id,
+                )
+                self.service.add_collection_post(
+                    collection["id"],
+                    post["id"],
+                    position=post_index,
+                    curation_note="不应进入审计详情",
+                    added_by=self.other_id,
+                )
+            self.service.set_collection_status(
+                collection["id"], status="published", updated_by=self.other_id
+            )
+            collections.append(collection)
+
+        with self.service._connect() as conn:
+            conn.execute(
+                "UPDATE community_collections SET published_at = ? WHERE id = ?",
+                (1_000, collections[0]["id"]),
+            )
+            conn.execute(
+                "UPDATE community_collections SET published_at = ? WHERE id = ?",
+                (2_000, collections[1]["id"]),
+            )
+
+        curated_first = self.service.list_public_collections(limit=1, sort="curated")
+        self.assertEqual(curated_first["items"][0]["id"], collections[0]["id"])
+        curated_second = self.service.list_public_collections(
+            limit=1,
+            sort="curated",
+            cursor=curated_first["next_cursor"],
+        )
+        self.assertEqual(curated_second["items"][0]["id"], collections[1]["id"])
+        recent = self.service.list_public_collections(sort="recent")
+        self.assertEqual(
+            [item["id"] for item in recent["items"]],
+            [collections[1]["id"], collections[0]["id"]],
+        )
+        richness = self.service.list_public_collections(sort="richness")
+        self.assertEqual(richness["items"][0]["id"], collections[1]["id"])
+        self.assertIn("可见笔记数量", richness["sort_explanation"])
+        recent_first = self.service.list_public_collections(limit=1, sort="recent")
+        recent_second = self.service.list_public_collections(
+            limit=1, sort="recent", cursor=recent_first["next_cursor"]
+        )
+        self.assertEqual(recent_second["items"][0]["id"], collections[0]["id"])
+        richness_first = self.service.list_public_collections(limit=1, sort="richness")
+        richness_second = self.service.list_public_collections(
+            limit=1, sort="richness", cursor=richness_first["next_cursor"]
+        )
+        self.assertEqual(richness_second["items"][0]["id"], collections[0]["id"])
+        with self.assertRaises(CommunityError):
+            self.service.list_public_collections(sort="personalized")
+
+        saved = self.service.toggle_collection_bookmark(
+            self.owner_id, collections[0]["id"]
+        )
+        self.assertTrue(saved["bookmarked"])
+        self.assertEqual(saved["bookmark_count"], 1)
+        self.assertTrue(
+            self.service.get_collection_interaction(
+                self.owner_id, collections[0]["id"]
+            )["bookmarked"]
+        )
+        bookmarks = self.service.list_collection_bookmarks(self.owner_id)
+        self.assertEqual([item["id"] for item in bookmarks["items"]], [collections[0]["id"]])
+        self.assertNotIn("user_id", bookmarks["items"][0])
+
+        share = self.service.get_public_collection_share(collections[0]["id"])
+        self.assertEqual(share["post_count"], 1)
+        self.assertNotIn("content", share)
+        self.assertTrue(share["canonical_path"].endswith(collections[0]["id"]))
+
+        audit = self.service.list_collection_audit(
+            collection_id=collections[0]["id"], limit=20
+        )
+        self.assertTrue({"create", "curate", "status"}.issubset(
+            {item["action"] for item in audit["items"]}
+        ))
+        self.assertTrue(all("不应进入审计详情" not in item["detail"] for item in audit["items"]))
+        self.assertTrue(all("content" not in item for item in audit["items"]))
+
+        self.service.set_collection_status(
+            collections[0]["id"], status="unpublished", updated_by=self.other_id
+        )
+        self.assertEqual(self.service.list_collection_bookmarks(self.owner_id)["items"], [])
+        with self.assertRaises(CommunityNotFoundError):
+            self.service.get_collection_interaction(self.owner_id, collections[0]["id"])
+
     def test_interactions_are_idempotent_scoped_and_comment_deletion_is_soft(self) -> None:
         created, _ = self.service.create_private_draft(self.owner_id, self.snapshot())
         self.service.publish(self.owner_id, created["id"])

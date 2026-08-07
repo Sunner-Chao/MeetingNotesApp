@@ -453,6 +453,109 @@ class CommunityRouteTests(unittest.TestCase):
             )
             self.assertEqual(blocked_batch.status_code, 503)
 
+    def test_collection_bookmark_sort_share_and_audit_routes(self) -> None:
+        owner_headers = {"Authorization": "Bearer owner-token"}
+        admin_headers = {"Authorization": "Bearer admin-token"}
+        with TestClient(self.app) as client:
+            collection = client.post(
+                "/api/account/community/collections",
+                headers=admin_headers,
+                json={
+                    "title": "上海城市观察",
+                    "destination": "上海",
+                    "theme": "城市更新",
+                },
+            ).json()
+            post = client.post(
+                "/api/account/community/drafts",
+                headers=owner_headers,
+                json={
+                    **self.payload(),
+                    "client_snapshot_id": "collection-interaction-route",
+                    "title": "街区更新观察",
+                },
+            ).json()
+            client.post(
+                f"/api/account/community/posts/{post['id']}/publish",
+                headers=owner_headers,
+            )
+            client.post(
+                f"/api/account/community/moderation/{post['id']}",
+                headers=admin_headers,
+                json={"decision": "approved", "reason": ""},
+            )
+            client.put(
+                f"/api/account/community/collections/{collection['id']}/posts/{post['id']}",
+                headers=admin_headers,
+                json={"position": 1, "curation_note": "街区更新样本"},
+            )
+            client.post(
+                f"/api/account/community/collections/{collection['id']}/status",
+                headers=admin_headers,
+                json={"status": "published"},
+            )
+
+            public_page = client.get("/api/community/collections?sort=richness")
+            self.assertEqual(public_page.status_code, 200)
+            self.assertEqual(public_page.json()["sort_mode"], "richness")
+            self.assertIn("可见笔记数量", public_page.json()["sort_explanation"])
+            self.assertEqual(
+                client.get("/api/community/collections?sort=personalized").status_code,
+                400,
+            )
+            share = client.get(
+                f"/api/community/collections/{collection['id']}/share"
+            )
+            self.assertEqual(share.status_code, 200)
+            self.assertNotIn("content", share.json())
+
+            toggled = client.post(
+                f"/api/account/community/collections/{collection['id']}/bookmark",
+                headers=owner_headers,
+            )
+            self.assertTrue(toggled.json()["bookmarked"])
+            interaction = client.get(
+                f"/api/account/community/collections/{collection['id']}/interaction",
+                headers=owner_headers,
+            )
+            self.assertTrue(interaction.json()["bookmarked"])
+            saved = client.get(
+                "/api/account/community/collection-bookmarks", headers=owner_headers
+            )
+            self.assertEqual(saved.json()["items"][0]["id"], collection["id"])
+            self.assertNotIn("user_id", saved.json()["items"][0])
+
+            self.assertEqual(
+                client.get(
+                    "/api/account/community/collection-audit",
+                    headers=owner_headers,
+                ).status_code,
+                403,
+            )
+            audit = client.get(
+                "/api/account/community/collection-audit?limit=10",
+                headers=admin_headers,
+            )
+            self.assertEqual(audit.status_code, 200)
+            self.assertTrue(any(item["action"] == "status" for item in audit.json()["items"]))
+            self.assertTrue(all("content" not in item for item in audit.json()["items"]))
+
+            self.write_enabled = False
+            self.assertEqual(
+                client.post(
+                    f"/api/account/community/collections/{collection['id']}/bookmark",
+                    headers=owner_headers,
+                ).status_code,
+                503,
+            )
+            self.assertEqual(
+                client.get(
+                    f"/api/account/community/collections/{collection['id']}/interaction",
+                    headers=owner_headers,
+                ).status_code,
+                200,
+            )
+
     def test_interaction_and_comment_routes_require_approved_post_and_owner_delete(self) -> None:
         owner_headers = {"Authorization": "Bearer owner-token"}
         admin_headers = {"Authorization": "Bearer admin-token"}

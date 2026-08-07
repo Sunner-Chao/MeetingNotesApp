@@ -21,6 +21,15 @@ POST_STATUSES = frozenset({"private_draft", "published", "withdrawn"})
 MODERATION_STATUSES = frozenset({"not_submitted", "pending"})
 REVIEW_DECISIONS = frozenset({"approved", "rejected"})
 COLLECTION_STATUSES = frozenset({"draft", "published", "unpublished"})
+COLLECTION_SORT_MODES = frozenset({"curated", "recent", "richness"})
+COLLECTION_SORT_EXPLANATIONS = {
+    "curated": "按编辑设置的人工顺序展示",
+    "recent": "按专题首次发布时间从近到远展示",
+    "richness": "按当前可见笔记数量从多到少展示",
+}
+COLLECTION_AUDIT_ACTIONS = frozenset(
+    {"create", "update", "status", "curate", "batch_curate", "cover", "remove"}
+)
 REPORT_CATEGORIES = frozenset({"privacy", "copyright", "safety", "spam", "other"})
 DEFAULT_ACTION_RATE_LIMITS: dict[str, tuple[int, int]] = {
     "interaction": (60, 60),
@@ -454,6 +463,43 @@ class CommunityService:
                     ON community_collection_posts(collection_id, position ASC, added_at ASC, post_id ASC);
                 CREATE INDEX IF NOT EXISTS idx_community_collection_posts_post
                     ON community_collection_posts(post_id, collection_id);
+
+                CREATE TABLE IF NOT EXISTS community_collection_bookmarks (
+                    collection_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    PRIMARY KEY(collection_id, user_id),
+                    FOREIGN KEY(collection_id) REFERENCES community_collections(id)
+                        ON DELETE CASCADE,
+                    FOREIGN KEY(user_id) REFERENCES users(id)
+                        ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_community_collection_bookmarks_user
+                    ON community_collection_bookmarks(user_id, created_at DESC, collection_id DESC);
+
+                CREATE TABLE IF NOT EXISTS community_collection_audit (
+                    id TEXT PRIMARY KEY,
+                    collection_id TEXT NOT NULL,
+                    actor_user_id TEXT NOT NULL,
+                    action TEXT NOT NULL
+                        CHECK(action IN ('create', 'update', 'status', 'curate',
+                            'batch_curate', 'cover', 'remove')),
+                    post_id TEXT,
+                    detail TEXT NOT NULL DEFAULT '',
+                    created_at INTEGER NOT NULL,
+                    FOREIGN KEY(collection_id) REFERENCES community_collections(id)
+                        ON DELETE CASCADE,
+                    FOREIGN KEY(actor_user_id) REFERENCES users(id)
+                        ON DELETE RESTRICT,
+                    FOREIGN KEY(post_id) REFERENCES community_posts(id)
+                        ON DELETE SET NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_community_collection_audit_created
+                    ON community_collection_audit(created_at DESC, id DESC);
+                CREATE INDEX IF NOT EXISTS idx_community_collection_audit_collection
+                    ON community_collection_audit(collection_id, created_at DESC, id DESC);
                 """
             )
             self._ensure_comment_report_columns(conn)
@@ -1429,6 +1475,9 @@ class CommunityService:
                 "SELECT * FROM community_collections WHERE id = ?",
                 (collection_id,),
             ).fetchone()
+            self._record_collection_audit(
+                conn, collection_id, clean_actor_id, "create", detail="创建专题"
+            )
             return self._admin_collection_payload(conn, row)
 
     def update_collection(
@@ -1470,6 +1519,9 @@ class CommunityService:
                 "SELECT * FROM community_collections WHERE id = ?",
                 (clean_collection_id,),
             ).fetchone()
+            self._record_collection_audit(
+                conn, clean_collection_id, clean_actor_id, "update", detail="更新专题"
+            )
             return self._admin_collection_payload(conn, row)
 
     def set_collection_status(
@@ -1519,6 +1571,13 @@ class CommunityService:
                 "SELECT * FROM community_collections WHERE id = ?",
                 (clean_collection_id,),
             ).fetchone()
+            self._record_collection_audit(
+                conn,
+                clean_collection_id,
+                clean_actor_id,
+                "status",
+                detail=f"状态改为 {clean_status}",
+            )
             return self._admin_collection_payload(conn, row)
 
     def add_collection_post(
@@ -1591,6 +1650,14 @@ class CommunityService:
                 """,
                 (clean_collection_id, clean_post_id),
             ).fetchone()
+            self._record_collection_audit(
+                conn,
+                clean_collection_id,
+                clean_actor_id,
+                "curate",
+                post_id=clean_post_id,
+                detail=f"位置 {position}",
+            )
             return self._admin_collection_post_payload(row)
 
     def batch_add_collection_posts(
@@ -1681,6 +1748,13 @@ class CommunityService:
                 """,
                 (clean_collection_id, *[item[0] for item in normalized]),
             ).fetchall()
+            self._record_collection_audit(
+                conn,
+                clean_collection_id,
+                clean_actor_id,
+                "batch_curate",
+                detail=f"批量处理 {len(normalized)} 篇",
+            )
             return {
                 "collection_id": clean_collection_id,
                 "items": [self._admin_collection_post_payload(row) for row in rows],
@@ -1737,6 +1811,14 @@ class CommunityService:
                 "SELECT * FROM community_collections WHERE id = ?",
                 (clean_collection_id,),
             ).fetchone()
+            self._record_collection_audit(
+                conn,
+                clean_collection_id,
+                clean_actor_id,
+                "cover",
+                post_id=clean_post_id,
+                detail="清除封面" if clean_post_id is None else "设置封面",
+            )
             return self._admin_collection_payload(conn, row)
 
     def remove_collection_post(
@@ -1768,6 +1850,14 @@ class CommunityService:
                 WHERE id = ?
                 """,
                 (clean_actor_id, now, clean_post_id, clean_collection_id),
+            )
+            self._record_collection_audit(
+                conn,
+                clean_collection_id,
+                clean_actor_id,
+                "remove",
+                post_id=clean_post_id,
+                detail="移除收录笔记",
             )
         return {
             "collection_id": clean_collection_id,
@@ -1878,6 +1968,11 @@ class CommunityService:
                     """
                 ).fetchone()[0]
             )
+            bookmark_count = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM community_collection_bookmarks"
+                ).fetchone()[0]
+            )
         return {
             "generated_at": self._now_ms(),
             "total_collection_count": sum(status_counts.values()),
@@ -1888,7 +1983,168 @@ class CommunityService:
             "visible_post_count": visible_count,
             "hidden_assignment_count": max(0, assigned_count - visible_count),
             "published_empty_count": published_empty_count,
+            "collection_bookmark_count": bookmark_count,
         }
+
+    def list_collection_audit(
+        self,
+        *,
+        collection_id: str | None = None,
+        cursor: str | None = None,
+        limit: int = 20,
+    ) -> dict:
+        clean_collection_id = (
+            self._validated_id(collection_id, "collection_id")
+            if collection_id is not None and collection_id.strip()
+            else None
+        )
+        normalized_limit = self._normalized_limit(limit)
+        cursor_created_at, cursor_id = self._decode_cursor(cursor)
+        query = """
+            SELECT id, collection_id, actor_user_id, action, post_id, detail, created_at
+            FROM community_collection_audit
+            WHERE 1 = 1
+        """
+        params: list[object] = []
+        if clean_collection_id is not None:
+            query += " AND collection_id = ?"
+            params.append(clean_collection_id)
+        if cursor_created_at is not None and cursor_id is not None:
+            query += " AND (created_at < ? OR (created_at = ? AND id < ?))"
+            params.extend([cursor_created_at, cursor_created_at, cursor_id])
+        query += " ORDER BY created_at DESC, id DESC LIMIT ?"
+        params.append(normalized_limit + 1)
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        visible_rows = rows[:normalized_limit]
+        return {
+            "items": [
+                {
+                    "id": row["id"],
+                    "collection_id": row["collection_id"],
+                    "actor_user_id": row["actor_user_id"],
+                    "action": row["action"],
+                    "post_id": row["post_id"] or "",
+                    "detail": row["detail"],
+                    "created_at": row["created_at"],
+                }
+                for row in visible_rows
+            ],
+            "next_cursor": self._encode_cursor(visible_rows[-1], "created_at")
+            if len(rows) > normalized_limit and visible_rows
+            else None,
+        }
+
+    def toggle_collection_bookmark(self, user_id: str, collection_id: str) -> dict:
+        clean_user_id = self._validated_id(user_id, "user_id")
+        clean_collection_id = self._validated_id(collection_id, "collection_id")
+        self._consume_action_attempt(clean_user_id, "interaction")
+        now = self._now_ms()
+        with self._connect() as conn:
+            self._visible_collection(conn, clean_collection_id)
+            existing = conn.execute(
+                "SELECT 1 FROM community_collection_bookmarks "
+                "WHERE collection_id = ? AND user_id = ?",
+                (clean_collection_id, clean_user_id),
+            ).fetchone()
+            if existing is None:
+                conn.execute(
+                    "INSERT INTO community_collection_bookmarks"
+                    "(collection_id, user_id, created_at) VALUES (?, ?, ?)",
+                    (clean_collection_id, clean_user_id, now),
+                )
+                bookmarked = True
+            else:
+                conn.execute(
+                    "DELETE FROM community_collection_bookmarks "
+                    "WHERE collection_id = ? AND user_id = ?",
+                    (clean_collection_id, clean_user_id),
+                )
+                bookmarked = False
+            count = conn.execute(
+                "SELECT COUNT(*) FROM community_collection_bookmarks WHERE collection_id = ?",
+                (clean_collection_id,),
+            ).fetchone()[0]
+        return {
+            "collection_id": clean_collection_id,
+            "bookmarked": bookmarked,
+            "bookmark_count": int(count),
+        }
+
+    def get_collection_interaction(self, user_id: str, collection_id: str) -> dict:
+        clean_user_id = self._validated_id(user_id, "user_id")
+        clean_collection_id = self._validated_id(collection_id, "collection_id")
+        with self._connect() as conn:
+            self._visible_collection(conn, clean_collection_id)
+            bookmarked = conn.execute(
+                "SELECT 1 FROM community_collection_bookmarks "
+                "WHERE collection_id = ? AND user_id = ?",
+                (clean_collection_id, clean_user_id),
+            ).fetchone()
+            count = conn.execute(
+                "SELECT COUNT(*) FROM community_collection_bookmarks WHERE collection_id = ?",
+                (clean_collection_id,),
+            ).fetchone()[0]
+        return {
+            "collection_id": clean_collection_id,
+            "bookmarked": bookmarked is not None,
+            "bookmark_count": int(count),
+        }
+
+    def list_collection_bookmarks(
+        self,
+        user_id: str,
+        *,
+        cursor: str | None = None,
+        limit: int = 20,
+    ) -> dict:
+        clean_user_id = self._validated_id(user_id, "user_id")
+        normalized_limit = self._normalized_limit(limit)
+        cursor_created_at, cursor_id = self._decode_cursor(cursor)
+        query = """
+            SELECT c.*, b.created_at AS bookmark_created_at
+            FROM community_collection_bookmarks b
+            JOIN community_collections c ON c.id = b.collection_id
+            WHERE b.user_id = ? AND c.status = 'published'
+                AND EXISTS (
+                    SELECT 1
+                    FROM community_collection_posts cp
+                    JOIN community_posts p ON p.id = cp.post_id
+                    JOIN community_moderation m ON m.post_id = p.id
+                    WHERE cp.collection_id = c.id
+                        AND p.status = 'published' AND m.decision = 'approved'
+                )
+        """
+        params: list[object] = [clean_user_id]
+        if cursor_created_at is not None and cursor_id is not None:
+            query += " AND (b.created_at < ? OR (b.created_at = ? AND c.id < ?))"
+            params.extend([cursor_created_at, cursor_created_at, cursor_id])
+        query += " ORDER BY b.created_at DESC, c.id DESC LIMIT ?"
+        params.append(normalized_limit + 1)
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+            visible_rows = rows[:normalized_limit]
+            items = [self._public_collection_payload(conn, row) for row in visible_rows]
+        return {
+            "items": items,
+            "next_cursor": self._encode_cursor(visible_rows[-1], "bookmark_created_at")
+            if len(rows) > normalized_limit and visible_rows
+            else None,
+        }
+
+    def get_public_collection_share(self, collection_id: str) -> dict:
+        clean_collection_id = self._validated_id(collection_id, "collection_id")
+        with self._connect() as conn:
+            row = self._visible_collection(conn, clean_collection_id)
+            return {
+                "collection_id": clean_collection_id,
+                "title": row["title"],
+                "description": row["description"],
+                "destination": row["destination"],
+                "theme": row["theme"],
+                "post_count": self._visible_collection_post_count(conn, clean_collection_id),
+                "canonical_path": f"/api/community/collections/{clean_collection_id}",
+            }
 
     def list_public_collections(
         self,
@@ -1897,16 +2153,19 @@ class CommunityService:
         limit: int = 20,
         destination: str = "",
         theme: str = "",
+        sort: str = "curated",
     ) -> dict:
         normalized_limit = self._normalized_limit(limit)
         clean_destination = destination.strip()
         clean_theme = theme.strip()
+        clean_sort = sort.strip().lower() or "curated"
+        if clean_sort not in COLLECTION_SORT_MODES:
+            raise CommunityError("专题排序方式无效")
         if len(clean_destination) > 120 or len(clean_theme) > 80:
             raise CommunityError("专题筛选条件过长")
         cursor_order, cursor_id = self._decode_cursor(cursor)
-        query = """
-            SELECT * FROM community_collections
-            WHERE status = 'published'
+        public_clause = """
+            status = 'published'
                 AND EXISTS (
                     SELECT 1
                     FROM community_collection_posts cp
@@ -1916,6 +2175,37 @@ class CommunityService:
                         AND p.status = 'published' AND m.decision = 'approved'
                 )
         """
+        richness_expression = """
+            (
+                SELECT COUNT(*)
+                FROM community_collection_posts visible_cp
+                JOIN community_posts visible_p ON visible_p.id = visible_cp.post_id
+                JOIN community_moderation visible_m ON visible_m.post_id = visible_p.id
+                WHERE visible_cp.collection_id = community_collections.id
+                    AND visible_p.status = 'published'
+                    AND visible_m.decision = 'approved'
+            )
+        """
+        sort_expression = "display_order"
+        if clean_sort == "recent":
+            query = f"""
+                SELECT community_collections.*, COALESCE(published_at, 0) AS sort_key
+                FROM community_collections
+                WHERE {public_clause}
+            """
+            sort_expression = "COALESCE(published_at, 0)"
+        elif clean_sort == "richness":
+            query = f"""
+                SELECT community_collections.*, {richness_expression} AS sort_key
+                FROM community_collections
+                WHERE {public_clause}
+            """
+            sort_expression = richness_expression
+        else:
+            query = f"""
+                SELECT * FROM community_collections
+                WHERE {public_clause}
+            """
         params: list[object] = []
         if clean_destination:
             query += " AND LOWER(destination) = LOWER(?)"
@@ -1924,9 +2214,21 @@ class CommunityService:
             query += " AND LOWER(theme) = LOWER(?)"
             params.append(clean_theme)
         if cursor_order is not None and cursor_id is not None:
-            query += " AND (display_order > ? OR (display_order = ? AND id > ?))"
-            params.extend([cursor_order, cursor_order, cursor_id])
-        query += " ORDER BY display_order ASC, id ASC LIMIT ?"
+            if clean_sort == "curated":
+                query += " AND (display_order > ? OR (display_order = ? AND id > ?))"
+                params.extend([cursor_order, cursor_order, cursor_id])
+            elif clean_sort == "recent":
+                query += f" AND ({sort_expression} < ? OR ({sort_expression} = ? AND id < ?))"
+                params.extend([cursor_order, cursor_order, cursor_id])
+            else:
+                query += f" AND ({sort_expression} < ? OR ({sort_expression} = ? AND id > ?))"
+                params.extend([cursor_order, cursor_order, cursor_id])
+        if clean_sort == "curated":
+            query += " ORDER BY display_order ASC, id ASC LIMIT ?"
+        elif clean_sort == "recent":
+            query += f" ORDER BY {sort_expression} DESC, id DESC LIMIT ?"
+        else:
+            query += f" ORDER BY {sort_expression} DESC, id ASC LIMIT ?"
         params.append(normalized_limit + 1)
         with self._connect() as conn:
             rows = conn.execute(query, params).fetchall()
@@ -1935,10 +2237,14 @@ class CommunityService:
             facets = self._public_collection_facets(conn)
         return {
             "items": items,
-            "next_cursor": self._encode_cursor(visible_rows[-1], "display_order")
+            "next_cursor": self._encode_cursor(
+                visible_rows[-1], "display_order" if clean_sort == "curated" else "sort_key"
+            )
             if len(rows) > normalized_limit and visible_rows
             else None,
             "facets": facets,
+            "sort_mode": clean_sort,
+            "sort_explanation": COLLECTION_SORT_EXPLANATIONS[clean_sort],
         }
 
     def get_public_collection(
@@ -2752,6 +3058,62 @@ class CommunityService:
         }
 
     @staticmethod
+    def _record_collection_audit(
+        conn: sqlite3.Connection,
+        collection_id: str,
+        actor_user_id: str,
+        action: str,
+        *,
+        post_id: str | None = None,
+        detail: str = "",
+    ) -> None:
+        if action not in COLLECTION_AUDIT_ACTIONS:
+            raise CommunityError("专题审计动作无效")
+        clean_detail = detail.strip()
+        if len(clean_detail) > 200:
+            raise CommunityError("专题审计说明过长")
+        conn.execute(
+            """
+            INSERT INTO community_collection_audit(
+                id, collection_id, actor_user_id, action, post_id, detail, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                uuid.uuid4().hex,
+                collection_id,
+                actor_user_id,
+                action,
+                post_id,
+                clean_detail,
+                int(time.time() * 1000),
+            ),
+        )
+
+    @staticmethod
+    def _visible_collection(
+        conn: sqlite3.Connection,
+        collection_id: str,
+    ) -> sqlite3.Row:
+        row = conn.execute(
+            """
+            SELECT * FROM community_collections
+            WHERE id = ? AND status = 'published'
+                AND EXISTS (
+                    SELECT 1
+                    FROM community_collection_posts cp
+                    JOIN community_posts p ON p.id = cp.post_id
+                    JOIN community_moderation m ON m.post_id = p.id
+                    WHERE cp.collection_id = community_collections.id
+                        AND p.status = 'published' AND m.decision = 'approved'
+                )
+            """,
+            (collection_id,),
+        ).fetchone()
+        if row is None:
+            raise CommunityNotFoundError("专题不存在或暂不可查看")
+        return row
+
+    @staticmethod
     def _visible_collection_post_count(
         conn: sqlite3.Connection,
         collection_id: str,
@@ -2787,6 +3149,12 @@ class CommunityService:
                 (row["id"],),
             ).fetchone()[0]
         )
+        bookmark_count = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM community_collection_bookmarks WHERE collection_id = ?",
+                (row["id"],),
+            ).fetchone()[0]
+        )
         return {
             "id": row["id"],
             "title": row["title"],
@@ -2797,6 +3165,7 @@ class CommunityService:
             "status": row["status"],
             "assigned_post_count": assigned_post_count,
             "visible_post_count": cls._visible_collection_post_count(conn, row["id"]),
+            "bookmark_count": bookmark_count,
             "cover_post_id": row["cover_post_id"] or "",
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
@@ -2863,6 +3232,12 @@ class CommunityService:
             """,
             (row["id"],),
         ).fetchall()
+        bookmark_count = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM community_collection_bookmarks WHERE collection_id = ?",
+                (row["id"],),
+            ).fetchone()[0]
+        )
         return {
             "id": row["id"],
             "title": row["title"],
@@ -2871,6 +3246,7 @@ class CommunityService:
             "theme": row["theme"],
             "display_order": row["display_order"],
             "post_count": cls._visible_collection_post_count(conn, row["id"]),
+            "bookmark_count": bookmark_count,
             "cover_post_id": cover["post_id"] if cover else "",
             "cover_thumbnail_url": (
                 f"/api/community/media/{cover['id']}/thumbnail" if cover else ""
