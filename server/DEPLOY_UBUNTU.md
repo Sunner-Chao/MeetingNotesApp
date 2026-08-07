@@ -119,6 +119,18 @@ curl http://127.0.0.1:8888/health
 
 `verify-native.sh` 会验证模型、Python 依赖、systemd 启用/运行状态、资源限制和健康接口。
 
+### 社区媒体维护验收
+
+Backend 与社区媒体目录已经存在时，先安装仅预演的每日 timer，再运行一次显式 dry-run 验收：
+
+```bash
+sudo bash /opt/meetingnotes-stt/current/scripts/install-community-media-cleanup.sh
+sudo bash /opt/meetingnotes-stt/current/scripts/verify-community-media-maintenance.sh --run-dry-run
+sudo systemctl list-timers meetingnotes-community-media-cleanup.timer
+```
+
+预检会对两个 unit 运行 `systemd-analyze verify`，确认已安装文件与当前 release 一致、timer 已启用且处于活动状态；`--run-dry-run` 额外启动一次只读清理预演并输出隔离区聚合统计。该过程不带 `--apply`，不会移动或删除媒体。实际清理必须先完成 P4-B13 的备份/只读窗口步骤；恢复演练应在隔离环境完成，不能用唯一线上数据库直接验证。
+
 Backend 控制台进程监听 `127.0.0.1:8090`，由 Nginx HTTPS 反向代理提供公网访问。当前公网地址为 `https://118.25.43.185/web`。SSH 隧道仍可用于本机维护：
 
 ```powershell

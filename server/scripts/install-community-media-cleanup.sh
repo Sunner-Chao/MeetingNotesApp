@@ -16,6 +16,9 @@ for unit in "${UNITS[@]}"; do
 done
 
 systemctl daemon-reload
+systemd-analyze verify \
+  "${SYSTEMD_ROOT}/meetingnotes-community-media-cleanup.service" \
+  "${SYSTEMD_ROOT}/meetingnotes-community-media-cleanup.timer"
 systemctl enable --now meetingnotes-community-media-cleanup.timer >/dev/null
 echo "[OK] Community media cleanup dry-run timer is enabled."
 echo "[INFO] Apply cleanup manually only after backup review with COMMUNITY_WRITE_ENABLED=false."

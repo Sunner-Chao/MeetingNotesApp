@@ -73,12 +73,23 @@ class CommunityMediaOperationsTests(unittest.TestCase):
         installer = (SERVER_DIR / "scripts" / "install-community-media-cleanup.sh").read_text(
             encoding="utf-8"
         )
+        verifier = (SERVER_DIR / "scripts" / "verify-community-media-maintenance.sh").read_text(
+            encoding="utf-8"
+        )
         self.assertIn("Environment=COMMUNITY_WRITE_ENABLED=true", service)
         self.assertIn("ConditionPathIsDirectory=/var/lib/meetingnotes-stt/backend/community-media", service)
         self.assertIn("--lock-file", service)
         self.assertNotIn("--apply", service)
         self.assertIn("Persistent=true", timer)
+        self.assertIn("systemd-analyze verify", installer)
         self.assertIn("enable --now meetingnotes-community-media-cleanup.timer", installer)
+        self.assertIn("bash -n", verifier)
+        self.assertIn("systemd-analyze verify", verifier)
+        self.assertIn("--run-dry-run", verifier)
+        self.assertNotIn("--apply", verifier)
+        self.assertIn("cmp -s", verifier)
+        self.assertIn("systemctl start meetingnotes-community-media-cleanup.service", verifier)
+        self.assertIn("--retention-days 90", verifier)
 
 
 if __name__ == "__main__":
