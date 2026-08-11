@@ -31,7 +31,13 @@ fun ProcessingProgressBar(
     onAction: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
-    FlowingProgressBorder(active = true, modifier = modifier.fillMaxWidth(), cornerRadius = 12.dp) {
+    FlowingProgressBorder(
+        active = true,
+        modifier = modifier.fillMaxWidth(),
+        cornerRadius = 8.dp,
+        inset = 1.dp,
+        strokeWidth = 1.8.dp
+    ) {
         Surface(
             modifier = Modifier.fillMaxWidth(),
             color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.42f),

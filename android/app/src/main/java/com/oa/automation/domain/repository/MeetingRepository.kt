@@ -2,6 +2,7 @@ package com.oa.automation.domain.repository
 
 import com.oa.automation.domain.model.Meeting
 import com.oa.automation.domain.model.MeetingAttachment
+import com.oa.automation.domain.model.RecordingMarker
 import com.oa.automation.domain.model.Transcript
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
@@ -20,4 +21,6 @@ interface MeetingRepository {
     fun observeAttachmentsByJourneyStageId(journeyStageId: String): Flow<List<MeetingAttachment>>
     suspend fun findAttachmentsByJourneyStageIds(stageIds: List<String>): Result<List<MeetingAttachment>>
     suspend fun deleteAttachment(id: String): Result<Unit>
+    suspend fun saveRecordingMarker(marker: RecordingMarker): Result<RecordingMarker>
+    suspend fun findRecordingMarkersByMeetingId(meetingId: String): Result<List<RecordingMarker>>
 }

@@ -1,0 +1,8 @@
+{
+  "version_code": 10219,
+  "version_name": "1.2.19",
+  "mandatory": false,
+  "release_notes": "首页最近记录使用微软 Fluent 语义色区分已完成与待完善状态；桌面、启动页、登录页和应用内品牌入口统一升级为全新 W 形书页图标，并优化圆角与自适应图标安全边距。",
+  "published_at": "2026-08-10T07:51:49Z",
+  "sha256": "6ff73feef5bf9b3520e6743be9669b7b6657314f0eb53e465032c3fae7701519"
+}

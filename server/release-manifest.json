@@ -1,9 +1,9 @@
 {
   "schema": 1,
-  "version": "1.1.11",
-  "release": "1.1.11-20260718023549710",
-  "status": "frozen",
-  "frozen_at": "2026-07-18",
+  "version": "1.2.18",
+  "release": "1.2.18-recording-menu-marker-flow",
+  "status": "candidate",
+  "frozen_at": "2026-08-10",
   "validated_host": "Ubuntu 22.04 x86_64, 4 CPU, 3719 MB RAM, no GPU",
   "deployment": "native-systemd",
   "python": "3.11",
@@ -27,7 +27,13 @@
     "stream_provisional_min_chars": 2,
     "stream_min_confidence": -0.9,
     "stream_max_no_speech_prob": 0.35,
-    "stream_profile": "revisable-preview; final-file-decoder-remains-beam-5"
+    "final_beam_size": 5,
+    "final_batch_size": 1,
+    "final_condition_on_previous_text": true,
+    "final_initial_prompt": "disabled by default; legacy prompt echoes sanitized",
+    "final_punctuation_restoration": "segment-pause fallback only when model output has no punctuation",
+    "stream_finalize_wait_sec": 15,
+    "stream_profile": "monotonic revisable-preview; uninterrupted-streams-finalize-in-place; final-decoder-remains-beam-5"
   },
   "model": {
     "path": "faster-whisper/small/model.bin",
@@ -51,7 +57,89 @@
     "credential_modes": [
       "relay-environment",
       "cli-login"
-    ]
+    ],
+    "android_default_provider": "codex-cli",
+    "codex_reasoning_effort": "medium",
+    "max_text_chars": 0,
+    "max_request_json_bytes": 0
+  },
+  "audio_archive": {
+    "enabled": true,
+    "retention_days": 30,
+    "max_gb": 10,
+    "ownership": "account-token",
+    "android_export": "system document save and FileProvider one-tap share"
+  },
+  "cloud_asr": {
+    "provider": "tencent-tiered",
+    "enabled_by_default": false,
+    "android_credentials": "account-stt-token-only",
+    "server_credentials": "environment-only",
+    "tiers": {
+      "standard": {"engine_type": "16k_zh", "usage_reference_sec": 18000, "application_budget_enforced": false},
+      "precision": {"engine_type": "16k_zh_en", "enabled_by_default": false, "monthly_limit_sec": 0, "application_budget_enforced": true}
+    },
+    "max_upload_mb": 100,
+    "max_audio_hours": "not application-limited; long recordings are chunked by service configuration"
+  },
+  "long_audio": {
+    "upload_limit_mb": 1024,
+    "chunk_threshold_sec": 2700,
+    "chunk_seconds": 1800,
+    "chunk_overlap_sec": 3,
+    "providers": ["faster-whisper", "sensevoice", "tencent-cloud"],
+    "merge": "ordered boundary de-duplication with punctuation normalization"
+  },
+  "realtime_asr": {
+    "provider": "tencent-tiered",
+    "enabled_by_default": false,
+    "android_credentials": "account-stt-token-only",
+    "server_credentials": "environment-only",
+    "standard_engine_type": "16k_zh",
+    "precision_engine_type": "16k_zh_en",
+    "audio_format": "16kHz 16-bit mono PCM",
+    "frame_ms": 200,
+    "server_max_concurrent": 16,
+    "provider_default_concurrent": 200,
+    "fallback": "faster-whisper revisable preview",
+    "session_limit": "no application-side duration or realtime budget limit"
+  },
+  "cloud_asr_usage": {
+    "endpoint": "/cloud-asr/policy",
+    "authentication": "account-stt-token",
+    "source": "precision recording-file ledger; Tencent GetUsageByDate is usage reference-only",
+    "business_names": [
+      "asr_rt",
+      "asr_rec"
+    ],
+    "scope": "tencent-account",
+    "cache_sec": 300,
+    "standard_usage_reference_sec": 18000,
+    "precision_requires_positive_cap": true,
+    "android_credentials": "account-stt-token-only"
+  },
+  "accounts": {
+    "database": "sqlite",
+    "password_hash": "scrypt",
+    "session_auth": "bearer",
+    "session_refresh_api": "/api/account/session",
+    "free_plan_code": "free",
+    "free_trial_request_limit": 10,
+    "admin_vip_default": true,
+    "recharge_flow": "manual-admin-approval",
+    "plans_config": "config/account-plans.json",
+    "monthly_plan_quotas": [30, 150],
+    "stt_user_token": "short-lived-hmac",
+    "stt_user_token_ttl_sec": 43200,
+    "admin_user_deletion": "ordinary-users-with-dependent-account-data"
+  },
+  "pwa": {
+    "base_path": "/app/",
+    "distribution": "same-origin HTTPS",
+    "database": "shared account SQLite database",
+    "meeting_sync": "offline-first last-write-wins with deletion tombstones",
+    "audio_sync": "account-scoped server archive",
+    "ios_install": "Safari add-to-home-screen"
   },
   "validation": {
     "production_health": "passed",
@@ -87,10 +175,44 @@
     "preview_display_stable_similarity": 0.7,
     "preview_display_min_chars": 4,
     "preview_noise_gate": "passed",
+    "account_service_tests": "70 server tests passed",
+    "production_admin_login": "passed",
+    "production_admin_vip_default": true,
+    "production_account_plans": 2,
+    "claude_empty_result_guard": "passed",
+    "stream_recording_in_place_finalization": "passed",
+    "final_decode_benchmark_audio_sec": 117.09,
+    "classic_beam5_elapsed_sec": 29.92,
+    "classic_beam5_character_error_rate": 0.1553,
+    "batch4_elapsed_sec": 23.44,
+    "batch4_character_error_rate": 0.2565,
+    "batch4_default_rejected_for_quality": true,
     "short_confident_fragment_gate": "passed",
     "production_two_character_fragment_held": true,
     "four_second_final_decode_chars": 0,
     "eight_second_final_decode_chars": 9,
-    "eight_second_final_decode_elapsed_sec": 16.72
+    "eight_second_final_decode_elapsed_sec": 16.72,
+    "production_1_2_3_health": "passed",
+    "production_1_2_3_ready": "passed",
+    "production_backend_https": "passed",
+    "production_account_stt_token_valid": 200,
+    "production_expired_stt_token_rejected": 401,
+    "production_invalid_stt_token_rejected": 401,
+    "production_admin_user_delete": "register=200 delete=200 old_session=401 remaining=0",
+    "server_1_2_7_tests": "50 passed",
+    "server_1_2_8_tests": "52 passed",
+    "server_1_2_9_tests": "61 passed",
+    "android_unit_tests": "145 passed",
+    "android_build_and_lint": "passed",
+    "android_marker_photo_linkage": "explicit marker id, transcript anchor highlight, camera/gallery binding and close-on-success passed",
+    "android_study_journey_recording_automation": "auto start, evidence-aware pause finalization, resume-next-stage and single-WAV pause/resume passed",
+    "android_rep_an00_install": "passed",
+    "android_instrumentation": "1.2m-text-import, docx-image, pdf-table-image-filename, exif-orientation, system-document audio copy passed",
+    "production_tencent_flash_asr": "android account token, latest recorded audio, HTTP 200, non-empty transcript",
+    "production_tencent_hybrid_smoke": "REP-AN00; 15x200ms frames; tencent-realtime partial non-empty; tencent-flash final non-empty; HTTP 200; no post-hotfix ASGI disconnect traceback",
+    "production_tencent_usage_api": "HTTP 200 at 2026-07-22T06:56:45Z; warning=normal; realtime used=0 remaining=18000; flash used=0 remaining=18000",
+    "audio_archive_production": "owner=1 isolated=0 cross-download=404 bytes=match delete=passed duration=1.0s",
+    "production_monotonic_stream_replay": "203.136s; preview chars=41,85,100,154,160,183,190,202,238,268,279,306; errors=0; final HTTP=200",
+    "android_audio_export": "REP-AN00; recording-page CreateDocument save copy and ACTION_SEND share passed; report-page share entry retained"
   }
 }

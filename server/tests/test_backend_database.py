@@ -82,7 +82,7 @@ class BackendDatabaseTests(unittest.TestCase):
         html = backend.index()
 
         self.assertIn("MeetingNotesApp | 运维控制台", html)
-        self.assertIn("Version 1.1.11", html)
+        self.assertIn(f"Version {backend.SERVER_VERSION}", html)
         self.assertIn(f"127.0.0.1:{backend.PORT}", html)
         self.assertNotIn("__VERSION__", html)
         self.assertNotIn("__DB_PATH__", html)
@@ -114,6 +114,22 @@ class BackendDatabaseTests(unittest.TestCase):
                 self.assertEqual(response.json()["quota"]["requests_remaining"], 1000)
         finally:
             backend.AGENT_GATEWAY = previous_gateway
+            backend.WEB_API_TOKEN = previous_web_token
+
+    def test_public_community_routes_bypass_web_admin_credentials(self) -> None:
+        previous_web_token = backend.WEB_API_TOKEN
+        backend.WEB_API_TOKEN = "web-secret"
+        try:
+            with TestClient(backend.app) as client:
+                for path in (
+                    "/api/community/status",
+                    "/api/community/posts",
+                    "/api/community/collections",
+                ):
+                    with self.subTest(path=path):
+                        self.assertEqual(client.get(path).status_code, 200)
+                self.assertEqual(client.get("/api/meetings").status_code, 401)
+        finally:
             backend.WEB_API_TOKEN = previous_web_token
 
 

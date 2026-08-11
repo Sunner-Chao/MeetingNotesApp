@@ -18,6 +18,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathMeasure
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
@@ -29,14 +30,18 @@ fun FlowingProgressBorder(
     cornerRadius: Dp = 22.dp,
     inset: Dp = 3.dp,
     strokeWidth: Dp = 2.2.dp,
-    colors: List<Color> = listOf(
-        Color(0xFF35E7FF),
-        Color(0xFFB88BFF),
-        Color(0xFFFF78C7),
-        Color(0xFF35E7FF)
-    ),
+    colors: List<Color> = emptyList(),
     content: @Composable BoxScope.() -> Unit
 ) {
+    val fluentColors = if (colors.isEmpty()) {
+        listOf(
+            MaterialTheme.colorScheme.primary,
+            MaterialTheme.colorScheme.primary.copy(alpha = 0.72f),
+            MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
+        )
+    } else {
+        colors
+    }
     val transition = rememberInfiniteTransition(label = "flowingProgressBorder")
     val phase by transition.animateFloat(
         initialValue = 0f,
@@ -52,12 +57,14 @@ fun FlowingProgressBorder(
         content()
         if (active) {
             Canvas(modifier = Modifier.fillMaxSize()) {
-                val borderInset = inset.toPx()
+                val borderInset = maxOf(inset.toPx(), strokeWidth.toPx() / 2f)
                 val left = borderInset
                 val top = borderInset
                 val right = size.width - borderInset
                 val bottom = size.height - borderInset
-                val radius = cornerRadius.toPx().coerceAtMost((right - left) / 2f)
+                val radius = (cornerRadius.toPx() - borderInset)
+                    .coerceAtLeast(0f)
+                    .coerceAtMost((right - left) / 2f)
                 val path = roundedRectPath(left, top, right, bottom, radius)
                 val measure = PathMeasure()
                 measure.setPath(path, false)
@@ -65,9 +72,15 @@ fun FlowingProgressBorder(
                 if (length > 0f) {
                     // Decreasing distance makes the head travel counter-clockwise.
                     val head = (1f - phase) * length
-                    val trailLength = length * 0.23f
-                    val steps = 11
+                    val trailLength = length * 0.16f
+                    val steps = 8
                     val width = strokeWidth.toPx()
+
+                    drawPath(
+                        path = path,
+                        color = fluentColors.first().copy(alpha = 0.20f),
+                        style = Stroke(width = width, cap = StrokeCap.Round)
+                    )
 
                     fun drawWrappedSegment(
                         startDistance: Float,
@@ -95,20 +108,15 @@ fun FlowingProgressBorder(
                     for (index in steps downTo 1) {
                         val tail = head - trailLength * index / steps
                         val fraction = 1f - index / (steps + 1f)
-                        val color = colors[index % colors.size].copy(alpha = 0.12f + fraction * 0.18f)
-                        drawWrappedSegment(tail, trailLength / steps * 1.25f, color, width * (2.8f - fraction))
+                        val color = fluentColors[index % fluentColors.size]
+                            .copy(alpha = 0.08f + fraction * 0.18f)
+                        drawWrappedSegment(tail, trailLength / steps * 1.1f, color, width * 1.35f)
                     }
                     drawWrappedSegment(
                         head - trailLength / steps,
-                        trailLength / steps * 1.55f,
-                        Color.White.copy(alpha = 0.45f),
-                        width * 4.4f
-                    )
-                    drawWrappedSegment(
-                        head - trailLength / steps,
-                        trailLength / steps * 1.35f,
-                        colors[0].copy(alpha = 0.98f),
-                        width * 1.15f
+                        trailLength / steps * 1.4f,
+                        fluentColors.first().copy(alpha = 0.95f),
+                        width * 1.35f
                     )
                 }
             }

@@ -67,7 +67,7 @@ class DocxPackageWriterTest {
                 assertEquals(5, Regex("<w:tbl>").findAll(documentXml).count())
                 assertTrue(documentXml.contains("已达成共识"))
                 assertTrue(documentXml.contains("未解决问题"))
-                assertTrue(documentXml.contains("BacklogID"))
+                assertTrue(documentXml.contains("事项编号"))
                 assertTrue(documentXml.contains("风险编号"))
                 assertTrue(documentXml.contains("（1）已确认第一项工作"))
                 assertTrue(documentXml.contains("<w:tblHeader/>"))
@@ -84,6 +84,59 @@ class DocxPackageWriterTest {
                 assertTrue(relationships.contains("media/image1.jpg"))
             }
             assertEquals("通用会议", ReportTemplateConfig().selectedName)
+        } finally {
+            output.delete()
+        }
+    }
+
+    @Test
+    fun writesStudyImagesAtAnchorsAndUsesPhotoCollectionForRemainingImages() {
+        val output = Files.createTempFile("study-report-", ".docx").toFile()
+        try {
+            val report = Report(
+                meetingId = "study-1",
+                rawContent = """
+                    # 大佛寺研学考察
+
+                    > 现场记录只代表当日观察。
+
+                    ## 第一站
+                    进入寺院后先听取讲解。
+
+                    [照片：图 1]
+
+                    ## 第二站
+                    沿中轴线继续参观。
+                """.trimIndent(),
+                templateName = "研学考察",
+                generatedAt = 1_700_000_000_000
+            )
+            val imageBytes = javaClass.classLoader
+                ?.getResourceAsStream("meeting-photo-fixture.jpg")
+                ?.use { it.readBytes() }
+                ?: error("Meeting photo fixture is missing")
+            val images = listOf(
+                DocxImage(imageBytes, 1600, 900, "山门.jpg"),
+                DocxImage(imageBytes, 1600, 900, "大殿.jpg")
+            )
+
+            DocxPackageWriter(report, images).write(output)
+
+            ZipFile(output).use { zip ->
+                val documentXml = zip.getInputStream(zip.getEntry("word/document.xml"))
+                    .bufferedReader().use { it.readText() }
+                val firstParagraph = documentXml.indexOf("进入寺院后先听取讲解")
+                val firstImage = documentXml.indexOf("rIdImage1")
+                val secondHeading = documentXml.indexOf("第二站")
+
+                assertTrue(firstParagraph in 0 until firstImage)
+                assertTrue(firstImage in 0 until secondHeading)
+                assertTrue(documentXml.contains("照片集锦"))
+                assertTrue(documentXml.contains("现场记录只代表当日观察"))
+                assertTrue(!documentXml.contains("[照片：图 1]"))
+                assertTrue(!documentXml.contains("&gt;"))
+                assertTrue(!documentXml.contains("会议影像资料"))
+            }
         } finally {
             output.delete()
         }

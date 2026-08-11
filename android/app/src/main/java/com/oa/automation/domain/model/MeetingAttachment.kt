@@ -12,5 +12,8 @@ data class MeetingAttachment(
     val longitude: Double? = null,
     val accuracyMeters: Float? = null,
     val locationCapturedAt: Long? = null,
-    val locationSource: String? = null
+    val locationSource: String? = null,
+    val recordingMarkerId: String? = null,
+    val markerTimestampMs: Long? = null,
+    val markerTranscriptAnchor: String? = null
 )

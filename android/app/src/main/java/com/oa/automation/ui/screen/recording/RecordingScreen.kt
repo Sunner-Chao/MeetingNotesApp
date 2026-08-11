@@ -129,6 +129,7 @@ import java.text.SimpleDateFormat
 import java.time.Instant
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.flow.collect
 import org.koin.androidx.compose.koinViewModel
 
 /**
@@ -160,7 +161,12 @@ fun RecordingScreen(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
+    var pendingCameraMarkerId by remember { mutableStateOf<String?>(null) }
+    var pendingGalleryMarkerId by remember { mutableStateOf<String?>(null) }
     var pendingImageImportUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
+    var pendingImageImportMarkerId by remember { mutableStateOf<String?>(null) }
+    var markerMediaChooserVisible by remember { mutableStateOf(false) }
+    var markerMediaChooserMarkerId by remember { mutableStateOf<String?>(null) }
     var pendingAudioSave by remember { mutableStateOf<PendingMeetingAudioExport?>(null) }
     var launchActionConsumed by rememberSaveable(meetingId, launchAction) {
         mutableStateOf(false)
@@ -170,30 +176,55 @@ fun RecordingScreen(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
         val uris = pendingImageImportUris
+        val markerId = pendingImageImportMarkerId
         pendingImageImportUris = emptyList()
+        pendingImageImportMarkerId = null
         if (uris.isNotEmpty()) {
-            viewModel.importImages(uris, captureLocation = permissions.values.any { it })
+            viewModel.importImages(
+                uris = uris,
+                captureLocation = permissions.values.any { it },
+                recordingMarkerId = markerId
+            )
         }
     }
 
-    fun importImagesWithOptionalLocation(uris: List<Uri>) {
+    fun importImagesWithOptionalLocation(uris: List<Uri>, recordingMarkerId: String?) {
         if (uris.isEmpty()) return
         if (ImageLocationPermission.isGranted(context)) {
-            viewModel.importImages(uris, captureLocation = true)
+            viewModel.importImages(
+                uris = uris,
+                captureLocation = true,
+                recordingMarkerId = recordingMarkerId
+            )
         } else {
             pendingImageImportUris = uris
+            pendingImageImportMarkerId = recordingMarkerId
             locationPermissionLauncher.launch(ImageLocationPermission.requestedPermissions)
         }
     }
 
     val galleryLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.GetMultipleContents()
-    ) { uris -> importImagesWithOptionalLocation(uris) }
+    ) { uris ->
+        val markerId = pendingGalleryMarkerId
+        pendingGalleryMarkerId = null
+        if (uris.isEmpty()) {
+            viewModel.onMarkerMediaPickerCancelled(markerId)
+        } else {
+            importImagesWithOptionalLocation(uris, markerId)
+        }
+    }
     val cameraLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.TakePicture()
     ) { saved ->
-        if (saved) pendingCameraUri?.let { importImagesWithOptionalLocation(listOf(it)) }
+        val markerId = pendingCameraMarkerId
+        if (saved) {
+            pendingCameraUri?.let { importImagesWithOptionalLocation(listOf(it), markerId) }
+        } else {
+            viewModel.onMarkerMediaPickerCancelled(markerId)
+        }
         pendingCameraUri = null
+        pendingCameraMarkerId = null
     }
     val audioSaveLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("audio/*")
@@ -205,7 +236,7 @@ fun RecordingScreen(
         }
     }
 
-    fun launchCamera() {
+    fun launchCamera(recordingMarkerId: String?) {
         val directory = File(context.cacheDir, "exports/camera").apply { mkdirs() }
         val target = File(directory, "meeting_${System.currentTimeMillis()}.jpg")
         val uri = FileProvider.getUriForFile(
@@ -214,7 +245,13 @@ fun RecordingScreen(
             target
         )
         pendingCameraUri = uri
+        pendingCameraMarkerId = recordingMarkerId
         cameraLauncher.launch(uri)
+    }
+
+    fun launchGallery(recordingMarkerId: String?) {
+        pendingGalleryMarkerId = recordingMarkerId
+        galleryLauncher.launch("image/*")
     }
 
     fun navigateBackAndStopRecording() {
@@ -226,6 +263,43 @@ fun RecordingScreen(
 
     LaunchedEffect(meetingId) {
         viewModel.loadMeeting(meetingId)
+    }
+
+    LaunchedEffect(viewModel) {
+        viewModel.effects.collect { effect ->
+            when (effect.mediaRequest) {
+                RecordingMediaRequest.CHOOSE_SOURCE -> {
+                    markerMediaChooserMarkerId = effect.recordingMarkerId
+                    markerMediaChooserVisible = true
+                }
+
+                RecordingMediaRequest.CAMERA -> launchCamera(effect.recordingMarkerId)
+                RecordingMediaRequest.GALLERY -> launchGallery(effect.recordingMarkerId)
+            }
+        }
+    }
+
+    if (markerMediaChooserVisible) {
+        MarkerMediaSourceDialog(
+            transcriptAnchor = uiState.activePhotoMarker?.transcriptAnchor.orEmpty(),
+            onTakePhoto = {
+                markerMediaChooserVisible = false
+                launchCamera(markerMediaChooserMarkerId)
+            },
+            onPickImages = {
+                markerMediaChooserVisible = false
+                launchGallery(markerMediaChooserMarkerId)
+            },
+            onKeepTextMarker = {
+                markerMediaChooserVisible = false
+                markerMediaChooserMarkerId = null
+                viewModel.closeActivePhotoMarker()
+            },
+            onDismiss = {
+                markerMediaChooserVisible = false
+                markerMediaChooserMarkerId = null
+            }
+        )
     }
 
     LaunchedEffect(uiState.reportReadyToOpen) {
@@ -314,10 +388,6 @@ fun RecordingScreen(
         onStopRecording = viewModel::stopRecording,
         onTogglePause = viewModel::togglePauseRecording,
         onAddMarker = viewModel::addRecordingMarker,
-        onStartJourney = viewModel::startJourney,
-        onSaveCurrentJourneyStage = viewModel::saveCurrentJourneyStage,
-        onPauseJourney = viewModel::pauseJourney,
-        onContinueJourney = viewModel::continueJourney,
         onGenerateStageDraft = viewModel::generateLatestStageDraft,
         onOpenStageDraft = viewModel::openLatestStageDraft,
         onSaveStageDraftContent = viewModel::saveStageDraftContent,
@@ -347,8 +417,8 @@ fun RecordingScreen(
         onImportTextFile = { filePickerLauncher.launch("text/*") },
         onImportAudioFile = { audioPickerLauncher.launch("audio/*") },
         onGenerateFromImport = viewModel::generateFromImport,
-        onTakePhoto = ::launchCamera,
-        onPickImages = { galleryLauncher.launch("image/*") },
+        onTakePhoto = viewModel::requestPhotoCapture,
+        onPickImages = viewModel::requestPhotoLibrary,
         onDeleteAttachment = viewModel::deleteAttachment,
         onRefreshAudio = viewModel::refreshArchivedAudio,
         onSaveAudio = viewModel::saveArchivedAudio,
@@ -357,6 +427,54 @@ fun RecordingScreen(
         onSelectStreamingTranscript = viewModel::selectStreamingTranscript,
         onSelectBackendTranscript = viewModel::selectBackendTranscript,
         onDismissTranscriptPicker = viewModel::dismissTranscriptPicker
+    )
+}
+
+@Composable
+private fun MarkerMediaSourceDialog(
+    transcriptAnchor: String,
+    onTakePhoto: () -> Unit,
+    onPickImages: () -> Unit,
+    onKeepTextMarker: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("为此处添加图片") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (transcriptAnchor.isNotBlank()) {
+                    Text(
+                        text = "已关联文字：$transcriptAnchor",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+                FilledTonalButton(
+                    onClick = onTakePhoto,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.PhotoCamera, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("拍摄现场照片")
+                }
+                OutlinedButton(
+                    onClick = onPickImages,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.Collections, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("从相册导入")
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onKeepTextMarker) { Text("仅保留文字标记") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("稍后配图") }
+        },
+        shape = RoundedCornerShape(18.dp)
     )
 }
 

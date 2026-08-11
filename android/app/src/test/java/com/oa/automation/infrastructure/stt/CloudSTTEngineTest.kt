@@ -93,6 +93,36 @@ class CloudSTTEngineTest {
     }
 
     @Test
+    fun `oversized upload returns a clear localized error`() = runBlocking {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(413)
+                .setBody("{\"detail\":\"Audio upload exceeds the 256 MB limit\"}")
+        )
+        val audio = File.createTempFile("oversized-cloud-asr-", ".wav").apply {
+            writeBytes(ByteArray(64))
+        }
+        try {
+            val engine = CloudSTTEngine(
+                STTConfig(
+                    engineType = STTEngineType.TENCENT_HYBRID,
+                    cloudEndpoint = server.url("/cloud-asr").toString(),
+                    cloudApiKey = "cloud-secret",
+                    cloudModel = "tencent-flash"
+                )
+            )
+
+            val result = engine.transcribe(audio)
+
+            assertTrue(result.isFailure)
+            assertTrue(result.exceptionOrNull()?.message.orEmpty().contains("256 MB 接收上限"))
+            assertTrue(result.exceptionOrNull()?.message.orEmpty().contains("HTTP 413"))
+        } finally {
+            audio.delete()
+        }
+    }
+
+    @Test
     fun `managed cloud asr uses account stt token and meeting id`() = runBlocking {
         server.enqueue(MockResponse().setResponseCode(200).setBody("{\"text\":\"托管识别结果\"}"))
         val audio = File.createTempFile("managed-cloud-asr-", ".wav").apply {

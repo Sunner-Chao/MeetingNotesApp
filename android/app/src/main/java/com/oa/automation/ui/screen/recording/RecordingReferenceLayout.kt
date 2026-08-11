@@ -180,53 +180,53 @@ private data class RecordingColors(
 )
 
 private val DarkRecordingColors = RecordingColors(
-    canvas = Color(0xFF040C12),           // deeper space-black
-    surface = Color(0xFF071520),
-    surfaceRaised = Color(0xFF0C1F28),
-    border = Color(0xFF1C3A44),
-    ink = Color(0xFFF0F7F9),
-    muted = Color(0xFF6E9098),
-    primary = Color(0xFF1FD396),           // vivid cyan-mint
-    blue = Color(0xFF38B2D1),
-    mint = Color(0xFF4DDEAF),              // brighter mint for wave accents
-    orange = Color(0xFFFFAA48),
+    canvas = Color(0xFF1B1A19),
+    surface = Color(0xFF252423),
+    surfaceRaised = Color(0xFF323130),
+    border = Color(0xFF484644),
+    ink = Color(0xFFF3F2F1),
+    muted = Color(0xFFC8C6C4),
+    primary = Color(0xFF60CDFF),
+    blue = Color(0xFF8CC8FF),
+    mint = Color(0xFF60CDFF),
+    orange = Color(0xFFA9C7E8),
     red = Color(0xFFFF5E56),
-    pageGradient = listOf(Color(0xFF040C12), Color(0xFF051521), Color(0xFF040C12)),
-    selectedSurface = Color(0xFF0A2C27),
-    transcriptSurface = Color(0xFF051018),
-    strongSelectedSurface = Color(0xFF115544),
-    countSurface = Color(0xFF0F342D),
-    disabledSurface = Color(0xFF14252C),
-    micGradient = listOf(Color(0xFF168969), Color(0xFF074038), Color(0xFF041E1C)), // dark→core
-    micInner = Color(0xFF073630),
-    blueIconSurface = Color(0xFF0D2635),
-    greenIconSurface = Color(0xFF0B2E28),
-    orangeIconSurface = Color(0xFF2C2218)
+    pageGradient = listOf(Color(0xFF1B1A19), Color(0xFF202B33), Color(0xFF1B1A19)),
+    selectedSurface = Color(0xFF123A55),
+    transcriptSurface = Color(0xFF202326),
+    strongSelectedSurface = Color(0xFF004578),
+    countSurface = Color(0xFF123A55),
+    disabledSurface = Color(0xFF323130),
+    micGradient = listOf(Color(0xFF60CDFF), Color(0xFF0078D4), Color(0xFF004578)),
+    micInner = Color(0xFF005A9E),
+    blueIconSurface = Color(0xFF153A52),
+    greenIconSurface = Color(0xFF17384D),
+    orangeIconSurface = Color(0xFF273846)
 )
 
 private val LightRecordingColors = RecordingColors(
-    canvas = Color(0xFFF3F7FB),           // crisp cool-white base
+    canvas = Color(0xFFF5F5F5),
     surface = Color(0xFFFFFFFF),
-    surfaceRaised = Color(0xFFEEF3F8),
-    border = Color(0xFFD9E4EC),           // blue-tinted border
-    ink = Color(0xFF141C28),
-    muted = Color(0xFF64737E),
-    primary = Color(0xFF0CAC7F),          // restrained mint-green
-    blue = Color(0xFF2288AA),
-    mint = Color(0xFF14A67A),
-    orange = Color(0xFFD07D22),
+    surfaceRaised = Color(0xFFF0F0F0),
+    border = Color(0xFFE1DFDD),
+    ink = Color(0xFF242424),
+    muted = Color(0xFF605E5C),
+    primary = Color(0xFF0078D4),
+    blue = Color(0xFF106EBE),
+    mint = Color(0xFF2B88B9),
+    orange = Color(0xFF486A8A),
     red = Color(0xFFDC4B45),
-    pageGradient = listOf(Color(0xFFF3F7FB), Color(0xFFECF7F2), Color(0xFFF3F7FB)),
-    selectedSurface = Color(0xFFDEF5EC),  // clear mint tint for selection
-    transcriptSurface = Color(0xFFF0FBF7), // barely-tinted mint for transcript bg
-    strongSelectedSurface = Color(0xFFCAEFE1),
-    countSurface = Color(0xFFDCF5EA),
-    disabledSurface = Color(0xFFE1E8EE),
-    micGradient = listOf(Color(0xFF3DDEAD), Color(0xFF12B386), Color(0xFF087660)), // vivid clean gradient
-    micInner = Color(0xFF0EA57B),
-    blueIconSurface = Color(0xFFDFF2F9),
-    greenIconSurface = Color(0xFFDAF5EE),
-    orangeIconSurface = Color(0xFFFFF0D8)
+    pageGradient = listOf(Color(0xFFF5F5F5), Color(0xFFEDF4F9), Color(0xFFF5F5F5)),
+    selectedSurface = Color(0xFFE5F1FB),
+    transcriptSurface = Color(0xFFF7FAFC),
+    strongSelectedSurface = Color(0xFFDDEBF7),
+    countSurface = Color(0xFFE5F1FB),
+    disabledSurface = Color(0xFFEDEBE9),
+    micGradient = listOf(Color(0xFF60CDFF), Color(0xFF0078D4), Color(0xFF005A9E)),
+    micInner = Color(0xFF0078D4),
+    blueIconSurface = Color(0xFFE5F1FB),
+    greenIconSurface = Color(0xFFEAF3F8),
+    orangeIconSurface = Color(0xFFF0F3F5)
 )
 
 private val LocalRecordingColors = staticCompositionLocalOf { DarkRecordingColors }
@@ -295,10 +295,6 @@ internal fun RecordingReferenceScaffold(
     onStopRecording: () -> Unit,
     onTogglePause: () -> Unit,
     onAddMarker: () -> Unit,
-    onStartJourney: () -> Unit,
-    onSaveCurrentJourneyStage: () -> Unit,
-    onPauseJourney: () -> Unit,
-    onContinueJourney: () -> Unit,
     onGenerateStageDraft: () -> Unit,
     onOpenStageDraft: () -> Unit,
     onSaveStageDraftContent: (String) -> Unit,
@@ -629,8 +625,6 @@ internal fun RecordingReferenceScaffold(
                         titleDraft = uiState.meetingTitle
                         titleEditorVisible = true
                     },
-                    onOpenService = { serviceDialogVisible = true },
-                    onOpenImages = { imageDialogVisible = true },
                     onOpenAudio = { audioDialogVisible = true },
                     onSwitchToImport = onSwitchToImport,
                     onAbandonRecording = { abandonDialogVisible = true },
@@ -639,10 +633,6 @@ internal fun RecordingReferenceScaffold(
                     onStopRecording = onStopRecording,
                     onTogglePause = onTogglePause,
                     onAddMarker = onAddMarker,
-                    onStartJourney = onStartJourney,
-                    onSaveCurrentJourneyStage = onSaveCurrentJourneyStage,
-                    onPauseJourney = onPauseJourney,
-                    onContinueJourney = onContinueJourney,
                     onGenerateStageDraft = onGenerateStageDraft,
                     onOpenStageDraft = onOpenStageDraft,
                     onGenerateJourneyEdition = onGenerateJourneyEdition,
@@ -654,7 +644,6 @@ internal fun RecordingReferenceScaffold(
                     onGenerateReport = onGenerateReport,
                     onCancelTranscription = onCancelTranscription,
                     onCancelReport = onCancelReport,
-                    onSttLanguageSelected = onSttLanguageSelected,
                     onDismissError = onDismissError
                 )
             } else {
@@ -1099,8 +1088,6 @@ private fun VoiceRecordingContent(
     uiState: RecordingUiState,
     layout: RecordingLayoutSpec,
     onSelectTemplate: (PresetReportTemplate) -> Unit,
-    onSttEngineSelected: (STTEngineType) -> Unit,
-    onSttLanguageSelected: (STTLanguage) -> Unit,
     onSwitchToVoice: () -> Unit,
     onSwitchToImport: () -> Unit,
     onStartRecording: () -> Unit,
@@ -1151,19 +1138,16 @@ private fun VoiceRecordingContent(
             },
             height = layout.recorderHeight,
             microphoneSize = layout.microphoneSize,
-            onMainAction = if (uiState.isRecording) onStopRecording else onStartRecording,
+            onMainAction = when (recordingMainAction(uiState)) {
+                RecordingMainAction.START -> onStartRecording
+                RecordingMainAction.STOP -> onStopRecording
+            },
             onCancelProcessing = if (uiState.isTranscribing) onCancelTranscription else onCancelReport
         )
         ReferenceTranscriptPanel(
             transcript = uiState.liveTranscript,
             previewMode = uiState.transcriptPreviewMode,
             isRecording = uiState.isRecording,
-            sttEngineType = uiState.sttEngineType,
-            sttLanguage = uiState.sttLanguage,
-            isSwitchingStt = uiState.isSwitchingSttEngine,
-            isSwitchingLanguage = uiState.isSwitchingSttLanguage,
-            onSttEngineSelected = onSttEngineSelected,
-            onSttLanguageSelected = onSttLanguageSelected,
             modifier = Modifier
                 .weight(1f)
                 .heightIn(min = layout.transcriptMinHeight)
@@ -1183,11 +1167,16 @@ private fun VoiceRecordingContent(
         RecordingBottomControls(
             inputMode = InputMode.VOICE,
             isBusy = uiState.isTranscribing || uiState.isGeneratingReport,
-            mainActionEnabled = !uiState.isTranscribing && !uiState.isGeneratingReport,
+            mainActionEnabled = !uiState.isFinalizingRecording &&
+                !uiState.isTranscribing &&
+                !uiState.isGeneratingReport,
             height = layout.controlHeight,
             onVoice = onSwitchToVoice,
             onImport = onSwitchToImport,
-            onMainAction = if (uiState.isRecording) onStopRecording else onStartRecording
+            onMainAction = when (recordingMainAction(uiState)) {
+                RecordingMainAction.START -> onStartRecording
+                RecordingMainAction.STOP -> onStopRecording
+            }
         )
     }
 }
@@ -1283,9 +1272,11 @@ private fun MeetingTemplateStrip(
     cardHeight: Dp,
     onSelectTemplate: (PresetReportTemplate) -> Unit
 ) {
-    var allTemplatesVisible by remember { mutableStateOf(false) }
     var previewTemplate by remember { mutableStateOf<PresetReportTemplate?>(null) }
-    val compactCards = cardHeight <= 104.dp
+    val rows = remember(templates) { templates.chunked(2) }
+    val rowGap = 6.dp
+    val rowHeight = (cardHeight - rowGap * (rows.size - 1).coerceAtLeast(0)) /
+        rows.size.coerceAtLeast(1)
 
     previewTemplate?.let { template ->
         AlertDialog(
@@ -1307,62 +1298,6 @@ private fun MeetingTemplateStrip(
         )
     }
 
-    if (allTemplatesVisible) {
-        AlertDialog(
-            onDismissRequest = { allTemplatesVisible = false },
-            title = { Text("全部纪要模板") },
-            text = {
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 430.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    itemsIndexed(templates, key = { _, item -> item.name }) { index, template ->
-                        val selected = template.name == selectedTemplateName
-                        Surface(
-                            onClick = {
-                                onSelectTemplate(template)
-                                allTemplatesVisible = false
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(12.dp),
-                            color = if (selected) LocalRecordingColors.current.selectedSurface else RecordingSurfaceRaised,
-                            border = BorderStroke(
-                                1.dp,
-                                if (selected) RecordingPurple else RecordingBorder
-                            )
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(12.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
-                            ) {
-                                TemplateIcon(index, template.name, 36.dp)
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(template.name, fontWeight = FontWeight.SemiBold)
-                                    Text(
-                                        template.subtitle.ifBlank { "会议纪要模板" },
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = RecordingMuted,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
-                                if (selected) {
-                                    Icon(Icons.Default.Check, contentDescription = null, tint = RecordingPurple)
-                                }
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { allTemplatesVisible = false }) { Text("关闭") }
-            }
-        )
-    }
-
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(14.dp),
@@ -1373,109 +1308,97 @@ private fun MeetingTemplateStrip(
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Surface(
-                onClick = { allTemplatesVisible = true },
-                modifier = Modifier.fillMaxWidth(),
-                color = Color.Transparent,
-                shape = RoundedCornerShape(8.dp)
-            ) {
-                Row(
-                    modifier = Modifier.padding(vertical = 2.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        Icons.AutoMirrored.Filled.Assignment,
-                        contentDescription = null,
-                        tint = RecordingInk,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(Modifier.width(7.dp))
-                    Text(
-                        text = "纪要模板",
-                        modifier = Modifier.weight(1f),
-                        color = RecordingInk,
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Icon(
-                        Icons.Default.ChevronRight,
-                        contentDescription = "查看全部模板",
-                        tint = RecordingMuted,
-                        modifier = Modifier.size(19.dp)
-                    )
-                }
-            }
             Row(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Filled.Assignment,
+                    contentDescription = null,
+                    tint = RecordingInk,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(Modifier.width(7.dp))
+                Text(
+                    text = "纪要模板",
+                    modifier = Modifier.weight(1f),
+                    color = RecordingInk,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = "长按查看说明",
+                    color = RecordingMuted,
+                    fontSize = 10.sp
+                )
+            }
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(cardHeight),
-                horizontalArrangement = Arrangement.spacedBy(7.dp)
+                verticalArrangement = Arrangement.spacedBy(rowGap)
             ) {
-                templates.forEachIndexed { index, template ->
-                    val selected = template.name == selectedTemplateName
-                    Surface(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxHeight()
-                            .combinedClickable(
-                                onClick = { onSelectTemplate(template) },
-                                onLongClick = { previewTemplate = template }
-                            ),
-                        shape = RoundedCornerShape(12.dp),
-                        color = if (selected) LocalRecordingColors.current.selectedSurface else RecordingSurfaceRaised,
-                        border = BorderStroke(
-                            if (selected) 1.5.dp else 1.dp,
-                            if (selected) RecordingPurple else RecordingBorder
-                        ),
-                        shadowElevation = if (selected) 5.dp else 0.dp
+                rows.forEachIndexed { rowIndex, rowTemplates ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth().height(rowHeight),
+                        horizontalArrangement = Arrangement.spacedBy(7.dp)
                     ) {
-                        Box(modifier = Modifier.fillMaxSize()) {
-                            Column(
+                        rowTemplates.forEachIndexed { columnIndex, template ->
+                            val index = rowIndex * 2 + columnIndex
+                            val selected = template.name == selectedTemplateName
+                            Surface(
                                 modifier = Modifier
-                                    .fillMaxSize()
-                                    .padding(horizontal = 6.dp, vertical = 7.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    .weight(1f)
+                                    .fillMaxHeight()
+                                    .combinedClickable(
+                                        onClick = { onSelectTemplate(template) },
+                                        onLongClick = { previewTemplate = template }
+                                    ),
+                                shape = RoundedCornerShape(10.dp),
+                                color = if (selected) LocalRecordingColors.current.selectedSurface else RecordingSurfaceRaised,
+                                border = BorderStroke(
+                                    if (selected) 1.5.dp else 1.dp,
+                                    if (selected) RecordingPurple else RecordingBorder
+                                ),
+                                shadowElevation = if (selected) 2.dp else 0.dp
                             ) {
-                                TemplateIcon(index, template.name, if (compactCards) 27.dp else 30.dp)
-                                Text(
-                                    text = template.name,
-                                    color = RecordingInk,
-                                    fontSize = 11.sp,
-                                    lineHeight = 14.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Clip
-                                )
-                                Text(
-                                    text = template.subtitle.ifBlank { "会议纪要" },
-                                    color = RecordingMuted,
-                                    fontSize = 9.sp,
-                                    lineHeight = 12.sp,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Clip
-                                )
-                            }
-                            if (selected) {
-                                Surface(
-                                    modifier = Modifier
-                                        .align(Alignment.TopEnd)
-                                        .padding(5.dp)
-                                        .size(18.dp),
-                                    shape = CircleShape,
-                                    color = RecordingPurple
+                                Row(
+                                    modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 5.dp),
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Box(contentAlignment = Alignment.Center) {
+                                    TemplateIcon(index, template.name, 28.dp)
+                                    Spacer(Modifier.width(7.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = template.name,
+                                            color = RecordingInk,
+                                            fontSize = 11.sp,
+                                            lineHeight = 14.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            text = template.subtitle.ifBlank { "会议纪要" },
+                                            color = RecordingMuted,
+                                            fontSize = 8.sp,
+                                            lineHeight = 10.sp,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                    if (selected) {
                                         Icon(
                                             Icons.Default.Check,
-                                            contentDescription = null,
-                                            tint = RecordingCanvas,
-                                            modifier = Modifier.size(12.dp)
+                                            contentDescription = "已选择",
+                                            tint = RecordingPurple,
+                                            modifier = Modifier.size(15.dp)
                                         )
                                     }
                                 }
                             }
                         }
+                        if (rowTemplates.size == 1) Spacer(Modifier.weight(1f))
                     }
                 }
             }
@@ -1957,12 +1880,6 @@ private fun ReferenceTranscriptPanel(
     transcript: String,
     previewMode: String,
     isRecording: Boolean,
-    sttEngineType: STTEngineType,
-    sttLanguage: STTLanguage,
-    isSwitchingStt: Boolean,
-    isSwitchingLanguage: Boolean,
-    onSttEngineSelected: (STTEngineType) -> Unit,
-    onSttLanguageSelected: (STTLanguage) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val scrollState = rememberScrollState()
@@ -2067,14 +1984,6 @@ private fun ReferenceTranscriptPanel(
                     }
                 }
             }
-            RuntimeQuickSelectors(
-                sttEngineType = sttEngineType,
-                sttLanguage = sttLanguage,
-                isSwitchingStt = isSwitchingStt,
-                isSwitchingLanguage = isSwitchingLanguage,
-                onSttEngineSelected = onSttEngineSelected,
-                onSttLanguageSelected = onSttLanguageSelected
-            )
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -2112,122 +2021,6 @@ private fun ReferenceTranscriptPanel(
                             fontSize = 14.sp,
                             lineHeight = 23.sp
                         )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun RuntimeQuickSelectors(
-    sttEngineType: STTEngineType,
-    sttLanguage: STTLanguage,
-    isSwitchingStt: Boolean,
-    isSwitchingLanguage: Boolean,
-    onSttEngineSelected: (STTEngineType) -> Unit,
-    onSttLanguageSelected: (STTLanguage) -> Unit
-) {
-    val normalizedEngine = if (sttEngineType == STTEngineType.TENCENT_HYBRID) {
-        STTEngineType.TENCENT_HYBRID
-    } else {
-        STTEngineType.FASTER_WHISPER
-    }
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        Surface(
-            shape = RoundedCornerShape(9.dp),
-            color = RecordingSurfaceRaised,
-            border = BorderStroke(1.dp, RecordingBorder)
-        ) {
-            Row(
-                modifier = Modifier.padding(2.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                STTLanguage.entries.forEach { language ->
-                    val selected = language == sttLanguage
-                    Surface(
-                        onClick = { if (!isSwitchingLanguage) onSttLanguageSelected(language) },
-                        shape = RoundedCornerShape(6.dp),
-                        color = if (selected) LocalRecordingColors.current.strongSelectedSurface else Color.Transparent,
-                        border = if (selected) BorderStroke(1.dp, RecordingPurple.copy(alpha = 0.72f)) else null
-                    ) {
-                        Box(
-                            modifier = Modifier.size(width = 38.dp, height = 32.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            if (selected && isSwitchingLanguage) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(12.dp),
-                                    strokeWidth = 1.5.dp,
-                                    color = RecordingPurple
-                                )
-                            } else {
-                                Text(
-                                    text = if (language == STTLanguage.CHINESE) "CN" else "EN",
-                                    color = if (selected) RecordingPurple else RecordingMuted,
-                                    fontSize = 11.sp,
-                                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        Surface(
-            modifier = Modifier.weight(1f),
-            shape = RoundedCornerShape(9.dp),
-            color = RecordingSurfaceRaised,
-            border = BorderStroke(1.dp, RecordingBorder)
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(2.dp),
-                horizontalArrangement = Arrangement.spacedBy(2.dp)
-            ) {
-                listOf(
-                    STTEngineType.FASTER_WHISPER to "智悟本地模型",
-                    STTEngineType.TENCENT_HYBRID to "智悟增强云模型"
-                ).forEach { (engine, label) ->
-                    val selected = normalizedEngine == engine
-                    Surface(
-                        onClick = { if (!isSwitchingStt) onSttEngineSelected(engine) },
-                        modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(6.dp),
-                        color = if (selected) LocalRecordingColors.current.strongSelectedSurface else Color.Transparent,
-                        border = if (selected) BorderStroke(1.dp, RecordingPurple.copy(alpha = 0.72f)) else null
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(32.dp)
-                                .padding(horizontal = 3.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center
-                        ) {
-                            if (selected && isSwitchingStt) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(10.dp),
-                                    strokeWidth = 1.4.dp,
-                                    color = RecordingPurple
-                                )
-                                Spacer(Modifier.width(3.dp))
-                            }
-                            Text(
-                                text = label,
-                                color = if (selected) RecordingPurple else RecordingMuted,
-                                fontSize = 10.sp,
-                                lineHeight = 12.sp,
-                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                                maxLines = 1,
-                                overflow = TextOverflow.Clip
-                            )
-                        }
                     }
                 }
             }
@@ -2750,6 +2543,7 @@ private fun RecordingMenuItem(
 }
 
 private fun recordingStatus(state: RecordingUiState): String = when {
+    state.isFinalizingRecording -> "正在结束并保存录音"
     state.isRecording -> "正在录音..."
     state.isTranscribing -> state.transcriptionProgressStage.ifBlank { "正在生成最终转录" }
     state.isGeneratingReport -> state.reportProgressStage.ifBlank { "正在生成会议纪要" }

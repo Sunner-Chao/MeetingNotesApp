@@ -37,7 +37,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.oa.automation.ui.screen.account.AccountScreen
-import com.oa.automation.ui.screen.community.CommunityScreen
+import com.oa.automation.ui.screen.community.StudyCommunityScreen
 import com.oa.automation.ui.screen.home.HomeLaunchAction
 import com.oa.automation.ui.screen.home.HomeScreen
 import com.oa.automation.ui.theme.BrandBlue
@@ -97,7 +97,7 @@ fun MainWorkspaceScreen(
                             onNavigateToNotifications = onNavigateToNotifications
                         )
 
-                        MainDestination.COMMUNITY -> CommunityScreen(
+                        MainDestination.COMMUNITY -> StudyCommunityScreen(
                             onOpenPost = onNavigateToCommunityPost,
                             onOpenCollection = onNavigateToCommunityCollection
                         )

@@ -984,18 +984,19 @@ private fun Response.toAccountError(body: String): String {
     val detail = runCatching {
         JsonParser.parseString(body).asJsonObject.get("detail")?.asString.orEmpty()
     }.getOrDefault("").take(200)
+    val localizedDetail = detail.takeIf { value -> value.any { it in '\u4e00'..'\u9fff' } }
     val retryAfter = header("Retry-After")?.toIntOrNull()?.coerceAtLeast(1)
     return when (code) {
-        400 -> detail.ifBlank { "请求内容不正确" }
-        401 -> detail.ifBlank { "用户名、密码或登录会话无效" }
-        403 -> detail.ifBlank { "当前账号没有操作权限" }
-        404 -> detail.ifBlank { "请求的账户资源不存在" }
-        409 -> detail.ifBlank { "账号或订单状态冲突" }
-        429 -> detail.ifBlank {
+        400 -> localizedDetail ?: "请求内容不正确"
+        401 -> localizedDetail ?: "服务鉴权状态异常，请稍后重试"
+        403 -> localizedDetail ?: "当前账号没有操作权限"
+        404 -> localizedDetail ?: "请求的账户资源不存在"
+        409 -> localizedDetail ?: "账号或订单状态冲突"
+        429 -> localizedDetail ?: run {
             retryAfter?.let { "操作太频繁，请在 $it 秒后重试" } ?: "操作太频繁，请稍后重试"
         }
-        422 -> detail.ifBlank { "社区快照字段不符合要求" }
-        503 -> detail.ifBlank { "账户服务暂时不可用" }
-        else -> detail.ifBlank { "账户服务请求失败（HTTP $code）" }
+        422 -> localizedDetail ?: "提交内容不符合要求"
+        503 -> localizedDetail ?: "账户服务暂时不可用"
+        else -> localizedDetail ?: "账户服务请求失败（HTTP $code）"
     }
 }

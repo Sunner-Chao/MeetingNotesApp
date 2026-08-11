@@ -2,6 +2,7 @@ package com.oa.automation.infrastructure.repository
 
 import com.oa.automation.domain.model.Meeting
 import com.oa.automation.domain.model.MeetingAttachment
+import com.oa.automation.domain.model.RecordingMarker
 import com.oa.automation.domain.model.Transcript
 import com.oa.automation.domain.repository.MeetingRepository
 import com.oa.automation.infrastructure.db.MeetingDao
@@ -97,5 +98,16 @@ class MeetingRepositoryImpl(
 
     override suspend fun deleteAttachment(id: String): Result<Unit> = runCatching {
         meetingDao.deleteAttachment(id)
+    }
+
+    override suspend fun saveRecordingMarker(marker: RecordingMarker): Result<RecordingMarker> = runCatching {
+        meetingDao.upsertRecordingMarker(marker.toEntity())
+        marker
+    }
+
+    override suspend fun findRecordingMarkersByMeetingId(
+        meetingId: String
+    ): Result<List<RecordingMarker>> = runCatching {
+        meetingDao.findRecordingMarkersByMeetingId(meetingId).map { it.toDomain() }
     }
 }

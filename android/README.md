@@ -24,7 +24,7 @@ Android 客户端负责用户交互、麦克风录音、实时转写预览、最
 - 登录状态通过 DataStore 保存，可在设置页退出登录。
 - Home、Recording、Report、Settings、VIP 专业模板页面使用 Navigation Compose 导航。
 - 注册和登录使用服务端数据库账户；新注册普通用户自动获得 Free 套餐和 10 次一次性试用额度。
-- 启动页、首页和应用图标统一使用绿色底、楷书“悟”字和暖金灵光标记。
+- 启动页、首页、登录页和桌面图标统一使用最新 W 形书页品牌图标，并针对圆角/圆形系统蒙版保留安全边距。
 
 ### 2. 会议管理
 
@@ -91,8 +91,9 @@ Android 客户端负责用户交互、麦克风录音、实时转写预览、最
 
 ### 7. 报告模板
 
-- APK 内置 5 个 Markdown 模板。
-- 主流程会议模板固定为三类：通用会议、项目管理、研学考察。行政会议与头脑风暴能力并入通用会议；专业工程版式作为项目管理下的后续版式配置，不扩展顶层类别。
+- 主流程固定为四类：通用会议、项目管理、论坛会议、研学考察；另提供 2 个 VIP 专业版式。
+- 通用会议覆盖行政会议、头脑风暴、杂谈、讲座沙龙等场景，由 AI 依据原始内容动态增删和重排章节，不机械套用固定结构。
+- 论坛会议突出主持串场、主题演讲、圆桌讨论和现场问答；3 至 4 小时录音由服务端按动态配置分段转写并去重合并。
 - VIP 专业模板：工程/建筑 施工/设计日志、监理会例会日志。
 - 录音前可选择模板，并可编辑模板正文。
 - 选择模板后列表保持展开，只有再次点击模板标题时才收起。
@@ -138,7 +139,7 @@ android/
 |   |   |-- service/           # 前台录音服务
 |   |   `-- stt/               # STT HTTP/WebSocket 客户端
 |   `-- ui/                    # Compose 页面和导航
-|-- app/src/main/assets/       # 5 个报告模板
+|-- app/src/main/assets/       # 主流程、VIP 专业及历史兼容模板资源
 |-- gradle/                    # Gradle Wrapper
 |-- settings.gradle.kts
 `-- gradlew / gradlew.bat
@@ -146,29 +147,42 @@ android/
 
 ## 构建
 
-环境要求：JDK 17、Android SDK 34。当前本机 SDK 配置为 `D:\pro_sunner\demo_vscode\android-sdk`。
+环境要求：JDK 17、Android SDK 34。SDK 路径由本机未跟踪的 `local.properties` 或构建环境动态提供。
 
 首次在其他机器构建时，根据 `local.properties.example` 创建本机 `local.properties` 并填写 SDK 绝对路径；该文件不会提交到 Git。
 
 可选的非敏感 Claude 默认地址/模型可写入 `local.defaults.env`，格式参见 `local.defaults.env.example`。API Key 不会编译进 APK，必须在应用设置中填写。
 
+### APK 签名与覆盖升级
+
+Android 覆盖升级要求 `applicationId` 和签名证书同时保持不变。不要让不同会话、电脑或发布脚本使用各自的临时 debug/release 密钥。以 `signing.properties.example` 为模板创建 `${user.home}/.meetingnotes/signing.properties`，为 `debug.*` 和 `release.*` 配置同一发布链路所需的稳定 keystore；真实 keystore、密码和该 properties 文件都不进入 Git。也可以通过 `MEETINGNOTES_DEBUG_STORE_FILE`、`MEETINGNOTES_DEBUG_STORE_PASSWORD`、`MEETINGNOTES_DEBUG_KEY_ALIAS`、`MEETINGNOTES_DEBUG_KEY_PASSWORD` 及对应的 `MEETINGNOTES_RELEASE_*` 环境变量注入，适合 CI 或正式发布机。
+
+每次构建 APK 前，Gradle 会运行 `verifyDebugSigning` 或 `verifyReleaseSigning`，输出证书 SHA-256 指纹但不会输出密码，并与版本化的 `signing-fingerprints.properties` 对比。缺少稳定签名配置、未登记指纹或指纹不一致时，构建会直接失败，防止生成无法覆盖升级的 APK。正式发布必须使用 release keystore，不能把 debug keystore 上传到服务器；首次建立正式密钥时需将公开的 release SHA-256 写入指纹表并纳入评审。
+
 ```powershell
 cd android
-.\gradlew.bat lintDebug testDebugUnitTest assembleDebug
+.\gradlew.bat verifySigningConfig testDebugUnitTest assembleRelease
+```
+
+显式检查两条签名链路：
+
+```powershell
+.\gradlew.bat verifySigningConfig
 ```
 
 输出 APK：
 
 ```text
-android/app/build/outputs/apk/debug/app-debug.apk
+android/app/build/outputs/apk/release/app-release.apk
 ```
 
-当前 `testDebugUnitTest` 为 `NO-SOURCE`；已有构建和 Lint 验证，但尚未建立 Android 自动化单元测试。
+当前 JVM 单元测试已覆盖录音状态、模板/来源映射、图文标记、报告页面、更新提示和数据访问等路径；真机验证仍需按发布批次人工复核。
 
 ## 已知边界
 
-- 登录不是服务端身份认证。
-- Android 业务数据仅在本地，不会同步到 Backend。
+- 登录、注册、会员和管理员流程使用服务端账户认证。
+- 会议正文、音频和报告当前仍以 Android Room/私有文件为采集过程可信源，尚未完成全部会议成果云同步。
 - 生产公网环境必须使用 HTTPS/WSS；当前为兼容局域网调试仍允许明文 HTTP。
 - API Token 存在普通 DataStore Preferences 中，并未使用 Android Keystore 加密。
 - 系统强杀应用进程时，无法保证录音最终稿继续转写。
+- 如果设备上已经安装了不同证书的旧包，Android 无法无损迁移签名；只能找回旧 keystore，或在确认数据备份后做一次性卸载迁移。完成迁移后，后续 APK 必须持续使用同一稳定证书。

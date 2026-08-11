@@ -51,6 +51,7 @@ cd <项目根目录>\server
 | `-ConfigFile` | 可选，上传指定生产配置并替换远端配置 |
 | `-OpenFirewall` | UFW 已启用时开放 STT 端口 |
 | `-WithBackend` | 同时安装可选 Backend；4 GB 主机默认不要启用 |
+| `-AndroidApk` | 可选。与 `-WithBackend` 一起发布 Android APK；自动校验 SHA-256，并只保留最新两份版本包 |
 | `-SkipModels` | 不检测/上传模型；仅在远端模型已确认有效时使用 |
 | `-SkipPackages` | 跳过 APT；仅在 Python 3.11 和系统库已安装时使用 |
 | `-NoSudo` | SSH 用户本身为 root 时使用 |
@@ -174,10 +175,16 @@ STT_MAX_CONCURRENT=2
 STT_CPU_THREADS=2
 STT_MAX_QUEUE=16
 STT_MAX_STREAMS=12
-STT_MAX_UPLOAD_MB=128
+STT_MAX_UPLOAD_MB=1024
+STT_LONG_AUDIO_CHUNK_THRESHOLD_SEC=2700
+STT_LONG_AUDIO_CHUNK_SECONDS=1800
+STT_LONG_AUDIO_CHUNK_OVERLAP_SEC=3
+TENCENT_ASR_MAX_UPLOAD_MB=100
+TENCENT_ASR_CHUNK_SECONDS=2400
+TENCENT_ASR_CHUNK_OVERLAP_SEC=3
 ```
 
-四核机器中，2 个推理任务各使用 2 个线程。不要把 Uvicorn 改为多进程 worker，多进程会重复加载约 486 MB 模型和推理状态。在 `/health` 中观察：
+超过腾讯单次请求上限的录音由服务端规范化为 16 kHz 单声道 WAV，按 40 分钟和 3 秒重叠分段提交腾讯云，结果按顺序去重合并；该路径不调用本地模型。四核机器中，2 个推理任务各使用 2 个线程。不要把 Uvicorn 改为多进程 worker，多进程会重复加载约 486 MB 模型和推理状态。在 `/health` 中观察：
 
 - `inference.active`：当前执行数，最大为 2。
 - `inference.queued`：等待数，最大为 16。

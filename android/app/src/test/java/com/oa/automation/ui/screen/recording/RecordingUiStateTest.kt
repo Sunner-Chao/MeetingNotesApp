@@ -6,8 +6,12 @@ import com.oa.automation.domain.model.StageDraftStatus
 import com.oa.automation.domain.model.StageDraftVersion
 import com.oa.automation.domain.model.JourneyEdition
 import com.oa.automation.domain.model.JourneyEditionStatus
+import com.oa.automation.domain.model.Meeting
+import com.oa.automation.domain.model.MeetingOrigin
 import com.oa.automation.domain.model.PublishedPost
 import com.oa.automation.domain.model.PublishedPostStatus
+import com.oa.automation.domain.model.RecordingMarker
+import com.oa.automation.infrastructure.background.BackgroundTaskState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -17,10 +21,73 @@ import com.oa.automation.infrastructure.service.RecordingSessionState
 
 class RecordingUiStateTest {
     @Test
+    fun `failed imported audio is recovered once when its local file still exists`() {
+        val meeting = Meeting(title = "文件导入", origin = MeetingOrigin.FILE_IMPORT)
+
+        assertTrue(
+            shouldRecoverImportedTranscription(
+                meeting = meeting,
+                hasTranscript = false,
+                taskState = BackgroundTaskState.FAILED,
+                audioFileAvailable = true,
+                recoveryAlreadyAttempted = false
+            )
+        )
+        assertFalse(
+            shouldRecoverImportedTranscription(
+                meeting = meeting,
+                hasTranscript = false,
+                taskState = BackgroundTaskState.FAILED,
+                audioFileAvailable = true,
+                recoveryAlreadyAttempted = true
+            )
+        )
+    }
+
+    @Test
+    fun `active or deliberately cancelled import is not auto restarted`() {
+        val meeting = Meeting(title = "文件导入", origin = MeetingOrigin.FILE_IMPORT)
+
+        listOf(
+            BackgroundTaskState.QUEUED,
+            BackgroundTaskState.RUNNING,
+            BackgroundTaskState.CANCELLED,
+            BackgroundTaskState.SUCCEEDED
+        ).forEach { taskState ->
+            assertFalse(
+                shouldRecoverImportedTranscription(
+                    meeting = meeting,
+                    hasTranscript = false,
+                    taskState = taskState,
+                    audioFileAvailable = true,
+                    recoveryAlreadyAttempted = false
+                )
+            )
+        }
+    }
+
+    @Test
+    fun `paused recording keeps terminate available while continue remains separate`() {
+        assertEquals(
+            RecordingMainAction.STOP,
+            recordingMainAction(RecordingUiState(isRecording = true, isPaused = true))
+        )
+        assertEquals(
+            RecordingMainAction.STOP,
+            recordingMainAction(RecordingUiState(isRecording = true))
+        )
+        assertEquals(
+            RecordingMainAction.START,
+            recordingMainAction(RecordingUiState())
+        )
+    }
+
+    @Test
     fun `changing meeting clears transient recording and processing state`() {
         val previous = RecordingUiState(
             meetingTitle = "Previous meeting",
             isRecordingActionPending = true,
+            isFinalizingRecording = true,
             isRecording = true,
             isPaused = true,
             hasRecording = true,
@@ -94,12 +161,20 @@ class RecordingUiStateTest {
             journeyStageCount = 1,
             isJourneyActionPending = true,
             journeyStatusMessage = "第 1 段已暂存",
-            recordingMarkers = listOf(12L, 98L)
+            recordingMarkers = listOf(12L, 98L),
+            recordingMarkerAnchors = listOf("现场讲解"),
+            activePhotoMarker = RecordingMarker(
+                id = "marker-1",
+                meetingId = "meeting-1",
+                timestampMs = 98_000L,
+                transcriptAnchor = "现场讲解"
+            )
         )
 
         val next = previous.resetForMeetingChange()
 
         assertFalse(next.isRecordingActionPending)
+        assertFalse(next.isFinalizingRecording)
         assertFalse(next.isRecording)
         assertFalse(next.isPaused)
         assertFalse(next.hasRecording)
@@ -136,12 +211,15 @@ class RecordingUiStateTest {
         assertFalse(next.isJourneyActionPending)
         assertEquals("", next.journeyStatusMessage)
         assertEquals(emptyList<Long>(), next.recordingMarkers)
+        assertEquals(emptyList<String>(), next.recordingMarkerAnchors)
+        assertNull(next.activePhotoMarker)
     }
 
     @Test
     fun `final transcription does not block the next recording`() {
         assertTrue(isRecordingActionEnabled(RecordingUiState(isTranscribing = true)))
         assertFalse(isRecordingActionEnabled(RecordingUiState(isRecordingActionPending = true)))
+        assertFalse(isRecordingActionEnabled(RecordingUiState(isFinalizingRecording = true)))
         assertFalse(isRecordingActionEnabled(RecordingUiState(isJourneyActionPending = true)))
         assertFalse(isRecordingActionEnabled(RecordingUiState(isGeneratingReport = true)))
     }
@@ -156,5 +234,70 @@ class RecordingUiStateTest {
                 )
             )
         )
+    }
+
+    @Test
+    fun `live recording finalization covers stop and transcript persistence`() {
+        assertTrue(
+            isLiveRecordingFinalizing(
+                RecordingSessionState(meetingId = "meeting-1", isStopping = true)
+            )
+        )
+        assertTrue(
+            isLiveRecordingFinalizing(
+                RecordingSessionState(meetingId = "meeting-1", status = "正在保存实时转写")
+            )
+        )
+        assertFalse(
+            isLiveRecordingFinalizing(
+                RecordingSessionState(meetingId = "meeting-1", status = "会议纪要正在排队")
+            )
+        )
+    }
+
+    @Test
+    fun `recording marker anchors the latest spoken sentence`() {
+        val transcript = "讲解员介绍了展馆历史。随后我们来到设备区，重点观察了数字化看板。"
+
+        assertEquals(
+            "随后我们来到设备区，重点观察了数字化看板。",
+            extractRecordingMarkerAnchor(transcript)
+        )
+    }
+
+    @Test
+    fun `marker highlight targets the latest repeated occurrence`() {
+        val transcript = "查看数字看板。继续交流。查看数字看板。"
+
+        assertEquals(
+            listOf(12..17),
+            findRecordingMarkerAnchorRanges(transcript, listOf("查看数字看板"))
+        )
+    }
+
+    @Test
+    fun `study stage only closes when it contains evidence`() {
+        assertFalse(hasMeaningfulStudyStageEvidence("", markerCount = 0, attachmentCount = 0))
+        assertTrue(hasMeaningfulStudyStageEvidence("新增讲解内容", markerCount = 0, attachmentCount = 0))
+        assertTrue(hasMeaningfulStudyStageEvidence("", markerCount = 1, attachmentCount = 0))
+        assertTrue(hasMeaningfulStudyStageEvidence("", markerCount = 0, attachmentCount = 1))
+    }
+
+    @Test
+    fun `study stage transcript keeps only text after its baseline`() {
+        assertEquals(
+            "第二段新增内容。",
+            studyStageTranscriptDelta(
+                baseline = "第一段内容。",
+                currentTranscript = "第一段内容。第二段新增内容。"
+            )
+        )
+    }
+
+    @Test
+    fun `active photo marker closes only after a linked image succeeds`() {
+        assertFalse(shouldCloseActivePhotoMarker("marker-1", "marker-1", importedCount = 0))
+        assertFalse(shouldCloseActivePhotoMarker("marker-1", "marker-2", importedCount = 1))
+        assertTrue(shouldCloseActivePhotoMarker("marker-1", "marker-1", importedCount = 1))
     }
 }

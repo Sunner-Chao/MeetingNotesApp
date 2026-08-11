@@ -131,7 +131,6 @@ fun ReportScreen(
         pendingCameraUri = captureUri
         cameraLauncher.launch(captureUri)
     }
-
     LaunchedEffect(meetingId) {
         viewModel.loadReport(meetingId)
     }
@@ -202,27 +201,13 @@ fun ReportScreen(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             ReportReferenceTopBar(
-                title = documentTitle,
-                reportAvailable = uiState.report != null,
-                optimizeActive = showChatPanel,
                 onNavigateBack = onNavigateBack,
-                onSave = viewModel::saveReport,
-                onOptimize = { showChatPanel = !showChatPanel },
                 onShare = { showExportMenu = true },
                 shareMenu = {
                     DropdownMenu(
                         expanded = showExportMenu,
                         onDismissRequest = { showExportMenu = false }
                     ) {
-                        DropdownMenuItem(
-                            text = { Text("保存纪要") },
-                            leadingIcon = { Icon(Icons.Default.Save, contentDescription = null) },
-                            enabled = uiState.report != null,
-                            onClick = {
-                                showExportMenu = false
-                                viewModel.saveReport()
-                            }
-                        )
                         DropdownMenuItem(
                             text = { Text(if (showChatPanel) "收起智能优化" else "智能优化") },
                             leadingIcon = { Icon(Icons.Default.AutoAwesome, contentDescription = null) },
@@ -242,34 +227,26 @@ fun ReportScreen(
                             }
                         )
                         HorizontalDivider()
-                        ExportFormat.entries.forEach { format ->
+                        listOf(ExportFormat.DOCX, ExportFormat.PDF).forEach { format ->
                             DropdownMenuItem(
                                 text = {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Icon(
                                             imageVector = when (format) {
-                                                ExportFormat.MARKDOWN -> Icons.Default.Code
-                                                ExportFormat.TXT -> Icons.Default.TextSnippet
                                                 ExportFormat.DOCX -> Icons.Default.Description
                                                 ExportFormat.PDF -> Icons.Default.PictureAsPdf
+                                                else -> Icons.Default.Description
                                             },
                                             contentDescription = null,
                                             modifier = Modifier.size(18.dp),
                                             tint = MaterialTheme.colorScheme.primary
                                         )
                                         Spacer(modifier = Modifier.width(10.dp))
-                                        Column {
-                                            Text(
-                                                format.name,
-                                                style = MaterialTheme.typography.bodyMedium,
-                                                fontWeight = FontWeight.Medium
-                                            )
-                                            Text(
-                                                format.extension,
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        }
+                                        Text(
+                                            text = if (format == ExportFormat.DOCX) "导出 Word" else "导出 PDF",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.Medium
+                                        )
                                     }
                                 },
                                 onClick = {
@@ -289,23 +266,6 @@ fun ReportScreen(
                                 }
                             )
                         }
-                        HorizontalDivider()
-                        DropdownMenuItem(
-                            text = { Text("拍摄会议图片") },
-                            leadingIcon = { Icon(Icons.Default.PhotoCamera, contentDescription = null) },
-                            onClick = {
-                                showExportMenu = false
-                                launchCamera()
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("从相册添加图片") },
-                            leadingIcon = { Icon(Icons.Default.Collections, contentDescription = null) },
-                            onClick = {
-                                showExportMenu = false
-                                galleryLauncher.launch("image/*")
-                            }
-                        )
                         DropdownMenuItem(
                             text = { Text("切换纪要模板") },
                             leadingIcon = { Icon(Icons.Default.SwapHoriz, contentDescription = null) },
@@ -431,6 +391,8 @@ fun ReportScreen(
                             onSelectTemplate = { template -> viewModel.selectReportTemplate(template) },
                             onRegenerateWithTemplate = { viewModel.regenerateWithTemplate(meetingId) },
                             onDeleteAttachment = viewModel::deleteAttachment,
+                            onAddImages = { galleryLauncher.launch("image/*") },
+                            onCaptureImage = ::launchCamera,
                             onRefreshAudio = { viewModel.refreshArchivedAudio(meetingId) },
                             onPrepareAudioPlayback = viewModel::prepareArchivedAudioPlayback,
                             onShareAudio = viewModel::shareArchivedAudio,
@@ -1068,48 +1030,66 @@ private fun MarkdownReportCard(content: String) {
 @Composable
 private fun MarkdownLine(line: String) {
     val trimmed = line.trim()
+    val heading = Regex("^(#{1,6})\\s+(.+)$").matchEntire(trimmed)
     when {
-        trimmed.startsWith("# ") -> Text(
-            text = trimmed.removePrefix("# ").trim(),
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(top = 4.dp)
-        )
-        trimmed.startsWith("## ") -> Text(
-            text = trimmed.removePrefix("## ").trim(),
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.padding(top = 10.dp)
-        )
-        trimmed.startsWith("### ") -> Text(
-            text = trimmed.removePrefix("### ").trim(),
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.padding(top = 6.dp)
-        )
-        trimmed.startsWith("|") -> Text(
-            text = trimmed,
+        heading != null -> {
+            val level = heading.groupValues[1].length
+            val headingStyle = when (level) {
+                1 -> MaterialTheme.typography.headlineSmall
+                2 -> MaterialTheme.typography.titleLarge
+                else -> MaterialTheme.typography.titleMedium
+            }
+            Text(
+                text = cleanMarkdownDisplayText(heading.groupValues[2]),
+                style = headingStyle,
+                fontWeight = if (level <= 2) FontWeight.Bold else FontWeight.SemiBold,
+                color = if (level == 2) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.padding(top = if (level == 1) 4.dp else 8.dp)
+            )
+        }
+        trimmed.startsWith(">") -> Text(
+            text = cleanMarkdownDisplayText(trimmed.removePrefix(">")),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(8.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
-                .padding(horizontal = 10.dp, vertical = 6.dp)
+            modifier = Modifier.padding(horizontal = 8.dp)
         )
+        trimmed.startsWith("|") -> {
+            val cells = trimmed.trim('|').split('|').map { cleanMarkdownDisplayText(it) }
+            if (cells.all { it.matches(Regex(":?-{3,}:?")) }) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            } else {
+                Text(
+                    text = cells.joinToString("    "),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                )
+            }
+        }
         trimmed.isBlank() -> Spacer(modifier = Modifier.height(4.dp))
         trimmed == "---" -> HorizontalDivider(
             modifier = Modifier.padding(vertical = 8.dp),
             color = MaterialTheme.colorScheme.outlineVariant
         )
         else -> Text(
-            text = line,
+            text = cleanMarkdownDisplayText(line),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurface
         )
     }
 }
+
+private fun cleanMarkdownDisplayText(text: String): String = text
+    .replace(Regex("^\\s*[-*+]\\s+"), "")
+    .replace(Regex("^\\s*\\d+[.)、]\\s+"), "")
+    .replace(Regex("\\*\\*(.+?)\\*\\*"), "$1")
+    .replace(Regex("__(.+?)__"), "$1")
+    .replace("`", "")
+    .trim()
 
 @Composable
 private fun StructuredReportContent(report: Report) {

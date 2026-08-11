@@ -39,7 +39,6 @@ import androidx.compose.material.icons.filled.EventAvailable
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.GraphicEq
-import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.NotificationsNone
 import androidx.compose.material.icons.filled.Close
@@ -90,8 +89,10 @@ import androidx.compose.ui.unit.Dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.oa.automation.R
 import com.oa.automation.domain.model.Meeting
+import com.oa.automation.domain.model.MeetingOrigin
 import com.oa.automation.domain.model.PresetReportTemplate
 import com.oa.automation.domain.model.ScheduledMeeting
+import com.oa.automation.domain.model.displayTitle
 import com.oa.automation.ui.component.AppLauncherIcon
 import com.oa.automation.ui.component.FirebaseUiTokens
 import com.oa.automation.ui.component.MeetingCard
@@ -128,32 +129,32 @@ private fun homeColors(): HomeColors {
         HomeColors(
             ink = scheme.onBackground,
             mutedInk = scheme.onSurfaceVariant,
-            blueTile = Color(0xFF1C2A3D),
-            mintTile = Color(0xFF17362F),
-            lilacTile = Color(0xFF2B2742),
-            peachTile = Color(0xFF3A2C22),
+            blueTile = Color(0xFF213547),
+            mintTile = Color(0xFF253947),
+            lilacTile = Color(0xFF293B49),
+            peachTile = Color(0xFF303B44),
             arrowSurface = scheme.surfaceVariant,
             meetingSurface = scheme.surface,
-            completedContainer = Color(0xFF173A2F),
-            pendingContainer = Color(0xFF1C3048),
-            completedContent = Color(0xFF83D7A8),
-            pendingContent = Color(0xFF8FC2FF),
+            completedContainer = Color(0xFF193B2B),
+            pendingContainer = Color(0xFF403A1A),
+            completedContent = Color(0xFF92C9A6),
+            pendingContent = Color(0xFFF8D86A),
             emptyIconContainer = Color(0xFF1C3048)
         )
     } else {
         HomeColors(
             ink = Color(0xFF172139),
             mutedInk = Color(0xFF858D9B),
-            blueTile = Color(0xFFEDF5FF),
-            mintTile = Color(0xFFECFAF5),
-            lilacTile = Color(0xFFF2EFFF),
-            peachTile = Color(0xFFFFF2E8),
+            blueTile = Color(0xFFE5F1FB),
+            mintTile = Color(0xFFEAF3F8),
+            lilacTile = Color(0xFFEDF3F8),
+            peachTile = Color(0xFFF1F3F5),
             arrowSurface = Color.White.copy(alpha = 0.92f),
             meetingSurface = Color.White.copy(alpha = 0.95f),
-            completedContainer = Color(0xFFE9F8F1),
-            pendingContainer = Color(0xFFEAF2FF),
-            completedContent = Color(0xFF24AD79),
-            pendingContent = BrandBlue,
+            completedContainer = Color(0xFFDFF6DD),
+            pendingContainer = Color(0xFFFFF4CE),
+            completedContent = Color(0xFF0E700E),
+            pendingContent = Color(0xFF8A6A00),
             emptyIconContainer = Color(0xFFEDF5FF)
         )
     }
@@ -290,10 +291,13 @@ fun HomeScreen(
             onOpen = { item ->
                 showAllMeetings = false
                 if (item.hasReport) onNavigateToReport(item.meeting.id)
-                else onNavigateToRecording(item.meeting.id, HomeLaunchAction.STANDARD)
+                else onNavigateToRecording(item.meeting.id, item.meeting.resumeLaunchAction())
             },
             onReportClick = { onNavigateToReport(it) },
-            onContinueRecording = { onNavigateToRecording(it, HomeLaunchAction.STANDARD) },
+            onContinueRecording = { meetingId ->
+                val meeting = uiState.meetings.firstOrNull { it.meeting.id == meetingId }?.meeting
+                onNavigateToRecording(meetingId, meeting?.resumeLaunchAction() ?: HomeLaunchAction.STANDARD)
+            },
             onRegenerateReport = viewModel::regenerateReport,
             onDelete = viewModel::deleteMeeting,
             onEdit = viewModel::startEditTitle
@@ -352,7 +356,7 @@ fun HomeScreen(
                             },
                             onImportFile = {
                                 viewModel.startNewMeeting(
-                                    viewModel.suggestMeetingTitle("资料导入"),
+                                    viewModel.suggestMeetingTitle("文件导入"),
                                     HomeLaunchAction.OPEN_IMPORT
                                 )
                             },
@@ -397,14 +401,19 @@ fun HomeScreen(
                                     items = uiState.meetings,
                                     key = { item -> item.meeting.id }
                                 ) { item ->
-                                    HomeMeetingRow(
-                                        item = item,
-                                        layout = layout,
-                                        onClick = {
+                                        HomeMeetingRow(
+                                            item = item,
+                                            layout = layout,
+                                            onClick = {
                                             if (item.hasReport) onNavigateToReport(item.meeting.id)
-                                            else onNavigateToRecording(item.meeting.id, HomeLaunchAction.STANDARD)
+                                            else onNavigateToRecording(
+                                                item.meeting.id,
+                                                item.meeting.resumeLaunchAction()
+                                            )
                                         },
-                                        onEdit = { viewModel.startEditTitle(item.meeting.id, item.meeting.title) },
+                                        onEdit = {
+                                            viewModel.startEditTitle(item.meeting.id, item.meeting.displayTitle())
+                                        },
                                         onDelete = { viewModel.deleteMeeting(item.meeting.id) }
                                     )
                                 }
@@ -514,7 +523,7 @@ private fun QuickActionGrid(
                 subtitle = "导入音视频\n智能解析",
                 kind = HomeActionArt.FOLDER,
                 containerColor = colors.mintTile,
-                accent = Color(0xFF20B98D),
+                accent = Color(0xFF106EBE),
                 layout = layout,
                 onClick = onImportFile,
                 modifier = Modifier.weight(1f)
@@ -526,7 +535,7 @@ private fun QuickActionGrid(
                 subtitle = "安排时间，\n提前提醒",
                 kind = HomeActionArt.ADD,
                 containerColor = colors.lilacTile,
-                accent = Color(0xFF8073F0),
+                accent = Color(0xFF2B88B9),
                 layout = layout,
                 onClick = onCreateMeeting,
                 modifier = Modifier.weight(1f)
@@ -536,7 +545,7 @@ private fun QuickActionGrid(
                 subtitle = "个性设置，\n专属体验",
                 kind = HomeActionArt.SETTINGS,
                 containerColor = colors.peachTile,
-                accent = Color(0xFFF4A13A),
+                accent = Color(0xFF486A8A),
                 layout = layout,
                 onClick = onSettings,
                 modifier = Modifier.weight(1f)
@@ -752,25 +761,25 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawFolderArtwork()
         size = Size(w * 0.84f, h * 0.10f)
     )
     drawRoundRect(
-        brush = Brush.verticalGradient(listOf(Color(0xFF8DC6B7), Color(0xFF6EAC9E))),
+        brush = Brush.verticalGradient(listOf(Color(0xFF4F9BC5), Color(0xFF2B6F9B))),
         topLeft = Offset(left + w * 0.025f, top + h * 0.085f),
         size = Size(folderWidth, folderHeight),
         cornerRadius = androidx.compose.ui.geometry.CornerRadius(w * 0.08f)
     )
     drawRoundRect(
-        brush = Brush.verticalGradient(listOf(Color(0xFFEFFFFA), Color(0xFFA8DFD0), Color(0xFF7DC2B1))),
+        brush = Brush.verticalGradient(listOf(Color(0xFFF0F8FD), Color(0xFFB9DDF5), Color(0xFF72B7DF))),
         topLeft = Offset(left, top + h * 0.04f),
         size = Size(folderWidth, folderHeight),
         cornerRadius = androidx.compose.ui.geometry.CornerRadius(w * 0.08f)
     )
     drawRoundRect(
-        brush = Brush.verticalGradient(listOf(Color(0xFFF4FFFC), Color(0xFFB9EBDD))),
+        brush = Brush.verticalGradient(listOf(Color(0xFFF5FAFD), Color(0xFFCBE7F7))),
         topLeft = Offset(left + w * 0.03f, top),
         size = Size(w * 0.36f, h * 0.18f),
         cornerRadius = androidx.compose.ui.geometry.CornerRadius(w * 0.06f)
     )
     drawRoundRect(
-        color = Color(0xFFB3EADA).copy(alpha = 0.72f),
+        color = Color(0xFFB9DDF5).copy(alpha = 0.72f),
         topLeft = Offset(left + w * 0.07f, top + h * 0.18f),
         size = Size(folderWidth * 0.84f, folderHeight * 0.64f),
         cornerRadius = androidx.compose.ui.geometry.CornerRadius(w * 0.06f)
@@ -788,13 +797,13 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawFolderArtwork()
         cornerRadius = androidx.compose.ui.geometry.CornerRadius(w * 0.05f)
     )
     drawRoundRect(
-        color = Color(0xFF75B8A9),
+        color = Color(0xFF4F96C2),
         topLeft = Offset(w * 0.08f, h * 0.745f),
         size = Size(w * 0.84f, h * 0.10f),
         cornerRadius = androidx.compose.ui.geometry.CornerRadius(h * 0.05f)
     )
     drawRoundRect(
-        brush = Brush.verticalGradient(listOf(Color.White, Color(0xFFBDEADE))),
+        brush = Brush.verticalGradient(listOf(Color.White, Color(0xFFCBE7F7))),
         topLeft = Offset(w * 0.08f, h * 0.72f),
         size = Size(w * 0.84f, h * 0.10f),
         cornerRadius = androidx.compose.ui.geometry.CornerRadius(h * 0.05f)
@@ -814,13 +823,13 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAddArtwork() {
         size = Size(w * 0.84f, h * 0.09f)
     )
     drawRoundRect(
-        color = Color(0xFF7667D0),
+        color = Color(0xFF005A9E),
         topLeft = Offset(left + w * 0.035f, top + h * 0.035f),
         size = Size(tile, tile),
         cornerRadius = androidx.compose.ui.geometry.CornerRadius(w * 0.13f)
     )
     drawRoundRect(
-        brush = Brush.verticalGradient(listOf(Color(0xFFF7F5FF), Color(0xFFB9B0FF), Color(0xFF8E80F2))),
+        brush = Brush.verticalGradient(listOf(Color(0xFFF1F8FD), Color(0xFF9FD5F5), Color(0xFF3A96DD))),
         topLeft = Offset(left, top),
         size = Size(tile, tile),
         cornerRadius = androidx.compose.ui.geometry.CornerRadius(w * 0.13f)
@@ -850,13 +859,13 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAddArtwork() {
         cornerRadius = androidx.compose.ui.geometry.CornerRadius(w * 0.035f)
     )
     drawRoundRect(
-        color = Color(0xFF8477DB),
+        color = Color(0xFF106EBE),
         topLeft = Offset(w * 0.08f, h * 0.795f),
         size = Size(w * 0.84f, h * 0.10f),
         cornerRadius = androidx.compose.ui.geometry.CornerRadius(h * 0.05f)
     )
     drawRoundRect(
-        brush = Brush.verticalGradient(listOf(Color.White, Color(0xFFC7C0FF))),
+        brush = Brush.verticalGradient(listOf(Color.White, Color(0xFFB9DDF5))),
         topLeft = Offset(w * 0.08f, h * 0.765f),
         size = Size(w * 0.84f, h * 0.10f),
         cornerRadius = androidx.compose.ui.geometry.CornerRadius(h * 0.05f)
@@ -891,15 +900,15 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSettingsArtwork
             center = Offset(center.x, center.y + yOffset)
         )
     }
-    drawGearLayer(listOf(Color(0xFFCE7B2C), Color(0xFFB96520)), h * 0.035f)
-    drawGearLayer(listOf(Color(0xFFFFE7C2), Color(0xFFF2A34D)), 0f)
+    drawGearLayer(listOf(Color(0xFF005A9E), Color(0xFF00395D)), h * 0.035f)
+    drawGearLayer(listOf(Color(0xFFD9EEF8), Color(0xFF60CDFF)), 0f)
     drawCircle(
-        brush = Brush.radialGradient(listOf(Color(0xFFFFE9C9), Color(0xFFF3A44E))),
+        brush = Brush.radialGradient(listOf(Color(0xFFE5F1FB), Color(0xFF60CDFF))),
         radius = outerRadius,
         center = center
     )
-    drawCircle(color = Color(0xFFC87528), radius = w * 0.12f, center = center)
-    drawCircle(color = Color(0xFF5B3C25), radius = w * 0.075f, center = center)
+    drawCircle(color = Color(0xFF0078D4), radius = w * 0.12f, center = center)
+    drawCircle(color = Color(0xFF00395D), radius = w * 0.075f, center = center)
     drawArc(
         color = Color.White.copy(alpha = 0.52f),
         startAngle = 205f,
@@ -910,13 +919,13 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSettingsArtwork
         style = Stroke(width = w * 0.035f)
     )
     drawRoundRect(
-        color = Color(0xFFD28535),
+        color = Color(0xFF106EBE),
         topLeft = Offset(w * 0.08f, h * 0.795f),
         size = Size(w * 0.84f, h * 0.10f),
         cornerRadius = androidx.compose.ui.geometry.CornerRadius(h * 0.05f)
     )
     drawRoundRect(
-        brush = Brush.verticalGradient(listOf(Color.White, Color(0xFFFFD59C))),
+        brush = Brush.verticalGradient(listOf(Color.White, Color(0xFFB9DDF5))),
         topLeft = Offset(w * 0.08f, h * 0.765f),
         size = Size(w * 0.84f, h * 0.10f),
         cornerRadius = androidx.compose.ui.geometry.CornerRadius(h * 0.05f)
@@ -971,23 +980,6 @@ private fun RecentMeetingsHeader(
     }
 }
 
-private enum class MeetingSource {
-    QUICK,
-    SCHEDULED,
-    IMPORT
-}
-
-private fun meetingSource(title: String): MeetingSource {
-    val normalized = title.trim().lowercase(Locale.getDefault())
-    return when {
-        listOf("资料导入", "文件导入", "导入会议", "import").any(normalized::contains) ->
-            MeetingSource.IMPORT
-        listOf("预定会议", "预约会议", "预定", "scheduled").any(normalized::contains) ->
-            MeetingSource.SCHEDULED
-        else -> MeetingSource.QUICK
-    }
-}
-
 @Composable
 @OptIn(ExperimentalFoundationApi::class)
 private fun HomeMeetingRow(
@@ -1000,23 +992,24 @@ private fun HomeMeetingRow(
     val colors = homeColors()
     var showMenu by remember { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf(false) }
-    val source = meetingSource(item.meeting.title)
+    val source = item.meeting.origin
+    val displayTitle = item.meeting.displayTitle()
     val icon = when (source) {
-        MeetingSource.QUICK -> Icons.Default.Mic
-        MeetingSource.SCHEDULED -> Icons.Default.EventAvailable
-        MeetingSource.IMPORT -> Icons.Default.FolderOpen
+        MeetingOrigin.QUICK -> Icons.Default.Mic
+        MeetingOrigin.SCHEDULED -> Icons.Default.EventAvailable
+        MeetingOrigin.FILE_IMPORT -> Icons.Default.FolderOpen
     }
     val iconTint = when (source) {
-        MeetingSource.QUICK -> BrandBlue
-        MeetingSource.SCHEDULED -> Color(0xFF806EF0)
-        MeetingSource.IMPORT -> Color(0xFF28BA91)
+        MeetingOrigin.QUICK -> BrandBlue
+        MeetingOrigin.SCHEDULED -> Color(0xFF2B88B9)
+        MeetingOrigin.FILE_IMPORT -> Color(0xFF106EBE)
     }
     if (showDeleteDialog) {
         AlertDialog(
             onDismissRequest = { showDeleteDialog = false },
             icon = { Icon(Icons.Default.DeleteOutline, null, tint = MaterialTheme.colorScheme.error) },
             title = { Text("删除会议") },
-            text = { Text("“${item.meeting.title}”及其录音、转写和纪要将被永久删除。") },
+            text = { Text("“$displayTitle”及其录音、转写和纪要将被永久删除。") },
             confirmButton = {
                 TextButton(onClick = {
                     showDeleteDialog = false
@@ -1057,33 +1050,58 @@ private fun HomeMeetingRow(
             Spacer(Modifier.width(10.dp))
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
-                    text = item.meeting.title,
+                    text = displayTitle,
                     style = MaterialTheme.typography.titleMedium.copy(fontSize = 15.sp, lineHeight = 20.sp),
                     color = colors.ink,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                Text(
-                    text = meetingMeta(item.meeting),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = colors.mutedInk,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    Text(
+                        text = meetingOriginLabel(source),
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                        color = iconTint,
+                        maxLines = 1
+                    )
+                    Text(
+                        text = meetingMeta(item.meeting),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.mutedInk,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
             }
+            val statusContainer = if (item.hasReport) colors.completedContainer else colors.pendingContainer
+            val statusContent = if (item.hasReport) colors.completedContent else colors.pendingContent
             Surface(
                 shape = RoundedCornerShape(50),
-                color = if (item.hasReport) colors.completedContainer else colors.pendingContainer
+                color = statusContainer
             ) {
-                Text(
-                    text = if (item.hasReport) "已完成" else "待完善",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = if (item.hasReport) colors.completedContent else colors.pendingContent,
-                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp)
-                )
+                Row(
+                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(6.dp)
+                            .background(statusContent, CircleShape)
+                    )
+                    Text(
+                        text = if (item.hasReport) "已完成" else "待完善",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = statusContent
+                    )
+                }
             }
             Icon(
-                imageVector = Icons.Default.KeyboardArrowRight,
+                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
                 contentDescription = "打开会议",
                 tint = colors.mutedInk.copy(alpha = 0.62f),
                 modifier = Modifier.size(25.dp)
@@ -1172,7 +1190,7 @@ private fun AllMeetingsSheet(
         ) {
             items(meetings, key = { it.meeting.id }) { item ->
                 MeetingCard(
-                    meeting = item.meeting,
+                    meeting = item.meeting.copy(title = item.meeting.displayTitle()),
                     hasReport = item.hasReport,
                     isRegenerating = regeneratingMeetingId == item.meeting.id,
                     onClick = { onOpen(item) },
@@ -1180,7 +1198,7 @@ private fun AllMeetingsSheet(
                     onContinueRecording = { onContinueRecording(item.meeting.id) },
                     onRegenerateReport = { onRegenerateReport(item.meeting.id) },
                     onDelete = { onDelete(item.meeting.id) },
-                    onEdit = { onEdit(item.meeting.id, item.meeting.title) }
+                    onEdit = { onEdit(item.meeting.id, item.meeting.displayTitle()) }
                 )
             }
         }
@@ -1459,6 +1477,12 @@ private fun reminderLabel(minutes: Int): String = when (minutes) {
 private fun meetingMeta(meeting: Meeting): String {
     val date = SimpleDateFormat("yyyy/MM/dd  HH:mm", Locale.SIMPLIFIED_CHINESE).format(Date(meeting.createdAt))
     return if (meeting.durationMs > 0L) "$date  |  ${formatDuration(meeting.durationMs)}" else date
+}
+
+internal fun meetingOriginLabel(origin: MeetingOrigin): String = when (origin) {
+    MeetingOrigin.QUICK -> "快速"
+    MeetingOrigin.SCHEDULED -> "预定"
+    MeetingOrigin.FILE_IMPORT -> "导入"
 }
 
 private fun formatDuration(durationMs: Long): String {

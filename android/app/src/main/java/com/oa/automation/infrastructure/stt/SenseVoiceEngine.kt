@@ -1,6 +1,7 @@
 package com.oa.automation.infrastructure.stt
 
 import com.google.gson.Gson
+import com.oa.automation.BuildConfig
 import com.oa.automation.domain.model.STTConfig
 import com.oa.automation.domain.model.STTEngineType
 import com.oa.automation.domain.model.ProcessingProgress
@@ -29,9 +30,9 @@ class SenseVoiceEngine(
 ) : SpeechToTextEngine {
 
     private val client = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.MINUTES)
-        .writeTimeout(10, TimeUnit.MINUTES)
+        .connectTimeout(BuildConfig.STT_CLOUD_CONNECT_TIMEOUT_SECONDS.toLong(), TimeUnit.SECONDS)
+        .readTimeout(BuildConfig.STT_CLOUD_READ_TIMEOUT_SECONDS.toLong(), TimeUnit.SECONDS)
+        .writeTimeout(BuildConfig.STT_CLOUD_WRITE_TIMEOUT_SECONDS.toLong(), TimeUnit.SECONDS)
         .build()
 
     private val gson = Gson()

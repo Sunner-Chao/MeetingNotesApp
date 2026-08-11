@@ -1,0 +1,19 @@
+{
+  "providers": {
+    "wechat": {
+      "name": "微信",
+      "enabled": false,
+      "authorization_url": ""
+    },
+    "qq": {
+      "name": "QQ",
+      "enabled": false,
+      "authorization_url": ""
+    },
+    "feishu": {
+      "name": "飞书",
+      "enabled": false,
+      "authorization_url": ""
+    }
+  }
+}

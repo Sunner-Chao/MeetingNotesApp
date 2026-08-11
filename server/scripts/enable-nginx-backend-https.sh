@@ -1,28 +1,44 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-CONFIG="/etc/nginx/sites-available/synthapi.conf"
+CONFIG="${NGINX_CONFIG:-/etc/nginx/sites-available/synthapi.conf}"
 BACKUP="${CONFIG}.bak-meetingnotes-$(date -u +%Y%m%d%H%M%S)"
-CERT="/etc/letsencrypt/live/118.25.43.185/fullchain.pem"
-KEY="/etc/letsencrypt/live/118.25.43.185/privkey.pem"
+BACKEND_ORIGIN="${MEETINGNOTES_BACKEND_ORIGIN:-http://127.0.0.1:8090}"
 
 [[ "${EUID}" -eq 0 ]] || { echo "Run as root." >&2; exit 1; }
 [[ -f "$CONFIG" ]] || { echo "Missing Nginx config: $CONFIG" >&2; exit 1; }
-[[ -f "$CERT" && -f "$KEY" ]] || { echo "The IP certificate is missing." >&2; exit 1; }
+[[ "$BACKEND_ORIGIN" =~ ^https?://[^/]+$ ]] || { echo "Invalid MEETINGNOTES_BACKEND_ORIGIN." >&2; exit 1; }
 
 cp -a "$CONFIG" "$BACKUP"
-python3 - "$CONFIG" <<'PY'
+python3 - "$CONFIG" "$BACKEND_ORIGIN" <<'PY'
 from pathlib import Path
+import re
 import sys
 
 path = Path(sys.argv[1])
+backend_origin = sys.argv[2]
 text = path.read_text(encoding="utf-8")
-marker = "    ssl_certificate_key /etc/letsencrypt/live/118.25.43.185/privkey.pem;\n"
+begin_marker = "    # BEGIN MeetingNotesApp managed routes"
+end_marker = "    # END MeetingNotesApp managed routes"
 locations = """
 
-    # MeetingNotesApp Backend: keep the application on localhost and publish only these routes over HTTPS.
+BEGIN_MARKER
+    location = /app {
+        return 308 /app/;
+    }
+
+    location ^~ /app/ {
+        proxy_pass BACKEND_ORIGIN;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-Host $host;
+    }
+
     location = /web {
-        proxy_pass http://127.0.0.1:8090/web;
+        proxy_pass BACKEND_ORIGIN/web;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header Authorization $http_authorization;
@@ -33,7 +49,7 @@ locations = """
     }
 
     location = /health {
-        proxy_pass http://127.0.0.1:8090/health;
+        proxy_pass BACKEND_ORIGIN/health;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header Authorization $http_authorization;
@@ -44,7 +60,7 @@ locations = """
     }
 
     location ^~ /api/ {
-        proxy_pass http://127.0.0.1:8090;
+        proxy_pass BACKEND_ORIGIN;
         proxy_http_version 1.1;
         proxy_connect_timeout 30s;
         proxy_send_timeout 660s;
@@ -56,36 +72,71 @@ locations = """
         proxy_set_header X-Forwarded-Proto https;
         proxy_set_header X-Forwarded-Host $host;
     }
+END_MARKER
 """
-install_marker = "MeetingNotesApp Backend: keep the application on localhost"
-if install_marker not in text:
-    if marker not in text:
-        raise SystemExit("Could not find the IP HTTPS server certificate marker")
-    text = text.replace(marker, marker + locations, 1)
-else:
-    api_start = "    location ^~ /api/ {\n"
-    start = text.find(api_start)
-    if start < 0:
-        raise SystemExit("Could not find the installed MeetingNotesApp API location")
-    end = text.find("    }\n", start)
-    if end < 0:
-        raise SystemExit("Could not find the end of the MeetingNotesApp API location")
-    api_block = text[start:end]
-    timeout_lines = (
-        "        proxy_connect_timeout 30s;\n"
-        "        proxy_send_timeout 660s;\n"
-        "        proxy_read_timeout 660s;\n"
+locations = (
+    locations.replace("BEGIN_MARKER", begin_marker)
+    .replace("END_MARKER", end_marker)
+    .replace("BACKEND_ORIGIN", backend_origin)
+)
+
+
+def remove_location(source: str, signature: str) -> str:
+    while True:
+        start = source.find(signature)
+        if start < 0:
+            return source
+        line_start = source.rfind("\n", 0, start) + 1
+        brace = source.find("{", start)
+        if brace < 0:
+            raise SystemExit(f"Malformed Nginx location: {signature}")
+        depth = 0
+        end = brace
+        while end < len(source):
+            if source[end] == "{":
+                depth += 1
+            elif source[end] == "}":
+                depth -= 1
+                if depth == 0:
+                    end += 1
+                    while end < len(source) and source[end] in " \t\r\n":
+                        end += 1
+                    source = source[:line_start] + source[end:]
+                    break
+            end += 1
+        else:
+            raise SystemExit(f"Unterminated Nginx location: {signature}")
+
+
+managed = re.compile(
+    re.escape(begin_marker) + r".*?" + re.escape(end_marker) + r"\s*",
+    re.DOTALL,
+)
+text = managed.sub("", text)
+
+# Upgrade the route block installed by older MeetingNotesApp releases.
+if "MeetingNotesApp Backend: keep the application on localhost" in text:
+    for signature in (
+        "location = /web {",
+        "location = /health {",
+        "location ^~ /api/ {",
+    ):
+        text = remove_location(text, signature)
+    text = re.sub(
+        r"^[ \t]*# MeetingNotesApp Backend: keep the application on localhost.*?\n",
+        "",
+        text,
+        flags=re.MULTILINE,
     )
-    if "proxy_read_timeout" not in api_block:
-        api_block = api_block.replace(
-            "        proxy_http_version 1.1;\n",
-            "        proxy_http_version 1.1;\n" + timeout_lines,
-            1,
-        )
-        text = text[:start] + api_block + text[end:]
+
+certificate_key = re.search(r"^[ \t]*ssl_certificate_key\s+[^;]+;[ \t]*\n", text, re.MULTILINE)
+if certificate_key is None:
+    raise SystemExit("Could not find an HTTPS server certificate key directive")
+insert_at = certificate_key.end()
+text = text[:insert_at] + locations + text[insert_at:]
 
 path.write_text(text, encoding="utf-8")
-print(f"MeetingNotesApp HTTPS locations are up to date; backup={path}.bak-meetingnotes")
+print(f"MeetingNotesApp HTTPS routes are up to date; backup={path}.bak-meetingnotes")
 PY
 
 nginx -t
@@ -93,4 +144,4 @@ systemctl unmask nginx.service
 systemctl enable nginx.service
 systemctl restart nginx.service
 systemctl is-active nginx.service
-echo "HTTPS dashboard: https://118.25.43.185/web"
+echo "MeetingNotesApp HTTPS routes enabled: /app/, /api/, /health and /web"

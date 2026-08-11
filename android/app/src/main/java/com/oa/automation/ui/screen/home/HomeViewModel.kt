@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.oa.automation.application.usecase.StartRecordingUseCase
 import com.oa.automation.data.local.ConfigDataStore
 import com.oa.automation.domain.model.Meeting
+import com.oa.automation.domain.model.MeetingOrigin
 import com.oa.automation.domain.model.PresetReportTemplate
 import com.oa.automation.domain.model.ScheduledMeeting
 import com.oa.automation.domain.repository.MeetingRepository
@@ -34,6 +35,18 @@ enum class HomeLaunchAction {
     STANDARD,
     START_RECORDING,
     OPEN_IMPORT
+}
+
+internal fun HomeLaunchAction.toMeetingOrigin(): MeetingOrigin = when (this) {
+    HomeLaunchAction.OPEN_IMPORT -> MeetingOrigin.FILE_IMPORT
+    HomeLaunchAction.STANDARD,
+    HomeLaunchAction.START_RECORDING -> MeetingOrigin.QUICK
+}
+
+internal fun Meeting.resumeLaunchAction(): HomeLaunchAction = when (origin) {
+    MeetingOrigin.FILE_IMPORT -> HomeLaunchAction.OPEN_IMPORT
+    MeetingOrigin.QUICK,
+    MeetingOrigin.SCHEDULED -> HomeLaunchAction.STANDARD
 }
 
 data class PendingMeetingNavigation(
@@ -137,7 +150,7 @@ class HomeViewModel(
         action: HomeLaunchAction = HomeLaunchAction.STANDARD
     ) {
         viewModelScope.launch {
-            val result = startRecordingUseCase(title)
+            val result = startRecordingUseCase(title, action.toMeetingOrigin())
             result
                 .onSuccess { meeting ->
                     _uiState.update {

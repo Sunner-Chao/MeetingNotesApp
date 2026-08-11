@@ -16,6 +16,11 @@ import com.oa.automation.domain.model.Report
 import java.io.File
 import java.io.FileOutputStream
 
+private fun String.usesStudyReportStyle(): Boolean =
+    contains("研学") || contains("参观考察") || contains("游记") || contains("文旅")
+
+private val photoAnchorPattern = Regex("^\\s*\\[照片\\s*[:：]\\s*图\\s*(\\d+)]\\s*$")
+
 /**
  * Report Exporter - Export meeting reports to various formats
  */
@@ -157,6 +162,7 @@ object ReportExporter {
         attachments: List<MeetingAttachment>,
         meetingTitle: String = ""
     ): File {
+        val isStudyReport = report.templateName.usesStudyReportStyle()
         val images = attachments.map { attachment ->
             MeetingImagePreparer.prepare(attachment)
                 ?: error("无法写入会议图片：${attachment.displayName}")
@@ -383,8 +389,62 @@ object ReportExporter {
             addVerticalSpace(12f)
         }
 
+        val placedImageIndexes = mutableSetOf<Int>()
+
+        fun drawReportImage(index: Int) {
+            val image = images.getOrNull(index) ?: return
+            val bitmap = checkNotNull(
+                BitmapFactory.decodeByteArray(image.bytes, 0, image.bytes.size)
+            ) { "无法解码图片：${image.caption}" }
+            try {
+                val fallbackCaption = if (isStudyReport) "照片" else "会议图片"
+                val caption = "图 ${index + 1}：${image.caption.ifBlank { fallbackCaption }}"
+                val captionLayout = createTextLayout(
+                    caption,
+                    footerPaint,
+                    Layout.Alignment.ALIGN_CENTER
+                )
+                val maxImageHeight = contentBottom - margin - captionLayout.height - 38f
+                val scale = minOf(
+                    1f,
+                    contentWidth / bitmap.width,
+                    maxImageHeight / bitmap.height
+                )
+                val imageWidth = bitmap.width * scale
+                val imageHeight = bitmap.height * scale
+                val blockHeight = imageHeight + captionLayout.height + 24f
+
+                if (yPosition + blockHeight > contentBottom) {
+                    startNewPage()
+                }
+
+                val imageLeft = margin + (contentWidth - imageWidth) / 2f
+                canvas.drawBitmap(
+                    bitmap,
+                    null,
+                    RectF(imageLeft, yPosition, imageLeft + imageWidth, yPosition + imageHeight),
+                    Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+                )
+                yPosition += imageHeight + 8f
+                canvas.save()
+                canvas.translate(margin, yPosition)
+                captionLayout.draw(canvas)
+                canvas.restore()
+                yPosition += captionLayout.height + 16f
+                placedImageIndexes += index
+            } finally {
+                bitmap.recycle()
+            }
+        }
+
         // Title
-        val title = if (report.rawContent.isNotBlank()) "会议纪要" else "会议纪要"
+        val title = report.rawContent.lineSequence()
+            .map(String::trim)
+            .firstOrNull { it.startsWith("# ") }
+            ?.removePrefix("# ")
+            ?.trim()
+            ?.takeIf(String::isNotBlank)
+            ?: if (isStudyReport) "研学考察游记" else "会议纪要"
         yPosition = drawText(title, titlePaint)
         canvas.drawLine(margin, yPosition, pageWidth - margin, yPosition, linePaint)
         yPosition += 16f
@@ -396,7 +456,15 @@ object ReportExporter {
             while (lineIndex < lines.size) {
                 val line = lines[lineIndex]
                 val trimmed = line.trim()
+                val photoAnchor = photoAnchorPattern.matchEntire(trimmed)
                 when {
+                    photoAnchor != null -> {
+                        val imageIndex = photoAnchor.groupValues[1].toIntOrNull()?.minus(1)
+                        if (imageIndex != null && imageIndex !in placedImageIndexes) {
+                            drawReportImage(imageIndex)
+                        }
+                        lineIndex++
+                    }
                     trimmed.startsWith("|") &&
                         lineIndex + 1 < lines.size &&
                         isPdfTableSeparator(lines[lineIndex + 1]) -> {
@@ -410,12 +478,15 @@ object ReportExporter {
                         drawTable(rows)
                     }
                     trimmed.startsWith("# ") -> {
-                        addVerticalSpace(8f)
-                        yPosition = drawText(
-                            trimmed.removePrefix("# ").trim(),
-                            titlePaint,
-                            minimumFollowingSpace = 30f
-                        )
+                        val heading = trimmed.removePrefix("# ").trim()
+                        if (heading != title) {
+                            addVerticalSpace(8f)
+                            yPosition = drawText(
+                                heading,
+                                titlePaint,
+                                minimumFollowingSpace = 30f
+                            )
+                        }
                         lineIndex++
                     }
                     trimmed.startsWith("## ") -> {
@@ -438,6 +509,16 @@ object ReportExporter {
                             trimmed.removePrefix("### ").trim(),
                             subHeadingPaint,
                             minimumFollowingSpace = 26f
+                        )
+                        lineIndex++
+                    }
+                    trimmed.matches(Regex("^#{4,6}\\s+.+$")) -> {
+                        addVerticalSpace(3f)
+                        val subHeadingPaint = TextPaint(headingPaint).apply { textSize = 12.5f }
+                        yPosition = drawText(
+                            cleanPdfMarkdown(trimmed),
+                            subHeadingPaint,
+                            minimumFollowingSpace = 20f
                         )
                         lineIndex++
                     }
@@ -506,55 +587,19 @@ object ReportExporter {
             }
         }
 
-        if (images.isNotEmpty()) {
+        val remainingImageIndexes = images.indices.filterNot(placedImageIndexes::contains)
+        if (remainingImageIndexes.isNotEmpty()) {
             if (yPosition > margin + 8f) {
                 startNewPage()
             }
-            yPosition = drawText("会议图片", headingPaint, minimumFollowingSpace = 48f)
+            yPosition = drawText(
+                if (isStudyReport) "照片集锦" else "会议图片",
+                headingPaint,
+                minimumFollowingSpace = 48f
+            )
             addVerticalSpace(4f)
 
-            images.forEachIndexed { index, image ->
-                val bitmap = checkNotNull(
-                    BitmapFactory.decodeByteArray(image.bytes, 0, image.bytes.size)
-                ) { "无法解码会议图片：${image.caption}" }
-                try {
-                    val caption = "图 ${index + 1}：${image.caption.ifBlank { "会议图片" }}"
-                    val captionLayout = createTextLayout(
-                        caption,
-                        footerPaint,
-                        Layout.Alignment.ALIGN_CENTER
-                    )
-                    val maxImageHeight = contentBottom - margin - captionLayout.height - 38f
-                    val scale = minOf(
-                        1f,
-                        contentWidth / bitmap.width,
-                        maxImageHeight / bitmap.height
-                    )
-                    val imageWidth = bitmap.width * scale
-                    val imageHeight = bitmap.height * scale
-                    val blockHeight = imageHeight + captionLayout.height + 24f
-
-                    if (yPosition + blockHeight > contentBottom) {
-                        startNewPage()
-                    }
-
-                    val imageLeft = margin + (contentWidth - imageWidth) / 2f
-                    canvas.drawBitmap(
-                        bitmap,
-                        null,
-                        RectF(imageLeft, yPosition, imageLeft + imageWidth, yPosition + imageHeight),
-                        Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
-                    )
-                    yPosition += imageHeight + 8f
-                    canvas.save()
-                    canvas.translate(margin, yPosition)
-                    captionLayout.draw(canvas)
-                    canvas.restore()
-                    yPosition += captionLayout.height + 16f
-                } finally {
-                    bitmap.recycle()
-                }
-            }
+            remainingImageIndexes.forEach(::drawReportImage)
         }
 
         // Footer
@@ -584,6 +629,8 @@ object ReportExporter {
         line.trim().trim('|').split('|').map { cleanPdfMarkdown(it.trim()) }
 
     private fun cleanPdfMarkdown(text: String): String = text
+        .replace(Regex("^\\s*#{1,6}\\s+"), "")
+        .replace(Regex("^\\s*>+\\s?"), "")
         .replace(Regex("\\*\\*(.+?)\\*\\*"), "$1")
         .replace(Regex("__(.+?)__"), "$1")
         .replace("`", "")

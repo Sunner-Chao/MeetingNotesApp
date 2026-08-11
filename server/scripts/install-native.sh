@@ -98,8 +98,8 @@ if ! id "$APP_USER" >/dev/null 2>&1; then
 fi
 
 install -d -m 0755 "$APP_ROOT" "$APP_ROOT/releases" "$APP_ROOT/venvs"
-install -d -o "$APP_USER" -g "$APP_GROUP" -m 0750 "$STATE_ROOT" "$STATE_ROOT/models" "$STATE_ROOT/tmp" "$STATE_ROOT/backend" "$STATE_ROOT/logs"
-install -d -o "$APP_USER" -g "$APP_GROUP" -m 0700 "$STATE_ROOT/agent-tasks" "$STATE_ROOT/.codex" "$STATE_ROOT/.claude"
+install -d -o "$APP_USER" -g "$APP_GROUP" -m 0750 "$STATE_ROOT" "$STATE_ROOT/models" "$STATE_ROOT/tmp" "$STATE_ROOT/backend" "$STATE_ROOT/logs" "$STATE_ROOT/data" "$STATE_ROOT/downloads"
+install -d -o "$APP_USER" -g "$APP_GROUP" -m 0700 "$STATE_ROOT/agent-tasks" "$STATE_ROOT/audio-archive" "$STATE_ROOT/.codex" "$STATE_ROOT/.claude"
 install -d -m 0750 "$CONFIG_ROOT" "$BACKUP_ROOT"
 
 WORK_DIR="$(mktemp -d "${APP_ROOT}/.install.XXXXXX")"
@@ -207,7 +207,7 @@ if [[ "$WITH_BACKEND" -eq 1 ]]; then
   "$FINAL_VENV/bin/python" -m pip install --disable-pip-version-check --no-cache-dir -r "$FINAL_RELEASE/backend-service/requirements.lock.txt"
 fi
 "$FINAL_VENV/bin/python" -m pip check
-"$FINAL_VENV/bin/python" -c 'import ctranslate2, fastapi, faster_whisper, uvicorn; print("[PYTHON] runtime imports OK")'
+"$FINAL_VENV/bin/python" -c 'import ctranslate2, fastapi, faster_whisper, tencentcloud.asr.v20190614, uvicorn; print("[PYTHON] runtime imports OK")'
 chown -R root:root "$FINAL_VENV"
 chmod -R go-w "$FINAL_VENV"
 
@@ -231,6 +231,10 @@ if [[ -n "$INPUT_CONFIG" ]]; then
 elif [[ ! -f "$CONFIG_FILE" ]]; then
   install -m 0640 -o root -g "$APP_GROUP" "$FINAL_RELEASE/config/stt.env.example" "$CONFIG_FILE"
 fi
+APP_UPDATE_CONFIG_FILE="${STATE_ROOT}/app-update.json"
+if [[ ! -f "$APP_UPDATE_CONFIG_FILE" && -f "$FINAL_RELEASE/config/app-update.json" ]]; then
+  install -m 0644 -o "$APP_USER" -g "$APP_GROUP" "$FINAL_RELEASE/config/app-update.json" "$APP_UPDATE_CONFIG_FILE"
+fi
 sed -i 's/\r$//' "$CONFIG_FILE"
 if ! grep -Eq '^STT_API_TOKEN=.+$' "$CONFIG_FILE"; then
   set_env_value STT_API_TOKEN "$(generate_token)"
@@ -250,8 +254,197 @@ fi
 if ! grep -Eq '^AGENT_DEFAULT_REQUEST_LIMIT=.+$' "$CONFIG_FILE"; then
   set_env_value AGENT_DEFAULT_REQUEST_LIMIT "1000"
 fi
+if ! grep -Eq '^AGENT_MAX_TEXT_CHARS=.+$' "$CONFIG_FILE"; then
+  set_env_value AGENT_MAX_TEXT_CHARS "0"
+fi
+if ! grep -Eq '^AGENT_MAX_REQUEST_JSON_BYTES=.+$' "$CONFIG_FILE"; then
+  set_env_value AGENT_MAX_REQUEST_JSON_BYTES "0"
+fi
+if ! grep -Eq '^ACCOUNT_TOKEN_SECRET=.+$' "$CONFIG_FILE"; then
+  set_env_value ACCOUNT_TOKEN_SECRET "$(generate_token)"
+fi
+if ! grep -Eq '^ACCOUNT_ADMIN_USERNAME=.+$' "$CONFIG_FILE"; then
+  set_env_value ACCOUNT_ADMIN_USERNAME "admin"
+fi
+if ! grep -Eq '^ACCOUNT_ADMIN_REQUEST_LIMIT=.+$' "$CONFIG_FILE"; then
+  set_env_value ACCOUNT_ADMIN_REQUEST_LIMIT "10000000"
+fi
+if ! grep -Eq '^ACCOUNT_SESSION_TTL_SEC=.+$' "$CONFIG_FILE"; then
+  set_env_value ACCOUNT_SESSION_TTL_SEC "2592000"
+fi
+if ! grep -Eq '^ACCOUNT_FREE_REQUEST_LIMIT=.+$' "$CONFIG_FILE"; then
+  set_env_value ACCOUNT_FREE_REQUEST_LIMIT "10"
+fi
+if ! grep -Eq '^ACCOUNT_FREE_PLAN_CODE=.+$' "$CONFIG_FILE"; then
+  set_env_value ACCOUNT_FREE_PLAN_CODE "free"
+fi
+if ! grep -Eq '^ACCOUNT_FREE_PLAN_NAME=.+$' "$CONFIG_FILE"; then
+  set_env_value ACCOUNT_FREE_PLAN_NAME "Free"
+fi
+if ! grep -Eq '^ACCOUNT_STT_TOKEN_TTL_SEC=.+$' "$CONFIG_FILE"; then
+  set_env_value ACCOUNT_STT_TOKEN_TTL_SEC "43200"
+fi
 if ! grep -Eq '^STT_LOG_PATH=.+$' "$CONFIG_FILE"; then
   set_env_value STT_LOG_PATH "$STATE_ROOT/logs/stt.log"
+fi
+if ! grep -Eq '^APP_UPDATE_CONFIG_PATH=.+$' "$CONFIG_FILE" || \
+  grep -Eq '^APP_UPDATE_CONFIG_PATH=/etc/meetingnotes-stt/app-update\.json$' "$CONFIG_FILE"; then
+  set_env_value APP_UPDATE_CONFIG_PATH "$APP_UPDATE_CONFIG_FILE"
+fi
+if ! grep -Eq '^APP_UPDATE_ANDROID_APK_PATH=.+$' "$CONFIG_FILE"; then
+  set_env_value APP_UPDATE_ANDROID_APK_PATH "$STATE_ROOT/downloads/ZhiWuBen-Android.apk"
+fi
+if ! grep -Eq '^STT_AUDIO_ARCHIVE_ENABLED=.+$' "$CONFIG_FILE"; then
+  set_env_value STT_AUDIO_ARCHIVE_ENABLED "1"
+fi
+if ! grep -Eq '^STT_AUDIO_ARCHIVE_DIR=.+$' "$CONFIG_FILE"; then
+  set_env_value STT_AUDIO_ARCHIVE_DIR "$STATE_ROOT/audio-archive"
+fi
+if ! grep -Eq '^STT_AUDIO_ARCHIVE_RETENTION_DAYS=.+$' "$CONFIG_FILE"; then
+  set_env_value STT_AUDIO_ARCHIVE_RETENTION_DAYS "30"
+fi
+if ! grep -Eq '^STT_AUDIO_ARCHIVE_MAX_GB=.+$' "$CONFIG_FILE"; then
+  set_env_value STT_AUDIO_ARCHIVE_MAX_GB "10"
+fi
+if ! grep -Eq '^STT_FINAL_CONDITION_ON_PREVIOUS_TEXT=.+$' "$CONFIG_FILE"; then
+  set_env_value STT_FINAL_CONDITION_ON_PREVIOUS_TEXT "1"
+fi
+CURRENT_FINAL_PROMPT="$(sed -n 's/^STT_FINAL_INITIAL_PROMPT=//p' "$CONFIG_FILE" | tail -n1)"
+if [[ -z "$CURRENT_FINAL_PROMPT" || "$CURRENT_FINAL_PROMPT" == "以下是普通话会议记录，请使用规范中文标点。" ]]; then
+  set_env_value STT_FINAL_INITIAL_PROMPT ""
+fi
+if ! grep -Eq '^STT_FINAL_RESTORE_PUNCTUATION=.+$' "$CONFIG_FILE"; then
+  set_env_value STT_FINAL_RESTORE_PUNCTUATION "1"
+fi
+if ! grep -Eq '^STT_FINAL_PUNCTUATION_PAUSE_SEC=.+$' "$CONFIG_FILE"; then
+  set_env_value STT_FINAL_PUNCTUATION_PAUSE_SEC "0.8"
+fi
+CURRENT_STT_MAX_UPLOAD_MB="$(sed -n 's/^STT_MAX_UPLOAD_MB=//p' "$CONFIG_FILE" | tail -n1)"
+if [[ -z "$CURRENT_STT_MAX_UPLOAD_MB" || "$CURRENT_STT_MAX_UPLOAD_MB" == "256" ]]; then
+  set_env_value STT_MAX_UPLOAD_MB "1024"
+fi
+if ! grep -Eq '^STT_LONG_AUDIO_CHUNK_THRESHOLD_SEC=.+$' "$CONFIG_FILE"; then
+  set_env_value STT_LONG_AUDIO_CHUNK_THRESHOLD_SEC "2700"
+fi
+if ! grep -Eq '^STT_LONG_AUDIO_CHUNK_SECONDS=.+$' "$CONFIG_FILE"; then
+  set_env_value STT_LONG_AUDIO_CHUNK_SECONDS "1800"
+fi
+if ! grep -Eq '^STT_LONG_AUDIO_CHUNK_OVERLAP_SEC=.+$' "$CONFIG_FILE"; then
+  set_env_value STT_LONG_AUDIO_CHUNK_OVERLAP_SEC "3"
+fi
+if ! grep -Eq '^TENCENT_ASR_ENABLED=.+$' "$CONFIG_FILE"; then
+  set_env_value TENCENT_ASR_ENABLED "0"
+fi
+if ! grep -Eq '^TENCENT_ASR_BASE_URL=.+$' "$CONFIG_FILE"; then
+  set_env_value TENCENT_ASR_BASE_URL "https://asr.cloud.tencent.com/asr/flash/v1"
+fi
+if ! grep -Eq '^TENCENT_ASR_ENGINE_TYPE=.+$' "$CONFIG_FILE"; then
+  set_env_value TENCENT_ASR_ENGINE_TYPE "16k_zh_en"
+fi
+if ! grep -Eq '^TENCENT_ASR_TIMEOUT_SEC=.+$' "$CONFIG_FILE"; then
+  set_env_value TENCENT_ASR_TIMEOUT_SEC "900"
+fi
+if ! grep -Eq '^TENCENT_ASR_MAX_UPLOAD_MB=.+$' "$CONFIG_FILE"; then
+  set_env_value TENCENT_ASR_MAX_UPLOAD_MB "100"
+fi
+if ! grep -Eq '^TENCENT_ASR_MAX_CONCURRENT=.+$' "$CONFIG_FILE"; then
+  set_env_value TENCENT_ASR_MAX_CONCURRENT "2"
+fi
+if ! grep -Eq '^TENCENT_ASR_CHUNK_SECONDS=.+$' "$CONFIG_FILE"; then
+  set_env_value TENCENT_ASR_CHUNK_SECONDS "2400"
+fi
+if ! grep -Eq '^TENCENT_ASR_CHUNK_OVERLAP_SEC=.+$' "$CONFIG_FILE"; then
+  set_env_value TENCENT_ASR_CHUNK_OVERLAP_SEC "3"
+fi
+if ! grep -Eq '^TENCENT_REALTIME_ASR_ENABLED=.+$' "$CONFIG_FILE"; then
+  set_env_value TENCENT_REALTIME_ASR_ENABLED "0"
+fi
+if ! grep -Eq '^TENCENT_REALTIME_ASR_BASE_URL=.+$' "$CONFIG_FILE"; then
+  set_env_value TENCENT_REALTIME_ASR_BASE_URL "wss://asr.cloud.tencent.com/asr/v2"
+fi
+if ! grep -Eq '^TENCENT_REALTIME_ASR_ENGINE_TYPE=.+$' "$CONFIG_FILE"; then
+  set_env_value TENCENT_REALTIME_ASR_ENGINE_TYPE "16k_zh_en"
+fi
+if ! grep -Eq '^TENCENT_REALTIME_ASR_MAX_CONCURRENT=.+$' "$CONFIG_FILE"; then
+  set_env_value TENCENT_REALTIME_ASR_MAX_CONCURRENT "16"
+fi
+if ! grep -Eq '^TENCENT_REALTIME_ASR_CONNECT_TIMEOUT_SEC=.+$' "$CONFIG_FILE"; then
+  set_env_value TENCENT_REALTIME_ASR_CONNECT_TIMEOUT_SEC "15"
+fi
+if ! grep -Eq '^TENCENT_REALTIME_ASR_FINAL_TIMEOUT_SEC=.+$' "$CONFIG_FILE"; then
+  set_env_value TENCENT_REALTIME_ASR_FINAL_TIMEOUT_SEC "15"
+fi
+if ! grep -Eq '^TENCENT_REALTIME_ASR_SIGNATURE_TTL_SEC=.+$' "$CONFIG_FILE"; then
+  set_env_value TENCENT_REALTIME_ASR_SIGNATURE_TTL_SEC "3600"
+fi
+if ! grep -Eq '^TENCENT_REALTIME_ASR_FRAME_MS=.+$' "$CONFIG_FILE"; then
+  set_env_value TENCENT_REALTIME_ASR_FRAME_MS "200"
+fi
+if ! grep -Eq '^TENCENT_REALTIME_ASR_QUEUE_SEC=.+$' "$CONFIG_FILE"; then
+  set_env_value TENCENT_REALTIME_ASR_QUEUE_SEC "6"
+fi
+# The generic Tencent switches are retained only for legacy configuration
+# compatibility. Explicit tiers below are the only routes used by new clients.
+if ! grep -Eq '^TENCENT_STANDARD_ASR_ENABLED=.+$' "$CONFIG_FILE"; then
+  set_env_value TENCENT_STANDARD_ASR_ENABLED "0"
+fi
+if ! grep -Eq '^TENCENT_STANDARD_REALTIME_ASR_ENABLED=.+$' "$CONFIG_FILE"; then
+  set_env_value TENCENT_STANDARD_REALTIME_ASR_ENABLED "0"
+fi
+if ! grep -Eq '^TENCENT_STANDARD_ASR_ENGINE_TYPE=.+$' "$CONFIG_FILE"; then
+  set_env_value TENCENT_STANDARD_ASR_ENGINE_TYPE "16k_zh"
+fi
+if ! grep -Eq '^TENCENT_STANDARD_REALTIME_ASR_ENGINE_TYPE=.+$' "$CONFIG_FILE"; then
+  set_env_value TENCENT_STANDARD_REALTIME_ASR_ENGINE_TYPE "16k_zh"
+fi
+if ! grep -Eq '^TENCENT_STANDARD_MONTHLY_LIMIT_SEC=.+$' "$CONFIG_FILE"; then
+  set_env_value TENCENT_STANDARD_MONTHLY_LIMIT_SEC "18000"
+fi
+if ! grep -Eq '^TENCENT_LEGACY_USAGE_TIER=.+$' "$CONFIG_FILE"; then
+  set_env_value TENCENT_LEGACY_USAGE_TIER "precision"
+fi
+if ! grep -Eq '^TENCENT_PRECISION_ASR_ENABLED=.+$' "$CONFIG_FILE"; then
+  set_env_value TENCENT_PRECISION_ASR_ENABLED "0"
+fi
+if ! grep -Eq '^TENCENT_PRECISION_REALTIME_ASR_ENABLED=.+$' "$CONFIG_FILE"; then
+  set_env_value TENCENT_PRECISION_REALTIME_ASR_ENABLED "0"
+fi
+if ! grep -Eq '^TENCENT_PRECISION_ASR_ENGINE_TYPE=.+$' "$CONFIG_FILE"; then
+  set_env_value TENCENT_PRECISION_ASR_ENGINE_TYPE "16k_zh_en"
+fi
+if ! grep -Eq '^TENCENT_PRECISION_REALTIME_ASR_ENGINE_TYPE=.+$' "$CONFIG_FILE"; then
+  set_env_value TENCENT_PRECISION_REALTIME_ASR_ENGINE_TYPE "16k_zh_en"
+fi
+if ! grep -Eq '^TENCENT_PRECISION_MONTHLY_LIMIT_SEC=.+$' "$CONFIG_FILE"; then
+  set_env_value TENCENT_PRECISION_MONTHLY_LIMIT_SEC "0"
+fi
+if ! grep -Eq '^TENCENT_ASR_USAGE_ENABLED=.+$' "$CONFIG_FILE"; then
+  set_env_value TENCENT_ASR_USAGE_ENABLED "1"
+fi
+if ! grep -Eq '^TENCENT_ASR_USAGE_API_ENDPOINT=.+$' "$CONFIG_FILE"; then
+  set_env_value TENCENT_ASR_USAGE_API_ENDPOINT "asr.tencentcloudapi.com"
+fi
+if ! grep -Eq '^TENCENT_ASR_USAGE_REGION=.+$' "$CONFIG_FILE"; then
+  set_env_value TENCENT_ASR_USAGE_REGION "ap-guangzhou"
+fi
+if ! grep -Eq '^TENCENT_ASR_USAGE_TIMEZONE=.+$' "$CONFIG_FILE"; then
+  set_env_value TENCENT_ASR_USAGE_TIMEZONE "Asia/Shanghai"
+fi
+if ! grep -Eq '^TENCENT_ASR_USAGE_CACHE_SEC=.+$' "$CONFIG_FILE"; then
+  set_env_value TENCENT_ASR_USAGE_CACHE_SEC "300"
+fi
+USAGE_LEDGER_PATH="$(sed -n 's/^TENCENT_ASR_USAGE_LEDGER_PATH=//p' "$CONFIG_FILE" | tail -n1)"
+if [[ -z "$USAGE_LEDGER_PATH" || "$USAGE_LEDGER_PATH" != /* ]]; then
+  set_env_value TENCENT_ASR_USAGE_LEDGER_PATH "$STATE_ROOT/data/tencent-asr-usage.db"
+fi
+if ! grep -Eq '^TENCENT_ASR_USAGE_LEDGER_ENABLED=.+$' "$CONFIG_FILE"; then
+  set_env_value TENCENT_ASR_USAGE_LEDGER_ENABLED "1"
+fi
+if ! grep -Eq '^TENCENT_REALTIME_MONTHLY_FREE_SEC=.+$' "$CONFIG_FILE"; then
+  set_env_value TENCENT_REALTIME_MONTHLY_FREE_SEC "18000"
+fi
+if ! grep -Eq '^TENCENT_FLASH_MONTHLY_FREE_SEC=.+$' "$CONFIG_FILE"; then
+  set_env_value TENCENT_FLASH_MONTHLY_FREE_SEC "18000"
 fi
 chown root:"$APP_GROUP" "$CONFIG_FILE"
 chmod 0640 "$CONFIG_FILE"

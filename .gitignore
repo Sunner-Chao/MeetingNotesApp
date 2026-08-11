@@ -20,6 +20,7 @@
 **/node_modules/
 **/dist/
 **/.vite/
+**/*.tsbuildinfo
 **/npm-debug.log*
 **/yarn-debug.log*
 **/yarn-error.log*
@@ -56,6 +57,10 @@
 /android/local.defaults.env
 !/android/local.defaults.env.example
 /android/local.properties
+/android/signing.properties
+**/*.keystore
+**/*.jks
+**/*.p12
 /server/**/runtime/
 /server/**/pip/
 /server/**/.switch_pending
@@ -77,6 +82,7 @@
 **/build
 **/*.gradle
 **/*.lock
+.tmp-gradle-*/
 
 **/~/
 
@@ -98,3 +104,14 @@ free_download_pdf/docs/
 
 # Generated brochure exports
 /projects/brochure/**/exports/
+
+# PWA visual verification output
+/pwa/artifacts/
+
+# Local release packages and UI review captures
+/ZhiWuBen-Android-*.apk
+/android/android/
+/android/community-*.png
+/android/community-*.xml
+/android/home-page-review.png
+/android/report-page-*.png

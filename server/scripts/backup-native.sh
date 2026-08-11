@@ -27,6 +27,20 @@ if [[ -f "$CONFIG_ROOT/stt.env" ]]; then
   install -D -m 0640 "$CONFIG_ROOT/stt.env" "$STAGE/etc/meetingnotes-stt/stt.env"
   INCLUDES+=("etc/meetingnotes-stt/stt.env")
 fi
+if [[ -f "$STATE_ROOT/app-update.json" ]]; then
+  install -D -m 0644 "$STATE_ROOT/app-update.json" "$STAGE/var/lib/meetingnotes-stt/app-update.json"
+  INCLUDES+=("var/lib/meetingnotes-stt/app-update.json")
+fi
+if [[ -f "$STATE_ROOT/downloads/ZhiWuBen-Android.apk" ]]; then
+  install -D -m 0644 "$STATE_ROOT/downloads/ZhiWuBen-Android.apk" "$STAGE/var/lib/meetingnotes-stt/downloads/ZhiWuBen-Android.apk"
+  INCLUDES+=("var/lib/meetingnotes-stt/downloads/ZhiWuBen-Android.apk")
+fi
+shopt -s nullglob
+for APK_PATH in "$STATE_ROOT"/downloads/ZhiWuBen-Android-[0-9]*.apk; do
+  APK_NAME="$(basename "$APK_PATH")"
+  install -D -m 0644 "$APK_PATH" "$STAGE/var/lib/meetingnotes-stt/downloads/$APK_NAME"
+  INCLUDES+=("var/lib/meetingnotes-stt/downloads/$APK_NAME")
+done
 if [[ -f "$STATE_ROOT/backend/meeting_notes.db" ]]; then
   install -d "$STAGE/var/lib/meetingnotes-stt/backend"
   python3.11 - "$STATE_ROOT/backend/meeting_notes.db" "$STAGE/var/lib/meetingnotes-stt/backend/meeting_notes.db" <<'PY'

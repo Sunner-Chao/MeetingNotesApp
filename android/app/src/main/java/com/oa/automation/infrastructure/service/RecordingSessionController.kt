@@ -7,6 +7,7 @@ import com.oa.automation.infrastructure.stt.StreamingSttClient
 import com.oa.automation.infrastructure.stt.StreamingSttProvider
 import com.oa.automation.infrastructure.account.AccountSessionSynchronizer
 import com.oa.automation.infrastructure.stt.StreamingTranscriptUpdate
+import com.oa.automation.infrastructure.stt.StreamingTranscriptAccumulator
 import com.oa.automation.infrastructure.stt.STTServiceClient
 import com.oa.automation.domain.model.STTEngineType
 import com.oa.automation.domain.model.STTLanguage
@@ -36,6 +37,7 @@ data class RecordingSessionState(
     val recordedDurationSeconds: Long = 0,
     val audioLevel: Float = 0f,
     val streamUpdate: StreamingTranscriptUpdate? = null,
+    val accumulatedTranscript: String = "",
     val status: String = "流式预览",
     val error: String? = null
 )
@@ -43,7 +45,9 @@ data class RecordingSessionState(
 data class RecordingStopResult(
     val meetingId: String,
     val audioFile: File,
-    val streamSessionId: String?
+    val streamSessionId: String?,
+    val transcriptText: String,
+    val durationMs: Long
 )
 
 class RecordingSessionController(
@@ -54,6 +58,7 @@ class RecordingSessionController(
 ) {
     private val operationMutex = Mutex()
     private var streamingPreviewActive = false
+    private val transcriptAccumulator = StreamingTranscriptAccumulator()
     @Volatile private var smoothedAudioLevel = 0f
     @Volatile private var pendingStopMeetingId: String? = null
     private val _state = MutableStateFlow(RecordingSessionState())
@@ -75,6 +80,12 @@ class RecordingSessionController(
         return true
     }
 
+    fun updatePostProcessingStatus(meetingId: String, status: String, error: String? = null) {
+        _state.update {
+            if (it.meetingId != meetingId) it else it.copy(status = status, error = error)
+        }
+    }
+
     suspend fun start(meetingId: String, meetingTitle: String): Result<Unit> = operationMutex.withLock {
         runCatching {
             require(meetingId.isNotBlank()) { "会议标识缺失" }
@@ -92,6 +103,7 @@ class RecordingSessionController(
 
             var sttConfig = configDataStore.appConfigFlow.first().sttConfig
             val usesTencentHybrid = sttConfig.engineType == STTEngineType.TENCENT_HYBRID
+            transcriptAccumulator.reset()
             _state.value = RecordingSessionState(
                 meetingId = meetingId,
                 meetingTitle = meetingTitle,
@@ -138,7 +150,14 @@ class RecordingSessionController(
                 },
                 language = sttConfig.language,
                 onPartialText = { update ->
-                    _state.update { it.copy(streamUpdate = update, status = "实时预览（可修订）") }
+                    val accumulatedText = transcriptAccumulator.update(update)
+                    _state.update {
+                        it.copy(
+                            streamUpdate = update,
+                            accumulatedTranscript = accumulatedText,
+                            status = "实时预览（可修订）"
+                        )
+                    }
                 },
                 onStatus = { status -> _state.update { it.copy(status = status, error = null) } },
                 onError = { error -> _state.update { it.copy(error = error) } }
@@ -201,9 +220,11 @@ class RecordingSessionController(
             audioRecorder.setOnPcmDataListener(null)
             val streamSessionId = if (streamingPreviewActive) streamingSttClient.stop() else null
             streamingPreviewActive = false
+            val transcriptText = transcriptAccumulator.snapshot()
             smoothedAudioLevel = 0f
             pendingStopMeetingId = null
             require(audioFile.isFile && audioFile.length() > 0L) { "录音文件为空" }
+            val durationMs = _state.value.durationSecondsAt(SystemClock.elapsedRealtime()) * 1_000L
             _state.update {
                 it.copy(
                     isStarting = false,
@@ -213,11 +234,12 @@ class RecordingSessionController(
                     startedAtElapsedRealtimeMs = null,
                     recordedDurationSeconds = it.durationSecondsAt(SystemClock.elapsedRealtime()),
                     audioLevel = 0f,
-                    status = "后台转写已排队",
+                    accumulatedTranscript = transcriptText,
+                    status = if (transcriptText.isBlank()) "实时转写未产生文本" else "正在保存实时转写",
                     error = null
                 )
             }
-            RecordingStopResult(meetingId, audioFile, streamSessionId)
+            RecordingStopResult(meetingId, audioFile, streamSessionId, transcriptText, durationMs)
         }.onFailure { error ->
             if (_state.value.meetingId == expectedMeetingId) pendingStopMeetingId = null
             _state.update {

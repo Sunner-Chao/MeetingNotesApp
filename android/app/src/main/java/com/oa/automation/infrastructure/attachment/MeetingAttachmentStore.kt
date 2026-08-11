@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
 import com.oa.automation.domain.model.MeetingAttachment
+import com.oa.automation.domain.model.RecordingMarker
 import com.oa.automation.domain.repository.MeetingRepository
 import com.oa.automation.infrastructure.llm.AgentAttachment
 import com.oa.automation.infrastructure.location.DeviceLocationProvider
@@ -29,29 +30,35 @@ class MeetingAttachmentStore(
         meetingId: String,
         source: Uri,
         captureLocation: Boolean = false,
-        journeyStageId: String? = null
+        journeyStageId: String? = null,
+        recordingMarker: RecordingMarker? = null
     ): Result<MeetingAttachment> = importImages(
         meetingId = meetingId,
         sources = listOf(source),
         captureLocation = captureLocation,
-        journeyStageId = journeyStageId
+        journeyStageId = journeyStageId,
+        recordingMarker = recordingMarker
     ).single()
 
     suspend fun importImages(
         meetingId: String,
         sources: List<Uri>,
         captureLocation: Boolean = false,
-        journeyStageId: String? = null
+        journeyStageId: String? = null,
+        recordingMarker: RecordingMarker? = null
     ): List<Result<MeetingAttachment>> = withContext(Dispatchers.IO) {
         val deviceLocation = if (captureLocation) locationProvider.capture() else null
-        sources.map { source -> importImage(meetingId, source, deviceLocation, journeyStageId) }
+        sources.map { source ->
+            importImage(meetingId, source, deviceLocation, journeyStageId, recordingMarker)
+        }
     }
 
     private suspend fun importImage(
         meetingId: String,
         source: Uri,
         deviceLocation: LocationSnapshot?,
-        journeyStageId: String?
+        journeyStageId: String?,
+        recordingMarker: RecordingMarker?
     ): Result<MeetingAttachment> =
         runCatching {
             val createdAt = System.currentTimeMillis()
@@ -84,7 +91,10 @@ class MeetingAttachmentStore(
                 longitude = location?.longitude,
                 accuracyMeters = location?.accuracyMeters,
                 locationCapturedAt = location?.capturedAt,
-                locationSource = location?.source
+                locationSource = location?.source,
+                recordingMarkerId = recordingMarker?.id,
+                markerTimestampMs = recordingMarker?.timestampMs,
+                markerTranscriptAnchor = recordingMarker?.transcriptAnchor?.takeIf { it.isNotBlank() }
             )
             meetingRepository.saveAttachment(attachment).getOrElse { error ->
                 target.delete()
@@ -109,7 +119,10 @@ class MeetingAttachmentStore(
                 longitude = attachment.longitude,
                 accuracyMeters = attachment.accuracyMeters,
                 locationCapturedAt = attachment.locationCapturedAt,
-                locationSource = attachment.locationSource
+                locationSource = attachment.locationSource,
+                recordingMarkerId = attachment.recordingMarkerId,
+                markerTimestampMs = attachment.markerTimestampMs,
+                markerTranscriptAnchor = attachment.markerTranscriptAnchor
             )
         }
     }

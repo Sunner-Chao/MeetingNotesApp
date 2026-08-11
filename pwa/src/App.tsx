@@ -1,0 +1,356 @@
+import { Share, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AppShell, type AppTab } from "./components/AppShell";
+import { AuthScreen } from "./components/AuthScreen";
+import { BrandMark } from "./components/BrandMark";
+import { ConfirmDialog } from "./components/ConfirmDialog";
+import { HistoryScreen } from "./components/HistoryScreen";
+import { HomeScreen } from "./components/HomeScreen";
+import { MeetingWorkspace } from "./components/MeetingWorkspace";
+import { ProfileScreen } from "./components/ProfileScreen";
+import { Toast, type ToastState } from "./components/Toast";
+import { authenticate, refreshSession, updateProfile } from "./lib/api";
+import { clearMeetings, deleteMeetingRecord, listMeetings, recoverInterruptedRecordings, saveMeeting } from "./lib/db";
+import { synchronizeCloudMeetings } from "./lib/cloudSync";
+import { audioExtension } from "./lib/format";
+import type { AuthSession, Meeting, RuntimeConfig, TemplateKey } from "./types";
+
+const CONFIG_KEY = "zhiwuben.pwa.config";
+const SESSION_KEY = "zhiwuben.pwa.session";
+const DEFAULT_CONFIG: RuntimeConfig = {
+  apiBase: "",
+  agentProvider: "codex-cli",
+  reasoningEffort: "medium",
+  defaultTemplate: "project"
+};
+
+function loadStored<T>(key: string): T | undefined {
+  try {
+    const value = localStorage.getItem(key);
+    return value ? JSON.parse(value) as T : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function newMeeting(templateKey: TemplateKey): Meeting {
+  const now = Date.now();
+  const title = `会议记录 ${new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  }).format(now)}`;
+  return {
+    id: crypto.randomUUID(),
+    title,
+    templateKey,
+    createdAt: now,
+    updatedAt: now,
+    durationSeconds: 0,
+    transcript: "",
+    report: "",
+    images: []
+  };
+}
+
+export default function App() {
+  const [config, setConfig] = useState<RuntimeConfig>(() => ({ ...DEFAULT_CONFIG, ...loadStored<RuntimeConfig>(CONFIG_KEY) }));
+  const [session, setSession] = useState<AuthSession | undefined>(() => {
+    const stored = loadStored<AuthSession>(SESSION_KEY);
+    return stored && stored.expires_at * 1000 > Date.now() ? stored : undefined;
+  });
+  const [meetings, setMeetings] = useState<Meeting[]>([]);
+  const [selectedMeetingId, setSelectedMeetingId] = useState<string>();
+  const [startMode, setStartMode] = useState<"record" | "text" | "transcribe">();
+  const [tab, setTab] = useState<AppTab>("home");
+  const [busy, setBusy] = useState(false);
+  const [ready, setReady] = useState(false);
+  const [online, setOnline] = useState(navigator.onLine);
+  const [cloudState, setCloudState] = useState<"idle" | "syncing" | "synced" | "pending">("idle");
+  const [toast, setToast] = useState<ToastState>();
+  const [confirm, setConfirm] = useState<{ kind: "delete"; meeting: Meeting } | { kind: "clear" }>();
+  const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent>();
+  const [showIosInstall, setShowIosInstall] = useState(false);
+  const toastTimer = useRef<number>();
+  const cloudSyncTimer = useRef<number>();
+  const cloudSyncRunning = useRef(false);
+  const meetingRevision = useRef(0);
+  const sessionRef = useRef(session);
+  const configRef = useRef(config);
+  const onlineRef = useRef(online);
+  sessionRef.current = session;
+  configRef.current = config;
+  onlineRef.current = online;
+  const selectedMeeting = useMemo(() => meetings.find((meeting) => meeting.id === selectedMeetingId), [meetings, selectedMeetingId]);
+  const standalone = window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+  const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
+
+  const notify = useCallback((message: string, kind: ToastState["kind"] = "success") => {
+    if (toastTimer.current) window.clearTimeout(toastTimer.current);
+    setToast({ message, kind });
+    toastTimer.current = window.setTimeout(() => setToast(undefined), 3600);
+  }, []);
+
+  useEffect(() => {
+    void (async () => {
+      const recovered = await recoverInterruptedRecordings();
+      const storedMeetings = await listMeetings();
+      setMeetings(storedMeetings);
+      if (recovered.length > 0) notify(`已恢复 ${recovered.length} 条中断录音`, "success");
+      setReady(true);
+    })().catch((error) => {
+      notify(error instanceof Error ? error.message : "无法读取本机会议库", "error");
+      setReady(true);
+    });
+  }, [notify]);
+
+  useEffect(() => {
+    const onOnline = () => setOnline(true);
+    const onOffline = () => setOnline(false);
+    const onInstallPrompt = (event: Event) => {
+      event.preventDefault();
+      setInstallPrompt(event as BeforeInstallPromptEvent);
+    };
+    window.addEventListener("online", onOnline);
+    window.addEventListener("offline", onOffline);
+    window.addEventListener("beforeinstallprompt", onInstallPrompt);
+    return () => {
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("offline", onOffline);
+      window.removeEventListener("beforeinstallprompt", onInstallPrompt);
+    };
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
+  }, [config]);
+
+  useEffect(() => {
+    if (session) localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+    else localStorage.removeItem(SESSION_KEY);
+  }, [session]);
+
+  const syncCloud = useCallback(async () => {
+    const activeSession = sessionRef.current;
+    if (!activeSession || !onlineRef.current || cloudSyncRunning.current) return;
+    const revisionAtStart = meetingRevision.current;
+    cloudSyncRunning.current = true;
+    setCloudState("syncing");
+    try {
+      const synchronized = await synchronizeCloudMeetings(configRef.current, activeSession);
+      if (meetingRevision.current === revisionAtStart) {
+        setMeetings(synchronized);
+        setCloudState("synced");
+      } else {
+        setCloudState("pending");
+      }
+    } catch {
+      setCloudState("pending");
+    } finally {
+      cloudSyncRunning.current = false;
+    }
+  }, []);
+
+  const scheduleCloudSync = useCallback(() => {
+    if (cloudSyncTimer.current) window.clearTimeout(cloudSyncTimer.current);
+    if (!sessionRef.current || !onlineRef.current) {
+      setCloudState("pending");
+      return;
+    }
+    setCloudState("pending");
+    cloudSyncTimer.current = window.setTimeout(() => void syncCloud(), 900);
+  }, [syncCloud]);
+
+  useEffect(() => {
+    if (ready && session && online) void syncCloud();
+    if (!online) setCloudState("pending");
+  }, [online, ready, session, syncCloud]);
+
+  useEffect(() => () => {
+    if (cloudSyncTimer.current) window.clearTimeout(cloudSyncTimer.current);
+  }, []);
+
+  const authenticateUser = async (nextConfig: RuntimeConfig, username: string, password: string, register: boolean) => {
+    setBusy(true);
+    setConfig(nextConfig);
+    try {
+      const authenticated = await authenticate(nextConfig, username, password, register);
+      setSession(authenticated);
+      notify(register ? "账户已创建，Free 试用已启用" : "登录成功", "success");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "登录失败", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const refresh = useCallback(async () => {
+    if (!session) throw new Error("请先登录账户");
+    const refreshed = await refreshSession(config, session);
+    setSession(refreshed);
+    return refreshed;
+  }, [config, session]);
+
+  const updateMeeting = useCallback((meeting: Meeting) => {
+    meetingRevision.current += 1;
+    setMeetings((current) => [meeting, ...current.filter((item) => item.id !== meeting.id)].sort((left, right) => right.updatedAt - left.updatedAt));
+    void saveMeeting(meeting).catch((error) => notify(error instanceof Error ? error.message : "会议保存失败", "error"));
+    scheduleCloudSync();
+  }, [notify, scheduleCloudSync]);
+
+  const create = useCallback((mode: "record" | "text") => {
+    const meeting = newMeeting(config.defaultTemplate);
+    updateMeeting(meeting);
+    setStartMode(mode);
+    setSelectedMeetingId(meeting.id);
+  }, [config.defaultTemplate, updateMeeting]);
+
+  const importAudio = useCallback((file: File) => {
+    const meeting = newMeeting(config.defaultTemplate);
+    const extension = file.name.includes(".") ? file.name.split(".").pop() : audioExtension(file.type);
+    const updated: Meeting = {
+      ...meeting,
+      title: file.name.replace(/\.[^.]+$/, "") || meeting.title,
+      audio: file,
+      audioName: file.name || `${meeting.id}.${extension}`,
+      audioType: file.type
+    };
+    updateMeeting(updated);
+    setStartMode("transcribe");
+    setSelectedMeetingId(updated.id);
+  }, [config.defaultTemplate, updateMeeting]);
+
+  const confirmAction = async () => {
+    if (!confirm) return;
+    if (confirm.kind === "delete") {
+      meetingRevision.current += 1;
+      await deleteMeetingRecord(confirm.meeting.id);
+      setMeetings((current) => current.filter((meeting) => meeting.id !== confirm.meeting.id));
+      if (selectedMeetingId === confirm.meeting.id) setSelectedMeetingId(undefined);
+      notify("会议记录已删除", "success");
+    } else {
+      meetingRevision.current += 1;
+      await clearMeetings();
+      setMeetings([]);
+      setSelectedMeetingId(undefined);
+      notify("会议记录已清空", "success");
+    }
+    setConfirm(undefined);
+    if (onlineRef.current) void syncCloud();
+  };
+
+  const install = async () => {
+    if (installPrompt) {
+      await installPrompt.prompt();
+      await installPrompt.userChoice;
+      setInstallPrompt(undefined);
+      return;
+    }
+    if (isIos && !standalone) setShowIosInstall(true);
+  };
+
+  if (!ready) {
+    return <main className="loading-screen"><BrandMark size={76} /><span>智悟本</span></main>;
+  }
+
+  if (!session) {
+    return <><AuthScreen config={config} busy={busy} onAuthenticate={authenticateUser} /><Toast toast={toast} onClose={() => setToast(undefined)} /></>;
+  }
+
+  if (selectedMeeting) {
+    return (
+      <>
+        <MeetingWorkspace
+          meeting={selectedMeeting}
+          session={session}
+          config={config}
+          startMode={startMode}
+          onBack={() => { setSelectedMeetingId(undefined); setStartMode(undefined); }}
+          onChange={updateMeeting}
+          onRefreshSession={refresh}
+          onNotify={notify}
+        />
+        <Toast toast={toast} onClose={() => setToast(undefined)} />
+      </>
+    );
+  }
+
+  return (
+    <>
+      <AppShell tab={tab} onTabChange={setTab}>
+        {tab === "home" && (
+          <HomeScreen
+            profile={session.user}
+            meetings={meetings}
+            selectedTemplate={config.defaultTemplate}
+            onTemplateChange={(defaultTemplate) => setConfig((current) => ({ ...current, defaultTemplate }))}
+            onCreate={create}
+            onImportAudio={importAudio}
+            onOpenMeeting={(meeting) => { setStartMode(undefined); setSelectedMeetingId(meeting.id); }}
+            onOpenHistory={() => setTab("history")}
+          />
+        )}
+        {tab === "history" && (
+          <HistoryScreen
+            meetings={meetings}
+            onOpen={(meeting) => setSelectedMeetingId(meeting.id)}
+            onRename={(meeting, title) => updateMeeting({ ...meeting, title: title.trim() || meeting.title, updatedAt: Date.now() })}
+            onDelete={(meeting) => setConfirm({ kind: "delete", meeting })}
+            onClear={() => setConfirm({ kind: "clear" })}
+          />
+        )}
+        {tab === "profile" && (
+          <ProfileScreen
+            profile={session.user}
+            config={config}
+            online={online}
+            cloudState={cloudState}
+            installAvailable={!standalone && (Boolean(installPrompt) || isIos)}
+            onInstall={() => void install()}
+            onSaveProfile={async (displayName, avatarDataUrl) => {
+              try {
+                const user = await updateProfile(config, session, displayName, avatarDataUrl);
+                setSession({ ...session, user });
+                notify("个人资料已更新", "success");
+              } catch (error) {
+                notify(error instanceof Error ? error.message : "资料更新失败", "error");
+              }
+            }}
+            onSaveConfig={(next) => { setConfig(next); notify("服务设置已保存", "success"); }}
+            onLogout={() => {
+              if (cloudSyncTimer.current) window.clearTimeout(cloudSyncTimer.current);
+              setSession(undefined);
+              setCloudState("idle");
+              setTab("home");
+              notify("已退出当前账户", "success");
+            }}
+          />
+        )}
+      </AppShell>
+
+      <ConfirmDialog
+        open={Boolean(confirm)}
+        title={confirm?.kind === "clear" ? "清空全部会议？" : "删除这条会议？"}
+        message={confirm?.kind === "clear" ? "本机保存的音频、转写和纪要将一并删除。" : "删除后无法从本机会议库恢复。"}
+        confirmText={confirm?.kind === "clear" ? "全部清空" : "删除"}
+        danger
+        onConfirm={() => void confirmAction()}
+        onCancel={() => setConfirm(undefined)}
+      />
+
+      {showIosInstall && (
+        <div className="dialog-backdrop" onMouseDown={() => setShowIosInstall(false)}>
+          <section className="install-dialog" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
+            <button className="icon-button dialog-close" onClick={() => setShowIosInstall(false)} title="关闭"><X /></button>
+            <Share />
+            <h2>安装智悟本</h2>
+            <ol><li>点击 Safari 底部的分享按钮</li><li>选择“添加到主屏幕”</li><li>确认名称并点击“添加”</li></ol>
+          </section>
+        </div>
+      )}
+      <Toast toast={toast} onClose={() => setToast(undefined)} />
+    </>
+  );
+}

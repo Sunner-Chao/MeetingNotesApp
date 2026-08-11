@@ -12,6 +12,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         TranscriptEntity::class,
         ReportEntity::class,
         MeetingAttachmentEntity::class,
+        RecordingMarkerEntity::class,
         ScheduledMeetingEntity::class,
         JourneyEntity::class,
         JourneyStageEntity::class,
@@ -21,7 +22,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         CommunitySyncOutboxEntity::class,
         PublishedPostMediaEntity::class
     ],
-    version = 13,
+    version = 15,
     exportSchema = false
 )
 @TypeConverters(DbConverters::class)
@@ -372,6 +373,63 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE published_posts ADD COLUMN stageTitles TEXT NOT NULL DEFAULT '[]'")
                 db.execSQL("ALTER TABLE published_posts ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'")
                 db.execSQL("ALTER TABLE published_posts ADD COLUMN pois TEXT NOT NULL DEFAULT '[]'")
+            }
+        }
+
+        val MIGRATION_13_14 = object : Migration(13, 14) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS recording_markers (
+                        id TEXT NOT NULL,
+                        meetingId TEXT NOT NULL,
+                        journeyStageId TEXT,
+                        timestampMs INTEGER NOT NULL,
+                        transcriptAnchor TEXT NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        PRIMARY KEY(id)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_recording_markers_meetingId " +
+                        "ON recording_markers(meetingId)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_recording_markers_journeyStageId " +
+                        "ON recording_markers(journeyStageId)"
+                )
+                db.execSQL("ALTER TABLE meeting_attachments ADD COLUMN recordingMarkerId TEXT")
+                db.execSQL("ALTER TABLE meeting_attachments ADD COLUMN markerTimestampMs INTEGER")
+                db.execSQL("ALTER TABLE meeting_attachments ADD COLUMN markerTranscriptAnchor TEXT")
+            }
+        }
+
+        val MIGRATION_14_15 = object : Migration(14, 15) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE meetings ADD COLUMN origin TEXT NOT NULL DEFAULT 'QUICK'")
+                db.execSQL(
+                    """
+                    UPDATE meetings
+                    SET origin = 'FILE_IMPORT'
+                    WHERE title LIKE '%资料导入%'
+                       OR title LIKE '%文件导入%'
+                       OR title LIKE '%导入会议%'
+                       OR LOWER(title) LIKE '%import%'
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    UPDATE meetings
+                    SET origin = 'SCHEDULED'
+                    WHERE origin = 'QUICK'
+                      AND (
+                          title LIKE '%预定会议%'
+                          OR title LIKE '%预约会议%'
+                          OR LOWER(title) LIKE '%scheduled%'
+                      )
+                    """.trimIndent()
+                )
             }
         }
     }

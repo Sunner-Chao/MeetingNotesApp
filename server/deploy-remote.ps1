@@ -16,6 +16,14 @@ param(
 
     [string]$ReleaseId = "",
 
+    [string]$PwaProject = "",
+
+    [string]$AndroidApk = "",
+
+    [string]$RemoteAppUpdateDirectory = "/var/lib/meetingnotes-stt/downloads",
+
+    [string]$RemoteAppUpdateConfig = "/var/lib/meetingnotes-stt/app-update.json",
+
     [switch]$WithBackend,
     [switch]$OpenFirewall,
     [switch]$SkipModels,
@@ -25,8 +33,17 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ServerRoot = $PSScriptRoot
+$ProjectRoot = Split-Path -Parent $ServerRoot
 $VersionFile = Join-Path $ServerRoot "VERSION"
 $Installer = Join-Path $ServerRoot "scripts\install-native.sh"
+
+if ([string]::IsNullOrWhiteSpace($PwaProject)) {
+    $PwaProject = Join-Path $ProjectRoot "pwa"
+}
+$PwaProject = (Resolve-Path -LiteralPath $PwaProject).Path
+$PwaPackage = Join-Path $PwaProject "package.json"
+$PwaDist = Join-Path $PwaProject "dist"
+$AppUpdateConfig = Join-Path $ServerRoot "config\app-update.json"
 
 foreach ($command in @("tar", "ssh", "scp")) {
     if (-not (Get-Command $command -ErrorAction SilentlyContinue)) {
@@ -39,9 +56,24 @@ if (-not (Test-Path -LiteralPath $VersionFile -PathType Leaf)) {
 if (-not (Test-Path -LiteralPath $Installer -PathType Leaf)) {
     throw "Missing installer: $Installer"
 }
+if (-not (Test-Path -LiteralPath $PwaPackage -PathType Leaf)) {
+    throw "Missing PWA package: $PwaPackage"
+}
+if (-not (Get-Command "npm" -ErrorAction SilentlyContinue)) {
+    throw "Required command is unavailable: npm"
+}
 $ResolvedKey = (Resolve-Path -LiteralPath $KeyPath).Path
 if ($ConfigFile) {
     $ConfigFile = (Resolve-Path -LiteralPath $ConfigFile).Path
+}
+if ($AndroidApk) {
+    $AndroidApk = (Resolve-Path -LiteralPath $AndroidApk).Path
+    if (-not (Test-Path -LiteralPath $AppUpdateConfig -PathType Leaf)) {
+        throw "Missing Android update manifest: $AppUpdateConfig"
+    }
+    if (-not $WithBackend) {
+        throw "Publishing an Android update requires -WithBackend so the update endpoint is available."
+    }
 }
 
 $Version = (Get-Content -LiteralPath $VersionFile -Raw).Trim()
@@ -63,10 +95,47 @@ $RemoteArchive = "/tmp/meetingnotes-server-$ReleaseId.tar.gz"
 $RemoteInstaller = "/tmp/meetingnotes-install-$ReleaseId.sh"
 $RemoteModels = "/tmp/meetingnotes-models-$ReleaseId.tar"
 $RemoteConfig = "/tmp/meetingnotes-config-$ReleaseId.env"
+$RemoteAndroidApk = "/tmp/meetingnotes-android-$ReleaseId.apk"
+$RemoteAppUpdateManifest = "/tmp/meetingnotes-android-update-$ReleaseId.json"
+$AppUpdateManifestForUpload = $AppUpdateConfig
 
 New-Item -ItemType Directory -Path $TempRoot | Out-Null
 try {
-    Write-Host "[1/6] Packaging Server $ReleaseId"
+    Write-Host "[1/7] Building PWA"
+    Push-Location $PwaProject
+    try {
+        & npm run build
+        if ($LASTEXITCODE -ne 0) { throw "PWA build failed with exit code $LASTEXITCODE" }
+    } finally {
+        Pop-Location
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $PwaDist "index.html") -PathType Leaf)) {
+        throw "PWA build did not produce dist/index.html"
+    }
+    $PwaBundle = Join-Path $TempRoot "pwa-dist"
+    Copy-Item -LiteralPath $PwaDist -Destination $PwaBundle -Recurse
+
+    if ($AndroidApk) {
+        $updateManifest = Get-Content -LiteralPath $AppUpdateConfig -Raw | ConvertFrom-Json
+        $versionCode = [int]$updateManifest.version_code
+        if ($versionCode -le 0 -or [string]::IsNullOrWhiteSpace([string]$updateManifest.version_name)) {
+            throw "Android update manifest must provide a positive version_code and version_name."
+        }
+        $updateManifest | Add-Member -Force -NotePropertyName sha256 -NotePropertyValue (
+            (Get-FileHash -LiteralPath $AndroidApk -Algorithm SHA256).Hash.ToLowerInvariant()
+        )
+        $updateManifest | Add-Member -Force -NotePropertyName apk_filename -NotePropertyValue (
+            "ZhiWuBen-Android-$versionCode.apk"
+        )
+        $AppUpdateManifestForUpload = Join-Path $TempRoot "app-update.json"
+        [IO.File]::WriteAllText(
+            $AppUpdateManifestForUpload,
+            ($updateManifest | ConvertTo-Json -Depth 8),
+            [Text.UTF8Encoding]::new($false)
+        )
+    }
+
+    Write-Host "[2/7] Packaging Server and PWA $ReleaseId"
     $tarArgs = @(
         "-czf", $Archive,
         "--exclude=./.env",
@@ -86,7 +155,9 @@ try {
         "--exclude=./tunnel_*.txt",
         "--exclude=./tunnel_*.log",
         "-C", $ServerRoot,
-        "."
+        ".",
+        "-C", $TempRoot,
+        "pwa-dist"
     )
     & tar @tarArgs
     if ($LASTEXITCODE -ne 0) { throw "tar failed with exit code $LASTEXITCODE" }
@@ -108,7 +179,7 @@ try {
     $Target = "$User@$ServerHost"
     $Privilege = if ($NoSudo) { "" } else { "sudo " }
 
-    Write-Host "[2/6] Testing key-based SSH access"
+    Write-Host "[3/7] Testing key-based SSH access"
     & ssh @sshArgs $Target "printf connected"
     if ($LASTEXITCODE -ne 0) { throw "SSH connection failed." }
     Write-Host ""
@@ -119,7 +190,7 @@ try {
         }
     }
 
-    Write-Host "[3/6] Uploading release archive"
+    Write-Host "[4/7] Uploading release archive"
     & scp @scpArgs $Archive "${Target}:$RemoteArchive"
     if ($LASTEXITCODE -ne 0) { throw "Release upload failed." }
     & scp @scpArgs $Installer "${Target}:$RemoteInstaller"
@@ -138,13 +209,13 @@ try {
         if (-not (Test-Path -LiteralPath $ModelsRoot -PathType Container)) {
             throw "Remote model is missing and local models directory is unavailable."
         }
-        Write-Host "[4/6] Uploading frozen STT models"
+        Write-Host "[5/7] Uploading frozen STT models"
         & tar -cf $ModelsArchive -C $ModelsRoot "faster-whisper/small" "faster-whisper/tiny"
         if ($LASTEXITCODE -ne 0) { throw "Model packaging failed." }
         & scp @scpArgs $ModelsArchive "${Target}:$RemoteModels"
         if ($LASTEXITCODE -ne 0) { throw "Model upload failed." }
     } else {
-        Write-Host "[4/6] Remote model already present; skipping model upload"
+        Write-Host "[5/7] Remote model already present; skipping model upload"
     }
 
     if ($ConfigFile) {
@@ -152,6 +223,12 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "Config upload failed." }
         & ssh @sshArgs $Target "chmod 600 $RemoteConfig"
         if ($LASTEXITCODE -ne 0) { throw "Could not secure the uploaded config file." }
+    }
+    if ($AndroidApk) {
+        & scp @scpArgs $AndroidApk "${Target}:$RemoteAndroidApk"
+        if ($LASTEXITCODE -ne 0) { throw "Android APK upload failed." }
+        & scp @scpArgs $AppUpdateManifestForUpload "${Target}:$RemoteAppUpdateManifest"
+        if ($LASTEXITCODE -ne 0) { throw "Android update manifest upload failed." }
     }
 
     $installArgs = @(
@@ -163,14 +240,21 @@ try {
     if ($WithBackend) { $installArgs += "--with-backend" }
     if ($OpenFirewall) { $installArgs += "--open-firewall" }
     if ($SkipPackages) { $installArgs += "--skip-packages" }
-    $remoteCleanup = "rm -f $RemoteArchive $RemoteInstaller $RemoteModels $RemoteConfig"
-    $remoteCommand = "trap 'status=`$?; $remoteCleanup; exit `$status' EXIT; ${Privilege}bash $RemoteInstaller " + ($installArgs -join " ")
+    $remoteCleanup = "rm -f $RemoteArchive $RemoteInstaller $RemoteModels $RemoteConfig $RemoteAndroidApk $RemoteAppUpdateManifest"
+    $remotePublishAndroid = if ($AndroidApk) {
+        "; ${Privilege}bash /opt/meetingnotes-stt/current/scripts/publish-android-update.sh " +
+        "--apk $RemoteAndroidApk --manifest $RemoteAppUpdateManifest " +
+        "--downloads-dir $RemoteAppUpdateDirectory --config $RemoteAppUpdateConfig " +
+        "--owner meetingnotes:meetingnotes --retain 2; " +
+        "${Privilege}systemctl restart meetingnotes-backend.service"
+    } else { "" }
+    $remoteCommand = "trap 'status=`$?; $remoteCleanup; exit `$status' EXIT; ${Privilege}bash $RemoteInstaller " + ($installArgs -join " ") + $remotePublishAndroid
 
-    Write-Host "[5/6] Installing and health-checking the native systemd release"
+    Write-Host "[6/7] Installing and health-checking the native systemd release"
     & ssh @sshArgs $Target $remoteCommand
     if ($LASTEXITCODE -ne 0) { throw "Remote installation failed; the installer attempted automatic rollback." }
 
-    Write-Host "[6/6] Synchronizing deployment metadata and managed config"
+    Write-Host "[7/7] Synchronizing deployment metadata and managed config"
     $verifyCommand = "${Privilege}bash /opt/meetingnotes-stt/current/scripts/verify-native.sh"
     & ssh @sshArgs $Target $verifyCommand
     if ($LASTEXITCODE -ne 0) { throw "Remote verification failed." }
@@ -192,8 +276,8 @@ try {
     }
     $State | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $ServerRoot ".deployment-state.json") -Encoding utf8
 
-    & ssh @sshArgs $Target "rm -f $RemoteArchive $RemoteInstaller $RemoteModels $RemoteConfig"
-    Write-Host "[OK] Release $ReleaseId is synchronized and ready at http://${ServerHost}:8888"
+    & ssh @sshArgs $Target "rm -f $RemoteArchive $RemoteInstaller $RemoteModels $RemoteConfig $RemoteAndroidApk $RemoteAppUpdateManifest"
+    Write-Host "[OK] Release $ReleaseId is synchronized; PWA is packaged at /app/"
 } finally {
     if (Test-Path -LiteralPath $TempRoot) {
         Remove-Item -LiteralPath $TempRoot -Recurse -Force

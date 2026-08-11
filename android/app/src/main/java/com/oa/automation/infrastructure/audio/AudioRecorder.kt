@@ -200,9 +200,14 @@ class AudioRecorder(private val context: android.content.Context) {
     fun pause(): Boolean {
         if (!isRecording || isPaused) return false
         val recorder = audioRecord ?: return false
+        // Set the flag before stopping the native recorder. Otherwise the
+        // capture thread can enter read() while AudioRecord is being stopped,
+        // leaving some devices in a state that cannot be resumed.
+        isPaused = true
         return runCatching {
             recorder.stop()
-            isPaused = true
+        }.onFailure {
+            isPaused = false
         }.isSuccess
     }
 
@@ -210,9 +215,11 @@ class AudioRecorder(private val context: android.content.Context) {
     @Synchronized
     fun resume(): Boolean {
         if (!isRecording || !isPaused) return false
+        val recorder = audioRecord ?: return false
         return runCatching {
-            audioRecord?.startRecording()
-            check(audioRecord?.recordingState == AudioRecord.RECORDSTATE_RECORDING)
+            check(recorder.state == AudioRecord.STATE_INITIALIZED)
+            recorder.startRecording()
+            check(recorder.recordingState == AudioRecord.RECORDSTATE_RECORDING)
             isPaused = false
         }.isSuccess
     }

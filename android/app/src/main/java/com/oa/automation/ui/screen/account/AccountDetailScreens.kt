@@ -73,7 +73,7 @@ import java.util.Locale
 import kotlin.math.floor
 import org.koin.androidx.compose.koinViewModel
 
-private val DetailGreen = Color(0xFF12B981)
+private val DetailGreen = Color(0xFF0078D4)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -375,7 +375,7 @@ private fun QuotaDetailsHero(quota: AgentQuota?, profile: AccountProfile?) {
                     Spacer(Modifier.height(18.dp))
                     Text(
                         formatter.format(remaining),
-                        color = Color(0xFF2FE08F),
+                        color = Color(0xFF60CDFF),
                         fontWeight = FontWeight.Bold,
                         fontSize = 30.sp,
                         lineHeight = 38.sp,
@@ -394,7 +394,7 @@ private fun QuotaDetailsHero(quota: AgentQuota?, profile: AccountProfile?) {
                     CircularProgressIndicator(
                         progress = { fraction },
                         modifier = Modifier.fillMaxSize(),
-                        color = Color(0xFF2FE6B1),
+                        color = Color(0xFF8CC8FF),
                         trackColor = Color.White.copy(alpha = 0.14f),
                         strokeWidth = 11.dp,
                         strokeCap = StrokeCap.Round

@@ -60,7 +60,7 @@ class StopRecordingUseCase(
             onProgress(ProcessingProgress(88, "整理识别文本"))
             val transcriptText = transcriptionResult
                 .getOrElse { error ->
-                    return@withContext Result.failure(Exception("STT failed: ${error.message}"))
+                    return@withContext Result.failure(error)
                 }
                 .let(SimplifiedChineseText::normalize)
 

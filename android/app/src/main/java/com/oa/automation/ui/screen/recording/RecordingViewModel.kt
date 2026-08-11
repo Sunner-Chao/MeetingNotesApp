@@ -32,11 +32,16 @@ import com.oa.automation.domain.repository.CommunitySyncRepository
 import com.oa.automation.application.usecase.GenerateStageDraftUseCase
 import com.oa.automation.application.usecase.GenerateJourneyEditionUseCase
 import com.oa.automation.application.usecase.CreatePublishedPostSnapshotUseCase
+import com.oa.automation.domain.model.Meeting
 import com.oa.automation.domain.model.Transcript
 import com.oa.automation.domain.model.MeetingAttachment
+import com.oa.automation.domain.model.MeetingOrigin
+import com.oa.automation.domain.model.RecordingMarker
+import com.oa.automation.domain.model.canonicalMeetingTranscripts
 import com.oa.automation.domain.model.STTConfig
 import com.oa.automation.domain.model.STTEngineType
 import com.oa.automation.domain.model.STTLanguage
+import com.oa.automation.domain.model.displayTitle
 import com.oa.automation.infrastructure.attachment.MeetingAttachmentStore
 import com.oa.automation.infrastructure.audio.ArchivedMeetingAudio
 import com.oa.automation.infrastructure.audio.MeetingAudioArchiveService
@@ -57,7 +62,10 @@ import com.oa.automation.infrastructure.community.PublishedPostMediaStore
 import com.oa.automation.infrastructure.db.PublishedPostMediaEntity
 import com.oa.automation.locale.SimplifiedChineseText
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
@@ -73,6 +81,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 data class RecordingUiState(
     val meetingTitle: String = "",
@@ -84,6 +94,7 @@ data class RecordingUiState(
     val isSwitchingSttLanguage: Boolean = false,
     val isSavingAgentProvider: Boolean = false,
     val isRecordingActionPending: Boolean = false,
+    val isFinalizingRecording: Boolean = false,
     val isRecording: Boolean = false,
     val isPaused: Boolean = false,
     val hasRecording: Boolean = false,
@@ -142,8 +153,33 @@ data class RecordingUiState(
     val pendingAudioExport: PendingMeetingAudioExport? = null,
     val audioExportMessage: String = "",
     val isImportingAudio: Boolean = false,
-    val recordingMarkers: List<Long> = emptyList()
+    val recordingMarkers: List<Long> = emptyList(),
+    val recordingMarkerAnchors: List<String> = emptyList(),
+    val activePhotoMarker: RecordingMarker? = null
 )
+
+internal enum class RecordingMediaRequest {
+    CHOOSE_SOURCE,
+    CAMERA,
+    GALLERY
+}
+
+internal data class RecordingUiEffect(
+    val mediaRequest: RecordingMediaRequest,
+    val recordingMarkerId: String? = null
+)
+
+internal fun shouldRecoverImportedTranscription(
+    meeting: Meeting?,
+    hasTranscript: Boolean,
+    taskState: BackgroundTaskState,
+    audioFileAvailable: Boolean,
+    recoveryAlreadyAttempted: Boolean
+): Boolean = meeting?.origin == MeetingOrigin.FILE_IMPORT &&
+    !hasTranscript &&
+    taskState == BackgroundTaskState.FAILED &&
+    audioFileAvailable &&
+    !recoveryAlreadyAttempted
 
 data class PublishedPostMediaSummary(
     val id: String,
@@ -168,10 +204,22 @@ internal fun recordingActionPending(session: RecordingSessionState): Boolean = w
     else -> false
 }
 
+internal fun isLiveRecordingFinalizing(session: RecordingSessionState): Boolean =
+    session.isStopping || session.status == "正在保存实时转写"
+
 internal fun isRecordingActionEnabled(state: RecordingUiState): Boolean =
     !state.isRecordingActionPending &&
+        !state.isFinalizingRecording &&
         !state.isJourneyActionPending &&
         !state.isGeneratingReport
+
+internal enum class RecordingMainAction {
+    START,
+    STOP
+}
+
+internal fun recordingMainAction(state: RecordingUiState): RecordingMainAction =
+    if (state.isRecording) RecordingMainAction.STOP else RecordingMainAction.START
 
 internal fun RecordingUiState.resetForMeetingChange(): RecordingUiState = copy(
     meetingTitle = "",
@@ -179,6 +227,7 @@ internal fun RecordingUiState.resetForMeetingChange(): RecordingUiState = copy(
     isSwitchingSttLanguage = false,
     isSavingAgentProvider = false,
     isRecordingActionPending = false,
+    isFinalizingRecording = false,
     isRecording = false,
     isPaused = false,
     hasRecording = false,
@@ -232,7 +281,9 @@ internal fun RecordingUiState.resetForMeetingChange(): RecordingUiState = copy(
     pendingAudioExport = null,
     audioExportMessage = "",
     isImportingAudio = false,
-    recordingMarkers = emptyList()
+    recordingMarkers = emptyList(),
+    recordingMarkerAnchors = emptyList(),
+    activePhotoMarker = null
 )
 
 enum class InputMode { VOICE, IMPORT }
@@ -274,6 +325,8 @@ class RecordingViewModel(
 
     private val _uiState = MutableStateFlow(RecordingUiState())
     val uiState: StateFlow<RecordingUiState> = _uiState.asStateFlow()
+    private val _effects = MutableSharedFlow<RecordingUiEffect>(extraBufferCapacity = 8)
+    internal val effects: SharedFlow<RecordingUiEffect> = _effects.asSharedFlow()
 
     private var currentMeetingId: String = ""
     private var latestStreamingText: String = ""
@@ -282,6 +335,7 @@ class RecordingViewModel(
     private var preservedStreamingText: String = ""
     private var currentStreamingSessionId: String = ""
     private var existingTranscriptText: String = ""
+    private var recordingMarkerRecords: List<RecordingMarker> = emptyList()
     private var attachmentCollectionJob: Job? = null
     private var journeyCollectionJob: Job? = null
     private var journeyStageCollectionJob: Job? = null
@@ -299,7 +353,15 @@ class RecordingViewModel(
     private var pendingExternalTextMeetingId: String? = null
     private var recordingTimerJob: Job? = null
     private var activeTimerStartedAtMs: Long? = null
+    private var studyJourneyAutomationJob: Job? = null
+    private val studyJourneyAutomationMutex = Mutex()
+    private var observedRecordingSession: RecordingSessionState? = null
+    private var trackedStudyStageId: String? = null
+    private var trackedStudyStageTranscriptBaseline: String = ""
+    private var trackedStudyStageStartedDurationSeconds: Long = 0L
+    private var pendingStudyStageTranscriptBaseline: String? = null
     private var trackedReportTaskId: java.util.UUID? = null
+    private val recoveredImportMeetingIds = mutableSetOf<String>()
 
     init {
         _uiState.update {
@@ -320,30 +382,41 @@ class RecordingViewModel(
         viewModelScope.launch {
             recordingController.state.collect { session ->
                 if (session.meetingId.isBlank() || session.meetingId != currentMeetingId) return@collect
+                val previousSession = observedRecordingSession
+                observedRecordingSession = session
+                val isFinalizing = isLiveRecordingFinalizing(session)
+                val clearTranscriptionState = isFinalizing ||
+                    session.error != null || session.status == "录音启动已取消"
                 _uiState.update {
                     it.copy(
                         isRecording = session.isRecording && !session.isStopping,
                         isPaused = session.isPaused,
-                        isRecordingActionPending = recordingActionPending(session),
+                        isRecordingActionPending = recordingActionPending(session) || isFinalizing,
+                        isFinalizingRecording = isFinalizing,
                         recordingDuration = session.durationSecondsAt(SystemClock.elapsedRealtime()),
                         audioLevel = session.audioLevel,
                         transcriptPreviewMode = session.status,
-                        isTranscribing = if (
-                            session.error != null || session.status == "录音启动已取消"
-                        ) false else it.isTranscribing,
-                        transcriptionProgressPercent = if (
-                            session.error != null || session.status == "录音启动已取消"
-                        ) null else it.transcriptionProgressPercent,
-                        transcriptionProgressStage = if (
-                            session.error != null || session.status == "录音启动已取消"
-                        ) "" else it.transcriptionProgressStage,
-                        transcriptionProgressIndeterminate = if (
-                            session.error != null || session.status == "录音启动已取消"
-                        ) false else it.transcriptionProgressIndeterminate,
+                        isTranscribing = if (clearTranscriptionState) false else it.isTranscribing,
+                        transcriptionProgressPercent = if (clearTranscriptionState) {
+                            null
+                        } else {
+                            it.transcriptionProgressPercent
+                        },
+                        transcriptionProgressStage = if (clearTranscriptionState) {
+                            ""
+                        } else {
+                            it.transcriptionProgressStage
+                        },
+                        transcriptionProgressIndeterminate = if (clearTranscriptionState) {
+                            false
+                        } else {
+                            it.transcriptionProgressIndeterminate
+                        },
                         error = session.error ?: it.error
                     )
                 }
                 synchronizeRecordingTimer(session)
+                handleStudyJourneyRecordingTransition(previousSession, session)
             }
         }
         viewModelScope.launch {
@@ -431,6 +504,10 @@ class RecordingViewModel(
             recordingTimerJob?.cancel()
             recordingTimerJob = null
             activeTimerStartedAtMs = null
+            studyJourneyAutomationJob?.cancel()
+            studyJourneyAutomationJob = null
+            observedRecordingSession = null
+            resetStudyStageEvidenceTracking()
             trackedReportTaskId = null
             journeyCollectionJob?.cancel()
             journeyCollectionJob = null
@@ -445,6 +522,7 @@ class RecordingViewModel(
             communitySyncCollectionJob?.cancel()
             communitySyncCollectionJob = null
             resetStreamingPreviewState()
+            recordingMarkerRecords = emptyList()
             _uiState.value = _uiState.value.resetForMeetingChange()
         }
         currentMeetingId = meetingId
@@ -464,10 +542,24 @@ class RecordingViewModel(
         viewModelScope.launch {
             val meeting = meetingRepository.findById(meetingId).getOrNull()
             val transcripts = meetingRepository.findTranscriptsByMeetingId(meetingId).getOrNull().orEmpty()
+            val recordingMarkers = meetingRepository.findRecordingMarkersByMeetingId(meetingId)
+                .getOrNull()
+                .orEmpty()
             val transcriptText = SimplifiedChineseText.normalize(
-                transcripts.joinToString("\n") { it.content }
+                transcripts.canonicalMeetingTranscripts().joinToString("\n") { it.content }
             )
             val hasReport = reportRepository.findByMeetingId(meetingId).getOrNull() != null
+            val transcriptionTask = taskScheduler.observeTranscription(meetingId).first()
+            val recoverableAudioFile = meeting?.audioFilePath
+                ?.let { path -> java.io.File(path) }
+                ?.takeIf { it.isFile && it.length() > 44L }
+            val shouldRecoverImport = shouldRecoverImportedTranscription(
+                meeting = meeting,
+                hasTranscript = transcriptText.isNotBlank(),
+                taskState = transcriptionTask.state,
+                audioFileAvailable = recoverableAudioFile != null,
+                recoveryAlreadyAttempted = meetingId in recoveredImportMeetingIds
+            )
             val appConfig = configDataStore.appConfigFlow.first()
             val sttConfig = appConfig.sttConfig
             val recordingState = recordingController.state.value
@@ -482,15 +574,23 @@ class RecordingViewModel(
                 meeting?.durationMs?.div(1_000L) ?: 0L
             }
             if (meeting != null && isCurrentMeeting(meetingId)) {
+                recordingMarkerRecords = recordingMarkers
                 existingTranscriptText = transcriptText
                 updateState {
                     it.copy(
-                        meetingTitle = meeting.title,
+                        meetingTitle = meeting.displayTitle(),
+                        inputMode = if (meeting.origin == MeetingOrigin.FILE_IMPORT) {
+                            InputMode.IMPORT
+                        } else {
+                            InputMode.VOICE
+                        },
                         sttEngineLabel = sttConfig.engineType.displayName,
                         sttLanguage = sttConfig.language,
                         isRecording = isGlobalRecording,
                         isPaused = recordingState.isPaused,
-                        hasRecording = isGlobalRecording || transcriptText.isNotBlank(),
+                        hasRecording = isGlobalRecording ||
+                            transcriptText.isNotBlank() ||
+                            recoverableAudioFile != null,
                         hasReport = hasReport,
                         recordingDuration = restoredDurationSeconds,
                         audioLevel = recordingState.audioLevel,
@@ -498,6 +598,12 @@ class RecordingViewModel(
                             isGlobalRecording && it.liveTranscript.isNotBlank() -> it.liveTranscript
                             else -> transcriptText
                         },
+                        recordingMarkers = recordingMarkers
+                            .map { marker -> marker.timestampMs / 1_000L }
+                            .distinct(),
+                        recordingMarkerAnchors = recordingMarkers
+                            .mapNotNull { marker -> marker.transcriptAnchor.takeIf(String::isNotBlank) },
+                        activePhotoMarker = null,
                         transcriptPreviewMode = when {
                             isGlobalRecording -> "WebSocket 流式预览"
                             transcriptText.isNotBlank() -> "已保存转写"
@@ -509,6 +615,24 @@ class RecordingViewModel(
                 }
                 recordingState.streamUpdate?.let(::updateStreamingPreview)
                 synchronizeRecordingTimer(recordingState)
+                if (shouldRecoverImport && recoverableAudioFile != null) {
+                    recoveredImportMeetingIds += meetingId
+                    taskScheduler.enqueueTranscription(
+                        meetingId = meetingId,
+                        audioFile = recoverableAudioFile
+                    )
+                    _uiState.update {
+                        it.copy(
+                            isTranscribing = true,
+                            transcriptionProgressPercent = null,
+                            transcriptionProgressStage = "正在恢复未完成的音频转写",
+                            transcriptionProgressIndeterminate = true,
+                            transcriptPreviewMode = "后台转写已重新排队",
+                            textImportStatus = "检测到未完成的音频，正在恢复转写",
+                            error = null
+                        )
+                    }
+                }
             }
         }
     }
@@ -635,6 +759,7 @@ class RecordingViewModel(
                                 )
                             }
                         }
+                        _uiState.value.currentJourneyStage?.let(::trackStudyStageEvidenceIfNeeded)
                         if (observedStageId == null) {
                             stageDraftCollectionJob?.cancel()
                             stageDraftCollectionJob = null
@@ -882,10 +1007,6 @@ class RecordingViewModel(
             return
         }
         val state = _uiState.value
-        if (isStudyJourneyAwaitingNextStage(state)) {
-            _uiState.update { it.copy(error = "请先开始下一段旅程，再录音或导入本段素材") }
-            return
-        }
         if (state.isRecordingActionPending || state.isJourneyActionPending) return
         val active = recordingController.state.value
         if (active.isStopping) {
@@ -901,7 +1022,13 @@ class RecordingViewModel(
                 recordingController.state.first { session ->
                     !session.isRecording && !session.isStarting && !session.isStopping
                 }
-                if (isCurrentMeeting(requestedMeetingId)) startRecordingNow(requestedMeetingId)
+                if (isCurrentMeeting(requestedMeetingId)) {
+                    if (isStudyJourneyState(_uiState.value)) {
+                        startStudyJourneyRecording(requestedMeetingId)
+                    } else {
+                        startRecordingNow(requestedMeetingId)
+                    }
+                }
             }
             return
         }
@@ -910,15 +1037,16 @@ class RecordingViewModel(
             return
         }
 
-        startRecordingNow(meetingId)
+        if (isStudyJourneyState(state)) {
+            startStudyJourneyRecording(meetingId)
+        } else {
+            startRecordingNow(meetingId)
+        }
     }
 
     private fun startRecordingNow(meetingId: String) {
         if (!isCurrentMeeting(meetingId)) return
-        if (isStudyJourneyAwaitingNextStage(_uiState.value)) {
-            _uiState.update { it.copy(error = "请先开始下一段旅程，再录音或导入本段素材") }
-            return
-        }
+        val studyJourney = isStudyJourneyState(_uiState.value)
         val currentTranscript = SimplifiedChineseText.normalize(_uiState.value.liveTranscript)
         existingTranscriptText = currentTranscript
         latestStreamingText = ""
@@ -926,17 +1054,23 @@ class RecordingViewModel(
         previewStreamingText = ""
         preservedStreamingText = ""
         currentStreamingSessionId = ""
-        startForegroundService(meetingId, _uiState.value.currentJourneyStage?.id)
+        startForegroundService(
+            meetingId = meetingId,
+            journeyStageId = if (studyJourney) null else _uiState.value.currentJourneyStage?.id,
+            autoGenerateReport = !studyJourney
+        )
         _uiState.update {
             it.copy(
                 isRecording = false,
                 isPaused = false,
                 isRecordingActionPending = true,
+                isFinalizingRecording = false,
                 hasRecording = currentTranscript.isNotBlank(),
                 liveTranscript = currentTranscript,
                 isTranscribing = false,
                 recordingDuration = 0,
                 transcriptPreviewMode = "正在启动后台录音",
+                isJourneyActionPending = false,
                 error = null
             )
         }
@@ -950,27 +1084,434 @@ class RecordingViewModel(
         val state = _uiState.value
         val meetingId = currentMeetingId
         if (meetingId.isBlank() || !state.isRecording || state.isRecordingActionPending) return
+        val isResuming = state.isPaused
         val action = if (state.isPaused) {
             RecordingService.ACTION_RESUME
         } else {
             RecordingService.ACTION_PAUSE
         }
+        _uiState.update {
+            it.copy(
+                isRecordingActionPending = true,
+                transcriptPreviewMode = if (isResuming) "正在继续录音" else "正在暂停录音",
+                error = null
+            )
+        }
+        if (isResuming && isStudyJourneyState(state) && state.currentJourneyStage == null) {
+            studyJourneyAutomationJob?.cancel()
+            studyJourneyAutomationJob = viewModelScope.launch {
+                studyJourneyAutomationMutex.withLock {
+                    ensureStudyJourneyStage(meetingId).fold(
+                        onSuccess = { sendRecordingControlAction(action, meetingId) },
+                        onFailure = { error ->
+                            if (isCurrentMeeting(meetingId)) {
+                                _uiState.update {
+                                    it.copy(
+                                        isRecordingActionPending = false,
+                                        isJourneyActionPending = false,
+                                        error = "开始下一段研学记录失败: ${error.message}"
+                                    )
+                                }
+                            }
+                        }
+                    )
+                }
+            }
+        } else {
+            sendRecordingControlAction(action, meetingId)
+        }
+    }
+
+    fun addRecordingMarker() {
+        requestMarkerMedia(RecordingMediaRequest.CHOOSE_SOURCE)
+    }
+
+    fun requestPhotoCapture() {
+        requestMarkerMedia(RecordingMediaRequest.CAMERA)
+    }
+
+    fun requestPhotoLibrary() {
+        requestMarkerMedia(RecordingMediaRequest.GALLERY)
+    }
+
+    fun closeActivePhotoMarker() {
+        _uiState.update {
+            it.copy(
+                activePhotoMarker = null,
+                transcriptPreviewMode = "文字标记已保留"
+            )
+        }
+    }
+
+    fun onMarkerMediaPickerCancelled(recordingMarkerId: String?) {
+        val marker = _uiState.value.activePhotoMarker
+        if (recordingMarkerId != null && marker?.id == recordingMarkerId) {
+            _uiState.update { it.copy(transcriptPreviewMode = "标记已保留，可再次添加图片") }
+        }
+    }
+
+    private fun requestMarkerMedia(request: RecordingMediaRequest) {
+        val state = _uiState.value
+        val meetingId = currentMeetingId
+        if (meetingId.isBlank()) return
+        if (!state.isRecording) {
+            emitMediaRequest(request, recordingMarkerId = null)
+            return
+        }
+        if (state.isPaused) {
+            _uiState.update { it.copy(error = "请继续录音后再创建图文标记") }
+            return
+        }
+        state.activePhotoMarker?.let { activeMarker ->
+            emitMediaRequest(request, activeMarker.id)
+            return
+        }
+        val timestampSeconds = state.recordingDuration.coerceAtLeast(0L)
+        val timestampMs = timestampSeconds * 1_000L
+        val journeyStageId = state.currentJourneyStage?.id
+        val existingMarker = recordingMarkerRecords.lastOrNull {
+            it.journeyStageId == journeyStageId && it.timestampMs == timestampMs
+        }
+        if (existingMarker != null) {
+            _uiState.update {
+                it.copy(
+                    activePhotoMarker = existingMarker,
+                    transcriptPreviewMode = "已定位 ${formatRecordingMarker(timestampSeconds)} · 请选择图片"
+                )
+            }
+            emitMediaRequest(request, existingMarker.id)
+            return
+        }
+        val marker = RecordingMarker(
+            id = java.util.UUID.randomUUID().toString(),
+            meetingId = meetingId,
+            journeyStageId = journeyStageId,
+            timestampMs = timestampMs,
+            transcriptAnchor = extractRecordingMarkerAnchor(state.liveTranscript)
+        )
+        recordingMarkerRecords = recordingMarkerRecords + marker
+        _uiState.update {
+            it.copy(
+                recordingMarkers = (it.recordingMarkers + timestampSeconds).distinct(),
+                recordingMarkerAnchors = (it.recordingMarkerAnchors + marker.transcriptAnchor)
+                    .filter(String::isNotBlank)
+                    .distinct(),
+                activePhotoMarker = marker,
+                transcriptPreviewMode = "已定位 ${formatRecordingMarker(timestampSeconds)} · 请选择图片"
+            )
+        }
+        viewModelScope.launch {
+            meetingRepository.saveRecordingMarker(marker).fold(
+                onSuccess = {
+                    if (isCurrentMeeting(meetingId)) emitMediaRequest(request, marker.id)
+                },
+                onFailure = { error ->
+                    if (isCurrentMeeting(meetingId)) {
+                        recordingMarkerRecords = recordingMarkerRecords.filterNot { it.id == marker.id }
+                        _uiState.update {
+                            it.copy(
+                                recordingMarkers = recordingMarkerRecords
+                                    .map { item -> item.timestampMs / 1_000L }
+                                    .distinct(),
+                                recordingMarkerAnchors = recordingMarkerRecords
+                                    .map { item -> item.transcriptAnchor }
+                                    .filter(String::isNotBlank)
+                                    .distinct(),
+                                activePhotoMarker = it.activePhotoMarker?.takeUnless { active ->
+                                    active.id == marker.id
+                                },
+                                error = "保存标记失败: ${error.message}"
+                            )
+                        }
+                    }
+                }
+            )
+        }
+    }
+
+    private fun emitMediaRequest(request: RecordingMediaRequest, recordingMarkerId: String?) {
+        _effects.tryEmit(
+            RecordingUiEffect(
+                mediaRequest = request,
+                recordingMarkerId = recordingMarkerId
+            )
+        )
+    }
+
+    private fun startStudyJourneyRecording(meetingId: String) {
+        if (!isCurrentMeeting(meetingId) || studyJourneyAutomationJob?.isActive == true) return
+        _uiState.update {
+            it.copy(
+                isRecordingActionPending = true,
+                isJourneyActionPending = true,
+                transcriptPreviewMode = "正在准备研学记录",
+                error = null
+            )
+        }
+        studyJourneyAutomationJob = viewModelScope.launch {
+            studyJourneyAutomationMutex.withLock {
+                ensureStudyJourneyStage(meetingId).fold(
+                    onSuccess = {
+                        if (isCurrentMeeting(meetingId)) startRecordingNow(meetingId)
+                    },
+                    onFailure = { error ->
+                        if (isCurrentMeeting(meetingId)) {
+                            _uiState.update {
+                                it.copy(
+                                    isRecordingActionPending = false,
+                                    isJourneyActionPending = false,
+                                    error = "准备研学记录失败: ${error.message}"
+                                )
+                            }
+                        }
+                    }
+                )
+            }
+            studyJourneyAutomationJob = null
+        }
+    }
+
+    private suspend fun ensureStudyJourneyStage(meetingId: String): Result<JourneyStage> = runCatching {
+        require(isCurrentMeeting(meetingId)) { "会议已切换" }
+        val state = _uiState.value
+        state.currentJourneyStage?.takeIf { it.status == JourneyStageStatus.ACTIVE }?.let { stage ->
+            trackStudyStageEvidenceIfNeeded(stage)
+            _uiState.update { it.copy(isJourneyActionPending = false, error = null) }
+            return@runCatching stage
+        }
+
+        val now = System.currentTimeMillis()
+        val journey = state.journey
+        if (journey == null) {
+            val journeyId = java.util.UUID.randomUUID().toString()
+            val initialStage = JourneyStage(
+                id = java.util.UUID.randomUUID().toString(),
+                journeyId = journeyId,
+                sequenceNumber = 1,
+                title = "第 1 段",
+                startedAt = now,
+                updatedAt = now
+            )
+            val createdJourney = Journey(
+                id = journeyId,
+                meetingId = meetingId,
+                title = state.meetingTitle.ifBlank { STUDY_JOURNEY_TEMPLATE_NAME },
+                currentStageId = initialStage.id,
+                createdAt = now,
+                updatedAt = now
+            )
+            journeyRepository.create(createdJourney, initialStage).getOrThrow()
+            _uiState.update {
+                it.copy(
+                    journey = createdJourney,
+                    currentJourneyStage = initialStage,
+                    journeyStageCount = 1,
+                    isJourneyActionPending = false,
+                    journeyStatusMessage = "研学记录已开始 · 第 1 段",
+                    error = null
+                )
+            }
+            trackStudyStageEvidenceIfNeeded(initialStage)
+            return@runCatching initialStage
+        }
+
+        require(journey.status != JourneyStatus.COMPLETED) { "研学记录已经完成" }
+        val existingStages = journeyRepository.observeStages(journey.id).first()
+        val nextSequence = (existingStages.maxOfOrNull { it.sequenceNumber } ?: 0) + 1
+        val nextStage = JourneyStage(
+            id = java.util.UUID.randomUUID().toString(),
+            journeyId = journey.id,
+            sequenceNumber = nextSequence,
+            title = "第 $nextSequence 段",
+            startedAt = now,
+            updatedAt = now
+        )
+        val resumedJourney = journey.copy(
+            status = JourneyStatus.ACTIVE,
+            currentStageId = nextStage.id,
+            updatedAt = now,
+            pausedAt = null
+        )
+        journeyRepository.startNextStage(resumedJourney, nextStage).getOrThrow()
+        _uiState.update {
+            it.copy(
+                journey = resumedJourney,
+                currentJourneyStage = nextStage,
+                journeyStageCount = maxOf(it.journeyStageCount, nextSequence),
+                isJourneyActionPending = false,
+                journeyStatusMessage = "已开始${nextStage.title}",
+                error = null
+            )
+        }
+        trackStudyStageEvidenceIfNeeded(nextStage)
+        nextStage
+    }
+
+    private fun handleStudyJourneyRecordingTransition(
+        previous: RecordingSessionState?,
+        current: RecordingSessionState
+    ) {
+        if (!isStudyJourneyState(_uiState.value)) return
+        val pausedNow = current.isRecording && current.isPaused
+        val justPaused = pausedNow && previous?.isPaused != true
+        val justResumed = current.isRecording && !current.isPaused && previous?.isPaused == true
+        val justStopped = previous?.isRecording == true && !current.isRecording && !current.isStopping
+
+        when {
+            justPaused -> scheduleStudyStageFinalization(current.meetingId, "录音已暂停")
+            justStopped -> scheduleStudyStageFinalization(current.meetingId, "本次录音已结束")
+            justResumed && _uiState.value.currentJourneyStage == null -> {
+                _uiState.update { it.copy(isJourneyActionPending = true, error = null) }
+                viewModelScope.launch {
+                    studyJourneyAutomationMutex.withLock {
+                        ensureStudyJourneyStage(current.meetingId).onFailure { error ->
+                            if (isCurrentMeeting(current.meetingId)) {
+                                _uiState.update {
+                                    it.copy(
+                                        isJourneyActionPending = false,
+                                        error = "续接研学记录失败: ${error.message}"
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun scheduleStudyStageFinalization(meetingId: String, reason: String) {
+        if (!isCurrentMeeting(meetingId)) return
+        _uiState.update { it.copy(isJourneyActionPending = true, error = null) }
+        viewModelScope.launch {
+            studyJourneyAutomationMutex.withLock {
+                finalizeStudyJourneyStageIfMeaningful(meetingId, reason)
+            }
+        }
+    }
+
+    private suspend fun finalizeStudyJourneyStageIfMeaningful(meetingId: String, reason: String) {
+        if (!isCurrentMeeting(meetingId)) return
+        val state = _uiState.value
+        val journey = state.journey
+        val stage = state.currentJourneyStage
+        if (
+            journey == null ||
+            stage == null ||
+            journey.status == JourneyStatus.COMPLETED ||
+            stage.status != JourneyStageStatus.ACTIVE
+        ) {
+            _uiState.update { it.copy(isJourneyActionPending = false) }
+            return
+        }
+
+        trackStudyStageEvidenceIfNeeded(stage)
+        val transcriptDelta = studyStageTranscriptDelta(
+            baseline = trackedStudyStageTranscriptBaseline,
+            currentTranscript = state.liveTranscript
+        )
+        val markerCount = recordingMarkerRecords.count { it.journeyStageId == stage.id }
+        val attachmentCount = state.attachments.count { it.journeyStageId == stage.id }
+        if (!hasMeaningfulStudyStageEvidence(transcriptDelta, markerCount, attachmentCount)) {
+            _uiState.update {
+                it.copy(
+                    isJourneyActionPending = false,
+                    journeyStatusMessage = "$reason · 未检测到新内容，继续沿用${stage.title}"
+                )
+            }
+            return
+        }
+
+        val now = System.currentTimeMillis()
+        runCatching {
+            if (transcriptDelta.isNotBlank()) {
+                meetingRepository.saveTranscript(
+                    Transcript(
+                        id = "journey-stage-${stage.id}",
+                        meetingId = meetingId,
+                        journeyStageId = stage.id,
+                        content = transcriptDelta,
+                        startTimeMs = trackedStudyStageStartedDurationSeconds * 1_000L,
+                        endTimeMs = state.recordingDuration.coerceAtLeast(
+                            trackedStudyStageStartedDurationSeconds
+                        ) * 1_000L,
+                        createdAt = stage.startedAt
+                    )
+                ).getOrThrow()
+            }
+            val savedStage = stage.copy(
+                status = JourneyStageStatus.SAVED,
+                updatedAt = now,
+                savedAt = now
+            )
+            val savedJourney = journey.copy(
+                status = JourneyStatus.ACTIVE,
+                currentStageId = null,
+                updatedAt = now
+            )
+            journeyRepository.saveCurrentStage(savedJourney, savedStage).getOrThrow()
+            pendingStudyStageTranscriptBaseline = SimplifiedChineseText.normalize(state.liveTranscript)
+            trackedStudyStageId = null
+            trackedStudyStageTranscriptBaseline = ""
+            trackedStudyStageStartedDurationSeconds = state.recordingDuration
+            _uiState.update {
+                it.copy(
+                    journey = savedJourney,
+                    currentJourneyStage = null,
+                    latestSavedJourneyStage = savedStage,
+                    isJourneyActionPending = false,
+                    journeyStatusMessage = "$reason · ${stage.title}已自动暂存",
+                    error = null
+                )
+            }
+            val liveSession = recordingController.state.value
+            if (
+                liveSession.meetingId == meetingId &&
+                liveSession.isRecording &&
+                !liveSession.isPaused &&
+                !liveSession.isStopping
+            ) {
+                ensureStudyJourneyStage(meetingId).onFailure { error ->
+                    if (isCurrentMeeting(meetingId)) {
+                        _uiState.update {
+                            it.copy(error = "${stage.title}已保存，但续接下一段失败: ${error.message}")
+                        }
+                    }
+                }
+            }
+        }.onFailure { error ->
+            if (isCurrentMeeting(meetingId)) {
+                _uiState.update {
+                    it.copy(
+                        isJourneyActionPending = false,
+                        error = "自动暂存${stage.title}失败: ${error.message}"
+                    )
+                }
+            }
+        }
+    }
+
+    private fun trackStudyStageEvidenceIfNeeded(stage: JourneyStage) {
+        if (trackedStudyStageId == stage.id) return
+        trackedStudyStageId = stage.id
+        trackedStudyStageTranscriptBaseline = pendingStudyStageTranscriptBaseline
+            ?: SimplifiedChineseText.normalize(_uiState.value.liveTranscript)
+        trackedStudyStageStartedDurationSeconds = _uiState.value.recordingDuration
+        pendingStudyStageTranscriptBaseline = null
+    }
+
+    private fun resetStudyStageEvidenceTracking() {
+        trackedStudyStageId = null
+        trackedStudyStageTranscriptBaseline = ""
+        trackedStudyStageStartedDurationSeconds = 0L
+        pendingStudyStageTranscriptBaseline = null
+    }
+
+    private fun sendRecordingControlAction(action: String, meetingId: String) {
         appContext.startService(Intent(appContext, RecordingService::class.java).apply {
             this.action = action
             putExtra(RecordingService.EXTRA_MEETING_ID, meetingId)
         })
-    }
-
-    fun addRecordingMarker() {
-        val state = _uiState.value
-        if (!state.isRecording) return
-        val timestamp = state.recordingDuration.coerceAtLeast(0L)
-        _uiState.update {
-            it.copy(
-                recordingMarkers = (it.recordingMarkers + timestamp).distinct(),
-                transcriptPreviewMode = "已标记 ${formatRecordingMarker(timestamp)}"
-            )
-        }
     }
 
     fun startJourney() {
@@ -1794,8 +2335,12 @@ class RecordingViewModel(
     private fun canChangeJourneyStage(state: RecordingUiState): Boolean =
         !state.isRecording &&
             !state.isRecordingActionPending &&
+            !state.isFinalizingRecording &&
             !state.isTranscribing &&
             !state.isGeneratingReport
+
+    private fun isStudyJourneyState(state: RecordingUiState): Boolean =
+        state.reportTemplate.selectedName == STUDY_JOURNEY_TEMPLATE_NAME || state.journey != null
 
     private fun isStudyJourneyAwaitingNextStage(state: RecordingUiState): Boolean =
         state.reportTemplate.selectedName == STUDY_JOURNEY_TEMPLATE_NAME &&
@@ -1813,7 +2358,8 @@ class RecordingViewModel(
             _uiState.update {
                 it.copy(
                     error = if (showNoRecordingError) "没有在录音" else null,
-                    isRecordingActionPending = false
+                    isRecordingActionPending = false,
+                    isFinalizingRecording = false
                 )
             }
             return
@@ -1824,6 +2370,7 @@ class RecordingViewModel(
                     isRecording = false,
                     isPaused = false,
                     isRecordingActionPending = false,
+                    isFinalizingRecording = false,
                     isTranscribing = false,
                     transcriptionProgressPercent = null,
                     transcriptionProgressStage = "",
@@ -1838,12 +2385,13 @@ class RecordingViewModel(
             it.copy(
                 isRecording = false,
                 isPaused = false,
-                isRecordingActionPending = false,
-                isTranscribing = true,
+                isRecordingActionPending = true,
+                isFinalizingRecording = true,
+                isTranscribing = false,
                 transcriptionProgressPercent = null,
-                transcriptionProgressStage = "后台转写正在排队",
-                transcriptionProgressIndeterminate = true,
-                transcriptPreviewMode = "正在提交后台转写",
+                transcriptionProgressStage = "",
+                transcriptionProgressIndeterminate = false,
+                transcriptPreviewMode = "正在结束并保存录音",
                 error = null
             )
         }
@@ -1865,6 +2413,7 @@ class RecordingViewModel(
                 isRecording = false,
                 isPaused = false,
                 isRecordingActionPending = false,
+                isFinalizingRecording = false,
                 hasRecording = existingTranscriptText.isNotBlank(),
                 liveTranscript = existingTranscriptText,
                 isTranscribing = false,
@@ -2374,25 +2923,53 @@ class RecordingViewModel(
         _uiState.update { it.copy(reportReadyToOpen = false) }
     }
 
-    fun importImages(uris: List<Uri>, captureLocation: Boolean = false) {
+    fun importImages(
+        uris: List<Uri>,
+        captureLocation: Boolean = false,
+        recordingMarkerId: String? = null
+    ) {
         val meetingId = currentMeetingId
         if (meetingId.isBlank() || uris.isEmpty()) return
-        if (isStudyJourneyAwaitingNextStage(_uiState.value)) {
-            _uiState.update { it.copy(error = "请先开始下一段旅程，再导入本段图片") }
+        val state = _uiState.value
+        val recordingMarker = recordingMarkerId?.let { markerId ->
+            recordingMarkerRecords.firstOrNull { marker -> marker.id == markerId }
+        }
+        if (recordingMarkerId != null && recordingMarker == null) {
+            _uiState.update { it.copy(error = "图文标记已失效，请重新标记") }
             return
         }
-        val journeyStageId = _uiState.value.currentJourneyStage?.id
+        val journeyStageId = recordingMarker?.journeyStageId
+            ?: state.currentJourneyStage?.id
+            ?: state.latestSavedJourneyStage?.id
         viewModelScope.launch {
-            attachmentStore.importImages(
+            val results = attachmentStore.importImages(
                 meetingId = meetingId,
                 sources = uris,
                 captureLocation = captureLocation,
-                journeyStageId = journeyStageId
-            ).forEach { result ->
+                journeyStageId = journeyStageId,
+                recordingMarker = recordingMarker
+            )
+            results.forEach { result ->
                 result.onFailure { error ->
                     if (isCurrentMeeting(meetingId)) {
                         _uiState.update { it.copy(error = "图片导入失败: ${error.message}") }
                     }
+                }
+            }
+            val importedCount = results.count { it.isSuccess }
+            if (
+                isCurrentMeeting(meetingId) &&
+                shouldCloseActivePhotoMarker(
+                    activeMarkerId = _uiState.value.activePhotoMarker?.id,
+                    importedMarkerId = recordingMarkerId,
+                    importedCount = importedCount
+                )
+            ) {
+                _uiState.update {
+                    it.copy(
+                        activePhotoMarker = null,
+                        transcriptPreviewMode = "图片已关联到 ${formatRecordingMarker(recordingMarker!!.timestampMs / 1_000L)}"
+                    )
                 }
             }
         }
@@ -2423,6 +3000,7 @@ class RecordingViewModel(
         audioImportToken = null
         pendingExternalTextMeetingId = null
         recordingTimerJob?.cancel()
+        studyJourneyAutomationJob?.cancel()
         super.onCleared()
     }
 
@@ -2580,7 +3158,7 @@ class RecordingViewModel(
                             .orEmpty()
                         if (!isCurrentMeeting(meetingId)) return@collect
                         val finalText = SimplifiedChineseText.normalize(
-                            transcripts.joinToString("\n") { it.content }
+                            transcripts.canonicalMeetingTranscripts().joinToString("\n") { it.content }
                         )
                         val currentLiveTranscript = _uiState.value.liveTranscript
                         existingTranscriptText = finalText
@@ -2722,12 +3300,17 @@ class RecordingViewModel(
         }
     }
 
-    private fun startForegroundService(meetingId: String, journeyStageId: String?) {
+    private fun startForegroundService(
+        meetingId: String,
+        journeyStageId: String?,
+        autoGenerateReport: Boolean
+    ) {
         val intent = Intent(appContext, RecordingService::class.java).apply {
             action = RecordingService.ACTION_START
             putExtra(RecordingService.EXTRA_MEETING_ID, meetingId)
             putExtra(RecordingService.EXTRA_MEETING_TITLE, _uiState.value.meetingTitle)
             putExtra(RecordingService.EXTRA_JOURNEY_STAGE_ID, journeyStageId)
+            putExtra(RecordingService.EXTRA_AUTO_GENERATE_REPORT, autoGenerateReport)
         }
         appContext.startForegroundService(intent)
     }
@@ -2753,12 +3336,99 @@ class RecordingViewModel(
 
     companion object {
         private const val RECORDING_TIMER_REFRESH_MS = 250L
+        private const val MARKER_TRANSCRIPT_ANCHOR_CHARS = 180
         private const val STUDY_JOURNEY_TEMPLATE_NAME = "研学考察"
     }
 }
 
 internal fun shouldRollStreamingSession(currentSessionId: String, incomingSessionId: String): Boolean =
     currentSessionId.isNotBlank() && incomingSessionId.isNotBlank() && currentSessionId != incomingSessionId
+
+internal fun extractRecordingMarkerAnchor(
+    transcript: String,
+    maxChars: Int = 180
+): String {
+    val normalized = SimplifiedChineseText.normalize(transcript).trim()
+    if (normalized.isBlank() || maxChars <= 0) return ""
+    val searchText = normalized.takeLast(maxChars * 2)
+    val boundaries = "。！？!?；;\n"
+    var endExclusive = searchText.length
+    while (endExclusive > 0 && searchText[endExclusive - 1].isWhitespace()) endExclusive--
+    if (endExclusive <= 0) return ""
+
+    val endsAtBoundary = searchText[endExclusive - 1] in boundaries
+    val boundarySearchEnd = if (endsAtBoundary) endExclusive - 1 else endExclusive
+    var start = -1
+    for (index in boundarySearchEnd - 1 downTo 0) {
+        if (searchText[index] in boundaries) {
+            start = index
+            break
+        }
+    }
+    var candidate = searchText.substring(start + 1, endExclusive).trim()
+    if (candidate.length < 4 && start > 0) {
+        var previousStart = -1
+        for (index in start - 1 downTo 0) {
+            if (searchText[index] in boundaries) {
+                previousStart = index
+                break
+            }
+        }
+        candidate = searchText.substring(previousStart + 1, endExclusive).trim()
+    }
+    return candidate.takeLast(maxChars).trim()
+}
+
+internal fun findRecordingMarkerAnchorRanges(
+    transcript: String,
+    anchors: List<String>
+): List<IntRange> {
+    if (transcript.isBlank()) return emptyList()
+    val occupied = mutableListOf<IntRange>()
+    anchors.asSequence()
+        .map(String::trim)
+        .filter(String::isNotBlank)
+        .distinct()
+        .sortedByDescending(String::length)
+        .forEach { anchor ->
+            val start = transcript.lastIndexOf(anchor)
+            if (start < 0) return@forEach
+            val range = start..(start + anchor.length - 1)
+            if (occupied.none { existing -> range.first <= existing.last && existing.first <= range.last }) {
+                occupied += range
+            }
+        }
+    return occupied.sortedBy(IntRange::first)
+}
+
+internal fun studyStageTranscriptDelta(
+    baseline: String,
+    currentTranscript: String
+): String {
+    val current = SimplifiedChineseText.normalize(currentTranscript).trim()
+    val base = SimplifiedChineseText.normalize(baseline).trim()
+    if (current.isBlank()) return ""
+    if (base.isBlank()) return current
+    if (current.startsWith(base)) return current.removePrefix(base).trim()
+
+    val commonPrefixLength = current.commonPrefixWith(base).length
+    val substantialPrefix = commonPrefixLength >= minOf(base.length, maxOf(8, base.length * 3 / 4))
+    return if (substantialPrefix) current.substring(commonPrefixLength).trim() else current
+}
+
+internal fun hasMeaningfulStudyStageEvidence(
+    transcriptDelta: String,
+    markerCount: Int,
+    attachmentCount: Int
+): Boolean = transcriptDelta.isNotBlank() || markerCount > 0 || attachmentCount > 0
+
+internal fun shouldCloseActivePhotoMarker(
+    activeMarkerId: String?,
+    importedMarkerId: String?,
+    importedCount: Int
+): Boolean = importedCount > 0 &&
+    activeMarkerId != null &&
+    activeMarkerId == importedMarkerId
 
 internal fun preserveStreamingSessionText(
     preservedText: String,

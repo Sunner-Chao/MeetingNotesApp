@@ -63,6 +63,22 @@ class CommunityApiServiceTest {
     }
 
     @Test
+    fun publicGatewayCredentialErrorIsLocalized() = runBlocking {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(401)
+                .setHeader("Content-Type", "application/json")
+                .setBody("""{"detail":"Missing or invalid API credentials"}""")
+        )
+
+        val error = service.publicCommunityPosts(
+            server.url("/api").toString()
+        ).exceptionOrNull()
+
+        assertEquals("服务鉴权状态异常，请稍后重试", error?.message)
+    }
+
+    @Test
     fun createDraftUsesLocalPostIdAsIdempotencyKey() = runBlocking {
         server.enqueue(
             MockResponse()

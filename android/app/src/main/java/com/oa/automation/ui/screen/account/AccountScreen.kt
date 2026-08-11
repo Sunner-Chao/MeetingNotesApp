@@ -89,7 +89,7 @@ import java.util.Locale
 import kotlin.math.floor
 import org.koin.androidx.compose.koinViewModel
 
-private val AccountGreen = Color(0xFF12B981)
+private val AccountGreen = Color(0xFF0078D4)
 private val AccountGold = Color(0xFFF2B84B)
 
 private data class AccountLayoutSpec(
@@ -579,7 +579,7 @@ private fun AccountQuotaPanel(
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = formatter.format(remaining),
-                            color = Color(0xFF2FE08F),
+                            color = Color(0xFF60CDFF),
                             fontWeight = FontWeight.Bold,
                             fontSize = if (layout.compact) 31.sp else 35.sp,
                             lineHeight = 39.sp,
@@ -609,7 +609,7 @@ private fun AccountQuotaPanel(
                             modifier = Modifier
                                 .fillMaxSize()
                                 .padding(7.dp),
-                            color = Color(0xFF2FE6B1),
+                            color = Color(0xFF8CC8FF),
                             trackColor = Color.White.copy(alpha = 0.14f),
                             strokeWidth = 10.dp,
                             strokeCap = StrokeCap.Round
@@ -1029,7 +1029,7 @@ internal fun ProfileAvatar(
                 Text(
                     text = fallbackText.firstOrNull()?.uppercase() ?: "悟",
                     style = MaterialTheme.typography.titleLarge,
-                    color = Color(0xFF075A3E),
+                    color = Color(0xFF00395D),
                     fontWeight = FontWeight.Bold
                 )
             }

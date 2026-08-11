@@ -137,7 +137,10 @@ class AgentGatewayEngine(
                 longitude = attachment.longitude,
                 accuracyMeters = attachment.accuracyMeters,
                 locationCapturedAt = attachment.locationCapturedAt,
-                locationSource = attachment.locationSource
+                locationSource = attachment.locationSource,
+                recordingMarkerId = attachment.recordingMarkerId,
+                markerTimestampMs = attachment.markerTimestampMs,
+                markerTranscriptAnchor = attachment.markerTranscriptAnchor
             )
         }
 
@@ -170,7 +173,10 @@ class AgentGatewayEngine(
         val longitude: Double? = null,
         val accuracyMeters: Float? = null,
         val locationCapturedAt: Long? = null,
-        val locationSource: String? = null
+        val locationSource: String? = null,
+        val recordingMarkerId: String? = null,
+        val markerTimestampMs: Long? = null,
+        val markerTranscriptAnchor: String? = null
     )
 
     data class AgentTaskResponse(

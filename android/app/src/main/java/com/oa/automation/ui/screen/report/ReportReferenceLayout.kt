@@ -8,13 +8,11 @@ import android.util.Base64
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -45,6 +43,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Description
@@ -55,10 +54,12 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.TaskAlt
+import androidx.compose.material.icons.filled.Timeline
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -121,15 +122,15 @@ import kotlinx.coroutines.launch
  * sequence is: title 95, audio 140, images 250, report 445, controls 702.
  */
 private val ReferenceInk = Color(0xFFF7F8FF)
-private val ReferenceMuted = Color(0xFFD6DBEA)
-private val ReferenceBorder = Color.White.copy(alpha = 0.36f)
-private val ReferenceGlassTop = Color.White.copy(alpha = 0.22f)
-private val ReferenceGlassBottom = Color.White.copy(alpha = 0.105f)
-private val ReferenceLavender = Color(0xFFC8A4FF)
-private val ReferenceSky = Color(0xFF78B8FF)
-private val ReferencePink = Color(0xFFFFA9D9)
-private val ReferenceMint = Color(0xFF9DE7D5)
-private val ReferenceStatusBar = Color(0xFF153850)
+private val ReferenceMuted = Color(0xFFD2E4F4)
+private val ReferenceBorder = Color(0xFF8CC8FF).copy(alpha = 0.32f)
+private val ReferenceGlassTop = Color(0xFFB9DDF5).copy(alpha = 0.16f)
+private val ReferenceGlassBottom = Color(0xFF0F3554).copy(alpha = 0.20f)
+private val ReferenceLavender = Color(0xFF8CC8FF)
+private val ReferenceSky = Color(0xFF60CDFF)
+private val ReferencePink = Color(0xFF3A96DD)
+private val ReferenceMint = Color(0xFF99D6FF)
+private val ReferenceStatusBar = Color(0xFF0F3554)
 
 private data class ReferenceMetrics(
     val horizontalInset: Dp,
@@ -168,7 +169,7 @@ private fun ReferenceSystemBars() {
         val previousNavigation = window?.navigationBarColor
         if (window != null) {
             window.statusBarColor = ReferenceStatusBar.toArgb()
-            window.navigationBarColor = Color(0xFF0E1D41).toArgb()
+            window.navigationBarColor = Color(0xFF0A243A).toArgb()
             WindowCompat.getInsetsController(window, view).apply {
                 isAppearanceLightStatusBars = false
                 isAppearanceLightNavigationBars = false
@@ -193,11 +194,11 @@ private fun ReferenceBackdrop(modifier: Modifier = Modifier) {
         drawRect(
             brush = Brush.linearGradient(
                 colors = listOf(
-                    Color(0xFF123655),
-                    Color(0xFF335F8B),
-                    Color(0xFF253C78),
-                    Color(0xFF331E60),
-                    Color(0xFF112A50)
+                    Color(0xFF0A243A),
+                    Color(0xFF123B5D),
+                    Color(0xFF0F4C75),
+                    Color(0xFF163A5F),
+                    Color(0xFF0B1F33)
                 ),
                 start = Offset(0f, 0f),
                 end = Offset(size.width, size.height)
@@ -205,28 +206,28 @@ private fun ReferenceBackdrop(modifier: Modifier = Modifier) {
         )
         drawRect(
             brush = Brush.radialGradient(
-                colors = listOf(Color(0xFF9CE7DA).copy(alpha = .58f), Color.Transparent),
+                colors = listOf(Color(0xFF60CDFF).copy(alpha = .32f), Color.Transparent),
                 center = Offset(size.width * .47f, size.height * .22f),
                 radius = size.width * .58f
             )
         )
         drawRect(
             brush = Brush.radialGradient(
-                colors = listOf(Color(0xFFFFB6D8).copy(alpha = .56f), Color.Transparent),
+                colors = listOf(Color(0xFF3A96DD).copy(alpha = .24f), Color.Transparent),
                 center = Offset(size.width * 1.02f, size.height * .60f),
                 radius = size.width * .72f
             )
         )
         drawRect(
             brush = Brush.radialGradient(
-                colors = listOf(Color(0xFF83C6F0).copy(alpha = .42f), Color.Transparent),
+                colors = listOf(Color(0xFF8CC8FF).copy(alpha = .22f), Color.Transparent),
                 center = Offset(size.width * .09f, size.height * .79f),
                 radius = size.width * .68f
             )
         )
         drawRect(
             brush = Brush.radialGradient(
-                colors = listOf(Color(0xFFAC84F5).copy(alpha = .42f), Color.Transparent),
+                colors = listOf(Color(0xFF106EBE).copy(alpha = .20f), Color.Transparent),
                 center = Offset(size.width * .52f, size.height * .93f),
                 radius = size.width * .64f
             )
@@ -236,12 +237,7 @@ private fun ReferenceBackdrop(modifier: Modifier = Modifier) {
 
 @Composable
 internal fun ReportReferenceTopBar(
-    title: String,
-    reportAvailable: Boolean,
-    optimizeActive: Boolean,
     onNavigateBack: () -> Unit,
-    onSave: () -> Unit,
-    onOptimize: () -> Unit,
     onShare: () -> Unit,
     shareMenu: @Composable () -> Unit
 ) {
@@ -296,6 +292,8 @@ internal fun ReportReferenceContent(
     onSelectTemplate: (PresetReportTemplate) -> Unit,
     onRegenerateWithTemplate: () -> Unit,
     onDeleteAttachment: (MeetingAttachment) -> Unit,
+    onAddImages: () -> Unit,
+    onCaptureImage: () -> Unit,
     onRefreshAudio: () -> Unit,
     onPrepareAudioPlayback: suspend (ArchivedMeetingAudio) -> Result<ArchivedMeetingAudioPlaybackSource>,
     onShareAudio: (ArchivedMeetingAudio) -> Unit,
@@ -306,6 +304,11 @@ internal fun ReportReferenceContent(
     modifier: Modifier = Modifier
 ) {
     val report = uiState.report ?: return
+    val templateName = report.templateName.ifBlank { uiState.reportTemplate.selectedName }
+    val isStudyReport = templateName.contains("研学") ||
+        templateName.contains("参观考察") ||
+        templateName.contains("游记") ||
+        templateName.contains("文旅")
     var showTemplatePreview by remember { mutableStateOf(false) }
     var previewTemplate by remember { mutableStateOf<PresetReportTemplate?>(null) }
 
@@ -352,6 +355,11 @@ internal fun ReportReferenceContent(
                     height = metrics.headerHeight
                 )
             }
+            if (isStudyReport && uiState.attachments.isNotEmpty()) {
+                item {
+                    ReferenceStudyJourneyCard(attachments = uiState.attachments)
+                }
+            }
             item {
                 ReferenceAudioCard(
                     audio = uiState.archivedAudio.firstOrNull(),
@@ -367,7 +375,10 @@ internal fun ReportReferenceContent(
                 ReferenceImagesCard(
                     attachments = uiState.attachments,
                     height = metrics.imageHeight,
-                    onDelete = onDeleteAttachment
+                    onDelete = onDeleteAttachment,
+                    onAddImages = onAddImages,
+                    onCaptureImage = onCaptureImage,
+                    isStudyReport = isStudyReport
                 )
             }
             item {
@@ -411,6 +422,112 @@ internal fun ReportReferenceContent(
                 height = metrics.controlHeight,
                 onClick = onShare
             )
+        }
+    }
+}
+
+internal data class ReferenceJourneyStageSummary(
+    val sequenceNumber: Int,
+    val attachmentCount: Int,
+    val locationCount: Int
+)
+
+internal fun referenceJourneyStageSummaries(
+    attachments: List<MeetingAttachment>
+): List<ReferenceJourneyStageSummary> {
+    if (attachments.isEmpty()) return emptyList()
+    val staged = attachments
+        .filter { !it.journeyStageId.isNullOrBlank() }
+        .groupBy { it.journeyStageId.orEmpty() }
+        .values
+        .sortedBy { group -> group.minOfOrNull { it.createdAt } ?: Long.MAX_VALUE }
+    val groups = if (staged.isNotEmpty()) {
+        staged
+    } else {
+        listOf(attachments)
+    }
+    return groups.mapIndexed { index, group ->
+        ReferenceJourneyStageSummary(
+            sequenceNumber = index + 1,
+            attachmentCount = group.size,
+            locationCount = group.count { it.latitude != null && it.longitude != null }
+        )
+    }
+}
+
+@Composable
+private fun ReferenceStudyJourneyCard(attachments: List<MeetingAttachment>) {
+    val stages = remember(attachments) { referenceJourneyStageSummaries(attachments) }
+    val locationCount = attachments.count { it.latitude != null && it.longitude != null }
+    ReferenceGlassCard(modifier = Modifier.fillMaxWidth().height(92.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Default.Timeline, null, tint = ReferenceInk, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(7.dp))
+            Text("考察轨迹", color = ReferenceInk, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.weight(1f))
+            Text(
+                text = "${stages.size} 段 · ${attachments.size} 条影像 · $locationCount 个地点",
+                color = ReferenceMuted,
+                fontSize = 10.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        LazyRow(
+            modifier = Modifier.fillMaxWidth().weight(1f).padding(top = 7.dp),
+            horizontalArrangement = Arrangement.spacedBy(7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            contentPadding = PaddingValues(horizontal = 2.dp)
+        ) {
+            itemsIndexed(
+                items = stages.take(6),
+                key = { _, stage -> stage.sequenceNumber }
+            ) { index, stage ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (index > 0) {
+                        Box(
+                            modifier = Modifier
+                                .width(22.dp)
+                                .height(2.dp)
+                                .background(ReferenceMint.copy(alpha = .72f), RoundedCornerShape(50))
+                        )
+                    }
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Box(
+                            modifier = Modifier
+                                .size(12.dp)
+                                .background(ReferenceMint, CircleShape)
+                                .border(2.dp, ReferenceMint.copy(alpha = .28f), CircleShape)
+                        )
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            text = "第${stage.sequenceNumber}段",
+                            color = ReferenceInk,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            text = "${stage.attachmentCount}影像${stage.locationCount.takeIf { it > 0 }?.let { " · ${it}地" }.orEmpty()}",
+                            color = ReferenceMuted,
+                            fontSize = 9.sp,
+                            maxLines = 1
+                        )
+                    }
+                }
+            }
+            if (stages.size > 6) {
+                item(key = "more-stages") {
+                    Text(
+                        text = "+${stages.size - 6}",
+                        color = ReferenceMuted,
+                        fontSize = 10.sp,
+                        modifier = Modifier.padding(start = 1.dp)
+                    )
+                }
+            }
         }
     }
 }
@@ -719,7 +836,10 @@ private fun ReferenceWaveform(
 private fun ReferenceImagesCard(
     attachments: List<MeetingAttachment>,
     height: Dp,
-    onDelete: (MeetingAttachment) -> Unit
+    onDelete: (MeetingAttachment) -> Unit,
+    onAddImages: () -> Unit,
+    onCaptureImage: () -> Unit,
+    isStudyReport: Boolean
 ) {
     var galleryIndex by remember { mutableStateOf<Int?>(null) }
     galleryIndex?.let { selectedIndex ->
@@ -727,6 +847,7 @@ private fun ReferenceImagesCard(
             attachments = attachments,
             initialIndex = selectedIndex,
             onDelete = onDelete,
+            isStudyReport = isStudyReport,
             onDismiss = { galleryIndex = null }
         )
     }
@@ -734,8 +855,21 @@ private fun ReferenceImagesCard(
         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Default.Image, null, tint = ReferenceInk, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(7.dp))
-            Text("会议图片", color = ReferenceInk, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            Text(
+                if (isStudyReport) "照片集锦" else "会议图片",
+                color = ReferenceInk,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.SemiBold
+            )
             Spacer(Modifier.weight(1f))
+            if (attachments.size >= 6) {
+                IconButton(onClick = onCaptureImage, modifier = Modifier.size(30.dp)) {
+                    Icon(Icons.Default.PhotoCamera, "拍摄照片", tint = ReferenceInk, modifier = Modifier.size(17.dp))
+                }
+                IconButton(onClick = onAddImages, modifier = Modifier.size(30.dp)) {
+                    Icon(Icons.Default.AddPhotoAlternate, "从相册选择", tint = ReferenceInk, modifier = Modifier.size(17.dp))
+                }
+            }
             Text(
                 text = "查看全部  ›",
                 color = if (attachments.isEmpty()) ReferenceMuted.copy(alpha = .55f) else ReferenceMuted,
@@ -752,7 +886,18 @@ private fun ReferenceImagesCard(
                     repeat(3) { columnIndex ->
                         val attachment = attachments.getOrNull(rowIndex * 3 + columnIndex)
                         if (attachment == null) {
-                            ReferenceImagePlaceholder(modifier = Modifier.weight(1f).fillMaxHeight())
+                            ReferenceImagePlaceholder(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxHeight(),
+                                addAction = true,
+                                onAddImages = onAddImages,
+                                onCaptureImage = if (rowIndex * 3 + columnIndex == attachments.size) {
+                                    onCaptureImage
+                                } else {
+                                    null
+                                }
+                            )
                         } else {
                             ReferenceAttachmentCell(
                                 attachment = attachment,
@@ -769,18 +914,64 @@ private fun ReferenceImagesCard(
 }
 
 @Composable
-private fun ReferenceImagePlaceholder(modifier: Modifier = Modifier) {
+private fun ReferenceImagePlaceholder(
+    modifier: Modifier = Modifier,
+    addAction: Boolean = false,
+    onAddImages: (() -> Unit)? = null,
+    onCaptureImage: (() -> Unit)? = null
+) {
+    val interactiveModifier = if (onCaptureImage == null && onAddImages != null) {
+        modifier.clickable(onClick = onAddImages)
+    } else {
+        modifier
+    }
     Box(
-        modifier = modifier
+        modifier = interactiveModifier
             .clip(RoundedCornerShape(8.dp))
             .background(Color.White.copy(alpha = .075f)),
         contentAlignment = Alignment.Center
     ) {
-        Icon(Icons.Default.Image, null, tint = ReferenceInk.copy(alpha = .34f), modifier = Modifier.size(16.dp))
+        if (onCaptureImage != null && onAddImages != null) {
+            Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                ReferenceImageActionButton(
+                    icon = Icons.Default.PhotoCamera,
+                    contentDescription = "拍摄照片",
+                    onClick = onCaptureImage
+                )
+                ReferenceImageActionButton(
+                    icon = Icons.Default.AddPhotoAlternate,
+                    contentDescription = "从相册选择",
+                    onClick = onAddImages
+                )
+            }
+        } else {
+            Icon(
+                if (addAction) Icons.Default.AddPhotoAlternate else Icons.Default.Image,
+                if (addAction) "添加图片" else null,
+                tint = ReferenceInk.copy(alpha = if (addAction) .56f else .34f),
+                modifier = Modifier.size(18.dp)
+            )
+        }
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun ReferenceImageActionButton(
+    icon: ImageVector,
+    contentDescription: String,
+    onClick: () -> Unit
+) {
+    Surface(
+        modifier = Modifier.size(32.dp),
+        shape = CircleShape,
+        color = Color.White.copy(alpha = .12f)
+    ) {
+        IconButton(onClick = onClick, modifier = Modifier.fillMaxSize()) {
+            Icon(icon, contentDescription, tint = ReferenceInk, modifier = Modifier.size(17.dp))
+        }
+    }
+}
+
 @Composable
 private fun ReferenceAttachmentCell(
     attachment: MeetingAttachment,
@@ -794,7 +985,7 @@ private fun ReferenceAttachmentCell(
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(8.dp))
-            .combinedClickable(onClick = onOpen, onLongClickLabel = "删除图片", onLongClick = onDelete)
+            .clickable(onClick = onOpen)
     ) {
         if (bitmap == null) {
             ReferenceImagePlaceholder(Modifier.fillMaxSize())
@@ -806,6 +997,23 @@ private fun ReferenceAttachmentCell(
                 modifier = Modifier.fillMaxSize()
             )
         }
+        Surface(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(4.dp)
+                .size(26.dp),
+            shape = CircleShape,
+            color = Color.Black.copy(alpha = .58f)
+        ) {
+            IconButton(onClick = onDelete, modifier = Modifier.fillMaxSize()) {
+                Icon(
+                    Icons.Default.DeleteOutline,
+                    contentDescription = "删除图片",
+                    tint = Color.White,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+        }
     }
 }
 
@@ -814,6 +1022,7 @@ private fun ReferenceImageGalleryDialog(
     attachments: List<MeetingAttachment>,
     initialIndex: Int,
     onDelete: (MeetingAttachment) -> Unit,
+    isStudyReport: Boolean,
     onDismiss: () -> Unit
 ) {
     var selectedIndex by remember(initialIndex, attachments) {
@@ -837,7 +1046,12 @@ private fun ReferenceImageGalleryDialog(
         ) {
             Column(modifier = Modifier.padding(14.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                    Text("会议图片", color = ReferenceInk, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        if (isStudyReport) "照片集锦" else "会议图片",
+                        color = ReferenceInk,
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
                     Spacer(Modifier.weight(1f))
                     Text("${selectedIndex + 1}/${attachments.size}", color = ReferenceMuted, fontSize = 12.sp)
                     Spacer(Modifier.width(4.dp))
@@ -935,10 +1149,10 @@ private fun ReferenceReportCard(
     FlowingProgressBorder(
         active = isProcessing,
         modifier = Modifier.fillMaxWidth().height(height),
-        cornerRadius = 22.dp,
-        inset = 2.dp,
-        strokeWidth = 2.dp,
-        colors = listOf(ReferenceMint, ReferencePink, ReferenceLavender, ReferenceSky)
+        cornerRadius = 17.dp,
+        inset = 1.dp,
+        strokeWidth = 1.8.dp,
+        colors = listOf(ReferenceSky, ReferencePink, ReferenceLavender)
     ) {
     ReferenceGlassCard(modifier = Modifier.fillMaxSize()) {
         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -1013,7 +1227,7 @@ private fun ReferenceSectionLabel(text: String) {
 
 @Composable
 private fun ReferencePointRow(point: String, index: Int) {
-    val pointColor = listOf(ReferencePink, Color(0xFFFFE6A6), ReferenceMint, Color(0xFFAEBBFF))[index % 4]
+    val pointColor = listOf(ReferencePink, ReferenceSky, ReferenceMint, ReferenceLavender)[index % 4]
     Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
         Box(
             modifier = Modifier
@@ -1211,7 +1425,7 @@ private fun ReferenceBottomAction(
                 style = Stroke(width = 2.dp.toPx())
             )
             drawRoundRect(
-                color = ReferencePink.copy(alpha = .22f),
+                color = ReferenceSky.copy(alpha = .16f),
                 topLeft = Offset(-8.dp.toPx(), -8.dp.toPx()),
                 size = size.copy(width = size.width + 16.dp.toPx(), height = size.height + 16.dp.toPx()),
                 cornerRadius = androidx.compose.ui.geometry.CornerRadius(size.height / 2f + 10.dp.toPx()),
@@ -1223,7 +1437,7 @@ private fun ReferenceBottomAction(
                 .fillMaxSize()
                 .clickable(onClick = onClick),
             shape = shape,
-            color = Color(0xFF536AC7).copy(alpha = .43f),
+            color = Color(0xFF005A9E).copy(alpha = .54f),
             border = BorderStroke(1.dp, Color.White.copy(alpha = .70f))
         ) {
             Column(

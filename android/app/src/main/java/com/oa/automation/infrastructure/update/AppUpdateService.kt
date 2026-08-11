@@ -30,6 +30,13 @@ sealed interface AppUpdateCheck {
     data class Available(val update: AndroidAppUpdate) : AppUpdateCheck
 }
 
+internal fun shouldPromptForUpdate(
+    update: AndroidAppUpdate,
+    ignoredVersionCode: Int?,
+    currentVersionCode: Int = BuildConfig.VERSION_CODE
+): Boolean = update.versionCode > currentVersionCode &&
+    (update.mandatory || update.versionCode != ignoredVersionCode)
+
 data class DownloadedAppUpdate(val update: AndroidAppUpdate, val apk: File)
 
 /** Network and installer boundary for the server-managed Android release channel. */

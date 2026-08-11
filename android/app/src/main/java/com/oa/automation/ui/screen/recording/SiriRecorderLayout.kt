@@ -18,7 +18,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -28,9 +27,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -38,7 +34,6 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.BookmarkBorder
@@ -53,6 +48,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
@@ -89,6 +85,9 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -123,32 +122,32 @@ private data class SiriRecorderPalette(
 )
 
 private val SiriDarkPalette = SiriRecorderPalette(
-    background = listOf(Color(0xFF080D23), Color(0xFF0D1631), Color(0xFF071A31)),
-    card = Color(0xFF263650).copy(alpha = 0.64f),
-    cardRaised = Color(0xFF344563).copy(alpha = 0.70f),
-    text = Color(0xFFF5F6FF),
-    muted = Color(0xFFBFC7DA),
-    border = Color(0xFFB8CBE5).copy(alpha = 0.34f),
-    control = Color(0xFFB4C3DA).copy(alpha = 0.18f),
-    controlBorder = Color(0xFFE4ECFF).copy(alpha = 0.35f),
-    cyan = Color(0xFF37E7FF),
-    pink = Color(0xFFFF79C8),
-    violet = Color(0xFFB883FF),
+    background = listOf(Color(0xFF1B1A19), Color(0xFF202B33), Color(0xFF1B1A19)),
+    card = Color(0xFF252423).copy(alpha = 0.82f),
+    cardRaised = Color(0xFF323130).copy(alpha = 0.88f),
+    text = Color(0xFFF3F2F1),
+    muted = Color(0xFFC8C6C4),
+    border = Color(0xFF8CC8FF).copy(alpha = 0.30f),
+    control = Color(0xFF323130).copy(alpha = 0.72f),
+    controlBorder = Color(0xFF8CC8FF).copy(alpha = 0.34f),
+    cyan = Color(0xFF60CDFF),
+    pink = Color(0xFF3A96DD),
+    violet = Color(0xFF106EBE),
     red = Color(0xFFFF5A5F)
 )
 
 private val SiriLightPalette = SiriRecorderPalette(
-    background = listOf(Color(0xFFE8F3FF), Color(0xFFF9F1FF), Color(0xFFE3FBF7)),
-    card = Color.White.copy(alpha = 0.68f),
+    background = listOf(Color(0xFFF5F5F5), Color(0xFFEDF4F9), Color(0xFFF5F5F5)),
+    card = Color.White.copy(alpha = 0.82f),
     cardRaised = Color.White.copy(alpha = 0.84f),
-    text = Color(0xFF172139),
-    muted = Color(0xFF657188),
-    border = Color(0xFF718AA7).copy(alpha = 0.30f),
+    text = Color(0xFF242424),
+    muted = Color(0xFF605E5C),
+    border = Color(0xFF0078D4).copy(alpha = 0.24f),
     control = Color.White.copy(alpha = 0.48f),
-    controlBorder = Color.White.copy(alpha = 0.78f),
-    cyan = Color(0xFF00AFC7),
-    pink = Color(0xFFEE5FA9),
-    violet = Color(0xFF8D5DEB),
+    controlBorder = Color(0xFF0078D4).copy(alpha = 0.28f),
+    cyan = Color(0xFF0078D4),
+    pink = Color(0xFF2B88B9),
+    violet = Color(0xFF106EBE),
     red = Color(0xFFE54850)
 )
 
@@ -159,8 +158,6 @@ internal fun SiriRecorderContent(
     onOpenReport: () -> Unit,
     hasExistingReport: Boolean,
     onEditTitle: () -> Unit,
-    onOpenService: () -> Unit,
-    onOpenImages: () -> Unit,
     onOpenAudio: () -> Unit,
     onSwitchToImport: () -> Unit,
     onAbandonRecording: () -> Unit,
@@ -169,10 +166,6 @@ internal fun SiriRecorderContent(
     onStopRecording: () -> Unit,
     onTogglePause: () -> Unit,
     onAddMarker: () -> Unit,
-    onStartJourney: () -> Unit,
-    onSaveCurrentJourneyStage: () -> Unit,
-    onPauseJourney: () -> Unit,
-    onContinueJourney: () -> Unit,
     onGenerateStageDraft: () -> Unit,
     onOpenStageDraft: () -> Unit,
     onGenerateJourneyEdition: () -> Unit,
@@ -184,7 +177,6 @@ internal fun SiriRecorderContent(
     onGenerateReport: () -> Unit,
     onCancelTranscription: () -> Unit,
     onCancelReport: () -> Unit,
-    onSttLanguageSelected: (STTLanguage) -> Unit,
     onDismissError: () -> Unit
 ) {
     val palette = if (com.oa.automation.ui.theme.LocalAppIsDarkTheme.current) {
@@ -193,8 +185,8 @@ internal fun SiriRecorderContent(
         SiriLightPalette
     }
     var menuExpanded by remember { mutableStateOf(false) }
-    var languageExpanded by remember { mutableStateOf(false) }
     val canGenerate = !uiState.isRecording &&
+        !uiState.isFinalizingRecording &&
         !uiState.isTranscribing &&
         !uiState.isGeneratingReport &&
         uiState.hasRecording &&
@@ -222,15 +214,12 @@ internal fun SiriRecorderContent(
                 onMenuExpandedChange = { menuExpanded = it },
                 onNavigateBack = onNavigateBack,
                 onEditTitle = onEditTitle,
-                onOpenService = onOpenService,
-                onOpenImages = onOpenImages,
                 onOpenAudio = onOpenAudio,
                 onSwitchToImport = onSwitchToImport,
                 onAbandonRecording = onAbandonRecording,
                 onGenerateReport = onGenerateReport,
                 canGenerate = canGenerate,
                 journey = uiState.journey,
-                currentJourneyStage = uiState.currentJourneyStage,
                 latestSavedJourneyStage = uiState.latestSavedJourneyStage,
                 latestStageDraft = uiState.latestStageDraft,
                 isGeneratingStageDraft = uiState.isGeneratingStageDraft,
@@ -238,16 +227,12 @@ internal fun SiriRecorderContent(
                 isGeneratingJourneyEdition = uiState.isGeneratingJourneyEdition,
                 latestPublishedPost = uiState.latestPublishedPost,
                 isCreatingPublishedPost = uiState.isCreatingPublishedPost,
-                selectedTemplateName = uiState.reportTemplate.selectedName,
                 journeyActionEnabled = !uiState.isJourneyActionPending &&
                     !uiState.isRecording &&
                     !uiState.isRecordingActionPending &&
+                    !uiState.isFinalizingRecording &&
                     !uiState.isTranscribing &&
                     !uiState.isGeneratingReport,
-                onStartJourney = onStartJourney,
-                onSaveCurrentJourneyStage = onSaveCurrentJourneyStage,
-                onPauseJourney = onPauseJourney,
-                onContinueJourney = onContinueJourney,
                 onGenerateStageDraft = onGenerateStageDraft,
                 onOpenStageDraft = onOpenStageDraft,
                 onGenerateJourneyEdition = onGenerateJourneyEdition,
@@ -266,6 +251,9 @@ internal fun SiriRecorderContent(
                     latestStageDraft = uiState.latestStageDraft,
                     latestJourneyEdition = uiState.latestJourneyEdition,
                     latestPublishedPost = uiState.latestPublishedPost,
+                    journeyStageCount = uiState.journeyStageCount,
+                    attachmentCount = uiState.attachments.size,
+                    publishedMediaCount = uiState.publishedPostMedia.size,
                     statusMessage = uiState.journeyStatusMessage,
                     palette = palette
                 )
@@ -290,9 +278,12 @@ internal fun SiriRecorderContent(
             Spacer(Modifier.height(10.dp))
             SiriTranscriptCard(
                 transcript = uiState.liveTranscript,
+                markerAnchors = uiState.recordingMarkerAnchors,
+                hasActivePhotoMarker = uiState.activePhotoMarker != null,
                 durationSeconds = uiState.recordingDuration,
                 isRecording = uiState.isRecording,
                 isPaused = uiState.isPaused,
+                isFinalizingRecording = uiState.isFinalizingRecording,
                 isTranscribing = uiState.isTranscribing,
                 isGeneratingReport = uiState.isGeneratingReport,
                 progressPercent = if (uiState.isTranscribing) {
@@ -301,11 +292,7 @@ internal fun SiriRecorderContent(
                     uiState.reportProgressPercent
                 },
                 status = uiState.transcriptPreviewMode,
-                language = uiState.sttLanguage,
-                languageExpanded = languageExpanded,
                 palette = palette,
-                onLanguageExpandedChange = { languageExpanded = it },
-                onSttLanguageSelected = onSttLanguageSelected,
                 onCancelTranscription = onCancelTranscription,
                 onCancelReport = onCancelReport,
                 onDismissError = onDismissError,
@@ -320,9 +307,13 @@ internal fun SiriRecorderContent(
                 audioLevel = uiState.audioLevel,
                 actionEnabled = isRecordingActionEnabled(uiState),
                 markerCount = uiState.recordingMarkers.size,
+                hasActivePhotoMarker = uiState.activePhotoMarker != null,
                 onAddMarker = onAddMarker,
                 onTogglePause = onTogglePause,
-                onMainAction = if (uiState.isRecording) onStopRecording else onStartRecording
+                onMainAction = when (recordingMainAction(uiState)) {
+                    RecordingMainAction.START -> onStartRecording
+                    RecordingMainAction.STOP -> onStopRecording
+                }
             )
             Spacer(Modifier.height(2.dp))
         }
@@ -340,15 +331,12 @@ private fun SiriTopBar(
     onMenuExpandedChange: (Boolean) -> Unit,
     onNavigateBack: () -> Unit,
     onEditTitle: () -> Unit,
-    onOpenService: () -> Unit,
-    onOpenImages: () -> Unit,
     onOpenAudio: () -> Unit,
     onSwitchToImport: () -> Unit,
     onAbandonRecording: () -> Unit,
     onGenerateReport: () -> Unit,
     canGenerate: Boolean,
     journey: Journey?,
-    currentJourneyStage: JourneyStage?,
     latestSavedJourneyStage: JourneyStage?,
     latestStageDraft: StageDraftVersion?,
     isGeneratingStageDraft: Boolean,
@@ -356,12 +344,7 @@ private fun SiriTopBar(
     isGeneratingJourneyEdition: Boolean,
     latestPublishedPost: PublishedPost?,
     isCreatingPublishedPost: Boolean,
-    selectedTemplateName: String,
     journeyActionEnabled: Boolean,
-    onStartJourney: () -> Unit,
-    onSaveCurrentJourneyStage: () -> Unit,
-    onPauseJourney: () -> Unit,
-    onContinueJourney: () -> Unit,
     onGenerateStageDraft: () -> Unit,
     onOpenStageDraft: () -> Unit,
     onGenerateJourneyEdition: () -> Unit,
@@ -415,61 +398,11 @@ private fun SiriTopBar(
                 expanded = menuExpanded,
                 onDismissRequest = { onMenuExpandedChange(false) }
             ) {
-                SiriMenuItem(Icons.AutoMirrored.Filled.ArrowBack, "返回", onNavigateBack, onMenuExpandedChange)
                 SiriMenuItem(Icons.Default.Edit, "修改会议名称", onEditTitle, onMenuExpandedChange)
-                SiriMenuItem(Icons.Default.Settings, "识别设置", onOpenService, onMenuExpandedChange)
-                SiriMenuItem(Icons.Default.AddPhotoAlternate, "会议图片", onOpenImages, onMenuExpandedChange)
                 SiriMenuItem(Icons.Default.Headphones, "保存或分享音频", onOpenAudio, onMenuExpandedChange)
                 SiriMenuItem(Icons.Default.Apps, "导入文本或音频", onSwitchToImport, onMenuExpandedChange)
-                if (journey == null && selectedTemplateName == "研学考察") {
-                    SiriMenuItem(
-                        icon = Icons.Default.AutoAwesome,
-                        text = "开始研学旅程",
-                        onClick = onStartJourney,
-                        onExpandedChange = onMenuExpandedChange,
-                        enabled = journeyActionEnabled
-                    )
-                }
                 if (journey != null) {
                     HorizontalDivider(color = palette.border)
-                    when (journey.status) {
-                        JourneyStatus.ACTIVE -> {
-                            if (currentJourneyStage != null) {
-                                SiriMenuItem(
-                                    icon = Icons.Default.BookmarkBorder,
-                                    text = "暂存本段",
-                                    onClick = onSaveCurrentJourneyStage,
-                                    onExpandedChange = onMenuExpandedChange,
-                                    enabled = journeyActionEnabled
-                                )
-                            } else {
-                                SiriMenuItem(
-                                    icon = Icons.Default.PlayArrow,
-                                    text = "开始下一段",
-                                    onClick = onContinueJourney,
-                                    onExpandedChange = onMenuExpandedChange,
-                                    enabled = journeyActionEnabled
-                                )
-                                SiriMenuItem(
-                                    icon = Icons.Default.Pause,
-                                    text = "暂停旅程",
-                                    onClick = onPauseJourney,
-                                    onExpandedChange = onMenuExpandedChange,
-                                    enabled = journeyActionEnabled
-                                )
-                            }
-                        }
-
-                        JourneyStatus.PAUSED -> SiriMenuItem(
-                            icon = Icons.Default.PlayArrow,
-                            text = "继续旅程",
-                            onClick = onContinueJourney,
-                            onExpandedChange = onMenuExpandedChange,
-                            enabled = journeyActionEnabled
-                        )
-
-                        JourneyStatus.COMPLETED -> Unit
-                    }
                     latestSavedJourneyStage?.let { savedStage ->
                         when {
                             isGeneratingStageDraft -> SiriMenuItem(
@@ -659,6 +592,9 @@ private fun SiriJourneyStrip(
     latestStageDraft: StageDraftVersion?,
     latestJourneyEdition: JourneyEdition?,
     latestPublishedPost: PublishedPost?,
+    journeyStageCount: Int,
+    attachmentCount: Int,
+    publishedMediaCount: Int,
     statusMessage: String,
     palette: SiriRecorderPalette
 ) {
@@ -687,38 +623,228 @@ private fun SiriJourneyStrip(
             JourneyStatus.ACTIVE -> currentStage?.let { "${it.title} · 进行中" } ?: "等待下一段"
         }
     }
+    val stageCount = journeyStageCount.coerceAtLeast(0)
+    val currentStageNumber = currentStage?.sequenceNumber?.coerceAtLeast(1)
+        ?: latestSavedStage?.sequenceNumber?.coerceAtLeast(1)
+        ?: stageCount
+    val visibleStageCount = stageCount.coerceIn(1, 6)
+    val journeyStateLabel = when (journey.status) {
+        JourneyStatus.ACTIVE -> "进行中"
+        JourneyStatus.PAUSED -> "已暂停"
+        JourneyStatus.COMPLETED -> "已完成"
+    }
+    val stageNoteLabel = when (latestStageDraft?.status) {
+        StageDraftStatus.DRAFT -> "阶段笔记待编辑"
+        StageDraftStatus.CONFIRMED -> "阶段笔记已确认"
+        null -> "阶段笔记待生成"
+    }
+    val editionLabel = when (latestJourneyEdition?.status) {
+        JourneyEditionStatus.DRAFT -> "总游记待编辑"
+        JourneyEditionStatus.CONFIRMED -> "总游记已确认"
+        null -> "总游记待生成"
+    }
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(8.dp),
-        color = palette.control,
-        border = BorderStroke(1.dp, palette.border)
+        shape = RoundedCornerShape(18.dp),
+        color = palette.card.copy(alpha = 0.72f),
+        border = BorderStroke(1.dp, palette.border.copy(alpha = 0.72f))
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(9.dp)
+            ) {
+                Surface(
+                    modifier = Modifier.size(30.dp),
+                    shape = CircleShape,
+                    color = palette.cyan.copy(alpha = 0.16f),
+                    border = BorderStroke(1.dp, palette.cyan.copy(alpha = 0.38f))
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Default.BookmarkBorder,
+                            contentDescription = null,
+                            tint = palette.cyan,
+                            modifier = Modifier.size(17.dp)
+                        )
+                    }
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = journey.title.ifBlank { "参观考察" },
+                        color = palette.text,
+                        style = MaterialTheme.typography.titleSmall.copy(fontSize = 14.sp, lineHeight = 18.sp),
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = progressLabel,
+                        color = palette.muted,
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp, lineHeight = 14.sp),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                SiriJourneyStatusPill(
+                    text = journeyStateLabel,
+                    palette = palette,
+                    active = journey.status == JourneyStatus.ACTIVE
+                )
+            }
+            Spacer(Modifier.height(10.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    text = "阶段",
+                    color = palette.muted,
+                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                    modifier = Modifier.width(27.dp)
+                )
+                SiriJourneyTimeline(
+                    stageCount = visibleStageCount,
+                    activeStage = currentStageNumber.coerceIn(0, visibleStageCount),
+                    palette = palette,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    text = "${currentStageNumber}/${stageCount}",
+                    color = palette.text,
+                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                    fontWeight = FontWeight.Medium
+                )
+            }
+            Spacer(Modifier.height(9.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                SiriJourneyMetric(
+                    icon = Icons.Default.PhotoLibrary,
+                    text = "${maxOf(attachmentCount, publishedMediaCount)} 条影像",
+                    palette = palette,
+                    modifier = Modifier.weight(1f)
+                )
+                SiriJourneyMetric(
+                    icon = Icons.Default.Description,
+                    text = stageNoteLabel,
+                    palette = palette,
+                    modifier = Modifier.weight(1f)
+                )
+                SiriJourneyMetric(
+                    icon = Icons.Default.AutoAwesome,
+                    text = editionLabel,
+                    palette = palette,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SiriJourneyStatusPill(
+    text: String,
+    palette: SiriRecorderPalette,
+    active: Boolean
+) {
+    val tint = if (active) palette.cyan else palette.muted
+    Surface(
+        shape = RoundedCornerShape(50),
+        color = tint.copy(alpha = 0.12f),
+        border = BorderStroke(1.dp, tint.copy(alpha = 0.28f))
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(7.dp)
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            Icon(
-                imageVector = Icons.Default.BookmarkBorder,
-                contentDescription = null,
-                tint = palette.cyan,
-                modifier = Modifier.size(16.dp)
+            Box(
+                modifier = Modifier
+                    .size(5.dp)
+                    .background(tint, CircleShape)
             )
             Text(
-                text = "研学旅程",
-                color = palette.text,
-                style = MaterialTheme.typography.labelLarge.copy(fontSize = 13.sp),
+                text = text,
+                color = tint,
+                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
                 fontWeight = FontWeight.Medium
             )
-            Text(
-                text = progressLabel,
-                color = palette.muted,
-                style = MaterialTheme.typography.labelMedium.copy(fontSize = 12.sp),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f)
+        }
+    }
+}
+
+@Composable
+private fun SiriJourneyTimeline(
+    stageCount: Int,
+    activeStage: Int,
+    palette: SiriRecorderPalette,
+    modifier: Modifier = Modifier
+) {
+    Canvas(modifier = modifier.height(18.dp)) {
+        val count = stageCount.coerceAtLeast(1)
+        val radius = 5.dp.toPx()
+        val startX = radius
+        val endX = size.width - radius
+        val spacing = if (count > 1) (endX - startX) / (count - 1) else 0f
+        val centerY = size.height / 2f
+        repeat(count - 1) { index ->
+            val segmentCompleted = index + 2 <= activeStage
+            drawLine(
+                color = if (segmentCompleted) palette.cyan.copy(alpha = 0.72f) else palette.border,
+                start = Offset(startX + spacing * index, centerY),
+                end = Offset(startX + spacing * (index + 1), centerY),
+                strokeWidth = 2.dp.toPx(),
+                cap = StrokeCap.Round
             )
         }
+        repeat(count) { index ->
+            val completed = index + 1 <= activeStage
+            val center = Offset(startX + spacing * index, centerY)
+            drawCircle(
+                color = if (completed) palette.cyan else palette.control,
+                radius = if (completed) radius else 3.5.dp.toPx(),
+                center = center
+            )
+            drawCircle(
+                color = if (completed) palette.cyan.copy(alpha = 0.92f) else palette.border,
+                radius = if (completed) radius else 3.5.dp.toPx(),
+                center = center,
+                style = Stroke(width = 1.dp.toPx())
+            )
+        }
+    }
+}
+
+@Composable
+private fun SiriJourneyMetric(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    text: String,
+    palette: SiriRecorderPalette,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier,
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = palette.muted,
+            modifier = Modifier.size(13.dp)
+        )
+        Text(
+            text = text,
+            color = palette.muted,
+            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, lineHeight = 13.sp),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 
@@ -766,42 +892,36 @@ private fun SiriTemplateChips(
     palette: SiriRecorderPalette,
     onSelectTemplate: (PresetReportTemplate) -> Unit
 ) {
-    val listState = rememberLazyListState()
-    val selectedIndex = templates.indexOfFirst { it.name == selectedTemplateName }
-    LaunchedEffect(selectedIndex) {
-        if (selectedIndex >= 0) {
-            listState.animateScrollToItem(selectedIndex)
-        }
-    }
     CompositionLocalProvider(LocalMinimumInteractiveComponentEnforcement provides false) {
-        LazyRow(
-            modifier = Modifier.fillMaxWidth(),
-            state = listState,
-            contentPadding = PaddingValues(horizontal = 2.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 2.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            itemsIndexed(
-                items = templates,
-                key = { _, template -> template.name }
-            ) { index, template ->
-                val selected = template.name == selectedTemplateName
-                SiriTemplateChip(
-                    template = template,
-                    selected = selected,
-                    icon = siriTemplateIcon(index),
-                    palette = palette,
-                    modifier = Modifier.width(template.siriChipWidth()),
-                    onClick = { onSelectTemplate(template) }
-                )
+            templates.chunked(2).forEachIndexed { rowIndex, rowTemplates ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    rowTemplates.forEachIndexed { columnIndex, template ->
+                        val index = rowIndex * 2 + columnIndex
+                        SiriTemplateChip(
+                            template = template,
+                            selected = template.name == selectedTemplateName,
+                            icon = siriTemplateIcon(index),
+                            palette = palette,
+                            modifier = Modifier.weight(1f),
+                            onClick = { onSelectTemplate(template) }
+                        )
+                    }
+                    if (rowTemplates.size == 1) {
+                        Spacer(Modifier.weight(1f))
+                    }
+                }
             }
         }
     }
-}
-
-private fun PresetReportTemplate.siriChipWidth() = when {
-    name.length >= 8 -> 140.dp
-    name.length >= 6 -> 116.dp
-    else -> 102.dp
 }
 
 private fun siriTemplateIcon(index: Int) = when (index) {
@@ -884,21 +1004,43 @@ private fun SiriTemplateChip(
     }
 }
 
+private fun buildMarkerAwareTranscriptText(
+    transcript: String,
+    markerAnchors: List<String>,
+    defaultColor: Color,
+    markerColor: Color
+): AnnotatedString = buildAnnotatedString {
+    append(transcript)
+    if (transcript.isNotEmpty()) {
+        addStyle(
+            style = SpanStyle(color = defaultColor),
+            start = 0,
+            end = transcript.length
+        )
+    }
+    findRecordingMarkerAnchorRanges(transcript, markerAnchors).forEach { range ->
+        addStyle(
+            style = SpanStyle(color = markerColor, fontWeight = FontWeight.SemiBold),
+            start = range.first,
+            end = range.last + 1
+        )
+    }
+}
+
 @Composable
 private fun SiriTranscriptCard(
     transcript: String,
+    markerAnchors: List<String>,
+    hasActivePhotoMarker: Boolean,
     durationSeconds: Long,
     isRecording: Boolean,
     isPaused: Boolean,
+    isFinalizingRecording: Boolean,
     isTranscribing: Boolean,
     isGeneratingReport: Boolean,
     progressPercent: Int?,
     status: String,
-    language: STTLanguage,
-    languageExpanded: Boolean,
     palette: SiriRecorderPalette,
-    onLanguageExpandedChange: (Boolean) -> Unit,
-    onSttLanguageSelected: (STTLanguage) -> Unit,
     onCancelTranscription: () -> Unit,
     onCancelReport: () -> Unit,
     onDismissError: () -> Unit,
@@ -928,48 +1070,6 @@ private fun SiriTranscriptCard(
                     fontWeight = FontWeight.Medium
                 )
                 Spacer(Modifier.weight(1f))
-                Box {
-                    Surface(
-                        onClick = { onLanguageExpandedChange(true) },
-                        shape = RoundedCornerShape(50),
-                        color = Color.Transparent
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(3.dp)
-                        ) {
-                            Text(
-                                language.displayName,
-                                color = palette.muted,
-                                style = MaterialTheme.typography.labelMedium.copy(fontSize = 12.sp)
-                            )
-                            Icon(
-                                Icons.Default.KeyboardArrowDown,
-                                contentDescription = "识别语言",
-                                tint = palette.muted,
-                                modifier = Modifier.size(16.dp)
-                            )
-                        }
-                    }
-                    DropdownMenu(
-                        expanded = languageExpanded,
-                        onDismissRequest = { onLanguageExpandedChange(false) }
-                    ) {
-                        STTLanguage.entries.forEach { option ->
-                            DropdownMenuItem(
-                                text = { Text(option.displayName) },
-                                trailingIcon = if (option == language) {
-                                    { Icon(Icons.Default.Check, contentDescription = null) }
-                                } else null,
-                                onClick = {
-                                    onSttLanguageSelected(option)
-                                    onLanguageExpandedChange(false)
-                                }
-                            )
-                        }
-                    }
-                }
             }
             Spacer(Modifier.height(10.dp))
             if (error != null) {
@@ -978,7 +1078,14 @@ private fun SiriTranscriptCard(
                     TextButton(onClick = onDismissError) { Text("关闭", color = palette.red) }
                 }
             }
-            if (isTranscribing || isGeneratingReport) {
+            if (isFinalizingRecording) {
+                Text(
+                    text = status.ifBlank { "正在结束并保存录音" },
+                    color = palette.muted,
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Spacer(Modifier.height(8.dp))
+            } else if (isTranscribing || isGeneratingReport) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         text = status.ifBlank { if (isTranscribing) "正在整理录音" else "正在生成纪要" },
@@ -996,6 +1103,15 @@ private fun SiriTranscriptCard(
                 Spacer(Modifier.height(8.dp))
             } else if (isRecording) {
                 Text("${formatSiriDuration(durationSeconds)} · 正在聆听", color = palette.muted, style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.height(8.dp))
+            }
+            if (hasActivePhotoMarker) {
+                Text(
+                    text = "红色文字已定位，等待关联现场图片",
+                    color = palette.red,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Medium
+                )
                 Spacer(Modifier.height(8.dp))
             }
             if (transcript.isBlank()) {
@@ -1020,22 +1136,18 @@ private fun SiriTranscriptCard(
                         .fillMaxWidth()
                         .weight(1f)
                 ) {
-                Column(
-                    modifier = Modifier.fillMaxSize().verticalScroll(scrollState),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    transcript.split(Regex("\\n+"))
-                        .filter { it.isNotBlank() }
-                        .forEach { paragraph ->
-                            Text(
-                                text = paragraph.trim(),
-                                color = palette.text,
-                                style = MaterialTheme.typography.bodyLarge,
-                                fontSize = 16.sp,
-                                lineHeight = 26.sp
-                            )
-                        }
-                }
+                    Text(
+                        text = buildMarkerAwareTranscriptText(
+                            transcript = transcript,
+                            markerAnchors = markerAnchors,
+                            defaultColor = palette.text,
+                            markerColor = palette.red
+                        ),
+                        modifier = Modifier.fillMaxSize().verticalScroll(scrollState),
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontSize = 16.sp,
+                        lineHeight = 26.sp
+                    )
                 }
             }
         }
@@ -1050,6 +1162,7 @@ private fun SiriBottomControls(
     audioLevel: Float,
     actionEnabled: Boolean,
     markerCount: Int,
+    hasActivePhotoMarker: Boolean,
     onAddMarker: () -> Unit,
     onTogglePause: () -> Unit,
     onMainAction: () -> Unit
@@ -1062,13 +1175,18 @@ private fun SiriBottomControls(
         SiriRoundAction(
             palette = palette,
             icon = Icons.Default.BookmarkBorder,
-            label = if (markerCount > 0) "标记 $markerCount" else "标记",
-            enabled = isRecording,
+            label = when {
+                hasActivePhotoMarker -> "待配图"
+                markerCount > 0 -> "标记 $markerCount"
+                else -> "标记"
+            },
+            enabled = isRecording && !isPaused && actionEnabled,
             onClick = onAddMarker
         )
         SiriMicOrb(
             palette = palette,
-            active = isRecording,
+            isRecording = isRecording,
+            isPaused = isPaused,
             audioLevel = audioLevel,
             enabled = actionEnabled,
             onClick = onMainAction
@@ -1077,7 +1195,7 @@ private fun SiriBottomControls(
             palette = palette,
             icon = if (isPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
             label = if (isPaused) "继续" else "暂停",
-            enabled = isRecording,
+            enabled = isRecording && actionEnabled,
             onClick = onTogglePause
         )
     }
@@ -1123,7 +1241,8 @@ private fun SiriRoundAction(
 @Composable
 private fun SiriMicOrb(
     palette: SiriRecorderPalette,
-    active: Boolean,
+    isRecording: Boolean,
+    isPaused: Boolean,
     audioLevel: Float,
     enabled: Boolean,
     onClick: () -> Unit
@@ -1145,7 +1264,11 @@ private fun SiriMicOrb(
         Canvas(Modifier.fillMaxSize()) {
             val center = Offset(size.width / 2f, size.height / 2f)
             val core = size.minDimension * 0.35f
-            val pulse = if (active) 1f + 0.10f * sin(phase * (PI * 2).toFloat()) else 1f
+            val pulse = if (isRecording && !isPaused) {
+                1f + 0.10f * sin(phase * (PI * 2).toFloat())
+            } else {
+                1f
+            }
             for (ring in 3 downTo 1) {
                 drawCircle(
                     brush = Brush.radialGradient(
@@ -1161,7 +1284,7 @@ private fun SiriMicOrb(
                     center = center
                 )
             }
-            if (active) {
+            if (isRecording && !isPaused) {
                 // Each ring expands from the microphone like a water ripple. The
                 // measured level controls both radius and opacity, while phase
                 // keeps the feedback alive between PCM callbacks.
@@ -1199,11 +1322,12 @@ private fun SiriMicOrb(
                 style = Stroke(width = 2.dp.toPx())
             )
         }
-        if (active) {
-            AudioReactiveMicGlyph(
-                palette = palette,
-                level = audioLevel,
-                modifier = Modifier.size(42.dp)
+        if (isRecording) {
+            Icon(
+                Icons.Default.Stop,
+                contentDescription = "结束并保存录音",
+                tint = Color.White,
+                modifier = Modifier.size(38.dp)
             )
         } else {
             Icon(

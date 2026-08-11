@@ -77,7 +77,10 @@ data class AgentAttachment(
     val longitude: Double? = null,
     val accuracyMeters: Float? = null,
     val locationCapturedAt: Long? = null,
-    val locationSource: String? = null
+    val locationSource: String? = null,
+    val recordingMarkerId: String? = null,
+    val markerTimestampMs: Long? = null,
+    val markerTranscriptAnchor: String? = null
 )
 
 /**
@@ -107,18 +110,22 @@ object ReportPromptTemplates {
     const val SYSTEM_PROMPT = """你是一个专业的 AI 文档生成助手，专门负责将录音转写、现场口述或原始记录整理成规范文档。
 
 你的职责：
-1. 严格按用户提供的模板生成文档
+1. 依据用户选择的会议类型和模板生成文档；通用会议允许按内容智能调整章节
 2. 从原始记录中提取关键信息、事实、数据和结论
 3. 会议纪要场景下识别决策事项、行动项和参会人员
 4. 工程/建筑日志场景下整理日期、天气、施工生产、设计工作、质量、安全、材料机具、验收、停工和加班等现场记录
 5. 监理例会场景下整理进度对比、上次整改闭合、监理工作、建设单位要求、责任单位和完成时限
 6. 参观考察场景下按实际行程顺序保留每个点位的时间、现场观察、讲解交流、可借鉴做法和后续启示
+7. 研学考察不得混入负责人、截止时间、验收标准、优先级、行动项、风险清单等项目管理字段；讲解人员只记录角色、姓名和单位，不推断职务
+8. 研学图片章节使用“照片集锦”；正文配图使用单独一行的“[照片：图 N]”锚点，并且只能引用实际存在的图号
+9. 论坛会议按主持串场、时间线、主题演讲、圆桌讨论和现场问答组织长篇内容，严格区分主持人、嘉宾与提问者
 
 输出格式要求：
 - 使用中文输出
 - 结构清晰，便于阅读
 - 不编造未提及的事实；无法确认的字段写“未提及”
-- 保留模板的标题层级、表格和章节结构"""
+- 专用模板保留标题层级、表格和章节结构；通用会议可按真实内容增删、合并或重排章节
+- Markdown 只用于客户端排版解析，不要使用代码围栏包裹整篇文档，也不要把 ##、> 等语法符号重复写成正文内容"""
 
     const val REFINEMENT_SYSTEM_PROMPT = """你是一个专业的会议纪要润色助手。用户会向你提供当前的会议纪要内容，你可以帮助用户：
 1. 润色文字，使表达更加专业流畅
@@ -170,14 +177,37 @@ object ReportPromptTemplates {
         val documentKind = reportDocumentKind(template.selectedName)
         val documentName = documentKind.documentTitle
         val sourceName = documentKind.sourceTitle
-        return """请根据以下$sourceName，严格按给定模板生成一份完整的 Markdown $documentName。
+        val structureRule = if (template.selectedName == "通用会议") {
+            "先判断行政会议、头脑风暴、杂谈、讲座沙龙、经营讨论或混合型场景，再按真实内容增删、合并和重排章节；不要输出判断过程。"
+        } else {
+            "保留模板的标题层级、表格和章节结构。"
+        }
+        val scenarioRule = when (template.selectedName) {
+            "通用会议" -> """
+                通用会议智能适配：
+                - 行政会议突出决定、责任人以及开始、检查、截止和汇报时间。
+                - 头脑风暴保留创意、观点聚类、少数意见、关键假设和待验证方向。
+                - 杂谈按话题脉络保留有价值的观点和案例，没有明确承诺时不生成行动项。
+                - 讲座沙龙区分主持人、主讲人和提问者，按主题、案例、问答与启发组织内容。
+            """.trimIndent()
+            "论坛会议" -> """
+                论坛会议长篇整理：
+                - 按真实时间、主持转场、议程变化和发言人切换分段，不得把数小时内容过度压缩。
+                - 区分主持人、主讲人、圆桌嘉宾和提问者，姓名不明确时写“待确认”。
+                - 保留演讲论据、数据、案例、圆桌分歧和问答对应关系。
+            """.trimIndent()
+            else -> ""
+        }
+        return """请根据以下$sourceName，依据给定模板生成一份完整的 Markdown $documentName。
 
 要求：
-1. 保留模板的标题层级、表格和章节结构。
+1. $structureRule
 2. 将模板中的占位符替换为能从转写文本推断出的真实内容；无法确认的字段写“未提及”。
 3. 不要输出 JSON，不要解释过程，只输出最终正文。
 4. 待办、决策、问题、工程量、人员、天气等内容必须来自$sourceName，不要编造。
 5. 当内容适合用表格展示时（如工程量清单、材料清单、人员分工、进度对比等），必须使用 Markdown 表格输出，使信息更清晰直观。
+
+$scenarioRule
 
 模板「${template.selectedName}」：
 ```markdown

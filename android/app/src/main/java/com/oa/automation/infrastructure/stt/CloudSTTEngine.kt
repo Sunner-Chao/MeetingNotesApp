@@ -265,6 +265,20 @@ private fun cloudAsrHttpError(code: Int, body: String): String = when (code) {
     403 -> "当前账号无权调用智悟增强云模型 (HTTP 403)"
     404 -> "智悟增强云模型接口不可用，请检查服务地址 (HTTP 404)"
     429 -> "智悟增强云模型繁忙或额度不足 (HTTP 429)"
+    413 -> {
+        val detail = runCatching {
+            JsonParser.parseString(body).asJsonObject.get("detail")?.asString.orEmpty()
+        }.getOrDefault("")
+        val limitMb = Regex("(?i)(?:exceeds the|limit(?: is)?)[^0-9]{0,24}(\\d+)\\s*MB")
+            .find(detail)
+            ?.groupValues
+            ?.getOrNull(1)
+        if (limitMb != null) {
+            "音频文件超过智悟增强云模型当前的 ${limitMb} MB 接收上限，请压缩音频或稍后重试 (HTTP 413)"
+        } else {
+            "音频文件超过智悟增强云模型当前接收上限，请压缩音频或稍后重试 (HTTP 413)"
+        }
+    }
     else -> "智悟增强云模型请求失败 (HTTP $code): ${body.take(200)}"
 }
 

@@ -1,0 +1,22 @@
+[
+  {
+    "code": "vip_starter",
+    "name": "轻享月卡",
+    "description": "每月 30 次 AI 处理额度，解锁施工日志与专业纪要模板",
+    "price_cents": 3900,
+    "quota_amount": 30,
+    "construction_logs_unlocked": true,
+    "active": true,
+    "sort_order": 10
+  },
+  {
+    "code": "vip_professional",
+    "name": "专业月卡",
+    "description": "每月 150 次 AI 处理额度，解锁施工日志与专业纪要模板",
+    "price_cents": 12900,
+    "quota_amount": 150,
+    "construction_logs_unlocked": true,
+    "active": true,
+    "sort_order": 20
+  }
+]

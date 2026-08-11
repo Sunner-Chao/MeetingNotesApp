@@ -1,5 +1,6 @@
 package com.oa.automation.ui.screen.settings
 
+import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
@@ -9,6 +10,7 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -16,10 +18,12 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -30,16 +34,24 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.core.view.WindowCompat
 import com.oa.automation.domain.model.CloudApiFormat
 import com.oa.automation.domain.model.AppThemeMode
 import com.oa.automation.domain.model.AgentProvider
@@ -54,6 +66,120 @@ import com.oa.automation.domain.model.TencentAsrTierPolicy
 import com.oa.automation.domain.model.TencentAsrUsage
 import com.oa.automation.domain.model.TencentAsrUsageService
 import com.oa.automation.domain.model.formatTencentAsrDuration
+import com.oa.automation.ui.theme.LocalAppIsDarkTheme
+
+private data class SettingsPalette(
+    val isDark: Boolean,
+    val background: Color,
+    val surface: Color,
+    val surfaceStrong: Color,
+    val text: Color,
+    val mutedText: Color,
+    val purple: Color,
+    val blue: Color,
+    val cyan: Color,
+    val pink: Color,
+    val error: Color,
+    val outline: Color
+)
+
+private val DarkSettingsPalette = SettingsPalette(
+    isDark = true,
+    background = Color(0xFF1B1A19),
+    surface = Color(0xE8252423),
+    surfaceStrong = Color(0xF2323130),
+    text = Color(0xFFF3F2F1),
+    mutedText = Color(0xFFC8C6C4),
+    purple = Color(0xFF60CDFF),
+    blue = Color(0xFF0078D4),
+    cyan = Color(0xFF8CC8FF),
+    pink = Color(0xFF3A96DD),
+    error = Color(0xFFFF7B8A),
+    outline = Color(0xFF605E5C)
+)
+
+private val LightSettingsPalette = SettingsPalette(
+    isDark = false,
+    background = Color(0xFFF5F5F5),
+    surface = Color(0xF8FFFFFF),
+    surfaceStrong = Color(0xFFFFFFFF),
+    text = Color(0xFF242424),
+    mutedText = Color(0xFF605E5C),
+    purple = Color(0xFF0078D4),
+    blue = Color(0xFF0067B8),
+    cyan = Color(0xFF2B88B9),
+    pink = Color(0xFF4F8FB7),
+    error = Color(0xFFBA1A1A),
+    outline = Color(0xFFD2D0CE)
+)
+
+private val LocalSettingsPalette = staticCompositionLocalOf { DarkSettingsPalette }
+private val SettingsSurface: Color @Composable get() = LocalSettingsPalette.current.surface
+private val SettingsSurfaceStrong: Color @Composable get() = LocalSettingsPalette.current.surfaceStrong
+private val SettingsText: Color @Composable get() = LocalSettingsPalette.current.text
+private val SettingsMutedText: Color @Composable get() = LocalSettingsPalette.current.mutedText
+private val SettingsPurple: Color @Composable get() = LocalSettingsPalette.current.purple
+private val SettingsBlue: Color @Composable get() = LocalSettingsPalette.current.blue
+private val SettingsCyan: Color @Composable get() = LocalSettingsPalette.current.cyan
+private val SettingsPink: Color @Composable get() = LocalSettingsPalette.current.pink
+private val SettingsError: Color @Composable get() = LocalSettingsPalette.current.error
+private val SettingsGlassShape = RoundedCornerShape(24.dp)
+
+private fun settingsColorScheme(palette: SettingsPalette): ColorScheme = if (palette.isDark) {
+    darkColorScheme(
+        primary = palette.blue,
+        onPrimary = Color.White,
+        primaryContainer = Color(0xFF004578),
+        onPrimaryContainer = Color(0xFFC7E9FF),
+        secondary = palette.cyan,
+        onSecondary = Color(0xFF001F23),
+        secondaryContainer = Color(0xFF0F4160),
+        onSecondaryContainer = Color(0xFFC7E9FF),
+        tertiary = palette.pink,
+        onTertiary = Color.White,
+        tertiaryContainer = Color(0xFF334E68),
+        onTertiaryContainer = Color(0xFFD7E9FA),
+        error = palette.error,
+        onError = Color(0xFF3B0710),
+        errorContainer = Color(0xFF5A1C29),
+        onErrorContainer = Color(0xFFFFD9DE),
+        background = palette.background,
+        onBackground = palette.text,
+        surface = palette.surfaceStrong,
+        onSurface = palette.text,
+        surfaceVariant = Color(0xFF323130),
+        onSurfaceVariant = palette.mutedText,
+        outline = Color(0xFF8A8886),
+        outlineVariant = palette.outline
+    )
+} else {
+    lightColorScheme(
+        primary = palette.blue,
+        onPrimary = Color.White,
+        primaryContainer = Color(0xFFE5F1FB),
+        onPrimaryContainer = Color(0xFF00395D),
+        secondary = palette.cyan,
+        onSecondary = Color.White,
+        secondaryContainer = Color(0xFFDDEBF7),
+        onSecondaryContainer = Color(0xFF00395D),
+        tertiary = palette.pink,
+        onTertiary = Color.White,
+        tertiaryContainer = Color(0xFFE1ECF5),
+        onTertiaryContainer = Color(0xFF19344D),
+        error = palette.error,
+        onError = Color.White,
+        errorContainer = Color(0xFFFFDAD6),
+        onErrorContainer = Color(0xFF410002),
+        background = palette.background,
+        onBackground = palette.text,
+        surface = palette.surfaceStrong,
+        onSurface = palette.text,
+        surfaceVariant = Color(0xFFF0F0F0),
+        onSurfaceVariant = palette.mutedText,
+        outline = Color(0xFF8A8886),
+        outlineVariant = palette.outline
+    )
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -63,6 +189,39 @@ fun SettingsScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val scrollState = rememberScrollState()
+    val systemIsDark = isSystemInDarkTheme()
+    val settingsPalette = if (uiState.themeMode.usesDarkColors(systemIsDark)) {
+        DarkSettingsPalette
+    } else {
+        LightSettingsPalette
+    }
+    val view = LocalView.current
+    val activity = view.context as? Activity
+    val appIsDark = LocalAppIsDarkTheme.current
+    val appBackground = MaterialTheme.colorScheme.background
+
+    DisposableEffect(activity, appIsDark, appBackground) {
+        onDispose {
+            activity?.window?.let { window ->
+                window.statusBarColor = appBackground.toArgb()
+                window.navigationBarColor = appBackground.toArgb()
+                WindowCompat.getInsetsController(window, view).apply {
+                    isAppearanceLightStatusBars = !appIsDark
+                    isAppearanceLightNavigationBars = !appIsDark
+                }
+            }
+        }
+    }
+    SideEffect {
+        activity?.window?.let { window ->
+            window.statusBarColor = settingsPalette.background.toArgb()
+            window.navigationBarColor = settingsPalette.background.toArgb()
+            WindowCompat.getInsetsController(window, view).apply {
+                isAppearanceLightStatusBars = !settingsPalette.isDark
+                isAppearanceLightNavigationBars = !settingsPalette.isDark
+            }
+        }
+    }
 
     LaunchedEffect(uiState.message) {
         uiState.message?.let {
@@ -71,155 +230,197 @@ fun SettingsScreen(
         }
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    Text(
-                        text = "设置",
-                        fontWeight = FontWeight.SemiBold
-                    )
-                },
-                navigationIcon = {
-                    IconButton(onClick = onNavigateBack) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "返回"
-                        )
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface
-                )
-            )
-        },
-        snackbarHost = {
-            uiState.message?.let { message ->
-                Snackbar(
-                    modifier = Modifier.padding(16.dp),
-                    shape = RoundedCornerShape(8.dp),
-                    containerColor = if (message.contains("成功")) {
-                        MaterialTheme.colorScheme.primaryContainer
-                    } else {
-                        MaterialTheme.colorScheme.errorContainer
-                    }
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Icon(
-                            imageVector = if (message.contains("成功")) Icons.Default.CheckCircle else Icons.Default.Error,
-                            contentDescription = null,
-                            tint = if (message.contains("成功")) {
-                                MaterialTheme.colorScheme.primary
+    CompositionLocalProvider(LocalSettingsPalette provides settingsPalette) {
+        MaterialTheme(colorScheme = settingsColorScheme(settingsPalette)) {
+        val palette = LocalSettingsPalette.current
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .drawBehind {
+                    drawRect(
+                        brush = Brush.linearGradient(
+                            colors = if (palette.isDark) {
+                                listOf(Color(0xFF163A5A), palette.background, Color(0xFF102A43))
                             } else {
-                                MaterialTheme.colorScheme.error
-                            }
+                                listOf(Color(0xFFE6F2FC), palette.background, Color(0xFFEAF2F8))
+                            },
+                            start = Offset.Zero,
+                            end = Offset(size.width, size.height)
                         )
-                        Text(message)
+                    )
+                    drawRect(
+                        brush = Brush.radialGradient(
+                            colors = listOf(palette.blue.copy(alpha = 0.14f), Color.Transparent),
+                            center = Offset(0f, size.height * 0.08f),
+                            radius = size.width * 0.95f
+                        )
+                    )
+                    drawRect(
+                        brush = Brush.radialGradient(
+                            colors = listOf(palette.cyan.copy(alpha = 0.10f), Color.Transparent),
+                            center = Offset(size.width, size.height * 0.30f),
+                            radius = size.width * 0.90f
+                        )
+                    )
+                    drawRect(
+                        brush = Brush.radialGradient(
+                            colors = listOf(palette.blue.copy(alpha = 0.08f), Color.Transparent),
+                            center = Offset(size.width * 0.85f, size.height),
+                            radius = size.width
+                        )
+                    )
+                }
+        ) {
+            Scaffold(
+                containerColor = Color.Transparent,
+                topBar = {
+                    CenterAlignedTopAppBar(
+                        title = {
+                            Text(
+                                text = "设置",
+                                fontSize = 25.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = SettingsText
+                            )
+                        },
+                        navigationIcon = {
+                            Surface(
+                                onClick = onNavigateBack,
+                                modifier = Modifier
+                                    .padding(start = 12.dp)
+                                    .size(44.dp),
+                                shape = CircleShape,
+                                color = SettingsSurfaceStrong.copy(alpha = 0.78f),
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (settingsPalette.isDark) Color.White.copy(alpha = 0.18f)
+                                    else settingsPalette.outline
+                                )
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                        contentDescription = "返回",
+                                        tint = SettingsText,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
+                            }
+                        },
+                        colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
+                            containerColor = Color.Transparent,
+                            scrolledContainerColor = Color.Transparent
+                        )
+                    )
+                },
+                snackbarHost = {
+                    uiState.message?.let { message ->
+                        Snackbar(
+                            modifier = Modifier.padding(16.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            containerColor = if (message.contains("成功")) {
+                                Color(0xFF0F4160)
+                            } else {
+                                MaterialTheme.colorScheme.errorContainer
+                            },
+                            contentColor = SettingsText
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = if (message.contains("成功")) Icons.Default.CheckCircle else Icons.Default.Error,
+                                    contentDescription = null,
+                                    tint = if (message.contains("成功")) SettingsCyan else SettingsError
+                                )
+                                Text(message)
+                            }
+                        }
                     }
                 }
-            }
-        }
-    ) { paddingValues ->
-        if (uiState.isLoading) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(paddingValues),
-                contentAlignment = Alignment.Center
-            ) {
-                CircularProgressIndicator()
-            }
-        } else {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(paddingValues)
-                    .verticalScroll(scrollState)
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                AppearanceAndUpdateSection(
-                    themeMode = uiState.themeMode,
-                    floatingBallEnabled = uiState.floatingBallEnabled,
-                    isCheckingUpdate = uiState.isCheckingUpdate,
-                    isDownloadingUpdate = uiState.isDownloadingUpdate,
-                    updateProgress = uiState.updateProgress,
-                    availableVersion = uiState.availableUpdate?.versionName,
-                    releaseNotes = uiState.availableUpdate?.releaseNotes.orEmpty(),
-                    onThemeModeChange = viewModel::updateThemeMode,
-                    onFloatingBallChange = viewModel::updateFloatingBallEnabled,
-                    onCheckUpdate = viewModel::checkForAppUpdate,
-                    onDownloadUpdate = viewModel::downloadAndInstallUpdate
-                )
+            ) { paddingValues ->
+                if (uiState.isLoading) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(paddingValues),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator(color = SettingsCyan)
+                    }
+                } else {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(paddingValues)
+                            .verticalScroll(scrollState)
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(18.dp)
+                    ) {
+                        AppearanceAndUpdateSection(
+                            themeMode = uiState.themeMode,
+                            floatingBallEnabled = uiState.floatingBallEnabled,
+                            isCheckingUpdate = uiState.isCheckingUpdate,
+                            isDownloadingUpdate = uiState.isDownloadingUpdate,
+                            updateProgress = uiState.updateProgress,
+                            availableVersion = uiState.availableUpdate?.versionName,
+                            releaseNotes = uiState.availableUpdate?.releaseNotes.orEmpty(),
+                            onThemeModeChange = viewModel::updateThemeMode,
+                            onFloatingBallChange = viewModel::updateFloatingBallEnabled,
+                            onCheckUpdate = viewModel::checkForAppUpdate,
+                            onDownloadUpdate = viewModel::downloadAndInstallUpdate
+                        )
 
-                // STT Configuration Section
-                STTConfigSection(
-                    config = uiState.appConfig.sttConfig,
-                    isTesting = uiState.isTestingSTT,
-                    isScanning = uiState.isScanningSTT,
-                    isSwitching = uiState.isSwitchingSTT,
-                    isLoadingTencentAsrPolicy = uiState.isLoadingTencentAsrPolicy,
-                    tencentAsrUsage = uiState.tencentAsrUsage,
-                    tencentAsrUsageError = uiState.tencentAsrUsageError,
-                    tencentAsrPolicy = uiState.tencentAsrPolicy,
-                    tencentAsrPolicyError = uiState.tencentAsrPolicyError,
-                    discoveredServers = uiState.discoveredServers,
-                    onEngineTypeChange = viewModel::updateSTTEngineType,
-                    onLocalEndpointChange = viewModel::updateSTTLocalEndpoint,
-                    onLocalModelChange = viewModel::updateSTTLocalModel,
-                    onApiTokenChange = viewModel::updateSTTApiToken,
-                    onTencentTierChange = viewModel::updateTencentAsrTier,
-                    onTestConnection = viewModel::testSTTConnection,
-                    onScanServers = viewModel::scanSTTServers,
-                    onRefreshTencentAsrPolicy = viewModel::refreshTencentAsrStatus,
-                    onApplyServer = viewModel::applyDiscoveredServer,
-                    onClearServers = viewModel::clearDiscoveredServers
-                )
+                        STTConfigSection(
+                            config = uiState.appConfig.sttConfig,
+                            isTesting = uiState.isTestingSTT,
+                            isScanning = uiState.isScanningSTT,
+                            isSwitching = uiState.isSwitchingSTT,
+                            isLoadingTencentAsrPolicy = uiState.isLoadingTencentAsrPolicy,
+                            tencentAsrUsage = uiState.tencentAsrUsage,
+                            tencentAsrUsageError = uiState.tencentAsrUsageError,
+                            tencentAsrPolicy = uiState.tencentAsrPolicy,
+                            tencentAsrPolicyError = uiState.tencentAsrPolicyError,
+                            discoveredServers = uiState.discoveredServers,
+                            onEngineTypeChange = viewModel::updateSTTEngineType,
+                            onLocalEndpointChange = viewModel::updateSTTLocalEndpoint,
+                            onLocalModelChange = viewModel::updateSTTLocalModel,
+                            onApiTokenChange = viewModel::updateSTTApiToken,
+                            onTencentTierChange = viewModel::updateTencentAsrTier,
+                            onTestConnection = viewModel::testSTTConnection,
+                            onScanServers = viewModel::scanSTTServers,
+                            onRefreshTencentAsrPolicy = viewModel::refreshTencentAsrStatus,
+                            onApplyServer = viewModel::applyDiscoveredServer,
+                            onClearServers = viewModel::clearDiscoveredServers
+                        )
 
-                // LLM Configuration Section
-                LLMConfigSection(
-                    config = uiState.appConfig.llmConfig,
-                    isTesting = uiState.isTestingLLM,
-                    onEngineTypeChange = viewModel::updateLLMEngineType,
-                    onAgentEndpointChange = viewModel::updateAgentEndpoint,
-                    onAgentAccessTokenChange = viewModel::updateAgentAccessToken,
-                    onAgentProviderChange = viewModel::updateAgentProvider,
-                    onCodexReasoningEffortChange = viewModel::updateCodexReasoningEffort,
-                    onClaudeReasoningEffortChange = viewModel::updateClaudeReasoningEffort,
-                    onLocalEndpointChange = viewModel::updateLLMLocalEndpoint,
-                    onLocalModelChange = viewModel::updateLLMLocalModel,
-                    onCloudEndpointChange = viewModel::updateLLMCloudEndpoint,
-                    onCloudApiKeyChange = viewModel::updateLLMCloudApiKey,
-                    onCloudModelChange = viewModel::updateLLMCloudModel,
-                    onCloudApiFormatChange = viewModel::updateLLMCloudApiFormat,
-                    onTestConnection = viewModel::testLLMConnection
-                )
+                        LLMConfigSection(
+                            config = uiState.appConfig.llmConfig,
+                            isTesting = uiState.isTestingLLM,
+                            onEngineTypeChange = viewModel::updateLLMEngineType,
+                            onAgentEndpointChange = viewModel::updateAgentEndpoint,
+                            onAgentAccessTokenChange = viewModel::updateAgentAccessToken,
+                            onAgentProviderChange = viewModel::updateAgentProvider,
+                            onCodexReasoningEffortChange = viewModel::updateCodexReasoningEffort,
+                            onClaudeReasoningEffortChange = viewModel::updateClaudeReasoningEffort,
+                            onLocalEndpointChange = viewModel::updateLLMLocalEndpoint,
+                            onLocalModelChange = viewModel::updateLLMLocalModel,
+                            onCloudEndpointChange = viewModel::updateLLMCloudEndpoint,
+                            onCloudApiKeyChange = viewModel::updateLLMCloudApiKey,
+                            onCloudModelChange = viewModel::updateLLMCloudModel,
+                            onCloudApiFormatChange = viewModel::updateLLMCloudApiFormat,
+                            onTestConnection = viewModel::testLLMConnection
+                        )
 
-                // Reset Button
-                OutlinedButton(
-                    onClick = viewModel::resetToDefault,
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(8.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = MaterialTheme.colorScheme.error
-                    )
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.RestartAlt,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("重置为默认配置")
+                        ResetSettingsCard(onClick = viewModel::resetToDefault)
+                        Spacer(modifier = Modifier.height(24.dp))
+                    }
                 }
-
-                Spacer(modifier = Modifier.height(24.dp))
             }
         }
     }
+}
 }
 
 @Composable
@@ -238,40 +439,70 @@ private fun AppearanceAndUpdateSection(
 ) {
     val context = LocalContext.current
     val overlayGranted = Settings.canDrawOverlays(context)
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(8.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-    ) {
+    val palette = LocalSettingsPalette.current
+    GlassSurface(modifier = Modifier.fillMaxWidth(), accent = SettingsCyan) {
         Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 22.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            SectionHeader("显示与更新", Icons.Default.Palette)
-            Text("主题", style = MaterialTheme.typography.labelLarge)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                ThemeModeButton("跟随系统", themeMode == AppThemeMode.SYSTEM) {
+            SectionHeader(
+                title = "显示与更新",
+                icon = Icons.Default.LightMode,
+                description = null,
+                accentStart = SettingsPurple,
+                accentEnd = SettingsPink
+            )
+            Text(
+                "外观模式",
+                style = MaterialTheme.typography.titleMedium,
+                color = SettingsText,
+                fontWeight = FontWeight.Medium
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                ThemeModeButton(
+                    text = "自动",
+                    icon = Icons.Default.BrightnessAuto,
+                    selected = themeMode == AppThemeMode.SYSTEM,
+                    modifier = Modifier.weight(1f)
+                ) {
                     onThemeModeChange(AppThemeMode.SYSTEM)
                 }
-                ThemeModeButton("浅色", themeMode == AppThemeMode.LIGHT) {
+                ThemeModeButton(
+                    text = "浅色",
+                    icon = Icons.Default.LightMode,
+                    selected = themeMode == AppThemeMode.LIGHT,
+                    modifier = Modifier.weight(1f)
+                ) {
                     onThemeModeChange(AppThemeMode.LIGHT)
                 }
-                ThemeModeButton("深色", themeMode == AppThemeMode.DARK) {
+                ThemeModeButton(
+                    text = "深色",
+                    icon = Icons.Default.DarkMode,
+                    selected = themeMode == AppThemeMode.DARK,
+                    modifier = Modifier.weight(1f)
+                ) {
                     onThemeModeChange(AppThemeMode.DARK)
                 }
             }
-            HorizontalDivider()
+            SettingsDivider()
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("后台悬浮球", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                     Text(
-                        text = if (overlayGranted) "切换到后台时显示，点击可快速回到智悟本" else "需要允许智悟本显示在其他应用上层",
+                        "背景悬浮球",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = SettingsText
+                    )
+                    Text(
+                        text = if (overlayGranted) "在界面中显示悬浮球，便于快速操作" else "需要允许智悟本显示在其他应用上层",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = SettingsMutedText
                     )
                 }
                 Switch(
@@ -287,44 +518,58 @@ private fun AppearanceAndUpdateSection(
                         } else {
                             onFloatingBallChange(enabled)
                         }
-                    }
+                    },
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = Color.White,
+                        checkedTrackColor = SettingsPurple,
+                        uncheckedThumbColor = if (palette.isDark) SettingsMutedText else Color(0xFF7A849B),
+                        uncheckedTrackColor = if (palette.isDark) Color(0xFF343B52) else Color(0xFFD8DEEB),
+                        uncheckedBorderColor = Color.Transparent
+                    )
                 )
             }
-            if (!overlayGranted) {
-                TextButton(
-                    onClick = {
-                        context.startActivity(
-                            Intent(
-                                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                                Uri.parse("package:${context.packageName}")
-                            )
-                        )
-                    },
-                    modifier = Modifier.align(Alignment.End)
-                ) { Text("打开悬浮窗授权") }
-            }
-            HorizontalDivider()
+            SettingsDivider()
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("版本与更新", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                     Text(
-                        availableVersion?.let { "发现新版本 $it" } ?: "当前版本 ${BuildConfig.VERSION_NAME}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        "当前版本",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = SettingsText
+                    )
+                    Text(
+                        availableVersion?.let { "发现新版本 $it" }
+                            ?: "v${BuildConfig.VERSION_NAME} (Build ${BuildConfig.VERSION_CODE})",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = SettingsMutedText
                     )
                 }
-                OutlinedButton(
+                Button(
                     onClick = if (availableVersion == null) onCheckUpdate else onDownloadUpdate,
                     enabled = !isCheckingUpdate && !isDownloadingUpdate,
-                    shape = RoundedCornerShape(8.dp)
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (palette.isDark) Color(0xFF25304A) else Color.White,
+                        contentColor = if (palette.isDark) SettingsText else SettingsPurple,
+                        disabledContainerColor = if (palette.isDark) Color(0xFF20283D) else Color(0xFFE5E8F0),
+                        disabledContentColor = SettingsMutedText
+                    ),
+                    contentPadding = PaddingValues(horizontal = 18.dp, vertical = 13.dp)
                 ) {
                     if (isCheckingUpdate || isDownloadingUpdate) {
                         CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                         Spacer(Modifier.width(6.dp))
+                    } else {
+                        Icon(
+                            imageVector = if (availableVersion != null) Icons.Default.Download else Icons.Default.Refresh,
+                            contentDescription = null,
+                            modifier = Modifier.size(17.dp)
+                        )
+                        Spacer(Modifier.width(7.dp))
                     }
                     Text(
                         when {
@@ -338,9 +583,9 @@ private fun AppearanceAndUpdateSection(
             }
             if (releaseNotes.isNotBlank()) {
                 Text(
-                    releaseNotes,
+                    "更新说明：$releaseNotes",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = SettingsMutedText
                 )
             }
         }
@@ -348,15 +593,89 @@ private fun AppearanceAndUpdateSection(
 }
 
 @Composable
-private fun ThemeModeButton(text: String, selected: Boolean, onClick: () -> Unit) {
-    val colors = if (selected) ButtonDefaults.buttonColors() else ButtonDefaults.outlinedButtonColors()
-    if (selected) {
-        Button(onClick = onClick, shape = RoundedCornerShape(8.dp), colors = colors) {
-            Text(text, style = MaterialTheme.typography.labelMedium)
-        }
-    } else {
-        OutlinedButton(onClick = onClick, shape = RoundedCornerShape(8.dp), colors = colors) {
-            Text(text, style = MaterialTheme.typography.labelMedium)
+private fun ThemeModeButton(
+    text: String,
+    icon: ImageVector,
+    selected: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    val shape = RoundedCornerShape(18.dp)
+    val palette = LocalSettingsPalette.current
+    Box(
+        modifier = modifier
+            .height(112.dp)
+            .clip(shape)
+            .background(
+                if (selected) {
+                    if (palette.isDark) {
+                        Brush.linearGradient(listOf(Color(0xFF164566), Color(0xFF0F2A40)))
+                    } else {
+                        Brush.linearGradient(listOf(Color(0xFFDCEFFA), Color(0xFFEDF5FA)))
+                    }
+                } else {
+                    if (palette.isDark) {
+                        Brush.verticalGradient(listOf(Color(0xFF1D2437), Color(0xFF151B2B)))
+                    } else {
+                        Brush.verticalGradient(listOf(Color.White, Color(0xFFF0F3FA)))
+                    }
+                }
+            )
+            .border(
+                BorderStroke(
+                    1.5.dp,
+                    if (selected) Brush.linearGradient(listOf(SettingsBlue, SettingsCyan))
+                    else if (palette.isDark) {
+                        Brush.linearGradient(listOf(Color(0xFF59647F), Color(0xFF31394F)))
+                    } else {
+                        Brush.linearGradient(listOf(Color(0xFFB9C3DD), Color(0xFFDCE2F0)))
+                    }
+                ),
+                shape
+            )
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(52.dp)
+                    .clip(RoundedCornerShape(15.dp))
+                    .background(
+                        when {
+                            selected -> if (palette.isDark) {
+                                Brush.linearGradient(listOf(Color(0xFFD6F0FF), Color(0xFF7ABFE4)))
+                            } else {
+                                Brush.linearGradient(listOf(Color.White, Color(0xFFD9EEF8)))
+                            }
+                            text == "浅色" -> Brush.linearGradient(listOf(Color(0xFFF4F5FA), Color(0xFFE0E5F1)))
+                            else -> if (palette.isDark) {
+                                Brush.linearGradient(listOf(Color(0xFF303747), Color(0xFF171D2C)))
+                            } else {
+                                Brush.linearGradient(listOf(Color(0xFFE9ECF5), Color(0xFFDDE3F0)))
+                            }
+                        }
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = if (text == "浅色") Color(0xFF6C7690)
+                    else if (selected) Color(0xFF656E88)
+                    else if (palette.isDark) Color(0xFFC6CAD7) else Color(0xFF65718C),
+                    modifier = Modifier.size(29.dp)
+                )
+            }
+            Text(
+                text = text,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                color = SettingsText
+            )
         }
     }
 }
@@ -367,7 +686,9 @@ private fun SectionHeader(
     icon: ImageVector,
     description: String? = null,
     expanded: Boolean? = null,
-    onToggle: (() -> Unit)? = null
+    onToggle: (() -> Unit)? = null,
+    accentStart: Color,
+    accentEnd: Color
 ) {
     Row(
         modifier = Modifier
@@ -379,39 +700,167 @@ private fun SectionHeader(
     ) {
         Box(
             modifier = Modifier
-                .size(32.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .background(MaterialTheme.colorScheme.primaryContainer),
+                .size(58.dp)
+                .clip(CircleShape)
+                .background(Brush.linearGradient(listOf(accentStart, accentEnd))),
             contentAlignment = Alignment.Center
         ) {
             Icon(
                 imageVector = icon,
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(18.dp)
+                tint = Color.White,
+                modifier = Modifier.size(29.dp)
             )
         }
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = title,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = SettingsText
             )
             description?.let {
                 Text(
                     text = it,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = SettingsMutedText
                 )
             }
         }
         if (expanded != null) {
             Icon(
-                imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                imageVector = if (expanded) Icons.Default.ExpandLess else Icons.AutoMirrored.Filled.ArrowForward,
                 contentDescription = if (expanded) "折叠" else "展开",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                tint = Color(0xFFD3D7E6),
+                modifier = Modifier.size(28.dp)
             )
+        }
+    }
+}
+
+@Composable
+private fun GlassSurface(
+    modifier: Modifier = Modifier,
+    accent: Color,
+    content: @Composable () -> Unit
+) {
+    val palette = LocalSettingsPalette.current
+    val shape = SettingsGlassShape
+    Surface(
+        modifier = modifier.border(
+            BorderStroke(
+                1.dp,
+                Brush.linearGradient(
+                    listOf(
+                        accent.copy(alpha = 0.82f),
+                        if (palette.isDark) Color.White.copy(alpha = 0.22f)
+                        else palette.outline.copy(alpha = 0.70f),
+                        SettingsCyan.copy(alpha = 0.72f)
+                    )
+                )
+            ),
+            shape
+        ),
+        shape = shape,
+        color = SettingsSurface,
+        tonalElevation = 0.dp,
+        shadowElevation = 0.dp,
+        content = content
+    )
+}
+
+@Composable
+private fun SettingsDivider() {
+    val palette = LocalSettingsPalette.current
+    HorizontalDivider(
+        color = if (palette.isDark) Color.White.copy(alpha = 0.16f) else palette.outline.copy(alpha = 0.72f),
+        thickness = 1.dp
+    )
+}
+
+@Composable
+private fun SettingsSummaryRow(
+    label: String,
+    value: String,
+    expanded: Boolean,
+    onClick: () -> Unit
+) {
+    val palette = LocalSettingsPalette.current
+    Surface(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        color = if (palette.isDark) Color(0xFF202A42).copy(alpha = 0.68f) else Color(0xFFF0F3FA),
+        border = BorderStroke(1.dp, if (palette.isDark) Color.White.copy(alpha = 0.12f) else Color(0xFFD5DCEB))
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 15.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(label, style = MaterialTheme.typography.titleMedium, color = SettingsMutedText)
+            Spacer(Modifier.weight(1f))
+            Text(
+                value,
+                style = MaterialTheme.typography.bodyLarge,
+                color = SettingsText,
+                maxLines = 1
+            )
+            Icon(
+                imageVector = if (expanded) Icons.Default.ExpandLess else Icons.AutoMirrored.Filled.ArrowForward,
+                contentDescription = if (expanded) "折叠" else "展开",
+                tint = Color(0xFFD3D7E6),
+                modifier = Modifier.padding(start = 8.dp).size(24.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun ResetSettingsCard(onClick: () -> Unit) {
+    val palette = LocalSettingsPalette.current
+    Surface(
+        onClick = onClick,
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(
+                BorderStroke(
+                    1.dp,
+                    Brush.linearGradient(
+                        if (palette.isDark) {
+                            listOf(SettingsError.copy(alpha = 0.9f), Color(0xFFFFB3B9).copy(alpha = 0.7f))
+                        } else {
+                            listOf(SettingsError.copy(alpha = 0.8f), Color(0xFFFFA7AF).copy(alpha = 0.7f))
+                        }
+                    )
+                ),
+                SettingsGlassShape
+            ),
+        shape = SettingsGlassShape,
+        color = if (palette.isDark) Color(0xFF241A31).copy(alpha = 0.9f) else Color(0xFFFFF1F3)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 21.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(58.dp)
+                    .clip(CircleShape)
+                    .background(
+                        if (palette.isDark) Color(0xFF5B304A).copy(alpha = 0.58f)
+                        else Color(0xFFFFDDE3)
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Default.RestartAlt, contentDescription = null, tint = SettingsError, modifier = Modifier.size(31.dp))
+            }
+            Spacer(Modifier.width(18.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text("恢复默认设置", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = SettingsError)
+                Spacer(Modifier.height(4.dp))
+                Text("清除所有个性化设置，恢复至初始状态", style = MaterialTheme.typography.bodyMedium, color = SettingsMutedText)
+            }
+            Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null, tint = Color(0xFFD3D7E6), modifier = Modifier.size(28.dp))
         }
     }
 }
@@ -447,7 +896,7 @@ private fun STTConfigSection(
     var engineExpanded by remember { mutableStateOf(false) }
     var modelExpanded by remember { mutableStateOf(false) }
     var showServerList by remember { mutableStateOf(false) }
-    var cardExpanded by remember { mutableStateOf(true) }
+    var cardExpanded by remember { mutableStateOf(false) }
 
     val modelOptions = when (config.engineType) {
         STTEngineType.FASTER_WHISPER -> listOf("tiny", "base", "small", "medium", "large-v3")
@@ -462,26 +911,25 @@ private fun STTConfigSection(
         showServerList = discoveredServers.isNotEmpty()
     }
 
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, MaterialTheme.shapes.medium),
-        shape = MaterialTheme.shapes.medium,
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
-    ) {
+    GlassSurface(modifier = Modifier.fillMaxWidth(), accent = SettingsBlue) {
         Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             SectionHeader(
                 title = "语音转文本 (STT)",
                 icon = Icons.Default.Mic,
                 description = "配置语音识别服务",
                 expanded = cardExpanded,
-                onToggle = { cardExpanded = !cardExpanded }
+                onToggle = { cardExpanded = !cardExpanded },
+                accentStart = SettingsBlue,
+                accentEnd = SettingsCyan
+            )
+            SettingsSummaryRow(
+                label = "当前引擎",
+                value = config.engineType.displayName,
+                expanded = cardExpanded,
+                onClick = { cardExpanded = !cardExpanded }
             )
 
             AnimatedVisibility(
@@ -490,9 +938,7 @@ private fun STTConfigSection(
                 exit = shrinkVertically() + fadeOut()
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                    HorizontalDivider(
-                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
-                    )
+                    SettingsDivider()
 
                     // Engine Type Selection
                     EngineTypeDropdown(
@@ -857,26 +1303,29 @@ private fun LLMConfigSection(
     var cloudApiKey by remember(config.cloudApiKey) { mutableStateOf(config.cloudApiKey ?: "") }
     var cloudModel by remember(config.cloudModel) { mutableStateOf(config.cloudModel ?: "") }
 
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, MaterialTheme.shapes.medium),
-        shape = MaterialTheme.shapes.medium,
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
-    ) {
+    GlassSurface(modifier = Modifier.fillMaxWidth(), accent = SettingsPink) {
         Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             SectionHeader(
                 title = "大语言模型 (LLM)",
                 icon = Icons.Default.SmartToy,
                 description = "LLM 与 STT 配置彼此独立",
                 expanded = cardExpanded,
-                onToggle = { cardExpanded = !cardExpanded }
+                onToggle = { cardExpanded = !cardExpanded },
+                accentStart = SettingsPink,
+                accentEnd = SettingsPurple
+            )
+            SettingsSummaryRow(
+                label = "当前模型",
+                value = when (config.engineType) {
+                    LLMEngineType.AGENT_GATEWAY -> "${config.agentProvider.displayName} Agent"
+                    LLMEngineType.LOCAL_OLLAMA -> config.localModel.ifBlank { config.engineType.displayName }
+                    LLMEngineType.CLOUD_API -> config.cloudModel?.ifBlank { null } ?: config.engineType.displayName
+                },
+                expanded = cardExpanded,
+                onClick = { cardExpanded = !cardExpanded }
             )
 
             AnimatedVisibility(
@@ -885,9 +1334,7 @@ private fun LLMConfigSection(
                 exit = shrinkVertically() + fadeOut()
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                    HorizontalDivider(
-                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
-                    )
+                    SettingsDivider()
 
                     // Engine Type
                     LLMEngineTypeDropdown(

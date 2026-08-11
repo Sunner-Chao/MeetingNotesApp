@@ -2,13 +2,13 @@
 
 ## 当前发布
 
-- 服务端版本：`1.1.1` 已冻结
+- 仓库候选基线：`1.2.18`；生产部署基线以部署状态和服务端配置为准
 - 生产部署：Ubuntu 原生 Python 3.11 + systemd
 - 目标主机：4 核、4 GB 内存、无 GPU、5 Mbps 带宽
 - 默认范围：STT 为核心组件；Backend Service 可选，当前远端实例已启用
 - Docker：不再使用，部署链路和工程中均不依赖 Docker
 
-目标 Ubuntu 22.04 主机的部署、鉴权、并发、过载、资源、服务重启、回滚、备份和恢复均已验收，`release-manifest.json` 状态为 `frozen`。1.1.5 修复最终稿简繁转换、Agent 图片请求代理超时，并为中转 Claude 图片故障提供受权限约束的 Codex 降级；1.1.6 强制每次 Codex/Claude CLI 调用使用全新的非持久化 Session；1.1.7 恢复可见的临时预览；1.1.8 让预览和最终稿共用同一个 Faster-Whisper 解码函数与核心参数；1.1.9 拦截不足四字的置信碎片；1.1.10 恢复可修订实时预览；1.1.11 让预览窗口以 4 秒节奏续接并降低 CPU 压力，同时保持完整文件最终稿使用 beam=5。此后服务端只接受明确的新版本升级，日常开发转向 Android。
+目标 Ubuntu 22.04 主机的部署、鉴权、并发、过载、资源、服务重启、回滚、备份和恢复均已验收。云端识别按标准档和高精度档分开配置；实时会话由用户结束、网络断开、上游结束或并发资源决定，不设应用侧时长或额度限制。
 
 ## 已实现功能
 
@@ -16,9 +16,13 @@
 
 - Faster-Whisper 文件转写：WAV、M4A、MP3、MP4、AAC、OGG、FLAC、WebM。
 - WebSocket 实时 PCM 转写，支持 partial、committed、stop 和有界滑动音频窗口。
+- 腾讯云混合模式分为标准档（`16k_zh`）与高精度付费档（`16k_zh_en`）；旧客户端协议只映射到标准档。
+- 标准云模型不做应用侧额度预留或时长限制；实时会话正常停止或异常断开会立即关闭云端连接。仅管理员显式启用的臻享付费档保留录音文件时长账本。
 - CPU `int8` 和 NVIDIA CUDA；本次冻结生产配置固定为 CPU `int8`。
 - 本地模型优先，生产环境固定使用 `small`，启动时校验 `model.bin` SHA-256。
+- 长录音按服务端动态策略分段处理：默认超过 45 分钟按 30 分钟片段、3 秒重叠顺序合并；腾讯云同时遵守单次 100 MiB 请求限制。上传接收上限默认 1 GiB，实际部署可通过环境变量调整。
 - 上传按 1 MB 分块落盘，限制单文件大小，推理完成后清理临时文件。
+- 可配置音频归档在最终推理前保存完整录音，按账户和会议隔离，并按保留天数和总容量清理。
 - 启动及周期性清理服务专属的过期临时文件，不处理其他应用文件。
 - Bearer Token 鉴权；生产配置禁止空 Token。
 - 运行时模型切换接口会暂停接单并排空已经接受的任务。
@@ -40,8 +44,11 @@
 - 独立 HTML 运维控制台：服务健康、模型/队列指标、引擎切换、会议表格、流式事件和日志维护。
 - Bearer Token 与可配置用户名的 HTTP Basic 鉴权；当前远端用户名为 `ubuntu`，密码为独立 `WEB_API_TOKEN`。
 - 私有 Agent API 使用独立 Bearer Token、按令牌配额、提供方权限、有效期和停用控制。
-- Agent 请求支持 Codex CLI、Claude CLI、图片附件、单任务执行和最多 8 个排队任务。
-- Android 已接入 Agent API；会议数据 API 仍未接入 Android。
+- Agent 请求支持 Codex CLI、Claude CLI、任意数量图片附件（默认不设张数上限，仍受单图/总上传字节保护）、单任务执行和最多 8 个排队任务。
+- Android 默认使用 Codex；Codex 与 Claude 推理强度可在 Android 服务设置中分别调整，服务端默认均为 `medium`。
+- 实时 PCM 会在 Server 同步归档，正常停止后直接就地生成 beam=5 最终稿；连接异常时 Android 自动回退完整文件上传。
+- Android 已接入账户、短期凭证、Agent 和额度 API；会议正文数据仍以本地 Room 为采集过程可信源，完整会议成果云同步仍在演进。
+- Agent transcript/chat 字符数和请求 JSON 字节数使用独立环境变量；`0` 表示不设置应用层硬上限。
 
 ## 生产架构
 
@@ -52,8 +59,10 @@ Android
    |                                      `--> Claude CLI --> 中转站 API
    |
    `-- STT HTTP/WS --> :8888 --> meetingnotes-stt.service
+                                      |--> 腾讯实时 ASR --> 可修订预览
+                                      |--> 腾讯极速版   --> 最终稿
                                       `--> 有界 FIFO (active=2, queue=16)
-                                           `--> Faster-Whisper small / CPU int8
+                                           `--> Faster-Whisper small / CPU int8 回退
 ```
 
 systemd 约束：
@@ -82,6 +91,8 @@ cd <项目根目录>\server
 ```
 
 脚本会完成源码打包、首次模型上传、Python 3.11/ffmpeg 安装、固定依赖安装、systemd 注册、健康等待和自动回退。远端管理配置会同步到本地 `.env.remote`，发布元数据会写入 `.deployment-state.json`；两者均被 Git 忽略。
+
+发布 Android 更新时，先将 `server/config/app-update.json` 的 `version_code` 和 `version_name` 改为与 APK 一致的版本，再附加 `-WithBackend -AndroidApk <APK 路径>`。脚本会计算 SHA-256、按版本原子发布 APK、保留当前与上一版本各一份，并清理更旧的安装包；手机端登录或回到前台时会静默检查，用户可立即更新、稍后提醒或忽略该可选版本。
 
 已经在 Ubuntu 本机取得 `server/` 目录时：
 
@@ -138,10 +149,19 @@ sudo bash /opt/meetingnotes-stt/current/scripts/rollback-native.sh
 
 ```dotenv
 AGENT_CODEX_AUTH_ENV=YUJIAN_API_KEY
+AGENT_CODEX_REASONING_EFFORT=medium
+AGENT_CLAUDE_EFFORT=medium
 YUJIAN_API_KEY=中转站令牌
 AGENT_CLAUDE_AUTH_ENV=ANTHROPIC_AUTH_TOKEN
 ANTHROPIC_BASE_URL=https://中转站地址
 ANTHROPIC_AUTH_TOKEN=中转站令牌
+AGENT_MAX_IMAGES=0
+AGENT_MAX_TEXT_CHARS=0
+AGENT_MAX_REQUEST_JSON_BYTES=0
+STT_AUDIO_ARCHIVE_ENABLED=1
+STT_AUDIO_ARCHIVE_DIR=/var/lib/meetingnotes-stt/audio-archive
+STT_AUDIO_ARCHIVE_RETENTION_DAYS=30
+STT_AUDIO_ARCHIVE_MAX_GB=10
 ```
 
 环境文件必须保持 `root:meetingnotes 0640`，Codex 配置必须保持 `meetingnotes:meetingnotes 0600`。修改后重启 `meetingnotes-backend.service`，通过 `/api/agent/health` 检查两个 provider 的 `authenticated` 和 `auth_method`。
@@ -154,6 +174,9 @@ ANTHROPIC_AUTH_TOKEN=中转站令牌
 | STT | `GET /ready` | 无 | 模型就绪检查 |
 | STT | `POST /transcribe` | Bearer | 完整音频转写 |
 | STT | `WS /ws/transcribe-stream` | Bearer | 实时 PCM 转写 |
+| STT | `POST /transcribe/stream/{session_id}` | Bearer | 对已完整上传的流式会话就地生成最终稿 |
+| STT | `GET /audio-archive?meeting_id={id}` | Bearer | 列出当前账户和会议的归档音频 |
+| STT | `GET/DELETE /audio-archive/{archive_id}` | Bearer | 下载或删除当前账户的归档音频 |
 | STT | `POST /admin/stt/switch` | Bearer | 切换引擎/模型 |
 | STT | `GET/DELETE /debug/stream-events` | Bearer | 流式调试事件 |
 | Backend | `GET /health` | 无 | 后端和数据库健康 |
@@ -162,6 +185,14 @@ ANTHROPIC_AUTH_TOKEN=中转站令牌
 | Agent | `POST /api/agent` | 独立 Bearer | 对话、报告生成和图片附件 |
 | Agent | `GET /api/agent/quota` | 独立 Bearer | 当前令牌额度 |
 | Agent | `/api/admin/agent/*` | Web 管理鉴权 | 令牌签发、停用和运行状态 |
+| Account | `POST /api/auth/register` | 无 | 注册服务端用户并签发会话 |
+| Account | `POST /api/auth/login` | 无 | 用户登录并签发用户/Agent令牌 |
+| Account | `GET /api/account/me` | 用户 Bearer | 用户角色、VIP、模板权益和额度 |
+| Account | `GET /api/account/session` | 用户 Bearer | 刷新资料、Agent 令牌和短期 STT 用户令牌 |
+| Account | `GET /api/account/plans` | 用户 Bearer | 动态套餐列表 |
+| Account | `GET/POST /api/account/orders` | 用户 Bearer | 查询或提交充值申请 |
+| Account Admin | `GET/PATCH/DELETE /api/admin/accounts/users/{user_id}` | 管理员用户 Bearer | 用户列表、启停和永久删除普通用户 |
+| Account Admin | `/api/admin/accounts/orders/*` | 管理员用户 Bearer | 订单列表、批准与拒绝 |
 
 ## 工程目录
 
@@ -183,9 +214,10 @@ server/
 
 ## 已知边界
 
-- Android 已接入 STT 和 Agent，但尚未接入 Backend 会议数据 API。
+- Android 已接入服务端注册、登录、用户会话、VIP 套餐、充值订单、管理员审批和 Agent 用户额度；会议业务数据仍保存在本机 Room。
 - “本地与服务端同步”当前指源码、版本、模型和生产配置同步，不是 Android 业务数据双向同步。
-- 当前是共享 STT Token，不是多租户账号系统。
+- STT 管理调用保留共享服务 Token；Android 用户使用由账户服务签发的短期 HMAC STT 令牌，不接触全局 STT 密钥。
+- 当前充值流程是“提交订单 -> 管理员确认入账”，尚未接入微信、支付宝或其他支付回调。
 - 5 Mbps 公网适合实时 PCM 和压缩音频，不适合多人同时上传超大原始录音；客户端后续应增加断点、重试和压缩策略。
-- Backend 公网控制台使用 `https://118.25.43.185/web`；Backend 进程仅绑定 `127.0.0.1:8090`，由 Nginx HTTPS 转发。
+- Backend 公网控制台地址由 Nginx 与运行环境配置提供；Backend 进程只绑定内部监听地址，由 Nginx HTTPS 转发。
 - Android STT 公网正式使用仍建议配置自己的域名和 HTTPS/WSS。

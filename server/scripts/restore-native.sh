@@ -5,6 +5,7 @@ APP_USER="meetingnotes"
 APP_GROUP="meetingnotes"
 CONFIG_FILE="/etc/meetingnotes-stt/stt.env"
 STATE_ROOT="/var/lib/meetingnotes-stt"
+UPDATE_CONFIG_FILE="${STATE_ROOT}/app-update.json"
 
 usage() {
   echo "Usage: restore-native.sh /var/backups/meetingnotes-stt/meetingnotes-*.tar.gz"
@@ -15,7 +16,7 @@ usage() {
 ARCHIVE="$1"
 [[ -f "$ARCHIVE" ]] || { echo "Backup not found: ${ARCHIVE}" >&2; exit 1; }
 
-if tar -tzf "$ARCHIVE" | grep -Ev '^(etc/meetingnotes-stt/stt\.env|var/lib/meetingnotes-stt/backend(/.*)?|)$' >/dev/null; then
+if tar -tzf "$ARCHIVE" | grep -Ev '^(etc/meetingnotes-stt/stt\.env|var/lib/meetingnotes-stt/(app-update\.json|backend(/.*)?|downloads/ZhiWuBen-Android(-[0-9]+)?\.apk)|)$' >/dev/null; then
   echo "Backup contains a path outside the managed config/database directories." >&2
   exit 1
 fi
@@ -30,6 +31,10 @@ tar -xzf "$ARCHIVE" -C /
 if [[ -f "$CONFIG_FILE" ]]; then
   chown root:"$APP_GROUP" "$CONFIG_FILE"
   chmod 0640 "$CONFIG_FILE"
+fi
+if [[ -f "$UPDATE_CONFIG_FILE" ]]; then
+  chown "$APP_USER":"$APP_GROUP" "$UPDATE_CONFIG_FILE"
+  chmod 0644 "$UPDATE_CONFIG_FILE"
 fi
 if [[ -d "$STATE_ROOT/backend" ]]; then
   chown -R "$APP_USER":"$APP_GROUP" "$STATE_ROOT/backend"
@@ -47,6 +52,15 @@ if [[ -e "$MEDIA_ROOT" || -e "$MEDIA_MANIFEST" ]]; then
     --media-root "$MEDIA_ROOT" \
     --manifest "$MEDIA_MANIFEST" >/dev/null
 fi
+if [[ -f "$STATE_ROOT/downloads/ZhiWuBen-Android.apk" ]]; then
+  chown "$APP_USER":"$APP_GROUP" "$STATE_ROOT/downloads/ZhiWuBen-Android.apk"
+  chmod 0644 "$STATE_ROOT/downloads/ZhiWuBen-Android.apk"
+fi
+shopt -s nullglob
+for APK_PATH in "$STATE_ROOT"/downloads/ZhiWuBen-Android-[0-9]*.apk; do
+  chown "$APP_USER":"$APP_GROUP" "$APK_PATH"
+  chmod 0644 "$APK_PATH"
+done
 
 systemctl restart meetingnotes-stt.service
 if [[ "$BACKEND_ENABLED" -eq 1 ]]; then

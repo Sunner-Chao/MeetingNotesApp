@@ -16,6 +16,11 @@ import kotlin.math.roundToLong
 private fun String.usesProjectManagementDocxTemplate(): Boolean =
     this == "项目管理" || (contains("孔爵") && contains("表格"))
 
+private fun String.usesStudyReportStyle(): Boolean =
+    contains("研学") || contains("参观考察") || contains("游记") || contains("文旅")
+
+private val photoAnchorPattern = Regex("^\\s*\\[照片\\s*[:：]\\s*图\\s*(\\d+)]\\s*$")
+
 object DocxReportExporter {
     private const val KONGJUE_TEMPLATE_ASSET = "kongjue-team-table-v1.docx"
 
@@ -135,11 +140,22 @@ internal class DocxPackageWriter(
     }
 
     private fun documentXml(): String {
+        val reportBlocks = parseReport()
+        val anchoredImageIndexes = reportBlocks
+            .filterIsInstance<ImageBlock>()
+            .mapTo(mutableSetOf()) { it.index }
+        val remainingImageIndexes = images.indices.filterNot(anchoredImageIndexes::contains)
+        val imageSectionTitle = if (report.templateName.usesStudyReportStyle()) {
+            "照片集锦"
+        } else {
+            "会议影像资料"
+        }
         val blocks = buildList {
-            addAll(parseReport())
-            if (images.isNotEmpty()) add(PageBreakBlock)
-            images.forEachIndexed { index, image ->
-                add(if (index == 0) ParagraphBlock("会议影像资料", "Heading1") else ParagraphBlock("", "Spacer"))
+            addAll(reportBlocks)
+            if (remainingImageIndexes.isNotEmpty()) add(PageBreakBlock)
+            remainingImageIndexes.forEachIndexed { position, index ->
+                val image = images[index]
+                add(if (position == 0) ParagraphBlock(imageSectionTitle, "Heading1") else ParagraphBlock("", "Spacer"))
                 add(ImageBlock(index, image))
                 add(ParagraphBlock("图 ${index + 1}  ${image.caption}", "Caption"))
             }
@@ -185,6 +201,19 @@ internal class DocxPackageWriter(
             val line = lines[index].trim()
             when {
                 line.isBlank() || line == "---" -> index++
+                photoAnchorPattern.matches(line) -> {
+                    val imageIndex = photoAnchorPattern.matchEntire(line)
+                        ?.groupValues
+                        ?.getOrNull(1)
+                        ?.toIntOrNull()
+                        ?.minus(1)
+                    val image = imageIndex?.let { images.getOrNull(it) }
+                    if (imageIndex != null && image != null && blocks.none { it is ImageBlock && it.index == imageIndex }) {
+                        blocks += ImageBlock(imageIndex, image)
+                        blocks += ParagraphBlock("图 ${imageIndex + 1}  ${image.caption}", "Caption")
+                    }
+                    index++
+                }
                 line.startsWith("|") && index + 1 < lines.size && isTableSeparator(lines[index + 1]) -> {
                     val rows = mutableListOf<List<String>>()
                     rows += parseTableRow(line)
@@ -197,6 +226,10 @@ internal class DocxPackageWriter(
                 }
                 line.startsWith("### ") -> {
                     blocks += ParagraphBlock(cleanMarkdown(line.removePrefix("### ")), "Heading2")
+                    index++
+                }
+                line.matches(Regex("^#{4,6}\\s+.+$")) -> {
+                    blocks += ParagraphBlock(cleanMarkdown(line), "Heading2")
                     index++
                 }
                 line.startsWith("## ") -> {
@@ -294,8 +327,8 @@ internal class DocxPackageWriter(
             "ActionID", "事项", "负责人", "当前状态", "截止时间", "是否待确认", "来源背景", "备注"
         )
         val backlogHeaders = listOf(
-            "BacklogID", "候选名称", "分层类别", "需求说明", "来源", "为什么值得记录",
-            "建议优先级", "当前状态", "是否可直接视为立项", "备注"
+            "事项编号", "事项名称", "类别", "具体说明", "来源", "保留原因",
+            "建议优先级", "当前状态", "是否立项", "备注"
         )
         val riskHeaders = listOf("风险编号", "风险内容", "说明")
 
@@ -383,10 +416,17 @@ internal class DocxPackageWriter(
                     add(ParagraphBlock(ReportDocumentFormatter.numbered(value, index), "ListNumber"))
                 }
 
-            add(ParagraphBlock("8. Backlog 候选（可沉淀）", "Heading1"))
+            add(ParagraphBlock("8. 后续沉淀事项", "Heading1"))
             add(
                 TableBlock(
-                    teamTableRows(markdown, listOf("backlog", "Backlog"), backlogHeaders, emptyList(), "BLG", 1)
+                    teamTableRows(
+                        markdown,
+                        listOf("后续沉淀事项", "沉淀事项", "backlog", "Backlog"),
+                        backlogHeaders,
+                        emptyList(),
+                        "BLG",
+                        1
+                    )
                 )
             )
 
@@ -532,7 +572,7 @@ internal class DocxPackageWriter(
         if (sourceValue == targetValue) return true
         val aliases = when (targetValue) {
             "actionid" -> setOf("行动项编号", "任务编号", "编号", "序号")
-            "backlogid" -> setOf("候选编号", "编号", "序号")
+            "事项编号" -> setOf("backlogid", "候选编号", "编号", "序号")
             "编号" -> setOf("共识编号", "问题编号", "序号")
             "风险编号" -> setOf("编号", "序号")
             "事项" -> setOf("任务内容", "行动项", "待办事项", "任务")
@@ -819,16 +859,19 @@ internal class DocxPackageWriter(
         </w:styles>
     """.trimIndent()
 
-    private fun footerXml(): String = """
+    private fun footerXml(): String {
+        val footerTitle = if (report.templateName.usesStudyReportStyle()) "研学考察记录" else "结构化会议纪要"
+        return """
         <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
         <w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
           <w:p><w:pPr><w:jc w:val="center"/><w:pBdr><w:top w:val="single" w:sz="4" w:space="5" w:color="D9E2F3"/></w:pBdr></w:pPr>
-            <w:r><w:rPr><w:color w:val="7F8C8D"/><w:sz w:val="17"/></w:rPr><w:t>智悟本 · 结构化会议纪要  |  第 </w:t></w:r>
+            <w:r><w:rPr><w:color w:val="7F8C8D"/><w:sz w:val="17"/></w:rPr><w:t>智悟本 · $footerTitle  |  第 </w:t></w:r>
             <w:fldSimple w:instr="PAGE"><w:r><w:rPr><w:color w:val="7F8C8D"/><w:sz w:val="17"/></w:rPr><w:t>1</w:t></w:r></w:fldSimple>
             <w:r><w:rPr><w:color w:val="7F8C8D"/><w:sz w:val="17"/></w:rPr><w:t> 页</w:t></w:r>
           </w:p>
         </w:ftr>
-    """.trimIndent()
+        """.trimIndent()
+    }
 
     private fun isTableSeparator(line: String): Boolean =
         line.trim().trim('|').split('|').all { it.trim().matches(Regex(":?-{3,}:?")) }
@@ -837,6 +880,8 @@ internal class DocxPackageWriter(
         line.trim().trim('|').split('|').map { cleanMarkdown(it.trim()) }
 
     private fun cleanMarkdown(text: String): String = text
+        .replace(Regex("^\\s*#{1,6}\\s+"), "")
+        .replace(Regex("^\\s*>+\\s?"), "")
         .replace(Regex("\\*\\*(.+?)\\*\\*"), "$1")
         .replace(Regex("__(.+?)__"), "$1")
         .replace("`", "")

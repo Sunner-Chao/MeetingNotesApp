@@ -1,0 +1,19 @@
+# Copy this file to ${user.home}/.meetingnotes/signing.properties (the default)
+# or android/signing.properties with MEETINGNOTES_SIGNING_PROPERTIES_FILE set.
+# Keep the real copy out of Git.
+# Use one stable certificate for every APK that must upgrade an existing install.
+# The debug and release entries may point to the same keystore for an internal
+# channel, but production releases should use a dedicated release keystore.
+# Paths may be absolute or relative to the android/ directory.
+
+debug.storeFile=${user.home}/.meetingnotes/meetingnotes-release.p12
+debug.storePassword=REPLACE_WITH_LOCAL_SECRET
+debug.keyAlias=meetingnotes-release
+debug.keyPassword=REPLACE_WITH_LOCAL_SECRET
+debug.storeType=PKCS12
+
+release.storeFile=${user.home}/.meetingnotes/meetingnotes-release.p12
+release.storePassword=REPLACE_WITH_RELEASE_SECRET
+release.keyAlias=meetingnotes-release
+release.keyPassword=REPLACE_WITH_RELEASE_SECRET
+release.storeType=PKCS12

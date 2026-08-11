@@ -36,6 +36,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.net.HttpURLConnection
+import java.net.URI
 import java.net.URL
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "oa_automation_settings")
@@ -45,6 +46,34 @@ private data class ReportTemplateAsset(
     val fileName: String,
     val subtitle: String
 )
+
+internal fun resolveAgentGatewayEndpoint(
+    savedEndpoint: String?,
+    accountEndpoint: String?,
+    defaultEndpoint: String
+): String {
+    val saved = savedEndpoint?.trim()?.trimEnd('/').orEmpty()
+    val accountGateway = accountEndpoint
+        ?.trim()
+        ?.trimEnd('/')
+        ?.takeIf { it.isNotBlank() }
+        ?.let { "$it/agent" }
+    val fallback = defaultEndpoint.trim().trimEnd('/')
+
+    return when {
+        saved.isBlank() -> accountGateway ?: fallback
+        saved.isLoopbackUrl() && accountGateway?.isLoopbackUrl() == false -> accountGateway
+        else -> saved
+    }
+}
+
+private fun String.isLoopbackUrl(): Boolean {
+    val host = runCatching { URI(this).host.orEmpty() }.getOrDefault("")
+    return host.equals("localhost", ignoreCase = true) ||
+        host == "127.0.0.1" ||
+        host == "::1" ||
+        host == "0:0:0:0:0:0:0:1"
+}
 
 /**
  * DataStore wrapper for persisting app configuration
@@ -115,6 +144,7 @@ class ConfigDataStore(private val context: Context) {
         private val SEEN_NOTIFICATION_EVENTS = stringSetPreferencesKey("seen_notification_events")
         private val APP_THEME_MODE = stringPreferencesKey("app_theme_mode")
         private val FLOATING_BALL_ENABLED = booleanPreferencesKey("floating_ball_enabled")
+        private val IGNORED_APP_UPDATE_VERSION = stringPreferencesKey("ignored_app_update_version")
 
         private val PRESET_TEMPLATE_ASSETS = listOf(
             ReportTemplateAsset(
@@ -128,6 +158,11 @@ class ConfigDataStore(private val context: Context) {
                 "推演节点、风险与行动项"
             ),
             ReportTemplateAsset(
+                "论坛会议",
+                "论坛会议.md",
+                "主持串场、主题演讲与问答脉络"
+            ),
+            ReportTemplateAsset(
                 "研学考察",
                 "参观考察游记.md",
                 "分段旅程、图文游记与阶段续写"
@@ -137,13 +172,14 @@ class ConfigDataStore(private val context: Context) {
             "通用会议纪要" to "通用会议",
             "行政会议" to "通用会议",
             "头脑风暴" to "通用会议",
+            "讲座论坛纪要" to "论坛会议",
+            "论坛会议纪要" to "论坛会议",
             "孔爵团队版表格会议纪要" to "项目管理",
             "项目管理纪要" to "项目管理",
             "参观考察（游记）" to "研学考察",
             "参观考察类会议" to "研学考察"
         )
         private val RETIRED_PRESET_NAMES = setOf(
-            "讲座论坛纪要",
             "政策解读纪要",
             "技术交流纪要",
             "学术报告纪要"
@@ -267,7 +303,11 @@ class ConfigDataStore(private val context: Context) {
                 engineType = preferences[LLM_ENGINE_TYPE]?.let {
                     runCatching { LLMEngineType.valueOf(it) }.getOrNull()
                 } ?: LLMEngineType.AGENT_GATEWAY,
-                agentEndpoint = preferences[LLM_AGENT_ENDPOINT] ?: BuildConfig.DEFAULT_AGENT_ENDPOINT,
+                agentEndpoint = resolveAgentGatewayEndpoint(
+                    savedEndpoint = preferences[LLM_AGENT_ENDPOINT],
+                    accountEndpoint = preferences[ACCOUNT_ENDPOINT],
+                    defaultEndpoint = BuildConfig.DEFAULT_AGENT_ENDPOINT
+                ),
                 agentAccessToken = preferences[LLM_AGENT_ACCESS_TOKEN],
                 agentProvider = preferences[LLM_AGENT_PROVIDER]?.let {
                     runCatching { AgentProvider.valueOf(it) }.getOrNull()
@@ -316,6 +356,10 @@ class ConfigDataStore(private val context: Context) {
         preferences[FLOATING_BALL_ENABLED] ?: false
     }
 
+    val ignoredAppUpdateVersionFlow: Flow<Int?> = context.dataStore.data.map { preferences ->
+        preferences[IGNORED_APP_UPDATE_VERSION]?.toIntOrNull()
+    }
+
     suspend fun updateAppThemeMode(mode: AppThemeMode) {
         context.dataStore.edit { preferences ->
             preferences[APP_THEME_MODE] = mode.name
@@ -325,6 +369,12 @@ class ConfigDataStore(private val context: Context) {
     suspend fun updateFloatingBallEnabled(enabled: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[FLOATING_BALL_ENABLED] = enabled
+        }
+    }
+
+    suspend fun ignoreAppUpdateVersion(versionCode: Int) {
+        context.dataStore.edit { preferences ->
+            preferences[IGNORED_APP_UPDATE_VERSION] = versionCode.toString()
         }
     }
 
@@ -598,7 +648,24 @@ class ConfigDataStore(private val context: Context) {
                     preferences[REPORT_TEMPLATE_IS_CUSTOM] = false.toString()
                 }
             }
-            preferences[DEFAULT_PROFILE_VERSION] = "10"
+            if (profileVersion < 11) {
+                val savedEndpoint = preferences[LLM_AGENT_ENDPOINT]
+                val resolvedEndpoint = resolveAgentGatewayEndpoint(
+                    savedEndpoint = savedEndpoint,
+                    accountEndpoint = preferences[ACCOUNT_ENDPOINT],
+                    defaultEndpoint = BuildConfig.DEFAULT_AGENT_ENDPOINT
+                )
+                if (savedEndpoint.isNullOrBlank() || savedEndpoint.isLoopbackUrl()) {
+                    preferences[LLM_AGENT_ENDPOINT] = resolvedEndpoint
+                }
+                if (preferences[LLM_AGENT_PROVIDER].isNullOrBlank()) {
+                    preferences[LLM_AGENT_PROVIDER] = AgentProvider.CODEX_CLI.name
+                }
+                if (preferences[LLM_CODEX_REASONING_EFFORT].isNullOrBlank()) {
+                    preferences[LLM_CODEX_REASONING_EFFORT] = CodexReasoningEffort.HIGH.name
+                }
+            }
+            preferences[DEFAULT_PROFILE_VERSION] = "11"
         }
     }
 

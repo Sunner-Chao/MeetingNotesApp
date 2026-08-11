@@ -31,18 +31,11 @@ class LLMEngine(
         val config = appConfig.llmConfig
         val engine = LLMReportEngine.fromConfig(config)
 
-        return engine.generateReport(transcript, appConfig.reportTemplateConfig, attachments).getOrElse { error ->
-            if (error is CancellationException) throw error
-            // Return a default error report
-            ReportData(
-                summary = "生成报告失败: ${error.message}",
-                keyPoints = emptyList(),
-                tasks = emptyList(),
-                decisions = emptyList(),
-                actionItems = emptyList(),
-                templateName = appConfig.reportTemplateConfig.selectedName
-            )
-        }
+        return engine.generateReport(transcript, appConfig.reportTemplateConfig, attachments)
+            .getOrElse { error ->
+                if (error is CancellationException) throw error
+                throw error
+            }
     }
 
     /**

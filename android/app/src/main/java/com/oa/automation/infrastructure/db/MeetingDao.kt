@@ -27,6 +27,9 @@ interface MeetingDao {
     @Query("DELETE FROM meeting_attachments WHERE meetingId = :meetingId")
     suspend fun deleteAttachmentsForMeeting(meetingId: String)
 
+    @Query("DELETE FROM recording_markers WHERE meetingId = :meetingId")
+    suspend fun deleteRecordingMarkersForMeeting(meetingId: String)
+
     @Query("DELETE FROM meetings WHERE id = :id")
     suspend fun deleteMeetingRow(id: String)
 
@@ -35,6 +38,7 @@ interface MeetingDao {
         deleteReportsForMeeting(id)
         deleteTranscriptsForMeeting(id)
         deleteAttachmentsForMeeting(id)
+        deleteRecordingMarkersForMeeting(id)
         deleteMeetingRow(id)
     }
 
@@ -67,4 +71,10 @@ interface MeetingDao {
 
     @Query("DELETE FROM meeting_attachments WHERE id = :id")
     suspend fun deleteAttachment(id: String)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertRecordingMarker(entity: RecordingMarkerEntity)
+
+    @Query("SELECT * FROM recording_markers WHERE meetingId = :meetingId ORDER BY createdAt ASC")
+    suspend fun findRecordingMarkersByMeetingId(meetingId: String): List<RecordingMarkerEntity>
 }

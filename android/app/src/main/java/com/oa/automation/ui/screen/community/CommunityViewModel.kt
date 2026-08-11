@@ -132,17 +132,14 @@ class CommunityViewModel(
 
     fun selectDestination(value: String) {
         _uiState.update { it.copy(destinationFilter = value, error = null) }
-        refresh()
     }
 
     fun selectTag(value: String) {
         _uiState.update { it.copy(tagFilter = value, error = null) }
-        refresh()
     }
 
     fun selectPoi(value: String) {
         _uiState.update { it.copy(poiFilter = value, error = null) }
-        refresh()
     }
 
     fun selectDays(minDays: Int, maxDays: Int) {
@@ -153,12 +150,10 @@ class CommunityViewModel(
                 error = null
             )
         }
-        refresh()
     }
 
     fun toggleHasMedia() {
         _uiState.update { it.copy(hasMediaOnly = !it.hasMediaOnly, error = null) }
-        refresh()
     }
 
     fun clearFilters() {
@@ -174,7 +169,6 @@ class CommunityViewModel(
                 error = null
             )
         }
-        refresh()
     }
 
     fun loadMore() {
@@ -232,7 +226,7 @@ class CommunityViewModel(
                     it.copy(
                         isLoading = false,
                         isLoadingMore = false,
-                        error = error.message ?: "研学社区加载失败"
+                        error = communityErrorMessage(error)
                     )
                 }
             }
@@ -342,6 +336,21 @@ class CommunityViewModel(
                 )
             }
         }
+    }
+}
+
+internal fun communityErrorMessage(error: Throwable): String {
+    val message = error.message.orEmpty().trim()
+    return when {
+        message.contains("鉴权", ignoreCase = true) ||
+            message.contains("credential", ignoreCase = true) ||
+            message.contains("unauthorized", ignoreCase = true) -> "社区服务正在更新，请稍后重试"
+        message.contains("timeout", ignoreCase = true) ||
+            message.contains("timed out", ignoreCase = true) -> "连接超时，请检查网络后重试"
+        message.contains("resolve host", ignoreCase = true) ||
+            message.contains("failed to connect", ignoreCase = true) -> "暂时无法连接研学社区"
+        message.any { it in '\u4e00'..'\u9fff' } -> message
+        else -> "研学社区加载失败，请稍后重试"
     }
 }
 

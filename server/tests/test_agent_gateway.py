@@ -31,8 +31,8 @@ class AgentGatewayTest(unittest.TestCase):
         root = Path(self.temp_dir.name)
         self.calls = []
 
-        def fake_runner(provider, prompt, attachments, task_root):
-            self.calls.append((provider, prompt, attachments, task_root))
+        def fake_runner(provider, prompt, attachments, task_root, reasoning_effort):
+            self.calls.append((provider, prompt, attachments, task_root, reasoning_effort))
             return "agent result"
 
         self.gateway = AgentGateway(
@@ -101,6 +101,119 @@ class AgentGatewayTest(unittest.TestCase):
                 [],
             )
 
+    def test_text_limit_is_disabled_by_default_and_can_be_configured(self):
+        long_text = "会" * 500_001
+        prompt = self.gateway._build_prompt(
+            {
+                "operation": "generate_report",
+                "transcript": long_text,
+            }
+        )
+        self.assertIn(long_text, prompt)
+
+        root = Path(self.temp_dir.name)
+        limited = AgentGateway(
+            db_path=root / "limited.db",
+            work_root=root / "limited-tasks",
+            max_text_chars=10,
+            runner=lambda *_args: "unused",
+        )
+        with self.assertRaises(AgentInputError):
+            limited._build_prompt(
+                {
+                    "operation": "generate_report",
+                    "transcript": "12345678901",
+                }
+            )
+
+    def test_visit_template_prompt_preserves_guide_and_trip_constraints(self):
+        prompt = self.gateway._build_prompt(
+            {
+                "operation": "generate_report",
+                "templateName": "参观考察（游记）",
+                "templateContent": "小红书/携程游记式可读性",
+                "transcript": "讲解员介绍展厅，团队记录现场观察。",
+                "attachmentManifest": [
+                    {
+                        "index": 1,
+                        "displayName": "entrance.jpg",
+                        "capturedAt": 1_754_274_400_000,
+                        "locationCapturedAt": 1_754_274_401_000,
+                        "latitude": 30.7521,
+                        "longitude": 120.7582,
+                        "accuracyMeters": 18.5,
+                        "locationSource": "gps",
+                        "recordingMarkerId": "marker-1",
+                        "markerTimestampMs": 72_000,
+                        "markerTranscriptAnchor": "随后讲解员介绍\n大殿。",
+                    }
+                ],
+            },
+            attachment_count=3,
+        )
+
+        self.assertIn("本次共有 3 张图片附件", prompt)
+        self.assertIn("导游、讲解员、接待方、受访方和参观者", prompt)
+        self.assertIn("小红书/携程游记", prompt)
+        self.assertIn("交通、预约、开放时间、费用和适合人群缺失时写“未提及”", prompt)
+        self.assertIn("图片编号不得超过这个范围", prompt)
+        self.assertIn("客户端图片附件清单", prompt)
+        self.assertIn("entrance.jpg", prompt)
+        self.assertIn("1754274400000", prompt)
+        self.assertIn("位置辅助=30.752100,120.758200", prompt)
+        self.assertIn("精度约 18.5 米", prompt)
+        self.assertIn("来源=gps", prompt)
+        self.assertIn("录音标记=01:12", prompt)
+        self.assertIn("转写锚点=随后讲解员介绍 大殿。", prompt)
+        self.assertIn("同一标记绑定多图时按图号连续插入", prompt)
+        self.assertIn("不得混入项目管理或工程管理字段", prompt)
+        self.assertIn("不得补写或推断职务", prompt)
+        self.assertIn("[照片：图 N]", prompt)
+        self.assertIn("照片集锦", prompt)
+
+    def test_attachment_manifest_ignores_invalid_location_values(self):
+        prompt = self.gateway._format_attachment_manifest(
+            [
+                {
+                    "displayName": "broken-location.jpg",
+                    "latitude": 95.0,
+                    "longitude": float("nan"),
+                    "accuracyMeters": -1.0,
+                    "locationSource": "gps\ninjected",
+                }
+            ]
+        )
+
+        self.assertIn("broken-location.jpg", prompt)
+        self.assertNotIn("位置辅助=", prompt)
+        self.assertNotIn("injected", prompt)
+
+    def test_default_image_count_is_unlimited_but_optional_cap_still_works(self):
+        images_root = Path(self.temp_dir.name) / "images"
+        images_root.mkdir()
+        twelve = [
+            IncomingAttachment(f"site-{index}.jpg", "image/jpeg", io.BytesIO(b"jpeg"))
+            for index in range(1, 13)
+        ]
+        stored = self.gateway._store_attachments(images_root, twelve)
+        self.assertEqual(len(stored), 12)
+        self.assertEqual(stored[-1].path.name, "12-site-12.jpg")
+
+        nine_root = Path(self.temp_dir.name) / "nine-images"
+        nine_root.mkdir()
+        capped = AgentGateway(
+            db_path=Path(self.temp_dir.name) / "capped.db",
+            work_root=Path(self.temp_dir.name) / "capped-tasks",
+            max_images=2,
+            max_image_bytes=1024,
+            max_total_bytes=2048,
+            runner=lambda *_args: "unused",
+        )
+        three = twelve[:3]
+        with self.assertRaises(AgentInputError) as context:
+            capped._store_attachments(nine_root, three)
+        self.assertIn("At most 2 images are allowed", str(context.exception))
+
     def test_provider_permissions_and_token_metadata(self):
         issued = self.gateway.issue_token("Claude plan", 20, {"claude-cli"}, None)
         self.assertTrue(issued["token"].startswith("mn_agent_"))
@@ -157,6 +270,13 @@ class AgentGatewayTest(unittest.TestCase):
             status = self.gateway._provider_status("codex-cli")
         self.assertTrue(status["authenticated"])
         self.assertEqual(status["auth_method"], "environment")
+        self.assertEqual(status["model_reasoning_effort"], "medium")
+
+        self.gateway.claude_path = sys.executable
+        self.gateway.claude_auth_env = "TEST_RELAY_API_KEY"
+        with patch.dict(os.environ, {"TEST_RELAY_API_KEY": "configured"}, clear=False):
+            claude_status = self.gateway._provider_status("claude-cli")
+        self.assertEqual(claude_status["effort"], "medium")
 
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("TEST_RELAY_API_KEY", None)
@@ -176,6 +296,8 @@ class AgentGatewayTest(unittest.TestCase):
         command = run_mock.call_args.args[0]
         self.assertNotIn("--ignore-user-config", command)
         self.assertIn("--ephemeral", command)
+        reasoning_index = command.index("--config")
+        self.assertEqual(command[reasoning_index + 1], 'model_reasoning_effort="medium"')
 
     @patch("agent_gateway.subprocess.run")
     def test_claude_image_uses_bidirectional_stream_json(self, run_mock):
@@ -201,6 +323,7 @@ class AgentGatewayTest(unittest.TestCase):
         self.assertEqual(command[command.index("--input-format") + 1], "stream-json")
         self.assertEqual(command[command.index("--output-format") + 1], "stream-json")
         self.assertIn("--no-session-persistence", command)
+        self.assertEqual(command[command.index("--effort") + 1], "medium")
         session_id = command[command.index("--session-id") + 1]
         self.assertEqual(str(uuid.UUID(session_id)), session_id)
 
@@ -220,6 +343,34 @@ class AgentGatewayTest(unittest.TestCase):
         )
         self.assertEqual(parse_claude_output(output), "会议纪要")
 
+    def test_claude_stream_without_final_text_does_not_leak_internal_events(self):
+        output = (
+            '{"type":"system","subtype":"init","model":"step-3.7-flash"}\n'
+            '{"type":"system","subtype":"thinking_tokens","estimated_tokens":16}\n'
+            '{"type":"assistant","message":{"content":'
+            '[{"type":"thinking","thinking":"internal reasoning"}]}}\n'
+            '{"type":"result","subtype":"success","result":""}\n'
+        )
+        self.assertEqual(parse_claude_output(output), "")
+
+    @patch("agent_gateway.subprocess.run")
+    def test_claude_success_without_final_text_is_a_provider_error(self, run_mock):
+        run_mock.return_value = SimpleNamespace(
+            returncode=0,
+            stdout=(
+                '{"type":"system","subtype":"init","model":"step-3.7-flash"}\n'
+                '{"type":"assistant","message":{"content":'
+                '[{"type":"thinking","thinking":"internal reasoning"}]}}\n'
+                '{"type":"result","subtype":"success","result":""}\n'
+            ),
+            stderr="",
+        )
+        task_root = Path(self.temp_dir.name) / "claude-empty-task"
+        task_root.mkdir()
+
+        with self.assertRaisesRegex(AgentProviderError, "completed without final text"):
+            self.gateway._run_claude("summarize", [], task_root)
+
     def test_claude_stream_error_extracts_result_detail(self):
         output = (
             '{"type":"system","subtype":"init"}\n'
@@ -231,8 +382,8 @@ class AgentGatewayTest(unittest.TestCase):
     def test_claude_image_failure_falls_back_to_authorized_codex(self):
         calls = []
 
-        def fallback_runner(provider, prompt, attachments, task_root):
-            calls.append(provider)
+        def fallback_runner(provider, prompt, attachments, task_root, reasoning_effort):
+            calls.append((provider, reasoning_effort))
             if provider == "claude-cli":
                 raise AgentProviderError("claude upstream failed")
             return "codex image report"
@@ -245,14 +396,30 @@ class AgentGatewayTest(unittest.TestCase):
                 "provider": "claude-cli",
                 "operation": "generate_report",
                 "transcript": "image meeting",
+                "model_reasoning_effort": "high",
+                "effort": "low",
             },
             [IncomingAttachment("meeting.png", "image/png", io.BytesIO(b"png"))],
         )
 
         self.assertEqual(response["text"], "codex image report")
-        self.assertEqual(calls, ["claude-cli", "codex-cli"])
+        self.assertEqual(calls, [("claude-cli", "low"), ("codex-cli", "high")])
         task = self.gateway.get_task(principal, response["task_id"])
         self.assertEqual(task["provider"], "codex-cli")
+
+    def test_rejects_provider_specific_effort_values(self):
+        principal = self.gateway.authenticate("Bearer bootstrap-secret")
+        with self.assertRaisesRegex(AgentInputError, "model_reasoning_effort"):
+            self.gateway.execute(
+                principal,
+                {
+                    "provider": "codex-cli",
+                    "operation": "chat",
+                    "model_reasoning_effort": "max",
+                    "messages": [{"role": "user", "content": "hello"}],
+                },
+                [],
+            )
 
 
 if __name__ == "__main__":

@@ -5,6 +5,8 @@ import androidx.room.Index
 import androidx.room.PrimaryKey
 import com.oa.automation.domain.model.Meeting
 import com.oa.automation.domain.model.MeetingAttachment
+import com.oa.automation.domain.model.MeetingOrigin
+import com.oa.automation.domain.model.RecordingMarker
 import com.oa.automation.domain.model.Report
 import com.oa.automation.domain.model.Task
 import com.oa.automation.domain.model.Transcript
@@ -15,7 +17,8 @@ data class MeetingEntity(
     val title: String,
     val createdAt: Long,
     val durationMs: Long,
-    val audioFilePath: String?
+    val audioFilePath: String?,
+    val origin: String
 )
 
 @Entity(
@@ -66,7 +69,26 @@ data class MeetingAttachmentEntity(
     val longitude: Double?,
     val accuracyMeters: Float?,
     val locationCapturedAt: Long?,
-    val locationSource: String?
+    val locationSource: String?,
+    val recordingMarkerId: String?,
+    val markerTimestampMs: Long?,
+    val markerTranscriptAnchor: String?
+)
+
+@Entity(
+    tableName = "recording_markers",
+    indices = [
+        Index(value = ["meetingId"]),
+        Index(value = ["journeyStageId"])
+    ]
+)
+data class RecordingMarkerEntity(
+    @PrimaryKey val id: String,
+    val meetingId: String,
+    val journeyStageId: String?,
+    val timestampMs: Long,
+    val transcriptAnchor: String,
+    val createdAt: Long
 )
 
 @Entity(
@@ -87,7 +109,8 @@ fun MeetingEntity.toDomain() = Meeting(
     title = title,
     createdAt = createdAt,
     durationMs = durationMs,
-    audioFilePath = audioFilePath
+    audioFilePath = audioFilePath,
+    origin = MeetingOrigin.fromPersisted(origin)
 )
 
 fun Meeting.toEntity() = MeetingEntity(
@@ -95,7 +118,8 @@ fun Meeting.toEntity() = MeetingEntity(
     title = title,
     createdAt = createdAt,
     durationMs = durationMs,
-    audioFilePath = audioFilePath
+    audioFilePath = audioFilePath,
+    origin = origin.name
 )
 
 fun TranscriptEntity.toDomain() = Transcript(
@@ -158,7 +182,10 @@ fun MeetingAttachmentEntity.toDomain() = MeetingAttachment(
     longitude = longitude,
     accuracyMeters = accuracyMeters,
     locationCapturedAt = locationCapturedAt,
-    locationSource = locationSource
+    locationSource = locationSource,
+    recordingMarkerId = recordingMarkerId,
+    markerTimestampMs = markerTimestampMs,
+    markerTranscriptAnchor = markerTranscriptAnchor
 )
 
 fun MeetingAttachment.toEntity() = MeetingAttachmentEntity(
@@ -173,5 +200,26 @@ fun MeetingAttachment.toEntity() = MeetingAttachmentEntity(
     longitude = longitude,
     accuracyMeters = accuracyMeters,
     locationCapturedAt = locationCapturedAt,
-    locationSource = locationSource
+    locationSource = locationSource,
+    recordingMarkerId = recordingMarkerId,
+    markerTimestampMs = markerTimestampMs,
+    markerTranscriptAnchor = markerTranscriptAnchor
+)
+
+fun RecordingMarkerEntity.toDomain() = RecordingMarker(
+    id = id,
+    meetingId = meetingId,
+    journeyStageId = journeyStageId,
+    timestampMs = timestampMs,
+    transcriptAnchor = transcriptAnchor,
+    createdAt = createdAt
+)
+
+fun RecordingMarker.toEntity() = RecordingMarkerEntity(
+    id = id,
+    meetingId = meetingId,
+    journeyStageId = journeyStageId,
+    timestampMs = timestampMs,
+    transcriptAnchor = transcriptAnchor,
+    createdAt = createdAt
 )

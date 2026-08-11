@@ -1,4 +1,10 @@
 fastapi==0.139.0
 uvicorn[standard]==0.51.0
 faster-whisper==1.2.1
+colorama==0.4.6
+opencc-python-reimplemented==0.1.7
 python-multipart==0.0.32
+httpx==0.28.1
+websockets==16.1
+tencentcloud-sdk-python-asr==3.1.137
+tzdata==2026.3
