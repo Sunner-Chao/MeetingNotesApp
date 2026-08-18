@@ -28,6 +28,7 @@ import com.oa.automation.domain.model.STTConfig
 import com.oa.automation.domain.model.STTEngineType
 import com.oa.automation.domain.model.STTLanguage
 import com.oa.automation.domain.model.TencentAsrTier
+import com.oa.automation.domain.model.isDevelopmentOnlySttEndpoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -253,7 +254,11 @@ class ConfigDataStore(private val context: Context) {
         }
         val savedSttEngineName = preferences[STT_ENGINE_TYPE]
         val savedSttEndpoint = preferences[STT_LOCAL_ENDPOINT]
-            ?.takeUnless { it == STTConfig.LEGACY_LOCAL_ENDPOINT || it == STTConfig.PREVIOUS_PUBLIC_ENDPOINT }
+            ?.takeUnless {
+                it == STTConfig.PREVIOUS_PUBLIC_ENDPOINT ||
+                    it == STTConfig.LEGACY_LOCAL_ENDPOINT ||
+                    !BuildConfig.DEBUG && it.isDevelopmentOnlySttEndpoint()
+            }
             ?: STTConfig.DEFAULT_LOCAL_ENDPOINT
         val savedCloudEndpoint = preferences[STT_CLOUD_ENDPOINT] ?: STTConfig.DEFAULT_CLOUD_ENDPOINT
         val savedCloudModel = preferences[STT_CLOUD_MODEL] ?: STTConfig.DEFAULT_CLOUD_MODEL
@@ -269,8 +274,7 @@ class ConfigDataStore(private val context: Context) {
                 "tencent-flash",
                 TencentAsrTier.STANDARD_FREE.cloudModel,
                 TencentAsrTier.PRECISION_PAID.cloudModel
-            ) &&
-            savedCloudEndpoint?.trimEnd('/') == "${savedSttEndpoint.trimEnd('/')}/cloud-asr"
+            ) && !savedCloudEndpoint.isNullOrBlank()
         val effectiveSttEngine = when {
             savedSttEngineName == "CLOUD_ASR" && isManagedTencentCloud -> {
                 STTEngineType.TENCENT_HYBRID
@@ -665,7 +669,73 @@ class ConfigDataStore(private val context: Context) {
                     preferences[LLM_CODEX_REASONING_EFFORT] = CodexReasoningEffort.HIGH.name
                 }
             }
-            preferences[DEFAULT_PROFILE_VERSION] = "11"
+            if (profileVersion < 12) {
+                val savedLocalEndpoint = preferences[STT_LOCAL_ENDPOINT]
+                    ?.trim()
+                    ?.trimEnd('/')
+                    .orEmpty()
+                val savedCloudEndpoint = preferences[STT_CLOUD_ENDPOINT]
+                    ?.trim()
+                    ?.trimEnd('/')
+                val savedCloudModel = preferences[STT_CLOUD_MODEL]
+                val savedEngine = preferences[STT_ENGINE_TYPE]
+                val managedTencentProfile = preferences[STT_CLOUD_API_KEY].isNullOrBlank() && (
+                    savedEngine == STTEngineType.TENCENT_HYBRID.name ||
+                        savedEngine == "CLOUD_ASR" ||
+                        savedCloudModel in setOf(
+                            "tencent-flash",
+                            TencentAsrTier.STANDARD_FREE.cloudModel,
+                            TencentAsrTier.PRECISION_PAID.cloudModel
+                        )
+                    )
+                val legacyManagedEndpoint = savedCloudEndpoint == "$savedLocalEndpoint/cloud-asr" ||
+                    savedCloudEndpoint?.endsWith("/cloud-asr") == true
+                val defaultCloudEndpoint = STTConfig.DEFAULT_CLOUD_ENDPOINT
+                if (managedTencentProfile &&
+                    !defaultCloudEndpoint.isNullOrBlank() &&
+                    (savedCloudEndpoint.isNullOrBlank() || legacyManagedEndpoint)
+                ) {
+                    preferences[STT_CLOUD_ENDPOINT] = defaultCloudEndpoint
+                }
+            }
+            if (profileVersion < 13 && !BuildConfig.DEBUG) {
+                val savedEndpoint = preferences[STT_LOCAL_ENDPOINT]
+                if (savedEndpoint.isNullOrBlank() || savedEndpoint.isDevelopmentOnlySttEndpoint()) {
+                    preferences[STT_LOCAL_ENDPOINT] = STTConfig.DEFAULT_LOCAL_ENDPOINT
+                }
+            }
+            if (profileVersion < 14) {
+                val savedEngine = preferences[STT_ENGINE_TYPE]
+                val savedEndpoint = preferences[STT_LOCAL_ENDPOINT]
+                    ?.trim()
+                    ?.trimEnd('/')
+                    .orEmpty()
+                val normalizedEndpoint = savedEndpoint.lowercase()
+                val managedLegacyCloudProfile = preferences[STT_CLOUD_API_KEY].isNullOrBlank() && (
+                    savedEngine == STTEngineType.TENCENT_HYBRID.name ||
+                        savedEngine == "CLOUD_ASR"
+                    )
+                val endpointWasCloudService = normalizedEndpoint.endsWith("/stt-cloud") ||
+                    normalizedEndpoint.endsWith("/cloud-asr")
+                if (managedLegacyCloudProfile || endpointWasCloudService) {
+                    preferences[STT_ENGINE_TYPE] = STTEngineType.FASTER_WHISPER.name
+                    preferences[STT_LOCAL_ENDPOINT] = STTConfig.DEFAULT_LOCAL_ENDPOINT
+                    preferences[STT_LOCAL_MODEL] = BuildConfig.DEFAULT_STT_MODEL
+                }
+            }
+            if (profileVersion < 15) {
+                val savedEngine = preferences[STT_ENGINE_TYPE]
+                val savedModel = preferences[STT_LOCAL_MODEL].orEmpty()
+                if (
+                    savedEngine == "SENSE_VOICE" ||
+                        savedModel.equals("SenseVoiceSmall", ignoreCase = true) ||
+                        savedModel.equals("iic/SenseVoiceSmall", ignoreCase = true)
+                ) {
+                    preferences[STT_ENGINE_TYPE] = STTEngineType.FASTER_WHISPER.name
+                    preferences[STT_LOCAL_MODEL] = STTEngineType.FASTER_WHISPER.defaultModel
+                }
+            }
+            preferences[DEFAULT_PROFILE_VERSION] = "15"
         }
     }
 

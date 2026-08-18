@@ -29,6 +29,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -48,6 +49,7 @@ import org.koin.androidx.compose.koinViewModel
 fun RegisterScreen(
     onNavigateBack: () -> Unit,
     onRegisterSuccess: () -> Unit,
+    onContinueAsGuest: () -> Unit,
     viewModel: RegisterViewModel = koinViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -92,35 +94,65 @@ fun RegisterScreen(
                         onRegister = {},
                         layout = layout
                     )
-                    AuthUsernameField(
-                        value = uiState.username,
-                        placeholder = "用户名",
-                        onValueChange = viewModel::updateUsername,
-                        onNext = { focusManager.moveFocus(FocusDirection.Down) },
-                        supportingText = "3-32 个文字、数字或下划线",
-                        layout = layout
+                    AuthModeSelector(
+                        mode = uiState.mode,
+                        onModeChange = viewModel::updateMode
                     )
-                    AuthPasswordField(
-                        value = uiState.password,
-                        placeholder = "密码",
-                        visible = uiState.passwordVisible,
-                        onValueChange = viewModel::updatePassword,
-                        onToggleVisibility = viewModel::togglePasswordVisibility,
-                        imeAction = ImeAction.Next,
-                        onImeAction = { focusManager.moveFocus(FocusDirection.Down) },
-                        supportingText = "至少 8 个字符",
-                        layout = layout
-                    )
-                    AuthPasswordField(
-                        value = uiState.confirmPassword,
-                        placeholder = "确认密码",
-                        visible = uiState.passwordVisible,
-                        onValueChange = viewModel::updateConfirmPassword,
-                        onToggleVisibility = viewModel::togglePasswordVisibility,
-                        imeAction = ImeAction.Done,
-                        onImeAction = viewModel::register,
-                        layout = layout
-                    )
+                    if (uiState.mode == AuthEntryMode.PASSWORD) {
+                        AuthUsernameField(
+                            value = uiState.username,
+                            placeholder = "用户名",
+                            onValueChange = viewModel::updateUsername,
+                            onNext = { focusManager.moveFocus(FocusDirection.Down) },
+                            supportingText = "3-32 个文字、数字或下划线",
+                            layout = layout
+                        )
+                        AuthPasswordField(
+                            value = uiState.password,
+                            placeholder = "密码",
+                            visible = uiState.passwordVisible,
+                            onValueChange = viewModel::updatePassword,
+                            onToggleVisibility = viewModel::togglePasswordVisibility,
+                            imeAction = ImeAction.Next,
+                            onImeAction = { focusManager.moveFocus(FocusDirection.Down) },
+                            supportingText = "至少 8 个字符",
+                            layout = layout
+                        )
+                        AuthPasswordField(
+                            value = uiState.confirmPassword,
+                            placeholder = "确认密码",
+                            visible = uiState.passwordVisible,
+                            onValueChange = viewModel::updateConfirmPassword,
+                            onToggleVisibility = viewModel::togglePasswordVisibility,
+                            imeAction = ImeAction.Done,
+                            onImeAction = viewModel::register,
+                            layout = layout
+                        )
+                    } else {
+                        AuthIdentifierField(
+                            value = uiState.identifier,
+                            mode = uiState.mode,
+                            onValueChange = viewModel::updateIdentifier,
+                            onNext = { focusManager.moveFocus(FocusDirection.Down) },
+                            layout = layout
+                        )
+                        AuthVerificationCodeField(
+                            value = uiState.verificationCode,
+                            isSending = uiState.isSendingCode,
+                            cooldownSeconds = uiState.codeCooldownSeconds,
+                            onValueChange = viewModel::updateVerificationCode,
+                            onSendCode = viewModel::requestCode,
+                            onDone = viewModel::register,
+                            layout = layout
+                        )
+                        if (uiState.codeSentTo.isNotBlank()) {
+                            Text(
+                                text = "验证码已发送至 ${uiState.codeSentTo}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
                     AnimatedVisibility(
                         visible = uiState.errorMessage != null,
                         enter = fadeIn(),
@@ -148,12 +180,16 @@ fun RegisterScreen(
                                 strokeWidth = 2.dp
                             )
                         } else {
-                            Text("注册并登录", style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                if (uiState.mode == AuthEntryMode.PASSWORD) "注册并登录" else "验证并创建账号",
+                                style = MaterialTheme.typography.titleMedium
+                            )
                         }
                     }
-                    SocialLoginSection(
-                        providers = uiState.authProviders,
-                        onProviderClick = { provider ->
+                    if (uiState.authProviders.isNotEmpty()) {
+                        SocialLoginSection(
+                            providers = uiState.authProviders,
+                            onProviderClick = { provider ->
                             if (provider.enabled && provider.authorizationUrl.isNotBlank()) {
                                 runCatching {
                                     context.startActivity(
@@ -167,10 +203,14 @@ fun RegisterScreen(
                                     ).show()
                                 }
                             }
-                        },
-                        layout = layout
-                    )
+                            },
+                            layout = layout
+                        )
+                    }
                 }
+            }
+            TextButton(onClick = onContinueAsGuest) {
+                Text("先本地录音，稍后注册")
             }
             AuthAgreement(prefix = "注册", layout = layout)
             AuthBenefits(layout)

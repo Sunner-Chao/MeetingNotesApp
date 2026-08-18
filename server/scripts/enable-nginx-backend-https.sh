@@ -4,19 +4,22 @@ set -Eeuo pipefail
 CONFIG="${NGINX_CONFIG:-/etc/nginx/sites-available/synthapi.conf}"
 BACKUP="${CONFIG}.bak-meetingnotes-$(date -u +%Y%m%d%H%M%S)"
 BACKEND_ORIGIN="${MEETINGNOTES_BACKEND_ORIGIN:-http://127.0.0.1:8090}"
+STT_ORIGIN="${MEETINGNOTES_STT_ORIGIN:-http://127.0.0.1:8888}"
 
 [[ "${EUID}" -eq 0 ]] || { echo "Run as root." >&2; exit 1; }
 [[ -f "$CONFIG" ]] || { echo "Missing Nginx config: $CONFIG" >&2; exit 1; }
 [[ "$BACKEND_ORIGIN" =~ ^https?://[^/]+$ ]] || { echo "Invalid MEETINGNOTES_BACKEND_ORIGIN." >&2; exit 1; }
+[[ "$STT_ORIGIN" =~ ^https?://[^/]+$ ]] || { echo "Invalid MEETINGNOTES_STT_ORIGIN." >&2; exit 1; }
 
 cp -a "$CONFIG" "$BACKUP"
-python3 - "$CONFIG" "$BACKEND_ORIGIN" <<'PY'
+python3 - "$CONFIG" "$BACKEND_ORIGIN" "$STT_ORIGIN" <<'PY'
 from pathlib import Path
 import re
 import sys
 
 path = Path(sys.argv[1])
 backend_origin = sys.argv[2]
+stt_origin = sys.argv[3]
 text = path.read_text(encoding="utf-8")
 begin_marker = "    # BEGIN MeetingNotesApp managed routes"
 end_marker = "    # END MeetingNotesApp managed routes"
@@ -72,12 +75,49 @@ BEGIN_MARKER
         proxy_set_header X-Forwarded-Proto https;
         proxy_set_header X-Forwarded-Host $host;
     }
+
+    location = /stt-cloud {
+        return 308 /stt-cloud/;
+    }
+
+    location = /stt-cloud/ws/transcribe-stream {
+        proxy_pass STT_ORIGIN/ws/transcribe-stream;
+        proxy_http_version 1.1;
+        proxy_read_timeout 86400s;
+        proxy_send_timeout 3600s;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header Authorization $http_authorization;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-Host $host;
+    }
+
+    location ^~ /stt-cloud/ {
+        client_max_body_size 1024m;
+        proxy_pass STT_ORIGIN/;
+        proxy_http_version 1.1;
+        proxy_connect_timeout 30s;
+        proxy_send_timeout 3600s;
+        proxy_read_timeout 14400s;
+        proxy_request_buffering off;
+        proxy_buffering off;
+        proxy_set_header Host $host;
+        proxy_set_header Authorization $http_authorization;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-Host $host;
+    }
 END_MARKER
 """
 locations = (
     locations.replace("BEGIN_MARKER", begin_marker)
     .replace("END_MARKER", end_marker)
     .replace("BACKEND_ORIGIN", backend_origin)
+    .replace("STT_ORIGIN", stt_origin)
 )
 
 
@@ -144,4 +184,4 @@ systemctl unmask nginx.service
 systemctl enable nginx.service
 systemctl restart nginx.service
 systemctl is-active nginx.service
-echo "MeetingNotesApp HTTPS routes enabled: /app/, /api/, /health and /web"
+echo "MeetingNotesApp HTTPS routes enabled: /app/, /api/, /health, /web and /stt-cloud/"

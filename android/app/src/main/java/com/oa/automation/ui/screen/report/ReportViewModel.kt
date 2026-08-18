@@ -6,10 +6,13 @@ import androidx.lifecycle.viewModelScope
 import com.oa.automation.data.local.ConfigDataStore
 import com.oa.automation.domain.model.PresetReportTemplate
 import com.oa.automation.domain.model.MeetingAttachment
+import com.oa.automation.domain.model.JourneyStage
 import com.oa.automation.domain.model.Report
 import com.oa.automation.domain.model.ReportTitleResolver
 import com.oa.automation.domain.model.ReportTemplateConfig
+import com.oa.automation.domain.model.Transcript
 import com.oa.automation.domain.repository.MeetingRepository
+import com.oa.automation.domain.repository.JourneyRepository
 import com.oa.automation.domain.repository.ReportRepository
 import com.oa.automation.infrastructure.llm.ChatMessage
 import com.oa.automation.infrastructure.llm.LLMEngine
@@ -42,6 +45,8 @@ data class ReportUiState(
     val meetingTitle: String = "",
     val meetingCreatedAt: Long = 0L,
     val meetingDurationMs: Long = 0L,
+    val journeyStartedAt: Long = 0L,
+    val journeyEndedAt: Long? = null,
     val initiatorName: String = "",
     val initiatorAvatarDataUrl: String? = null,
     val isLoading: Boolean = false,
@@ -66,12 +71,26 @@ data class ReportUiState(
     val message: String? = null,
     val hasUnsavedChanges: Boolean = false,
     val attachments: List<MeetingAttachment> = emptyList(),
+    val journeyStages: List<JourneyStage> = emptyList(),
+    val journeyStageTranscripts: Map<String, String> = emptyMap(),
     val archivedAudio: List<ArchivedMeetingAudio> = emptyList(),
     val isLoadingAudio: Boolean = false,
     val preparingAudioShareId: String? = null,
     val deletingAudioId: String? = null,
     val pendingAudioShare: PreparedMeetingAudioShare? = null
 )
+
+internal fun journeyStageTranscriptMap(transcripts: List<Transcript>): Map<String, String> =
+    transcripts
+        .filter { !it.journeyStageId.isNullOrBlank() }
+        .groupBy { it.journeyStageId.orEmpty() }
+        .mapValues { (_, stageTranscripts) ->
+            SimplifiedChineseText.normalize(
+                stageTranscripts
+                    .sortedWith(compareBy<Transcript> { it.startTimeMs }.thenBy { it.createdAt })
+                    .joinToString("\n") { it.content }
+            )
+        }
 
 class ReportViewModel(
     private val taskScheduler: BackgroundTaskScheduler,
@@ -80,7 +99,8 @@ class ReportViewModel(
     private val llmEngine: LLMEngine,
     private val configDataStore: ConfigDataStore,
     private val attachmentStore: MeetingAttachmentStore,
-    private val audioArchiveService: MeetingAudioArchiveService
+    private val audioArchiveService: MeetingAudioArchiveService,
+    private val journeyRepository: JourneyRepository
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ReportUiState())
@@ -123,12 +143,19 @@ class ReportViewModel(
             )
 
             val meeting = meetingRepository.findById(meetingId).getOrNull()
+            val journey = journeyRepository.findByMeetingId(meetingId).getOrNull()
+            val journeyStages = journey?.let { journeyRepository.observeStages(it.id).first() }.orEmpty()
+            val journeyEndedAt = journey?.completedAt
+                ?: journeyStages.maxOfOrNull { it.savedAt ?: it.updatedAt }
             val session = configDataStore.authSessionFlow.first()
             _uiState.update {
                 it.copy(
                     meetingTitle = meeting?.title.orEmpty(),
                     meetingCreatedAt = meeting?.createdAt ?: 0L,
                     meetingDurationMs = meeting?.durationMs ?: 0L,
+                    journeyStartedAt = journey?.createdAt ?: 0L,
+                    journeyEndedAt = journeyEndedAt?.takeIf { it > (journey?.createdAt ?: 0L) },
+                    journeyStages = journeyStages,
                     initiatorName = session?.user?.displayName.orEmpty()
                         .ifBlank { session?.user?.username.orEmpty() },
                     initiatorAvatarDataUrl = session?.user?.avatarDataUrl
@@ -148,7 +175,7 @@ class ReportViewModel(
             val transcriptText = SimplifiedChineseText.normalize(
                 transcripts.joinToString("\n") { it.content }
             )
-            _uiState.value = _uiState.value.copy(transcriptText = transcriptText)
+            _uiState.value = _uiState.value.copy(transcriptText = transcriptText, journeyStageTranscripts = journeyStageTranscriptMap(transcripts))
 
             // 先尝试从数据库加载已保存的报告
             val existingReport = reportRepository.findByMeetingId(meetingId).getOrNull()
@@ -468,7 +495,7 @@ class ReportViewModel(
         if (state.preparingAudioShareId != null || state.deletingAudioId != null) return
         viewModelScope.launch {
             _uiState.update { it.copy(deletingAudioId = audio.id) }
-            audioArchiveService.delete(audio.id)
+            audioArchiveService.delete(audio)
                 .onSuccess {
                     _uiState.update {
                         it.copy(

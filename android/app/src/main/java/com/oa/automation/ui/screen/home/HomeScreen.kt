@@ -3,6 +3,7 @@ package com.oa.automation.ui.screen.home
 import android.app.DatePickerDialog
 import android.app.TimePickerDialog
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
@@ -36,6 +37,7 @@ import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Event
 import androidx.compose.material.icons.filled.EventAvailable
+import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.GraphicEq
@@ -46,6 +48,7 @@ import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -77,10 +80,13 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -167,6 +173,8 @@ private data class HomeLayoutSpec(
     val tileTitleSize: Int,
     val artworkWidth: Dp,
     val artworkHeight: Dp,
+    val heroCardHeight: Dp,
+    val heroTitleSize: Int,
     val brandIconSize: Dp,
     val brandTitleSize: Int,
     val greetingSize: Int,
@@ -185,6 +193,8 @@ private fun homeLayoutSpec(maxWidth: Dp, maxHeight: Dp): HomeLayoutSpec {
             tileTitleSize = 18,
             artworkWidth = 62.dp,
             artworkHeight = 78.dp,
+            heroCardHeight = 132.dp,
+            heroTitleSize = 26,
             brandIconSize = 34.dp,
             brandTitleSize = 25,
             greetingSize = 24,
@@ -200,6 +210,8 @@ private fun homeLayoutSpec(maxWidth: Dp, maxHeight: Dp): HomeLayoutSpec {
             tileTitleSize = 19,
             artworkWidth = 68.dp,
             artworkHeight = 86.dp,
+            heroCardHeight = 144.dp,
+            heroTitleSize = 29,
             brandIconSize = 38.dp,
             brandTitleSize = 27,
             greetingSize = 26,
@@ -214,18 +226,13 @@ private fun homeLayoutSpec(maxWidth: Dp, maxHeight: Dp): HomeLayoutSpec {
 fun HomeScreen(
     onNavigateToRecording: (String, HomeLaunchAction) -> Unit,
     onNavigateToReport: (String) -> Unit = {},
-    onNavigateToSettings: () -> Unit,
     onNavigateToNotifications: () -> Unit,
     viewModel: HomeViewModel = koinViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
-    var showMeetingDialog by remember { mutableStateOf(false) }
     var showAllMeetings by remember { mutableStateOf(false) }
     var showClearMeetingsDialog by remember { mutableStateOf(false) }
-    var draftMeetingTitle by remember { mutableStateOf("") }
-    var draftScheduledAt by remember { mutableStateOf(viewModel.suggestScheduledTime()) }
-    val context = LocalContext.current
 
     LaunchedEffect(uiState.message) {
         uiState.message?.let {
@@ -240,26 +247,6 @@ fun HomeScreen(
         }
     }
 
-    if (showMeetingDialog) {
-        ScheduledMeetingDialog(
-            title = draftMeetingTitle,
-            scheduledAt = draftScheduledAt,
-            templates = uiState.reportTemplates,
-            onTitleChange = { draftMeetingTitle = it },
-            onScheduledAtChange = { draftScheduledAt = it },
-            onDismiss = { showMeetingDialog = false },
-            onConfirm = { reminderMinutes, templateName ->
-                requestNotificationPermissionIfNeeded(context)
-                viewModel.scheduleMeeting(
-                    title = draftMeetingTitle.trim().ifBlank { viewModel.suggestMeetingTitle("预定会议") },
-                    scheduledAt = draftScheduledAt,
-                    reminderMinutes = reminderMinutes,
-                    templateName = templateName
-                )
-                showMeetingDialog = false
-            }
-        )
-    }
     if (showClearMeetingsDialog) {
         AlertDialog(
             onDismissRequest = { showClearMeetingsDialog = false },
@@ -350,31 +337,17 @@ fun HomeScreen(
                             layout = layout,
                             onQuickRecording = {
                                 viewModel.startNewMeeting(
-                                    viewModel.suggestMeetingTitle("快速会议"),
+                                    viewModel.suggestMeetingTitle("即刻倾听"),
                                     HomeLaunchAction.START_RECORDING
                                 )
                             },
                             onImportFile = {
                                 viewModel.startNewMeeting(
-                                    viewModel.suggestMeetingTitle("文件导入"),
+                                    viewModel.suggestMeetingTitle("顷刻成稿"),
                                     HomeLaunchAction.OPEN_IMPORT
                                 )
-                            },
-                            onCreateMeeting = {
-                                draftMeetingTitle = viewModel.suggestMeetingTitle("预定会议")
-                                draftScheduledAt = viewModel.suggestScheduledTime()
-                                showMeetingDialog = true
-                            },
-                            onSettings = onNavigateToSettings
+                            }
                         )
-                        if (uiState.scheduledMeetings.isNotEmpty()) {
-                            Spacer(Modifier.height(if (layout.compact) 6.dp else 10.dp))
-                            UpcomingMeetings(
-                                meetings = uiState.scheduledMeetings,
-                                onDelete = viewModel::deleteScheduledMeeting,
-                                layout = layout
-                            )
-                        }
                         Spacer(Modifier.height(layout.sectionSpacing))
                         RecentMeetingsHeader(
                             meetingCount = uiState.meetings.size,
@@ -387,7 +360,7 @@ fun HomeScreen(
                         if (uiState.meetings.isEmpty()) {
                             EmptyHistory {
                                 viewModel.startNewMeeting(
-                                    viewModel.suggestMeetingTitle("快速会议"),
+                                    viewModel.suggestMeetingTitle("即刻倾听"),
                                     HomeLaunchAction.START_RECORDING
                                 )
                             }
@@ -501,56 +474,188 @@ private fun HomeGreeting(displayName: String, layout: HomeLayoutSpec) {
 private fun QuickActionGrid(
     layout: HomeLayoutSpec,
     onQuickRecording: () -> Unit,
-    onImportFile: () -> Unit,
-    onCreateMeeting: () -> Unit,
-    onSettings: () -> Unit
+    onImportFile: () -> Unit
 ) {
-    val colors = homeColors()
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            FeatureTile(
-                title = "快速会议",
-                subtitle = "一键开始，\n智能转写",
-                kind = HomeActionArt.MIC,
-                containerColor = colors.blueTile,
-                accent = BrandBlue,
-                layout = layout,
-                onClick = onQuickRecording,
-                modifier = Modifier.weight(1f)
-            )
-            FeatureTile(
-                title = "文件导入",
-                subtitle = "导入音视频\n智能解析",
-                kind = HomeActionArt.FOLDER,
-                containerColor = colors.mintTile,
-                accent = Color(0xFF106EBE),
-                layout = layout,
-                onClick = onImportFile,
-                modifier = Modifier.weight(1f)
+    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        HomeHeroActionCard(
+            title = "即刻倾听",
+            subtitle = "一键录音，AI 智能转写",
+            buttonLabel = "开始会议",
+            kind = HomeHeroArt.MICROPHONE,
+            layout = layout,
+            onClick = onQuickRecording
+        )
+        HomeHeroActionCard(
+            title = "顷刻成稿",
+            subtitle = "导入音频或文档，AI 智能处理",
+            buttonLabel = "导入文件",
+            kind = HomeHeroArt.FILE_IMPORT,
+            layout = layout,
+            onClick = onImportFile
+        )
+    }
+}
+
+private enum class HomeHeroArt { MICROPHONE, FILE_IMPORT }
+
+@Composable
+private fun HomeHeroActionCard(
+    title: String,
+    subtitle: String,
+    buttonLabel: String,
+    kind: HomeHeroArt,
+    layout: HomeLayoutSpec,
+    onClick: () -> Unit
+) {
+    Card(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth().height(layout.heroCardHeight),
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.Transparent),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp, pressedElevation = 2.dp)
+    ) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                drawRect(
+                    brush = Brush.linearGradient(
+                        colors = listOf(Color(0xFF0968F4), Color(0xFF1C92F7), Color(0xFF59D7E5)),
+                        start = Offset.Zero,
+                        end = Offset(size.width, size.height * 0.78f)
+                    )
+                )
+                drawCircle(
+                    color = Color(0xFF8CDCF7).copy(alpha = 0.24f),
+                    radius = size.width * 0.47f,
+                    center = Offset(size.width * 0.22f, -size.height * 0.20f)
+                )
+                drawCircle(
+                    color = Color.White.copy(alpha = 0.16f),
+                    radius = size.width * 0.40f,
+                    center = Offset(size.width * 1.03f, size.height * 1.14f)
+                )
+            }
+            Column(
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .padding(start = 24.dp, top = 16.dp, bottom = 16.dp)
+                    .widthIn(max = if (layout.compact) 194.dp else 238.dp),
+                verticalArrangement = Arrangement.spacedBy(7.dp)
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.headlineMedium.copy(
+                        fontSize = layout.heroTitleSize.sp,
+                        lineHeight = (layout.heroTitleSize + 7).sp
+                    ),
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
+                )
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
+                    color = Color.White.copy(alpha = 0.92f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Button(
+                    onClick = onClick,
+                    shape = RoundedCornerShape(24.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color.White.copy(alpha = 0.19f),
+                        contentColor = Color.White
+                    ),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp),
+                    modifier = Modifier.height(39.dp)
+                ) {
+                    Icon(
+                        imageVector = if (kind == HomeHeroArt.MICROPHONE) Icons.Default.Mic else Icons.Default.FileUpload,
+                        contentDescription = null,
+                        modifier = Modifier.size(21.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(buttonLabel, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                }
+            }
+            when (kind) {
+                HomeHeroArt.MICROPHONE -> Image(
+                    painter = painterResource(R.drawable.action_mic_3d_clean),
+                    contentDescription = null,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .padding(end = 20.dp, top = 7.dp, bottom = 3.dp)
+                        .width(if (layout.compact) 114.dp else 128.dp)
+                        .fillMaxHeight()
+                )
+                HomeHeroArt.FILE_IMPORT -> FileImportHeroArtwork(
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .padding(end = 18.dp, top = 4.dp, bottom = 2.dp)
+                        .width(if (layout.compact) 112.dp else 124.dp)
+                        .fillMaxHeight()
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun FileImportHeroArtwork(modifier: Modifier = Modifier) {
+    Canvas(modifier = modifier) {
+        val w = size.width
+        val h = size.height
+        val pageLeft = w * 0.17f
+        val pageTop = h * 0.13f
+        val pageWidth = w * 0.62f
+        val pageHeight = h * 0.67f
+        val radius = w * 0.08f
+        drawOval(
+            color = Color(0xFF0876B6).copy(alpha = 0.20f),
+            topLeft = Offset(w * 0.10f, h * 0.80f),
+            size = Size(w * 0.78f, h * 0.10f)
+        )
+        drawRoundRect(
+            color = Color(0xFF1575D1).copy(alpha = 0.48f),
+            topLeft = Offset(pageLeft + w * 0.045f, pageTop + h * 0.045f),
+            size = Size(pageWidth, pageHeight),
+            cornerRadius = androidx.compose.ui.geometry.CornerRadius(radius)
+        )
+        drawRoundRect(
+            brush = Brush.verticalGradient(listOf(Color.White, Color(0xFFE9F4FF))),
+            topLeft = Offset(pageLeft, pageTop),
+            size = Size(pageWidth, pageHeight),
+            cornerRadius = androidx.compose.ui.geometry.CornerRadius(radius)
+        )
+        val fold = pageWidth * 0.30f
+        val foldPath = Path().apply {
+            moveTo(pageLeft + pageWidth - fold, pageTop)
+            lineTo(pageLeft + pageWidth, pageTop + fold)
+            lineTo(pageLeft + pageWidth - fold, pageTop + fold)
+            close()
+        }
+        drawPath(foldPath, color = Color(0xFFB6D4FF))
+        repeat(3) { index ->
+            val y = pageTop + pageHeight * (0.38f + index * 0.16f)
+            drawRoundRect(
+                color = Color(0xFF478CF3),
+                topLeft = Offset(pageLeft + pageWidth * 0.20f, y),
+                size = Size(pageWidth * (if (index == 1) 0.57f else 0.38f), h * 0.045f),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(h * 0.022f)
             )
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            FeatureTile(
-                title = "预定会议",
-                subtitle = "安排时间，\n提前提醒",
-                kind = HomeActionArt.ADD,
-                containerColor = colors.lilacTile,
-                accent = Color(0xFF2B88B9),
-                layout = layout,
-                onClick = onCreateMeeting,
-                modifier = Modifier.weight(1f)
-            )
-            FeatureTile(
-                title = "常用设置",
-                subtitle = "个性设置，\n专属体验",
-                kind = HomeActionArt.SETTINGS,
-                containerColor = colors.peachTile,
-                accent = Color(0xFF486A8A),
-                layout = layout,
-                onClick = onSettings,
-                modifier = Modifier.weight(1f)
-            )
-        }
+        val badgeSize = w * 0.43f
+        val badgeLeft = w * 0.55f
+        val badgeTop = h * 0.61f
+        drawRoundRect(
+            brush = Brush.verticalGradient(listOf(Color(0xFF5B9CFF), Color(0xFF1764D8))),
+            topLeft = Offset(badgeLeft, badgeTop),
+            size = Size(badgeSize, badgeSize),
+            cornerRadius = androidx.compose.ui.geometry.CornerRadius(w * 0.10f)
+        )
+        val arrowX = badgeLeft + badgeSize * 0.50f
+        drawLine(Color.White, Offset(arrowX, badgeTop + badgeSize * 0.70f), Offset(arrowX, badgeTop + badgeSize * 0.30f), w * 0.045f, androidx.compose.ui.graphics.StrokeCap.Round)
+        drawLine(Color.White, Offset(arrowX, badgeTop + badgeSize * 0.30f), Offset(arrowX - badgeSize * 0.18f, badgeTop + badgeSize * 0.48f), w * 0.045f, androidx.compose.ui.graphics.StrokeCap.Round)
+        drawLine(Color.White, Offset(arrowX, badgeTop + badgeSize * 0.30f), Offset(arrowX + badgeSize * 0.18f, badgeTop + badgeSize * 0.48f), w * 0.045f, androidx.compose.ui.graphics.StrokeCap.Round)
     }
 }
 
@@ -994,15 +1099,10 @@ private fun HomeMeetingRow(
     var showDeleteDialog by remember { mutableStateOf(false) }
     val source = item.meeting.origin
     val displayTitle = item.meeting.displayTitle()
-    val icon = when (source) {
-        MeetingOrigin.QUICK -> Icons.Default.Mic
-        MeetingOrigin.SCHEDULED -> Icons.Default.EventAvailable
-        MeetingOrigin.FILE_IMPORT -> Icons.Default.FolderOpen
-    }
     val iconTint = when (source) {
-        MeetingOrigin.QUICK -> BrandBlue
-        MeetingOrigin.SCHEDULED -> Color(0xFF2B88B9)
-        MeetingOrigin.FILE_IMPORT -> Color(0xFF106EBE)
+        MeetingOrigin.QUICK -> Color(0xFF08799A)
+        MeetingOrigin.SCHEDULED -> Color(0xFF08799A)
+        MeetingOrigin.FILE_IMPORT -> Color(0xFF08799A)
     }
     if (showDeleteDialog) {
         AlertDialog(
@@ -1041,11 +1141,20 @@ private fun HomeMeetingRow(
             Surface(
                 modifier = Modifier.size(layout.recordIconSize),
                 shape = RoundedCornerShape(12.dp),
-                color = iconTint.copy(alpha = 0.12f)
+                color = Color.Transparent
             ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(icon, contentDescription = null, tint = iconTint, modifier = Modifier.size(24.dp))
-                }
+                Image(
+                    painter = painterResource(
+                        if (source == MeetingOrigin.FILE_IMPORT) {
+                            R.drawable.action_folder_3d_clean
+                        } else {
+                            R.drawable.action_mic_3d_clean
+                        }
+                    ),
+                    contentDescription = if (source == MeetingOrigin.FILE_IMPORT) "文件记录" else "录音记录",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.fillMaxSize()
+                )
             }
             Spacer(Modifier.width(10.dp))
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -1432,7 +1541,7 @@ private fun ScheduledMeetingDialog(
                     }
                 }
                 Text(
-                    text = "到点后可直接进入快速会议，纪要模板会沿用本次预定设置。",
+                    text = "到点后可直接进入即刻倾听，纪要模板会沿用本次预定设置。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

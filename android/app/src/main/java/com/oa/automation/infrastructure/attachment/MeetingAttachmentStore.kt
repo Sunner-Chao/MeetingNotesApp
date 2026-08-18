@@ -10,7 +10,10 @@ import com.oa.automation.infrastructure.llm.AgentAttachment
 import com.oa.automation.infrastructure.location.DeviceLocationProvider
 import com.oa.automation.infrastructure.location.ExifLocationReader
 import com.oa.automation.infrastructure.location.LocationSnapshot
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -45,12 +48,17 @@ class MeetingAttachmentStore(
         sources: List<Uri>,
         captureLocation: Boolean = false,
         journeyStageId: String? = null,
-        recordingMarker: RecordingMarker? = null
+        recordingMarker: RecordingMarker? = null,
+        onProgress: (completed: Int, total: Int) -> Unit = { _, _ -> }
     ): List<Result<MeetingAttachment>> = withContext(Dispatchers.IO) {
         val deviceLocation = if (captureLocation) locationProvider.capture() else null
-        sources.map { source ->
-            importImage(meetingId, source, deviceLocation, journeyStageId, recordingMarker)
-        }
+        processImageImportsSequentially(
+            sources = sources,
+            importer = { source ->
+                importImage(meetingId, source, deviceLocation, journeyStageId, recordingMarker)
+            },
+            onProgress = onProgress
+        )
     }
 
     private suspend fun importImage(
@@ -59,8 +67,7 @@ class MeetingAttachmentStore(
         deviceLocation: LocationSnapshot?,
         journeyStageId: String?,
         recordingMarker: RecordingMarker?
-    ): Result<MeetingAttachment> =
-        runCatching {
+    ): Result<MeetingAttachment> = try {
             val createdAt = System.currentTimeMillis()
             val mimeType = context.contentResolver.getType(source)?.takeIf { it.startsWith("image/") }
                 ?: "image/jpeg"
@@ -100,6 +107,11 @@ class MeetingAttachmentStore(
                 target.delete()
                 throw error
             }
+            Result.success(attachment)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            Result.failure(error)
         }
 
     suspend fun delete(attachment: MeetingAttachment): Result<Unit> = withContext(Dispatchers.IO) {
@@ -133,4 +145,20 @@ class MeetingAttachmentStore(
             if (column >= 0 && cursor.moveToFirst()) cursor.getString(column) else null
         }
     }.getOrNull()
+}
+
+internal suspend fun <Source, Value> processImageImportsSequentially(
+    sources: List<Source>,
+    importer: suspend (Source) -> Result<Value>,
+    onProgress: (completed: Int, total: Int) -> Unit = { _, _ -> }
+): List<Result<Value>> {
+    val total = sources.size
+    return buildList(total) {
+        sources.forEach { source ->
+            currentCoroutineContext().ensureActive()
+            add(importer(source))
+            onProgress(size, total)
+            currentCoroutineContext().ensureActive()
+        }
+    }
 }

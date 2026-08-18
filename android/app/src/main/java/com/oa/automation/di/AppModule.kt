@@ -1,6 +1,7 @@
 package com.oa.automation.di
 
 import androidx.room.Room
+import com.oa.automation.BuildConfig
 import com.oa.automation.application.usecase.GenerateReportUseCase
 import com.oa.automation.application.usecase.GenerateJourneyEditionUseCase
 import com.oa.automation.application.usecase.CreatePublishedPostSnapshotUseCase
@@ -19,6 +20,7 @@ import com.oa.automation.infrastructure.audio.MeetingAudioArchiveService
 import com.oa.automation.infrastructure.audio.ImportedAudioStore
 import com.oa.automation.infrastructure.account.AccountApiService
 import com.oa.automation.infrastructure.account.AccountSessionSynchronizer
+import com.oa.automation.infrastructure.account.LocalAccountDataMigrator
 import com.oa.automation.infrastructure.account.ProfileAvatarCodec
 import com.oa.automation.infrastructure.attachment.MeetingAttachmentStore
 import com.oa.automation.infrastructure.background.BackgroundTaskScheduler
@@ -51,7 +53,9 @@ import com.oa.automation.ui.screen.account.CommunityModerationViewModel
 import com.oa.automation.ui.screen.community.CommunityPostDetailViewModel
 import com.oa.automation.ui.screen.community.CommunityCollectionDetailViewModel
 import com.oa.automation.ui.screen.community.CommunityViewModel
+import com.oa.automation.ui.screen.community.CommunityPublishingViewModel
 import com.oa.automation.ui.screen.login.LoginViewModel
+import com.oa.automation.ui.screen.login.ForgotPasswordViewModel
 import com.oa.automation.ui.screen.login.RegisterViewModel
 import com.oa.automation.ui.screen.recording.RecordingViewModel
 import com.oa.automation.ui.screen.report.ReportViewModel
@@ -123,6 +127,7 @@ val appModule = module {
     single { AgentQuotaService() }
     single { AccountApiService() }
     single { AccountSessionSynchronizer(get(), get()) }
+    single { LocalAccountDataMigrator(get(), get(), get()) }
     single { CommunitySyncProcessor(get(), get(), get(), get(), get()) }
     single { PublishedPostMediaStore(androidContext(), get(), get()) }
     single { ProfileAvatarCodec(androidContext()) }
@@ -134,18 +139,23 @@ val appModule = module {
     factory { GenerateStageDraftUseCase(get(), get(), get(), get()) }
     factory { GenerateJourneyEditionUseCase(get(), get(), get()) }
     factory { CreatePublishedPostSnapshotUseCase(get(), get(), get(), get()) }
+    if (BuildConfig.DEBUG) {
+        single { com.oa.automation.debug.DevelopmentDemoDataSeeder(get(), get(), get(), get()) }
+    }
 
     // ViewModels
-    viewModel { LoginViewModel(get(), get()) }
-    viewModel { RegisterViewModel(get(), get()) }
+    viewModel { LoginViewModel(get(), get(), get()) }
+    viewModel { ForgotPasswordViewModel(get(), get()) }
+    viewModel { RegisterViewModel(get(), get(), get()) }
     viewModel { HomeViewModel(get(), get(), get(), get(), get(), get(), get(), get()) }
     viewModel { AccountViewModel(get(), get(), get(), get(), get()) }
     viewModel { CommunityModerationViewModel(get(), get()) }
     viewModel { CommunityViewModel(get(), get()) }
+    viewModel { CommunityPublishingViewModel(get(), get(), get()) }
     viewModel { CommunityPostDetailViewModel(get(), get()) }
     viewModel { CommunityCollectionDetailViewModel(get(), get()) }
     viewModel { RecordingViewModel(get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), androidContext()) }
-    viewModel { ReportViewModel(get(), get(), get(), get(), get(), get(), get()) }
-    viewModel { SettingsViewModel(get(), get(), get()) }
+    viewModel { ReportViewModel(get(), get(), get(), get(), get(), get(), get(), get()) }
+    viewModel { SettingsViewModel(get(), get(), get(), if (BuildConfig.DEBUG) get() else null) }
     viewModel { VipViewModel(get(), get(), get(), get(), get()) }
 }

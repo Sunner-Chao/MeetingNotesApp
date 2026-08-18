@@ -18,6 +18,9 @@ class CommunitySyncRepositoryImpl(
     private val publishedPostDao: PublishedPostDao,
     private val scheduler: CommunitySyncEnqueuer
 ) : CommunitySyncRepository {
+    override fun observeAll(): Flow<List<CommunitySyncState>> =
+        outboxDao.observeAll().map { states -> states.map { it.toDomain() } }
+
     override suspend fun enqueueUpload(postId: String): Result<CommunitySyncState> = runCatching {
         val post = publishedPostDao.findById(postId) ?: error("Published post not found: $postId")
         require(post.status == PublishedPostStatus.READY.name) {

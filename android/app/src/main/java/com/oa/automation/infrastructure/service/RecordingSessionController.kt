@@ -8,12 +8,15 @@ import com.oa.automation.infrastructure.stt.StreamingSttProvider
 import com.oa.automation.infrastructure.account.AccountSessionSynchronizer
 import com.oa.automation.infrastructure.stt.StreamingTranscriptUpdate
 import com.oa.automation.infrastructure.stt.StreamingTranscriptAccumulator
-import com.oa.automation.infrastructure.stt.STTServiceClient
+import com.oa.automation.infrastructure.stt.CloudSTTEngine
 import com.oa.automation.domain.model.STTEngineType
 import com.oa.automation.domain.model.STTLanguage
 import com.oa.automation.domain.model.TencentAsrTier
+import com.oa.automation.domain.model.serviceEndpointFor
 import java.io.File
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -22,6 +25,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
 import kotlin.math.log10
 import kotlin.math.sqrt
@@ -47,7 +51,8 @@ data class RecordingStopResult(
     val audioFile: File,
     val streamSessionId: String?,
     val transcriptText: String,
-    val durationMs: Long
+    val durationMs: Long,
+    val requiresLogin: Boolean
 )
 
 class RecordingSessionController(
@@ -57,7 +62,11 @@ class RecordingSessionController(
     private val accountSessionSynchronizer: AccountSessionSynchronizer
 ) {
     private val operationMutex = Mutex()
+    private val fallbackScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var streamingPreviewActive = false
+    private var accountAccessEnabled = false
+    private var cloudFallbackAvailable = false
+    @Volatile private var automaticCloudFallbackAttempted = false
     private val transcriptAccumulator = StreamingTranscriptAccumulator()
     @Volatile private var smoothedAudioLevel = 0f
     @Volatile private var pendingStopMeetingId: String? = null
@@ -103,30 +112,58 @@ class RecordingSessionController(
 
             var sttConfig = configDataStore.appConfigFlow.first().sttConfig
             val usesTencentHybrid = sttConfig.engineType == STTEngineType.TENCENT_HYBRID
+            automaticCloudFallbackAttempted = false
+            val accountSessionAvailable = configDataStore.authSessionFlow.first()?.expiresAt?.let {
+                it > System.currentTimeMillis() / 1_000
+            } == true
+            // Refresh a valid account opportunistically. A failed refresh must not block
+            // local recording; it only disables cloud fallback for this session.
+            if (accountSessionAvailable) {
+                accountSessionSynchronizer.refresh()
+                sttConfig = configDataStore.appConfigFlow.first().sttConfig
+            }
+            accountAccessEnabled = accountSessionAvailable && !sttConfig.apiToken.isNullOrBlank()
+            cloudFallbackAvailable = accountAccessEnabled && !sttConfig.cloudEndpoint.isNullOrBlank()
+            val localEndpoint = sttConfig.localEndpoint.trim()
+            val useCloudInitially = usesTencentHybrid ||
+                (localEndpoint.isBlank() && cloudFallbackAvailable)
+            val initialEndpoint = if (useCloudInitially) {
+                sttConfig.serviceEndpointFor(STTEngineType.TENCENT_HYBRID)
+            } else {
+                localEndpoint
+            }
+            val initialProvider = if (useCloudInitially) {
+                sttConfig.tencentAsrTier.toStreamingProvider()
+            } else {
+                StreamingSttProvider.LOCAL
+            }
             transcriptAccumulator.reset()
             _state.value = RecordingSessionState(
                 meetingId = meetingId,
                 meetingTitle = meetingTitle,
                 isStarting = true,
-                status = if (usesTencentHybrid) "正在连接智悟增强云模型" else "正在连接实时预览"
+                status = when {
+                    useCloudInitially -> "正在连接智悟增强云模型"
+                    initialEndpoint.isBlank() -> "正在启动本地录音"
+                    else -> "正在连接本地实时预览"
+                }
             )
             smoothedAudioLevel = 0f
             if (pendingStopMeetingId == meetingId) {
                 pendingStopMeetingId = null
                 throw CancellationException("录音启动已取消")
             }
-            val credentialRefresh = accountSessionSynchronizer.refresh()
-            sttConfig = configDataStore.appConfigFlow.first().sttConfig
-            if (sttConfig.apiToken.isNullOrBlank() && credentialRefresh.isFailure) {
-                error(credentialRefresh.exceptionOrNull()?.message ?: "账户凭证刷新失败")
-            }
-            withContext(Dispatchers.IO) {
-                STTServiceClient.testConnection(sttConfig.localEndpoint, sttConfig.apiToken)
-            }.getOrElse { failure ->
-                error(failure.message ?: "STT 服务鉴权失败")
+            if (useCloudInitially) {
+                require(cloudFallbackAvailable) { "智悟增强云模型需要有效的账户令牌和服务地址" }
+                val connectionResult = withContext(Dispatchers.IO) {
+                    CloudSTTEngine.testHybridConnection(sttConfig)
+                }
+                connectionResult.getOrElse { failure ->
+                    error(failure.message ?: "STT 服务鉴权失败")
+                }
             }
             audioRecorder.setOnChunkAvailableListener(null)
-            streamingPreviewActive = true
+            streamingPreviewActive = initialEndpoint.isNotBlank()
             audioRecorder.setOnPcmDataListener { pcmBytes, length ->
                 val measuredLevel = normalizedPcmLevel(pcmBytes, length)
                 smoothedAudioLevel = smoothedAudioLevel * 0.72f + measuredLevel * 0.28f
@@ -137,31 +174,34 @@ class RecordingSessionController(
                         it
                     }
                 }
-                streamingSttClient.sendAudio(pcmBytes)
+                if (streamingPreviewActive) streamingSttClient.sendAudio(pcmBytes)
             }
-            streamingSttClient.start(
-                endpoint = sttConfig.localEndpoint,
-                meetingId = meetingId,
-                apiToken = sttConfig.apiToken,
-                streamProvider = if (usesTencentHybrid) {
-                    sttConfig.tencentAsrTier.toStreamingProvider()
-                } else {
-                    StreamingSttProvider.LOCAL
-                },
-                language = sttConfig.language,
-                onPartialText = { update ->
-                    val accumulatedText = transcriptAccumulator.update(update)
-                    _state.update {
-                        it.copy(
-                            streamUpdate = update,
-                            accumulatedTranscript = accumulatedText,
-                            status = "实时预览（可修订）"
-                        )
+            if (streamingPreviewActive) {
+                streamingSttClient.start(
+                    endpoint = initialEndpoint,
+                    meetingId = meetingId,
+                    apiToken = sttConfig.apiToken,
+                    streamProvider = initialProvider,
+                    language = sttConfig.language,
+                    onPartialText = { update ->
+                        val accumulatedText = transcriptAccumulator.update(update)
+                        _state.update {
+                            it.copy(
+                                streamUpdate = update,
+                                accumulatedTranscript = accumulatedText,
+                                status = "实时预览（可修订）"
+                            )
+                        }
+                    },
+                    onStatus = { status -> _state.update { it.copy(status = status, error = null) } },
+                    onError = { error -> _state.update { it.copy(error = error) } },
+                    onProviderFailure = { provider, detail ->
+                        if (provider == StreamingSttProvider.LOCAL) {
+                            requestAutomaticCloudFallback(detail)
+                        }
                     }
-                },
-                onStatus = { status -> _state.update { it.copy(status = status, error = null) } },
-                onError = { error -> _state.update { it.copy(error = error) } }
-            )
+                )
+            }
             if (pendingStopMeetingId == meetingId) {
                 if (streamingPreviewActive) streamingSttClient.stop()
                 streamingPreviewActive = false
@@ -185,7 +225,12 @@ class RecordingSessionController(
                     isStopping = stopWasRequested,
                     startedAtElapsedRealtimeMs = SystemClock.elapsedRealtime(),
                     recordedDurationSeconds = 0,
-                    status = if (stopWasRequested) "正在结束录音" else if (usesTencentHybrid) "智悟增强云模型识别中" else "实时预览处理中",
+                    status = when {
+                        stopWasRequested -> "正在结束录音"
+                        useCloudInitially -> "智悟增强云模型识别中"
+                        initialEndpoint.isBlank() -> "本地录音中"
+                        else -> "本地实时预览处理中"
+                    },
                     error = null
                 )
             }
@@ -220,6 +265,7 @@ class RecordingSessionController(
             audioRecorder.setOnPcmDataListener(null)
             val streamSessionId = if (streamingPreviewActive) streamingSttClient.stop() else null
             streamingPreviewActive = false
+            automaticCloudFallbackAttempted = false
             val transcriptText = transcriptAccumulator.snapshot()
             smoothedAudioLevel = 0f
             pendingStopMeetingId = null
@@ -239,7 +285,14 @@ class RecordingSessionController(
                     error = null
                 )
             }
-            RecordingStopResult(meetingId, audioFile, streamSessionId, transcriptText, durationMs)
+            RecordingStopResult(
+                meetingId,
+                audioFile,
+                streamSessionId,
+                transcriptText,
+                durationMs,
+                requiresLogin = !accountAccessEnabled
+            )
         }.onFailure { error ->
             if (_state.value.meetingId == expectedMeetingId) pendingStopMeetingId = null
             _state.update {
@@ -315,13 +368,21 @@ class RecordingSessionController(
                 } else {
                     StreamingSttProvider.LOCAL
                 }
+                val endpoint = sttConfig.serviceEndpointFor(engineType)
+                require(endpoint.isNotBlank()) {
+                    if (engineType == STTEngineType.TENCENT_HYBRID) {
+                        "智悟增强云模型地址未配置"
+                    } else {
+                        "智悟本地识别服务地址未配置"
+                    }
+                }
                 _state.update {
                     it.copy(
                         status = "正在切换至${engineType.displayName}",
                         error = null
                     )
                 }
-                streamingSttClient.switchProvider(provider).getOrThrow()
+                streamingSttClient.switchService(endpoint, provider).getOrThrow()
                 _state.update {
                     it.copy(
                         status = "${engineType.displayName}已启用",
@@ -334,6 +395,35 @@ class RecordingSessionController(
                 }
             }
         }
+
+    private fun requestAutomaticCloudFallback(detail: String) {
+        if (!cloudFallbackAvailable || automaticCloudFallbackAttempted) return
+        if (!_state.value.isRecording || _state.value.isStopping) return
+        automaticCloudFallbackAttempted = true
+        _state.update {
+            it.copy(
+                status = "本地实时识别暂不可用，正在切换云端兜底",
+                error = null
+            )
+        }
+        fallbackScope.launch {
+            val result = switchStreamingProvider(STTEngineType.TENCENT_HYBRID)
+            _state.update {
+                if (!it.isRecording || it.isStopping) return@update it
+                if (result.isSuccess) {
+                    it.copy(
+                        status = "云端兜底实时识别中",
+                        error = null
+                    )
+                } else {
+                    it.copy(
+                        status = "本地与云端实时识别均不可用",
+                        error = "本地实时识别失败：$detail；云端兜底失败：${result.exceptionOrNull()?.message ?: "未知错误"}"
+                    )
+                }
+            }
+        }
+    }
 
     suspend fun switchStreamingLanguage(language: STTLanguage): Result<Unit> =
         operationMutex.withLock {
@@ -358,6 +448,7 @@ class RecordingSessionController(
         audioRecorder.setOnPcmDataListener(null)
         if (streamingPreviewActive) streamingSttClient.stop()
         streamingPreviewActive = false
+        automaticCloudFallbackAttempted = false
         smoothedAudioLevel = 0f
         audioRecorder.cancel(deleteFile = deleteFile)
         pendingStopMeetingId = null

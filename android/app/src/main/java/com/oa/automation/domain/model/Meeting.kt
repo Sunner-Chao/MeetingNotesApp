@@ -20,7 +20,7 @@ enum class MeetingOrigin {
     }
 }
 
-private val LEGACY_FILE_IMPORT_TITLE = Regex("^资料导入(?:\\s+\\d{2}-\\d{2}\\s+\\d{2}:\\d{2})?$")
+private val LEGACY_FILE_IMPORT_TITLE = Regex("^(资料导入|文件导入)(?:\\s+\\d{2}-\\d{2}\\s+\\d{2}:\\d{2})?$")
 
 /**
  * Keeps system-generated titles consistent after the import entry was renamed.
@@ -29,7 +29,7 @@ private val LEGACY_FILE_IMPORT_TITLE = Regex("^资料导入(?:\\s+\\d{2}-\\d{2}\
 fun Meeting.displayTitle(): String = if (
     origin == MeetingOrigin.FILE_IMPORT && LEGACY_FILE_IMPORT_TITLE.matches(title.trim())
 ) {
-    title.trim().replaceFirst("资料导入", "文件导入")
+    title.trim().replaceFirst(Regex("^(资料导入|文件导入)"), "顷刻成稿")
 } else {
     title
 }

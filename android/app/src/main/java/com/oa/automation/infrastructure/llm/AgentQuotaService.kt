@@ -17,11 +17,19 @@ data class AgentQuota(
     @SerializedName("request_limit") val requestLimit: Int,
     @SerializedName("requests_used") val requestsUsed: Int,
     @SerializedName("requests_remaining") val requestsRemaining: Int,
+    @SerializedName("ai_credits_granted") private val billedAiCreditsGranted: Int? = null,
+    @SerializedName("ai_credits_used") private val billedAiCreditsUsed: Int? = null,
+    @SerializedName("ai_credits_remaining") private val billedAiCreditsRemaining: Int? = null,
     @SerializedName("allowed_providers") val allowedProviders: List<String>,
     @SerializedName("expires_at") val expiresAt: Long?
 ) {
+    val aiCreditsGranted: Int get() = billedAiCreditsGranted ?: requestLimit
+    val aiCreditsUsed: Int get() = billedAiCreditsUsed ?: requestsUsed
+    val aiCreditsRemaining: Int get() = billedAiCreditsRemaining ?: requestsRemaining
     val usedFraction: Float
-        get() = if (requestLimit <= 0) 0f else (requestsUsed.toFloat() / requestLimit).coerceIn(0f, 1f)
+        get() = if (aiCreditsGranted <= 0) 0f else {
+            (aiCreditsUsed.toFloat() / aiCreditsGranted).coerceIn(0f, 1f)
+        }
 }
 
 class AgentQuotaService(

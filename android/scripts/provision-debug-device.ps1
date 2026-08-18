@@ -2,6 +2,9 @@
 param(
     [string]$AdbPath = "D:\pro_sunner\demo_vscode\android-sdk\platform-tools\adb.exe",
     [string]$ServerEnvPath = "",
+    [string]$LocalDefaultsPath = "",
+    [string]$LocalEndpoint = "",
+    [string]$CloudEndpoint = "",
     [string]$PackageName = "com.oa.automation",
     [string]$DeviceSerial = ""
 )
@@ -11,6 +14,9 @@ $AndroidRoot = Split-Path -Parent $PSScriptRoot
 $WorkspaceRoot = Split-Path -Parent $AndroidRoot
 if (-not $ServerEnvPath) {
     $ServerEnvPath = Join-Path $WorkspaceRoot "server\.env.remote"
+}
+if (-not $LocalDefaultsPath) {
+    $LocalDefaultsPath = Join-Path $AndroidRoot "local.defaults.env"
 }
 
 if (-not (Test-Path -LiteralPath $AdbPath -PathType Leaf)) {
@@ -30,18 +36,33 @@ $token = $tokenLine.Substring($tokenLine.IndexOf("=") + 1).Trim().Trim('"')
 if (-not $token) {
     throw "STT_API_TOKEN is empty."
 }
-$endpointLine = Get-Content -LiteralPath $ServerEnvPath |
-    Where-Object { $_ -like "PUBLIC_STT_URL=*" } |
-    Select-Object -Last 1
-$endpoint = if ($endpointLine) {
-    $endpointLine.Substring($endpointLine.IndexOf("=") + 1).Trim().Trim('"').TrimEnd('/')
-} else {
-    ""
+function Read-EnvValue {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return "" }
+    $line = Get-Content -LiteralPath $Path |
+        Where-Object { $_ -like "$Name=*" } |
+        Select-Object -Last 1
+    if (-not $line) { return "" }
+    return $line.Substring($line.IndexOf("=") + 1).Trim().Trim('"').TrimEnd('/')
 }
-if (-not $endpoint) {
+
+if (-not $LocalEndpoint) {
+    $LocalEndpoint = Read-EnvValue -Path $LocalDefaultsPath -Name "MEETINGNOTES_STT_DEBUG_ENDPOINT"
+}
+if (-not $LocalEndpoint) {
+    $LocalEndpoint = Read-EnvValue -Path $LocalDefaultsPath -Name "MEETINGNOTES_STT_ENDPOINT"
+}
+if (-not $LocalEndpoint) {
+    $LocalEndpoint = Read-EnvValue -Path $ServerEnvPath -Name "PUBLIC_STT_URL"
+}
+if (-not $LocalEndpoint) {
     $deploymentStatePath = Join-Path $WorkspaceRoot "server\.deployment-state.json"
     if (-not (Test-Path -LiteralPath $deploymentStatePath -PathType Leaf)) {
-        throw "PUBLIC_STT_URL is empty and deployment metadata is unavailable."
+        throw "The local STT endpoint is empty and deployment metadata is unavailable."
     }
     $deploymentState = Get-Content -LiteralPath $deploymentStatePath -Raw | ConvertFrom-Json
     $portLine = Get-Content -LiteralPath $ServerEnvPath |
@@ -52,10 +73,16 @@ if (-not $endpoint) {
     } else {
         "8888"
     }
-    $endpoint = "http://$($deploymentState.server):$port"
+    $LocalEndpoint = "http://$($deploymentState.server):$port"
 }
-if ($endpoint -notmatch '^https?://') {
-    throw "PUBLIC_STT_URL must use http or https."
+if (-not $CloudEndpoint) {
+    $CloudEndpoint = Read-EnvValue -Path $LocalDefaultsPath -Name "MEETINGNOTES_STT_CLOUD_ENDPOINT"
+}
+if ($LocalEndpoint -notmatch '^https?://') {
+    throw "The local STT endpoint must use http or https."
+}
+if ($CloudEndpoint -notmatch '^https?://') {
+    throw "The cloud STT endpoint must use http or https."
 }
 
 $deviceArgs = if ($DeviceSerial) { @("-s", $DeviceSerial) } else { @() }
@@ -75,10 +102,11 @@ Start-Sleep -Seconds 1
     -a com.oa.automation.debug.PROVISION_STT `
     -n "$PackageName/.debug.DebugProvisioningReceiver" `
     --es stt_api_token $token `
-    --es stt_endpoint $endpoint | Out-Null
+    --es stt_endpoint $LocalEndpoint `
+    --es stt_cloud_endpoint $CloudEndpoint | Out-Null
 if ($LASTEXITCODE -ne 0) {
     throw "Debug STT provisioning broadcast failed."
 }
 Start-Sleep -Seconds 2
 
-Write-Host "[OK] Production STT credentials were provisioned to the debug device DataStore."
+Write-Host "[OK] Local and cloud STT endpoints were provisioned to the debug device DataStore."

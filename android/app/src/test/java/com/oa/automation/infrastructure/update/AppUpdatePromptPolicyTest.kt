@@ -1,6 +1,7 @@
 package com.oa.automation.infrastructure.update
 
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -37,5 +38,15 @@ class AppUpdatePromptPolicyTest {
     fun `installed or older version is not prompted`() {
         assertFalse(shouldPromptForUpdate(update(13), ignoredVersionCode = null, currentVersionCode = 13))
         assertFalse(shouldPromptForUpdate(update(12), ignoredVersionCode = null, currentVersionCode = 13))
+    }
+
+    @Test
+    fun `a higher server version replaces a pending update prompt`() {
+        val pending = update(14)
+        val latest = update(17)
+
+        assertSame(latest, newerAppUpdate(pending, latest))
+        assertSame(pending, newerAppUpdate(pending, update(13)))
+        assertSame(pending, newerAppUpdate(pending, update(14)))
     }
 }

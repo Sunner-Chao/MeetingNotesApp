@@ -47,11 +47,25 @@ interface SpeechToTextEngine {
      */
     companion object {
         fun fromConfig(config: STTConfig): SpeechToTextEngine {
-            return when (config.engineType) {
+            val primary = when (config.engineType) {
                 STTEngineType.FASTER_WHISPER -> FasterWhisperEngine(config)
-                STTEngineType.SENSE_VOICE -> SenseVoiceEngine(config)
                 STTEngineType.TENCENT_HYBRID -> CloudSTTEngine(config)
             }
+            if (config.engineType == STTEngineType.TENCENT_HYBRID ||
+                config.cloudEndpoint.isNullOrBlank() ||
+                config.apiToken.isNullOrBlank()
+            ) {
+                return primary
+            }
+
+            val cloudFallback = CloudSTTEngine(
+                config.copy(
+                    engineType = STTEngineType.TENCENT_HYBRID,
+                    cloudApiKey = null,
+                    cloudModel = config.tencentAsrTier.cloudModel
+                )
+            )
+            return FallbackSpeechToTextEngine(primary, cloudFallback)
         }
     }
 }

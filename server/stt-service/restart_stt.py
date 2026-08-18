@@ -41,7 +41,7 @@ def main() -> int:
     env["STT_ENGINE"] = args.engine
     env["STT_MODEL"] = args.model
 
-    # Ensure ffmpeg is on PATH (required by SenseVoice/FunASR for audio loading)
+    # Ensure ffmpeg is on PATH for compressed audio decoding.
     found_ffmpeg = False
     for ffmpeg_dir in [
         os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~\\AppData\\Local")),
@@ -64,7 +64,7 @@ def main() -> int:
         if found_ffmpeg:
             break
     if not found_ffmpeg:
-        print("[restart_stt] WARNING: ffmpeg not found - SenseVoice may fail to load audio!", flush=True)
+        print("[restart_stt] WARNING: ffmpeg not found - some compressed audio may fail to load!", flush=True)
 
     stdout_file = open(args.stdout_log, "ab", buffering=0)
     stderr_file = open(args.stderr_log, "ab", buffering=0)

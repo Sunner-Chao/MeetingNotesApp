@@ -47,7 +47,7 @@ data class TencentAsrUsage(
         TencentAsrQuotaWarningLevel.LOW ->
             "智悟增强云模型可用额度不足 1 小时，实时识别和终稿识别都会消耗云端资源。"
         TencentAsrQuotaWarningLevel.CRITICAL ->
-            "智悟增强云模型可用额度不足 15 分钟，建议切换智悟本地模型或补充云端资源。"
+            "智悟增强云模型可用额度不足 15 分钟，建议切换智悟本地通用模型或补充云端资源。"
         TencentAsrQuotaWarningLevel.EXHAUSTED ->
             "智悟增强云模型当前额度已用完，继续使用可能产生费用；余额不足时识别会失败。"
     }

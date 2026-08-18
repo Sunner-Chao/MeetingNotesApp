@@ -32,9 +32,12 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CloudDone
+import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.PhoneAndroid
+import androidx.compose.material.icons.filled.Sms
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -162,6 +165,7 @@ fun LoginScreen(
     onNavigateToRegister: () -> Unit,
     onNavigateToForgotPassword: () -> Unit,
     onLoginSuccess: () -> Unit,
+    onContinueAsGuest: () -> Unit,
     modifier: Modifier = Modifier,
     viewModel: LoginViewModel? = null
 ) {
@@ -207,23 +211,53 @@ fun LoginScreen(
                         onRegister = onNavigateToRegister,
                         layout = layout
                     )
-                    AuthUsernameField(
-                        value = uiState.username,
-                        placeholder = "用户名 / 邮箱 / 手机号",
-                        onValueChange = { onEvent(LoginEvent.UsernameChanged(it)) },
-                        onNext = { focusManager.moveFocus(FocusDirection.Down) },
-                        layout = layout
+                    AuthModeSelector(
+                        mode = uiState.mode,
+                        onModeChange = { onEvent(LoginEvent.ModeChanged(it)) }
                     )
-                    AuthPasswordField(
-                        value = uiState.password,
-                        placeholder = "请输入密码",
-                        visible = uiState.passwordVisible,
-                        onValueChange = { onEvent(LoginEvent.PasswordChanged(it)) },
-                        onToggleVisibility = { onEvent(LoginEvent.TogglePasswordVisibility) },
-                        imeAction = ImeAction.Done,
-                        onImeAction = { onEvent(LoginEvent.LoginClicked) },
-                        layout = layout
-                    )
+                    if (uiState.mode == AuthEntryMode.PASSWORD) {
+                        AuthUsernameField(
+                            value = uiState.username,
+                            placeholder = "旧用户名",
+                            onValueChange = { onEvent(LoginEvent.UsernameChanged(it)) },
+                            onNext = { focusManager.moveFocus(FocusDirection.Down) },
+                            layout = layout
+                        )
+                        AuthPasswordField(
+                            value = uiState.password,
+                            placeholder = "请输入密码",
+                            visible = uiState.passwordVisible,
+                            onValueChange = { onEvent(LoginEvent.PasswordChanged(it)) },
+                            onToggleVisibility = { onEvent(LoginEvent.TogglePasswordVisibility) },
+                            imeAction = ImeAction.Done,
+                            onImeAction = { onEvent(LoginEvent.LoginClicked) },
+                            layout = layout
+                        )
+                    } else {
+                        AuthIdentifierField(
+                            value = uiState.identifier,
+                            mode = uiState.mode,
+                            onValueChange = { onEvent(LoginEvent.IdentifierChanged(it)) },
+                            onNext = { focusManager.moveFocus(FocusDirection.Down) },
+                            layout = layout
+                        )
+                        AuthVerificationCodeField(
+                            value = uiState.verificationCode,
+                            isSending = uiState.isSendingCode,
+                            cooldownSeconds = uiState.codeCooldownSeconds,
+                            onValueChange = { onEvent(LoginEvent.VerificationCodeChanged(it)) },
+                            onSendCode = { onEvent(LoginEvent.SendCodeClicked) },
+                            onDone = { onEvent(LoginEvent.LoginClicked) },
+                            layout = layout
+                        )
+                        if (uiState.codeSentTo.isNotBlank()) {
+                            Text(
+                                text = "验证码已发送至 ${uiState.codeSentTo}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
                     AnimatedVisibility(
                         visible = uiState.errorMessage != null,
                         enter = fadeIn(),
@@ -236,7 +270,7 @@ fun LoginScreen(
                             style = MaterialTheme.typography.bodySmall
                         )
                     }
-                    Row(
+                    if (uiState.mode == AuthEntryMode.PASSWORD) Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -253,8 +287,10 @@ fun LoginScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Spacer(Modifier.weight(1f))
-                        TextButton(onClick = onNavigateToForgotPassword) {
-                            Text("忘记密码？", style = MaterialTheme.typography.bodyMedium)
+                        TextButton(
+                            onClick = onNavigateToForgotPassword
+                        ) {
+                            Text("忘记密码", style = MaterialTheme.typography.bodyMedium)
                         }
                     }
                     Button(
@@ -272,15 +308,23 @@ fun LoginScreen(
                                 strokeWidth = 2.dp
                             )
                         } else {
-                            Text("登录", style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                if (uiState.mode == AuthEntryMode.PASSWORD) "登录" else "验证并继续",
+                                style = MaterialTheme.typography.titleMedium
+                            )
                         }
                     }
-                    SocialLoginSection(
-                        providers = uiState.authProviders,
-                        onProviderClick = { launchSocialLogin(context, it) },
-                        layout = layout
-                    )
+                    if (uiState.authProviders.isNotEmpty()) {
+                        SocialLoginSection(
+                            providers = uiState.authProviders,
+                            onProviderClick = { launchSocialLogin(context, it) },
+                            layout = layout
+                        )
+                    }
                 }
+            }
+            TextButton(onClick = onContinueAsGuest) {
+                Text("先本地录音，稍后登录")
             }
             AuthAgreement(prefix = "登录", layout = layout)
             AuthBenefits(layout)
@@ -391,6 +435,131 @@ private fun AuthTab(
                 )
         )
     }
+}
+
+@Composable
+internal fun AuthModeSelector(
+    mode: AuthEntryMode,
+    onModeChange: (AuthEntryMode) -> Unit,
+    modes: List<AuthEntryMode> = listOf(
+        AuthEntryMode.PHONE,
+        AuthEntryMode.EMAIL,
+        AuthEntryMode.PASSWORD
+    )
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant
+    ) {
+        Row(modifier = Modifier.padding(3.dp)) {
+            modes.forEach { item ->
+                val label = when (item) {
+                    AuthEntryMode.PHONE -> "手机号"
+                    AuthEntryMode.EMAIL -> "邮箱"
+                    AuthEntryMode.PASSWORD -> "密码"
+                }
+                Surface(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(38.dp)
+                        .clickable { onModeChange(item) },
+                    shape = RoundedCornerShape(6.dp),
+                    color = if (mode == item) {
+                        MaterialTheme.colorScheme.surface
+                    } else {
+                        Color.Transparent
+                    },
+                    shadowElevation = if (mode == item) 1.dp else 0.dp
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text(
+                            text = label,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = if (mode == item) {
+                                MaterialTheme.colorScheme.onSurface
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun AuthIdentifierField(
+    value: String,
+    mode: AuthEntryMode,
+    onValueChange: (String) -> Unit,
+    onNext: () -> Unit,
+    layout: AuthLayoutSpec
+) {
+    val isPhone = mode == AuthEntryMode.PHONE
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        modifier = Modifier.fillMaxWidth().height(layout.fieldHeight),
+        placeholder = { Text(if (isPhone) "请输入手机号" else "请输入邮箱") },
+        leadingIcon = {
+            Icon(
+                if (isPhone) Icons.Default.PhoneAndroid else Icons.Default.Email,
+                contentDescription = null
+            )
+        },
+        singleLine = true,
+        shape = RoundedCornerShape(15.dp),
+        colors = authFieldColors(),
+        keyboardOptions = KeyboardOptions(
+            keyboardType = if (isPhone) KeyboardType.Phone else KeyboardType.Email,
+            imeAction = ImeAction.Next
+        ),
+        keyboardActions = KeyboardActions(onNext = { onNext() })
+    )
+}
+
+@Composable
+internal fun AuthVerificationCodeField(
+    value: String,
+    isSending: Boolean,
+    cooldownSeconds: Int,
+    onValueChange: (String) -> Unit,
+    onSendCode: () -> Unit,
+    onDone: () -> Unit,
+    layout: AuthLayoutSpec
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        modifier = Modifier.fillMaxWidth().height(layout.fieldHeight),
+        placeholder = { Text("6 位验证码") },
+        leadingIcon = { Icon(Icons.Default.Sms, contentDescription = null) },
+        trailingIcon = {
+            TextButton(
+                onClick = onSendCode,
+                enabled = !isSending && cooldownSeconds == 0
+            ) {
+                Text(
+                    when {
+                        isSending -> "发送中"
+                        cooldownSeconds > 0 -> "${cooldownSeconds}s"
+                        else -> "获取验证码"
+                    },
+                    maxLines = 1
+                )
+            }
+        },
+        singleLine = true,
+        shape = RoundedCornerShape(15.dp),
+        colors = authFieldColors(),
+        keyboardOptions = KeyboardOptions(
+            keyboardType = KeyboardType.NumberPassword,
+            imeAction = ImeAction.Done
+        ),
+        keyboardActions = KeyboardActions(onDone = { onDone() })
+    )
 }
 
 @Composable
@@ -662,6 +831,6 @@ private fun launchSocialLogin(context: Context, provider: SocialAuthProvider) {
 @Composable
 private fun LoginScreenPreview() {
     OAAutomationTheme(darkTheme = false) {
-        LoginScreen({}, {}, {}, {})
+        LoginScreen({}, {}, {}, {}, {})
     }
 }

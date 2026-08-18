@@ -144,7 +144,6 @@ import com.oa.automation.domain.model.STTEngineType
 import com.oa.automation.domain.model.STTLanguage
 import com.oa.automation.infrastructure.audio.ArchivedMeetingAudio
 import com.oa.automation.infrastructure.textimport.ExternalTextSource
-import com.oa.automation.ui.component.FlowingProgressBorder
 import com.oa.automation.ui.component.ProcessingStatusRow
 import com.oa.automation.ui.theme.LocalAppIsDarkTheme
 import java.util.Locale
@@ -398,6 +397,9 @@ internal fun RecordingReferenceScaffold(
         UtilityDialog(title = "会议图片", onDismiss = { imageDialogVisible = false }) {
             MeetingImagesSection(
                 attachments = uiState.attachments,
+                isImporting = uiState.isImportingImages,
+                importCompleted = uiState.imageImportCompleted,
+                importTotal = uiState.imageImportTotal,
                 onTakePhoto = onTakePhoto,
                 onPickImages = onPickImages,
                 onDelete = onDeleteAttachment
@@ -493,13 +495,6 @@ internal fun RecordingReferenceScaffold(
         )
     }
 
-    FlowingProgressBorder(
-        active = uiState.isTranscribing || uiState.isGeneratingReport,
-        modifier = Modifier.fillMaxSize(),
-        cornerRadius = 18.dp,
-        inset = 2.dp,
-        strokeWidth = 2.dp
-    ) {
     Scaffold(
         containerColor = RecordingCanvas,
         topBar = {
@@ -666,8 +661,7 @@ internal fun RecordingReferenceScaffold(
             }
         }
     }
-    }
-    }
+}
 }
 
 @Composable
@@ -1146,7 +1140,7 @@ private fun VoiceRecordingContent(
         )
         ReferenceTranscriptPanel(
             transcript = uiState.liveTranscript,
-            previewMode = uiState.transcriptPreviewMode,
+            previewMode = imageImportProgressLabel(uiState) ?: uiState.transcriptPreviewMode,
             isRecording = uiState.isRecording,
             modifier = Modifier
                 .weight(1f)
@@ -1157,6 +1151,7 @@ private fun VoiceRecordingContent(
             isRecording = uiState.isRecording,
             isTranscribing = uiState.isTranscribing,
             isGeneratingReport = uiState.isGeneratingReport,
+            isImportingImages = uiState.isImportingImages,
             hasTranscript = uiState.hasRecording && uiState.liveTranscript.isNotBlank(),
             onTakePhoto = onTakePhoto,
             onPickImages = onPickImages,
@@ -2338,6 +2333,7 @@ private fun MeetingQuickActions(
     isRecording: Boolean,
     isTranscribing: Boolean,
     isGeneratingReport: Boolean,
+    isImportingImages: Boolean,
     hasTranscript: Boolean,
     onTakePhoto: () -> Unit,
     onPickImages: () -> Unit,
@@ -2360,11 +2356,13 @@ private fun MeetingQuickActions(
             MeetingMediaButton(
                 icon = Icons.Default.PhotoCamera,
                 label = "拍照",
+                enabled = !isImportingImages,
                 onClick = onTakePhoto
             )
             MeetingMediaButton(
                 icon = Icons.Default.AddPhotoAlternate,
-                label = "上传",
+                label = if (isImportingImages) "导入中" else "上传",
+                enabled = !isImportingImages,
                 onClick = onPickImages
             )
             if (attachmentCount > 0) {
@@ -2430,10 +2428,12 @@ private fun MeetingQuickActions(
 private fun MeetingMediaButton(
     icon: ImageVector,
     label: String,
+    enabled: Boolean = true,
     onClick: () -> Unit
 ) {
     Surface(
         onClick = onClick,
+        enabled = enabled,
         shape = RoundedCornerShape(9.dp),
         color = RecordingSurface,
         border = BorderStroke(1.dp, RecordingBorder)
@@ -2446,12 +2446,12 @@ private fun MeetingMediaButton(
             Icon(
                 imageVector = icon,
                 contentDescription = null,
-                tint = RecordingPurple,
+                tint = if (enabled) RecordingPurple else RecordingMuted,
                 modifier = Modifier.size(16.dp)
             )
             Text(
                 text = label,
-                color = RecordingInk,
+                color = if (enabled) RecordingInk else RecordingMuted,
                 fontSize = 11.sp,
                 maxLines = 1
             )

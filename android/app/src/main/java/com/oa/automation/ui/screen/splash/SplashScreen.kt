@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -28,9 +27,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.foundation.shape.RoundedCornerShape
 import com.oa.automation.ui.component.AppLauncherIcon
 import kotlinx.coroutines.delay
 
@@ -39,7 +36,6 @@ fun SplashScreen(
     onSplashFinished: () -> Unit
 ) {
     var showIcon by remember { mutableStateOf(false) }
-    var showTitle by remember { mutableStateOf(false) }
     var showSubtitle by remember { mutableStateOf(false) }
     var startExit by remember { mutableStateOf(false) }
 
@@ -50,17 +46,15 @@ fun SplashScreen(
         iconScale.animateTo(
             targetValue = 1f,
             animationSpec = tween(
-                durationMillis = 600,
+                durationMillis = 900,
                 easing = FastOutSlowInEasing
             )
         )
-        delay(200)
-        showTitle = true
-        delay(300)
+        delay(350)
         showSubtitle = true
-        delay(800)
+        delay(1_400)
         startExit = true
-        delay(400)
+        delay(500)
         onSplashFinished()
     }
 
@@ -72,7 +66,7 @@ fun SplashScreen(
     ) {
         AnimatedVisibility(
             visible = !startExit,
-            exit = fadeOut(animationSpec = tween(400))
+            exit = fadeOut(animationSpec = tween(500))
         ) {
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -82,8 +76,8 @@ fun SplashScreen(
                 AnimatedVisibility(
                     visible = showIcon,
                     enter = scaleIn(
-                        animationSpec = tween(600, easing = FastOutSlowInEasing)
-                    ) + fadeIn(animationSpec = tween(600))
+                        animationSpec = tween(900, easing = FastOutSlowInEasing)
+                    ) + fadeIn(animationSpec = tween(900))
                 ) {
                     AppLauncherIcon(
                         modifier = Modifier
@@ -93,36 +87,18 @@ fun SplashScreen(
                     )
                 }
 
-                Spacer(modifier = Modifier.height(24.dp))
-
-                // Title
-                AnimatedVisibility(
-                    visible = showTitle,
-                    enter = slideInVertically(
-                        initialOffsetY = { it / 2 },
-                        animationSpec = tween(500, easing = FastOutSlowInEasing)
-                    ) + fadeIn(animationSpec = tween(500))
-                ) {
-                    Text(
-                        text = "智悟本",
-                        style = MaterialTheme.typography.headlineLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(20.dp))
 
                 // Subtitle
                 AnimatedVisibility(
                     visible = showSubtitle,
                     enter = slideInVertically(
                         initialOffsetY = { it / 3 },
-                        animationSpec = tween(400, easing = FastOutSlowInEasing)
-                    ) + fadeIn(animationSpec = tween(400))
+                        animationSpec = tween(550, easing = FastOutSlowInEasing)
+                    ) + fadeIn(animationSpec = tween(550))
                 ) {
                     Text(
-                        text = "智能会议纪要 · 高效记录",
+                        text = "记录我的成长",
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

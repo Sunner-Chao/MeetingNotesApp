@@ -1,7 +1,10 @@
 package com.oa.automation.infrastructure.service
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
+import com.oa.automation.ui.screen.recording.isActiveRecordingSessionForMeeting
 
 class RecordingSessionStateTest {
     @Test
@@ -41,5 +44,23 @@ class RecordingSessionStateTest {
         )
 
         assertEquals(52L, state.durationSecondsAt(15_800L))
+    }
+
+    @Test
+    fun `stale preview from a completed meeting is not active for a new meeting`() {
+        val stale = RecordingSessionState(
+            meetingId = "meeting-old",
+            accumulatedTranscript = "上一场会议内容",
+            status = "正在保存实时转写"
+        )
+
+        assertFalse(isActiveRecordingSessionForMeeting(stale, "meeting-new"))
+        assertFalse(isActiveRecordingSessionForMeeting(stale, "meeting-old"))
+        assertTrue(
+            isActiveRecordingSessionForMeeting(
+                stale.copy(meetingId = "meeting-new", isStarting = true),
+                "meeting-new"
+            )
+        )
     }
 }

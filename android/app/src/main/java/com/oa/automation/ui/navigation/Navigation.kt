@@ -12,18 +12,15 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.navigation
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
-import com.oa.automation.data.local.ConfigDataStore
 import com.oa.automation.ui.screen.account.AccountProfileScreen
 import com.oa.automation.ui.screen.account.AccountQuotaDetailsScreen
 import com.oa.automation.ui.screen.account.AccountUserManagementScreen
@@ -32,6 +29,7 @@ import com.oa.automation.ui.screen.community.CommunityPostDetailScreen
 import com.oa.automation.ui.screen.community.CommunityCollectionDetailScreen
 import com.oa.automation.ui.screen.login.LoginScreen
 import com.oa.automation.ui.screen.login.LoginViewModel
+import com.oa.automation.ui.screen.login.ForgotPasswordScreen
 import com.oa.automation.ui.screen.login.RegisterScreen
 import com.oa.automation.ui.screen.main.MainWorkspaceScreen
 import com.oa.automation.ui.screen.notifications.NotificationCenterScreen
@@ -40,7 +38,6 @@ import com.oa.automation.ui.screen.report.ReportScreen
 import com.oa.automation.ui.screen.settings.SettingsScreen
 import com.oa.automation.ui.screen.splash.SplashScreen
 import com.oa.automation.ui.screen.vip.VipScreen
-import org.koin.compose.koinInject
 import org.koin.androidx.compose.koinViewModel
 
 private const val TRANSITION_DURATION = 400
@@ -55,11 +52,8 @@ private const val TRANSITION_DURATION = 400
 @Composable
 fun OAAutomationNavHost(
     modifier: Modifier = Modifier,
-    navController: NavHostController = rememberNavController(),
-    configDataStore: ConfigDataStore = koinInject()
+    navController: NavHostController = rememberNavController()
 ) {
-    val savedSession by configDataStore.authSessionFlow.collectAsStateWithLifecycle(initialValue = null)
-
     NavHost(
         navController = navController,
         startDestination = Splash,
@@ -81,19 +75,9 @@ fun OAAutomationNavHost(
         composable<Splash> {
             SplashScreen(
                 onSplashFinished = {
-                    val isLoggedIn = savedSession?.expiresAt?.let {
-                        it > System.currentTimeMillis() / 1000
-                    } == true
-                    if (isLoggedIn) {
-                        navController.navigate(MainGraph) {
-                            popUpTo<Splash> { inclusive = true }
-                            launchSingleTop = true
-                        }
-                    } else {
-                        navController.navigate(AuthGraph) {
-                            popUpTo<Splash> { inclusive = true }
-                            launchSingleTop = true
-                        }
+                    navController.navigate(MainGraph) {
+                        popUpTo<Splash> { inclusive = true }
+                        launchSingleTop = true
                     }
                 }
             )
@@ -115,7 +99,13 @@ fun OAAutomationNavHost(
                     },
                     onLoginSuccess = {
                         navController.navigate(MainGraph) {
-                            popUpTo<AuthGraph> { inclusive = true }
+                            popUpTo<MainGraph> { inclusive = true }
+                            launchSingleTop = true
+                        }
+                    },
+                    onContinueAsGuest = {
+                        navController.navigate(MainGraph) {
+                            popUpTo<MainGraph> { inclusive = true }
                             launchSingleTop = true
                         }
                     }
@@ -127,7 +117,13 @@ fun OAAutomationNavHost(
                     onNavigateBack = { navController.popBackStack() },
                     onRegisterSuccess = {
                         navController.navigate(MainGraph) {
-                            popUpTo<AuthGraph> { inclusive = true }
+                            popUpTo<MainGraph> { inclusive = true }
+                            launchSingleTop = true
+                        }
+                    },
+                    onContinueAsGuest = {
+                        navController.navigate(MainGraph) {
+                            popUpTo<MainGraph> { inclusive = true }
                             launchSingleTop = true
                         }
                     }
@@ -135,10 +131,7 @@ fun OAAutomationNavHost(
             }
 
             composable<ForgotPassword> {
-                // TODO: Replace with real ForgotPasswordScreen
-                PlaceholderScreen(title = "忘记密码") {
-                    navController.popBackStack()
-                }
+                ForgotPasswordScreen(onNavigateBack = { navController.popBackStack() })
             }
         }
 
@@ -180,6 +173,11 @@ fun OAAutomationNavHost(
                     onLogout = {
                         navController.navigate(AuthGraph) {
                             popUpTo<MainGraph> { inclusive = true }
+                            launchSingleTop = true
+                        }
+                    },
+                    onLogin = {
+                        navController.navigate(AuthGraph) {
                             launchSingleTop = true
                         }
                     }
@@ -268,6 +266,11 @@ fun OAAutomationNavHost(
                     onNavigateBack = { navController.popBackStack() },
                     onNavigateToReport = { id ->
                         navController.navigate(Report(id))
+                    },
+                    onRequireLogin = {
+                        navController.navigate(AuthGraph) {
+                            launchSingleTop = true
+                        }
                     }
                 )
             }

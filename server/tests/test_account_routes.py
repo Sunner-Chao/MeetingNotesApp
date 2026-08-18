@@ -53,6 +53,7 @@ class AccountRouteTests(unittest.TestCase):
             plans_path=self.plans_path,
             admin_username="admin",
             admin_password="route-admin-password",
+            expose_auth_code=True,
         )
 
     def tearDown(self) -> None:
@@ -122,6 +123,85 @@ class AccountRouteTests(unittest.TestCase):
             self.assertEqual(deleted.status_code, 200)
             self.assertEqual(deleted.json()["status"], "deleted")
             self.assertEqual(client.get("/api/account/me", headers=user_headers).status_code, 401)
+
+    def test_code_auth_and_provider_discovery_use_mobile_first_policy(self) -> None:
+        with TestClient(backend.app) as client:
+            requested = client.post(
+                "/api/auth/code/request",
+                json={"channel": "phone", "identifier": "13800138000"},
+            )
+            self.assertEqual(requested.status_code, 200)
+            verified = client.post(
+                "/api/auth/code/verify",
+                json={
+                    "channel": "phone",
+                    "identifier": "+8613800138000",
+                    "code": requested.json()["verification_code"],
+                },
+            )
+            self.assertEqual(verified.status_code, 200)
+            headers = {"Authorization": f"Bearer {verified.json()['access_token']}"}
+            profile = client.get("/api/account/me", headers=headers).json()
+            self.assertIn("phone", profile["identity_providers"])
+            self.assertEqual(profile["usage"]["included_minutes"], 120)
+            self.assertEqual(profile["usage"]["ai_credits_remaining"], 5)
+
+            providers = client.get("/api/auth/providers").json()
+            self.assertEqual([item["id"] for item in providers], ["wechat", "feishu"])
+            self.assertEqual(providers[1]["tier"], "team")
+
+    def test_password_reset_and_identity_binding_routes_use_scoped_codes(self) -> None:
+        with TestClient(backend.app) as client:
+            registered = client.post(
+                "/api/auth/register",
+                json={"username": "binding_user", "password": "strong-password"},
+            ).json()
+            headers = {"Authorization": f"Bearer {registered['access_token']}"}
+            requested = client.post(
+                "/api/auth/code/request",
+                json={"channel": "email", "identifier": "binding@example.com", "purpose": "bind"},
+            ).json()
+            bound = client.post(
+                "/api/account/identities/verify",
+                headers=headers,
+                json={
+                    "channel": "email",
+                    "identifier": "binding@example.com",
+                    "purpose": "bind",
+                    "code": requested["verification_code"],
+                },
+            )
+            self.assertEqual(bound.status_code, 200)
+            self.assertIn("email", [item["provider"] for item in bound.json()])
+
+            requested = client.post(
+                "/api/auth/code/request",
+                json={
+                    "channel": "email",
+                    "identifier": "binding@example.com",
+                    "purpose": "reset_password",
+                },
+            ).json()
+            reset = client.post(
+                "/api/auth/password/reset",
+                json={
+                    "channel": "email",
+                    "identifier": "binding@example.com",
+                    "purpose": "reset_password",
+                    "code": requested["verification_code"],
+                    "new_password": "new-strong-password",
+                },
+            )
+            self.assertEqual(reset.status_code, 200)
+            self.assertEqual(reset.json()["status"], "password_reset")
+            self.assertEqual(client.get("/api/account/me", headers=headers).status_code, 401)
+            self.assertEqual(
+                client.post(
+                    "/api/auth/password/login",
+                    json={"username": "binding_user", "password": "new-strong-password"},
+                ).status_code,
+                200,
+            )
 
     def test_account_meetings_are_isolated_synced_and_tombstoned(self) -> None:
         with TestClient(backend.app) as client:

@@ -107,7 +107,7 @@ lang: zh-CN
 | 模型切换维护 | 暂停接收新推理，返回 503 |
 | 调用方取消 | 已接受任务完成清理，避免临时文件泄漏 |
 
-SenseVoice 代码仍保留为研发能力，但本次冻结生产配置不安装 FunASR，不启用 SenseVoice。原因是 4 GB 无 GPU 主机不适合额外引入 PyTorch/FunASR 依赖与模型内存。
+历史版本曾评估 SenseVoice，但当前生产代码已移除 FunASR 依赖和 SenseVoice 分支，统一使用 Faster-Whisper；旧客户端配置在升级时迁移到默认模型。
 
 ## 3.4 鉴权和运维接口
 

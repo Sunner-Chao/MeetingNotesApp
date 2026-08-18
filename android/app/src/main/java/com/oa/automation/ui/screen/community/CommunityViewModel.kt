@@ -138,6 +138,11 @@ class CommunityViewModel(
         _uiState.update { it.copy(tagFilter = value, error = null) }
     }
 
+    fun selectQuickTopic(value: String) {
+        _uiState.update { it.copy(tagFilter = value, error = null) }
+        refresh()
+    }
+
     fun selectPoi(value: String) {
         _uiState.update { it.copy(poiFilter = value, error = null) }
     }

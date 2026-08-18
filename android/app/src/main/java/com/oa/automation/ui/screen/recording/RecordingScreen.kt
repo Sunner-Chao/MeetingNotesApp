@@ -156,17 +156,20 @@ fun RecordingScreen(
     launchAction: RecordingLaunchAction = RecordingLaunchAction.STANDARD,
     onNavigateBack: () -> Unit,
     onNavigateToReport: (String) -> Unit,
+    onRequireLogin: () -> Unit,
     viewModel: RecordingViewModel = koinViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
-    var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
-    var pendingCameraMarkerId by remember { mutableStateOf<String?>(null) }
-    var pendingGalleryMarkerId by remember { mutableStateOf<String?>(null) }
-    var pendingImageImportUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
-    var pendingImageImportMarkerId by remember { mutableStateOf<String?>(null) }
-    var markerMediaChooserVisible by remember { mutableStateOf(false) }
-    var markerMediaChooserMarkerId by remember { mutableStateOf<String?>(null) }
+    var pendingCameraUriString by rememberSaveable(meetingId) { mutableStateOf<String?>(null) }
+    var pendingCameraMarkerId by rememberSaveable(meetingId) { mutableStateOf<String?>(null) }
+    var pendingGalleryMarkerId by rememberSaveable(meetingId) { mutableStateOf<String?>(null) }
+    var pendingImageImportUriStrings by rememberSaveable(meetingId) {
+        mutableStateOf(arrayListOf<String>())
+    }
+    var pendingImageImportMarkerId by rememberSaveable(meetingId) { mutableStateOf<String?>(null) }
+    var markerMediaChooserVisible by rememberSaveable(meetingId) { mutableStateOf(false) }
+    var markerMediaChooserMarkerId by rememberSaveable(meetingId) { mutableStateOf<String?>(null) }
     var pendingAudioSave by remember { mutableStateOf<PendingMeetingAudioExport?>(null) }
     var launchActionConsumed by rememberSaveable(meetingId, launchAction) {
         mutableStateOf(false)
@@ -175,9 +178,9 @@ fun RecordingScreen(
     val locationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
-        val uris = pendingImageImportUris
+        val uris = pendingImageImportUriStrings.map(Uri::parse)
         val markerId = pendingImageImportMarkerId
-        pendingImageImportUris = emptyList()
+        pendingImageImportUriStrings = arrayListOf()
         pendingImageImportMarkerId = null
         if (uris.isNotEmpty()) {
             viewModel.importImages(
@@ -197,7 +200,7 @@ fun RecordingScreen(
                 recordingMarkerId = recordingMarkerId
             )
         } else {
-            pendingImageImportUris = uris
+            pendingImageImportUriStrings = ArrayList(uris.map(Uri::toString))
             pendingImageImportMarkerId = recordingMarkerId
             locationPermissionLauncher.launch(ImageLocationPermission.requestedPermissions)
         }
@@ -219,11 +222,13 @@ fun RecordingScreen(
     ) { saved ->
         val markerId = pendingCameraMarkerId
         if (saved) {
-            pendingCameraUri?.let { importImagesWithOptionalLocation(listOf(it), markerId) }
+            pendingCameraUriString
+                ?.let(Uri::parse)
+                ?.let { importImagesWithOptionalLocation(listOf(it), markerId) }
         } else {
             viewModel.onMarkerMediaPickerCancelled(markerId)
         }
-        pendingCameraUri = null
+        pendingCameraUriString = null
         pendingCameraMarkerId = null
     }
     val audioSaveLauncher = rememberLauncherForActivityResult(
@@ -244,7 +249,7 @@ fun RecordingScreen(
             "${context.packageName}.fileprovider",
             target
         )
-        pendingCameraUri = uri
+        pendingCameraUriString = uri.toString()
         pendingCameraMarkerId = recordingMarkerId
         cameraLauncher.launch(uri)
     }
@@ -306,6 +311,13 @@ fun RecordingScreen(
         if (uiState.reportReadyToOpen) {
             viewModel.consumeReportNavigation()
             onNavigateToReport(meetingId)
+        }
+    }
+
+    LaunchedEffect(uiState.requiresLogin) {
+        if (uiState.requiresLogin) {
+            viewModel.consumeLoginRequest()
+            onRequireLogin()
         }
     }
 
@@ -930,11 +942,7 @@ internal fun RuntimeServiceSwitcher(
     onSttLanguageSelected: (STTLanguage) -> Unit
 ) {
     var sttMenuExpanded by remember { mutableStateOf(false) }
-    val sttLabel = if (sttEngineType == STTEngineType.TENCENT_HYBRID) {
-        "智悟增强云模型"
-    } else {
-        "智悟本地模型"
-    }
+    val sttLabel = sttEngineType.displayName
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -1019,8 +1027,8 @@ internal fun RuntimeServiceSwitcher(
                     onDismissRequest = { sttMenuExpanded = false }
                 ) {
                     listOf(
-                        STTEngineType.FASTER_WHISPER to "智悟本地模型",
-                        STTEngineType.TENCENT_HYBRID to "智悟增强云模型"
+                        STTEngineType.FASTER_WHISPER to STTEngineType.FASTER_WHISPER.displayName,
+                        STTEngineType.TENCENT_HYBRID to STTEngineType.TENCENT_HYBRID.displayName
                     ).forEach { (engine, label) ->
                         DropdownMenuItem(
                             text = { Text(label) },
@@ -1035,11 +1043,7 @@ internal fun RuntimeServiceSwitcher(
                                 )
                             },
                             trailingIcon = {
-                                if (
-                                    engine == sttEngineType ||
-                                    engine == STTEngineType.FASTER_WHISPER &&
-                                    sttEngineType == STTEngineType.SENSE_VOICE
-                                ) {
+                                if (engine == sttEngineType) {
                                     Icon(Icons.Default.Check, contentDescription = null)
                                 }
                             },
@@ -1414,6 +1418,9 @@ private fun CollapsibleTranscriptCard(
 @Composable
 internal fun MeetingImagesSection(
     attachments: List<MeetingAttachment>,
+    isImporting: Boolean,
+    importCompleted: Int,
+    importTotal: Int,
     onTakePhoto: () -> Unit,
     onPickImages: () -> Unit,
     onDelete: (MeetingAttachment) -> Unit
@@ -1430,16 +1437,20 @@ internal fun MeetingImagesSection(
             Column {
                 Text("会议图片", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                 Text(
-                    if (attachments.isEmpty()) "可随时记录白板、投影和现场资料" else "已添加 ${attachments.size} 张",
+                    when {
+                        isImporting -> "正在导入 ${importCompleted.coerceAtMost(importTotal)}/$importTotal"
+                        attachments.isEmpty() -> "可随时记录白板、投影和现场资料"
+                        else -> "已添加 ${attachments.size} 张"
+                    },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
             Row {
-                IconButton(onClick = onTakePhoto) {
+                IconButton(onClick = onTakePhoto, enabled = !isImporting) {
                     Icon(Icons.Default.PhotoCamera, contentDescription = "拍照")
                 }
-                IconButton(onClick = onPickImages) {
+                IconButton(onClick = onPickImages, enabled = !isImporting) {
                     Icon(Icons.Default.Collections, contentDescription = "从相册添加")
                 }
             }

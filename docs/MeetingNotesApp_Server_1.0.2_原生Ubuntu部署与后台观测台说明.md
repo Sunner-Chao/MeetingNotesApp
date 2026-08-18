@@ -81,7 +81,7 @@ Android 当前已接入 STT，但尚未接入 Backend 的会议/报告 API。Bac
 - 深色侧栏、浅色工作区、紧凑指标卡和表格化信息布局，视觉方向参考 Material Kit。
 - Backend/STT 健康卡、当前引擎/模型、队列和活跃推理指标。
 - 当前配置、手机端 STT 地址、数据库路径和日志路径展示。
-- Faster-Whisper / SenseVoice 切换按钮。
+- Faster-Whisper `large-v3-turbo` 应用按钮；当前不提供多模型切换。
 - 最近会议表格、partial 摘要、流式事件查看器、STT 日志查看器。
 - 日志/事件清理操作和页内通知。
 - 桌面和 390px 手机宽度响应式布局。

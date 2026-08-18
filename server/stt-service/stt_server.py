@@ -9,7 +9,7 @@ import shutil
 
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
-# Ensure ffmpeg is discoverable (required by SenseVoice/FunASR to load audio)
+# Ensure ffmpeg is discoverable for deployments that use external audio codecs.
 _ffmpeg = shutil.which("ffmpeg")
 if _ffmpeg is None:
     for _d in (
@@ -23,7 +23,7 @@ if _ffmpeg is None:
             _ffmpeg = _ffmpeg_candidate
             break
     if _ffmpeg is None:
-        print("[STT] WARNING: ffmpeg not found - SenseVoice transcription will fail", flush=True)
+        print("[STT] WARNING: ffmpeg not found - some compressed audio formats may fail", flush=True)
     else:
         print(f"[STT] ffmpeg added to PATH: {_ffmpeg}", flush=True)
 else:
@@ -66,16 +66,13 @@ import ctranslate2
 import faster_whisper
 from opencc import OpenCC
 
-try:
-    from funasr import AutoModel as FunASRAutoModel
-except Exception:
-    FunASRAutoModel = None
 import uvicorn
 import httpx
 import websockets
 from fastapi import Depends, Form, Header, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
 
 from inference_scheduler import (
@@ -88,8 +85,9 @@ model = None
 final_model = None
 stream_model = None
 stt_engine = "faster-whisper"
-model_size = "small"
-model_source = "small"
+DEFAULT_STT_MODEL = "large-v3-turbo"
+model_size = os.getenv("STT_MODEL", DEFAULT_STT_MODEL).strip() or DEFAULT_STT_MODEL
+model_source = model_size
 model_load_error = ""
 stream_model_size = ""
 stream_model_source = ""
@@ -150,10 +148,22 @@ STT_CPU_THREADS = positive_int_env("STT_CPU_THREADS", max(1, (os.cpu_count() or 
 STT_API_TOKEN = os.getenv("STT_API_TOKEN", "").strip()
 STT_REQUIRE_API_TOKEN = os.getenv("STT_REQUIRE_API_TOKEN", "0").strip().lower() in {"1", "true", "yes"}
 ACCOUNT_TOKEN_SECRET = os.getenv("ACCOUNT_TOKEN_SECRET", "").strip()
+WEB_API_USERNAME = os.getenv("WEB_API_USERNAME", "admin").strip() or "admin"
+WEB_API_TOKEN = os.getenv("WEB_API_TOKEN", "").strip()
+STT_LOG_PATH = Path(os.getenv("STT_LOG_PATH", "").strip()).resolve() if os.getenv("STT_LOG_PATH", "").strip() else None
+STT_ERROR_LOG_PATH = (
+    Path(os.getenv("STT_ERROR_LOG_PATH", "").strip()).resolve()
+    if os.getenv("STT_ERROR_LOG_PATH", "").strip()
+    else None
+)
+STT_ADMIN_TEMPLATE_PATH = Path(__file__).resolve().with_name("stt_admin.html")
 STT_MODEL_SHA256 = os.getenv("STT_MODEL_SHA256", "").strip().lower()
-STT_STREAM_MODEL = os.getenv("STT_STREAM_MODEL", "small").strip() or "small"
+STT_STREAM_MODEL = os.getenv("STT_STREAM_MODEL", model_size).strip() or model_size
 STT_STREAM_MODEL_SHA256 = os.getenv("STT_STREAM_MODEL_SHA256", "").strip().lower()
 STT_STREAM_CPU_THREADS = positive_int_env("STT_STREAM_CPU_THREADS", STT_CPU_THREADS)
+STT_STREAM_INFERENCE_FAILURE_THRESHOLD = positive_int_env(
+    "STT_STREAM_INFERENCE_FAILURE_THRESHOLD", 3
+)
 STT_FINAL_RETRY_MIN_CHARS = positive_int_env("STT_FINAL_RETRY_MIN_CHARS", 8)
 FINAL_BEAM_SIZE = positive_int_env("STT_FINAL_BEAM_SIZE", 5)
 STT_FINAL_BATCH_SIZE = positive_int_env("STT_FINAL_BATCH_SIZE", 1)
@@ -325,7 +335,7 @@ STT_ALLOWED_MODELS = {
     item.strip()
     for item in os.getenv(
         "STT_ALLOWED_MODELS",
-        "tiny,base,small,medium,large-v3,SenseVoiceSmall,iic/SenseVoiceSmall",
+        "tiny,base,small,medium,large-v3,large-v3-turbo",
     ).split(",")
     if item.strip()
 }
@@ -338,7 +348,6 @@ tencent_usage_ledger_lock = threading.Lock()
 tencent_usage_cache: tuple[float, str, dict[str, Any]] | None = None
 _tencent_usage_ledger_initialized = False
 model_switch_lock = asyncio.Lock()
-sensevoice_inference_lock = threading.Lock()
 active_stream_sessions: set[str] = set()
 active_stream_owners: dict[str, int] = {}
 stream_recordings: dict[str, "StreamRecording"] = {}
@@ -1842,6 +1851,11 @@ stream_debug_events: deque[dict[str, Any]] = deque(maxlen=STREAM_DEBUG_EVENT_LIM
 simplified_chinese = OpenCC("t2s")
 
 
+def stream_required_new_bytes(last_processed_size: int, min_bytes: int, step_bytes: int) -> int:
+    """Start preview at the configured minimum, then use the steady rolling step."""
+    return step_bytes if last_processed_size > 0 else min_bytes
+
+
 class TranscribeResponse(BaseModel):
     text: str
     language: str = "zh"
@@ -2469,8 +2483,13 @@ def push_debug_event(event_type: str, **payload: Any) -> None:
 def has_valid_fw_model_dir(path: Path) -> bool:
     model_bin = path / "model.bin"
     tokenizer = path / "tokenizer.json"
-    vocab = path / "vocabulary.txt"
-    return model_bin.exists() and model_bin.stat().st_size > 1024 and tokenizer.exists() and vocab.exists()
+    vocabulary_exists = (path / "vocabulary.txt").exists() or (path / "vocabulary.json").exists()
+    return (
+        model_bin.exists()
+        and model_bin.stat().st_size > 1024
+        and tokenizer.exists()
+        and vocabulary_exists
+    )
 
 
 def warmup_faster_whisper(candidate_model) -> None:
@@ -2496,42 +2515,12 @@ def warmup_faster_whisper(candidate_model) -> None:
             os.unlink(temp_path)
 
 
-def load_model(size: str = "small", engine: str = "faster-whisper"):
+def load_model(size: str = DEFAULT_STT_MODEL, engine: str = "faster-whisper"):
     global model, final_model, model_size, model_source
     global stt_engine, model_load_error, model_checksum_verified
     model_root.mkdir(parents=True, exist_ok=True)
-
-    if engine == "sensevoice":
-        if FunASRAutoModel is None:
-            raise RuntimeError("SenseVoice dependencies missing. Please install funasr and dependencies.")
-
-        sensevoice_root = (model_root / "sensevoice").resolve()
-        sensevoice_root.mkdir(parents=True, exist_ok=True)
-
-        candidate_path = Path(size)
-        if not candidate_path.is_absolute():
-            candidate_path = (sensevoice_root / size).resolve()
-
-        # Use local folder first; otherwise fallback to official hub id.
-        if candidate_path.exists():
-            next_model_source = str(candidate_path)
-        else:
-            next_model_source = size if "/" in size else "iic/SenseVoiceSmall"
-
-        print(f"Loading SenseVoice model: {next_model_source}", flush=True)
-        print(f"Model root: {model_root}", flush=True)
-        next_model = FunASRAutoModel(
-            model=next_model_source,
-            trust_remote_code=True,
-        )
-        model = next_model
-        final_model = None
-        model_size = size
-        model_source = next_model_source
-        stt_engine = engine
-        model_load_error = ""
-        print("SenseVoice model loaded successfully!", flush=True)
-        return
+    if engine != "faster-whisper":
+        raise RuntimeError("Only Faster-Whisper is supported by the local STT service")
 
     fw_root = (model_root / "faster-whisper").resolve()
     fw_root.mkdir(parents=True, exist_ok=True)
@@ -2625,7 +2614,7 @@ def load_stream_model() -> None:
         stream_model = None
         stream_model_error = "Primary model is not loaded"
         return
-    if stt_engine != "faster-whisper" or STT_STREAM_MODEL == model_size:
+    if STT_STREAM_MODEL == model_size:
         stream_model = model
         stream_model_size = model_size
         stream_model_source = model_source
@@ -2795,38 +2784,6 @@ def transcribe_local_single_file(file_path: str, language: str = "zh") -> Transc
         raise RuntimeError("Model not loaded")
     started_at = time.monotonic()
 
-    if stt_engine == "sensevoice":
-        # FunASR model objects keep mutable decoding state, so one shared instance
-        # must be serialized. Faster-Whisper remains parallel through its workers.
-        with sensevoice_inference_lock:
-            result = model.generate(input=file_path)
-        text = ""
-        detected_language = language
-        if isinstance(result, list) and result:
-            item = result[0]
-            if isinstance(item, dict):
-                text = str(item.get("text", "") or "").strip()
-                detected_language = str(item.get("lang", language) or language)
-            else:
-                text = str(item).strip()
-        elif isinstance(result, dict):
-            text = str(result.get("text", "") or "").strip()
-            detected_language = str(result.get("lang", language) or language)
-        else:
-            text = str(result or "").strip()
-
-        text = normalize_preview_text(text)
-        if is_known_hallucination(text):
-            text = ""
-        else:
-            text = restore_final_punctuation(text, [], language)
-        print(
-            "SenseVoice transcription completed: "
-            f"chars={len(text)}, language={detected_language}, elapsed_sec={time.monotonic() - started_at:.2f}",
-            flush=True,
-        )
-        return TranscribeResponse(text=text, language=detected_language)
-
     result = transcribe_faster_whisper_file(model, file_path, language)
     print(
         "Transcription completed: "
@@ -2920,29 +2877,6 @@ def transcribe_audio(
         os.unlink(tmp_path)
 
 
-def transcribe_stream_pcm(
-    pcm_bytes: bytes,
-    sample_rate: int = 16000,
-    channels: int = 1,
-    language: str = "zh",
-) -> TranscribeResponse:
-    if len(pcm_bytes) == 0:
-        return TranscribeResponse(text="", language="zh")
-
-    with new_temp_file(".wav") as temp_file:
-        tmp_path = temp_file.name
-
-    try:
-        with wave.open(tmp_path, "wb") as wav_file:
-            wav_file.setnchannels(channels)
-            wav_file.setsampwidth(2)
-            wav_file.setframerate(sample_rate)
-            wav_file.writeframes(pcm_bytes)
-        return transcribe_file(tmp_path, language)
-    finally:
-        os.unlink(tmp_path)
-
-
 def transcribe_stream_snapshot(
     pcm_bytes: bytes,
     sample_rate: int = 16000,
@@ -2954,20 +2888,6 @@ def transcribe_stream_snapshot(
         return {
             "text": "",
             "language": language,
-            "segments": [],
-        }
-
-    # SenseVoice streaming preview currently uses whole-buffer snapshot text.
-    if stt_engine == "sensevoice":
-        response = transcribe_stream_pcm(
-            pcm_bytes,
-            sample_rate=sample_rate,
-            channels=channels,
-            language=language,
-        )
-        return {
-            "text": normalize_preview_text(response.text),
-            "language": response.language,
             "segments": [],
         }
 
@@ -3112,6 +3032,45 @@ def require_management_token(authorization: str | None = Header(default=None)) -
         raise HTTPException(status_code=401, detail="Missing or invalid management bearer token")
 
 
+web_admin_security = HTTPBasic(auto_error=False)
+
+
+def require_web_admin(
+    credentials: HTTPBasicCredentials | None = Depends(web_admin_security),
+) -> None:
+    if not WEB_API_TOKEN:
+        raise HTTPException(status_code=503, detail="STT Web management is not configured")
+    username_valid = credentials is not None and hmac.compare_digest(
+        credentials.username,
+        WEB_API_USERNAME,
+    )
+    password_valid = credentials is not None and hmac.compare_digest(
+        credentials.password,
+        WEB_API_TOKEN,
+    )
+    if not username_valid or not password_valid:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid STT Web management credentials",
+            headers={"WWW-Authenticate": 'Basic realm="MeetingNotes STT"'},
+        )
+
+
+def read_log_tail(path: Path | None, limit: int = 160) -> list[str]:
+    if path is None or not path.is_file():
+        return []
+    safe_limit = max(1, min(limit, 500))
+    try:
+        with path.open("rb") as stream:
+            stream.seek(0, os.SEEK_END)
+            size = stream.tell()
+            stream.seek(max(0, size - 256 * 1024), os.SEEK_SET)
+            text = stream.read().decode("utf-8", errors="replace")
+    except OSError:
+        return []
+    return text.splitlines()[-safe_limit:]
+
+
 def safe_audio_suffix(filename: str | None) -> str:
     suffix = Path(filename or "audio.bin").suffix.lower()
     if suffix in {".wav", ".m4a", ".mp3", ".mp4", ".aac", ".ogg", ".flac", ".webm"}:
@@ -3198,6 +3157,27 @@ async def app_lifespan(_app: FastAPI):
 app = FastAPI(title="OA助手 STT Server", lifespan=app_lifespan)
 
 
+@app.get("/", include_in_schema=False)
+async def root_redirect():
+    return RedirectResponse(url="/admin/", status_code=307)
+
+
+@app.get("/admin", include_in_schema=False)
+async def admin_redirect():
+    return RedirectResponse(url="/admin/", status_code=307)
+
+
+@app.get("/admin/", include_in_schema=False, dependencies=[Depends(require_web_admin)])
+async def admin_page():
+    if not STT_ADMIN_TEMPLATE_PATH.is_file():
+        raise HTTPException(status_code=503, detail="STT management page is unavailable")
+    return FileResponse(
+        STT_ADMIN_TEMPLATE_PATH,
+        media_type="text/html; charset=utf-8",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @app.get("/health")
 async def health():
     return {
@@ -3213,12 +3193,11 @@ async def health():
         "model_error": model_load_error,
         "model_checksum_verified": model_checksum_verified,
         "device": STT_DEVICE,
-        "sensevoice_serialized": stt_engine == "sensevoice",
         "long_audio": {
             "chunk_threshold_sec": STT_LONG_AUDIO_CHUNK_THRESHOLD_SEC,
             "chunk_seconds": STT_LONG_AUDIO_CHUNK_SECONDS,
             "chunk_overlap_sec": STT_LONG_AUDIO_CHUNK_OVERLAP_SEC,
-            "applies_to": ["faster-whisper", "sensevoice", "tencent-cloud"],
+            "applies_to": ["faster-whisper", "tencent-cloud"],
         },
         "streams": {
             "active": len(active_stream_sessions),
@@ -3299,6 +3278,40 @@ async def health():
     }
 
 
+@app.get("/admin/api/status", dependencies=[Depends(require_web_admin)])
+async def admin_status():
+    payload = await health()
+    payload["management"] = {
+        "domain": "lstwin.space",
+        "log_available": bool(STT_LOG_PATH and STT_LOG_PATH.is_file()),
+        "error_log_available": bool(STT_ERROR_LOG_PATH and STT_ERROR_LOG_PATH.is_file()),
+    }
+    return payload
+
+
+@app.get("/admin/api/events", dependencies=[Depends(require_web_admin)])
+async def admin_events(limit: int = 40):
+    safe_limit = max(1, min(limit, STREAM_DEBUG_EVENT_LIMIT))
+    return {
+        "events": list(stream_debug_events)[-safe_limit:],
+        "limit": safe_limit,
+        "buffer_limit": STREAM_DEBUG_EVENT_LIMIT,
+    }
+
+
+@app.get("/admin/api/logs", dependencies=[Depends(require_web_admin)])
+async def admin_logs(limit: int = 160):
+    return {
+        "stdout": read_log_tail(STT_LOG_PATH, limit),
+        "stderr": read_log_tail(STT_ERROR_LOG_PATH, limit),
+    }
+
+
+@app.post("/admin/api/stt/switch", dependencies=[Depends(require_web_admin)])
+async def admin_switch_stt(request: SwitchSTTRequest):
+    return await switch_stt(request)
+
+
 @app.get("/ready")
 async def ready():
     if model is None:
@@ -3319,12 +3332,12 @@ async def ready():
 async def switch_stt(request: SwitchSTTRequest):
     global model_load_error
     engine = request.engine.strip().lower()
-    if engine not in {"faster-whisper", "sensevoice"}:
-        raise HTTPException(status_code=400, detail="engine must be faster-whisper or sensevoice")
+    if engine != "faster-whisper":
+        raise HTTPException(status_code=400, detail="only faster-whisper is supported")
 
     model_name = (request.model or "").strip()
     if not model_name:
-        model_name = "SenseVoiceSmall" if engine == "sensevoice" else "small"
+        model_name = DEFAULT_STT_MODEL
     if model_name not in STT_ALLOWED_MODELS:
         raise HTTPException(status_code=400, detail="model is not in STT_ALLOWED_MODELS")
 
@@ -3978,6 +3991,7 @@ async def transcribe_stream(websocket: WebSocket):
         nonlocal previous_preview_candidate, last_payload
         nonlocal last_processed_size, min_bytes, stream_stopped
         rejected_streak = 0
+        inference_failure_streak = 0
         loop = asyncio.get_event_loop()
         debug_audio_ticks = 0
         last_debug_time = loop.time()
@@ -4006,7 +4020,11 @@ async def transcribe_stream(websocket: WebSocket):
                     },
                 )
             step_bytes = int(sample_rate * channels * 2 * STREAM_STEP_SEC)
-            required_new_bytes = step_bytes if last_processed_size > 0 else max(min_bytes, step_bytes)
+            required_new_bytes = stream_required_new_bytes(
+                last_processed_size,
+                min_bytes,
+                step_bytes,
+            )
             if current_size < min_bytes or current_total_bytes - last_processed_size < required_new_bytes:
                 continue
 
@@ -4031,6 +4049,7 @@ async def transcribe_stream(websocket: WebSocket):
                     inference_language,
                     label=f"stream:{session_id}",
                 )
+                inference_failure_streak = 0
                 if inference_language != language:
                     continue
                 push_debug_event(
@@ -4056,6 +4075,7 @@ async def transcribe_stream(websocket: WebSocket):
                 )
                 continue
             except Exception as exc:
+                inference_failure_streak += 1
                 push_debug_event(
                     "transcribe_error",
                     session_id=session_id,
@@ -4063,9 +4083,24 @@ async def transcribe_stream(websocket: WebSocket):
                     buffered_bytes=current_size,
                     snapshot_bytes=len(snapshot),
                     error=str(exc),
+                    failure_streak=inference_failure_streak,
                 )
                 print(f"[WS] Transcription error for session {session_id}: {exc}", flush=True)
-                # Recreate executor if it was broken by a thread crash
+                if inference_failure_streak >= STT_STREAM_INFERENCE_FAILURE_THRESHOLD:
+                    stream_stopped = True
+                    with contextlib.suppress(Exception):
+                        await websocket.send_text(
+                            json.dumps(
+                                {
+                                    "type": "error",
+                                    "message": "本地实时识别连续失败，正在准备云端兜底",
+                                },
+                                ensure_ascii=False,
+                            )
+                        )
+                    with contextlib.suppress(Exception):
+                        await websocket.close(code=1011, reason="local inference failed")
+                    break
                 continue
             raw_text = normalize_preview_text(result["text"])
             final_compatible_preview = result.get("strategy") == "final-compatible"
@@ -4074,11 +4109,7 @@ async def transcribe_stream(websocket: WebSocket):
             preview_candidate = ""
             preview_mode = ""
             preview_similarity = 0.0
-            if stt_engine == "sensevoice":
-                current_text = raw_text
-                accepted_segments = []
-                rejected_segments = []
-            elif quality_gated_preview:
+            if quality_gated_preview:
                 (
                     preview_candidate,
                     preview_mode,
@@ -4651,8 +4682,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default=os.getenv("STT_BIND_IP", "0.0.0.0"))
     parser.add_argument("--port", type=int, default=int(os.getenv("STT_PORT", "8888")))
-    parser.add_argument("--model", default=os.getenv("STT_MODEL", "small"))
-    parser.add_argument("--engine", default=os.getenv("STT_ENGINE", "faster-whisper"), choices=["faster-whisper", "sensevoice"])
+    parser.add_argument("--model", default=os.getenv("STT_MODEL", DEFAULT_STT_MODEL))
+    parser.add_argument("--engine", default=os.getenv("STT_ENGINE", "faster-whisper"), choices=["faster-whisper"])
     parser.add_argument("--device", default=STT_DEVICE, choices=["auto", "cpu", "cuda"])
     args = parser.parse_args()
     STT_DEVICE = args.device

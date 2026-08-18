@@ -1,7 +1,9 @@
 import java.awt.*
 import java.awt.image.BufferedImage
+import java.awt.geom.Ellipse2D
 import java.awt.geom.RoundRectangle2D
 import java.io.FileInputStream
+import java.net.URI
 import java.security.KeyStore
 import java.security.MessageDigest
 import java.util.Properties
@@ -49,6 +51,10 @@ fun loadRelayConfig(path: String): Map<String, String> {
         }
         .toMap()
 }
+
+fun endpointHost(endpoint: String): String = runCatching {
+    URI(endpoint).host.orEmpty().trim().trimEnd('.').lowercase()
+}.getOrDefault("")
 
 data class SigningSpec(
     val variant: String,
@@ -165,6 +171,21 @@ fun verifiedSigningFingerprint(spec: SigningSpec): String {
 }
 
 val claudeEnv = loadEnvFile("local.defaults.env")
+val legacySttEndpoint = claudeEnv["MEETINGNOTES_STT_ENDPOINT"]
+    ?.takeIf { it.isNotBlank() }
+val debugSttEndpoint = claudeEnv["MEETINGNOTES_STT_DEBUG_ENDPOINT"]
+    ?.takeIf { it.isNotBlank() }
+    ?: legacySttEndpoint
+    ?: "http://10.0.2.2:8888"
+val releaseSttEndpoint = claudeEnv["MEETINGNOTES_STT_RELEASE_ENDPOINT"]
+    ?.takeIf { it.isNotBlank() }
+    .orEmpty()
+val debugSttRelayAddress = claudeEnv["MEETINGNOTES_STT_DEBUG_IPV4_RELAY_ADDRESS"]
+    ?.takeIf { it.isNotBlank() }
+    .orEmpty()
+val releaseSttRelayAddress = claudeEnv["MEETINGNOTES_STT_IPV4_RELAY_ADDRESS"]
+    ?.takeIf { it.isNotBlank() }
+    .orEmpty()
 
 android {
     namespace = "com.oa.automation"
@@ -174,8 +195,8 @@ android {
         applicationId = "com.oa.automation"
         minSdk = 26
         targetSdk = 34
-        versionCode = 10219
-        versionName = "1.2.19"
+        versionCode = 10225
+        versionName = "1.2.25"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -206,11 +227,17 @@ android {
 
     buildTypes {
         getByName("debug") {
+            buildConfigField("String", "DEFAULT_STT_ENDPOINT", "\"$debugSttEndpoint\"")
+            buildConfigField("String", "DEFAULT_STT_RELAY_HOST", "\"${endpointHost(debugSttEndpoint)}\"")
+            buildConfigField("String", "DEFAULT_STT_IPV4_RELAY_ADDRESS", "\"$debugSttRelayAddress\"")
             debugSigning?.let {
                 signingConfig = signingConfigs.getByName("meetingNotesDebug")
             }
         }
         release {
+            buildConfigField("String", "DEFAULT_STT_ENDPOINT", "\"$releaseSttEndpoint\"")
+            buildConfigField("String", "DEFAULT_STT_RELAY_HOST", "\"${endpointHost(releaseSttEndpoint)}\"")
+            buildConfigField("String", "DEFAULT_STT_IPV4_RELAY_ADDRESS", "\"$releaseSttRelayAddress\"")
             releaseSigning?.let {
                 signingConfig = signingConfigs.getByName("meetingNotesRelease")
             }
@@ -282,6 +309,22 @@ val verifyReleaseSigning = tasks.register("verifyReleaseSigning") {
     }
 }
 
+val verifyReleaseServiceEndpoints = tasks.register("verifyReleaseServiceEndpoints") {
+    group = "verification"
+    description = "Verify that release service endpoints are explicitly configured"
+    doLast {
+        require(releaseSttEndpoint.startsWith("https://")) {
+            "MEETINGNOTES_STT_RELEASE_ENDPOINT must be configured with an HTTPS URL before building a release."
+        }
+        require(endpointHost(releaseSttEndpoint).isNotBlank()) {
+            "MEETINGNOTES_STT_RELEASE_ENDPOINT must contain a valid hostname."
+        }
+        require(releaseSttRelayAddress.matches(Regex("(?:[0-9]{1,3}\\.){3}[0-9]{1,3}"))) {
+            "MEETINGNOTES_STT_IPV4_RELAY_ADDRESS must be configured as an IPv4 address before building a release."
+        }
+    }
+}
+
 tasks.register("verifySigningConfig") {
     group = "verification"
     description = "Verify both debug and release signing certificates"
@@ -292,7 +335,7 @@ tasks.matching { it.name == "preDebugBuild" }.configureEach {
     dependsOn(verifyDebugSigning)
 }
 tasks.matching { it.name == "preReleaseBuild" }.configureEach {
-    dependsOn(verifyReleaseSigning)
+    dependsOn(verifyReleaseSigning, verifyReleaseServiceEndpoints)
 }
 
 android.defaultConfig {
@@ -304,12 +347,9 @@ android.defaultConfig {
     val anthropicModel = claudeEnv["ANTHROPIC_MODEL"]
         ?: claudeEnv["ANTHROPIC_DEFAULT_SONNET_MODEL"]
         ?: ""
-    val sttEndpoint = claudeEnv["MEETINGNOTES_STT_ENDPOINT"]
-        ?.takeIf { it.isNotBlank() }
-        ?: "http://localhost:8888"
     val sttModel = claudeEnv["MEETINGNOTES_STT_MODEL"]
         ?.takeIf { it.isNotBlank() }
-        ?: "small"
+        ?: "large-v3-turbo"
     val sttCloudEndpoint = claudeEnv["MEETINGNOTES_STT_CLOUD_ENDPOINT"]
         ?.takeIf { it.isNotBlank() }
         ?: ""
@@ -334,7 +374,7 @@ android.defaultConfig {
     ]
         ?.toIntOrNull()
         ?.coerceIn(80, 1_000)
-        ?: 180
+        ?: 120
     val transcriptPreviewMaxChars = claudeEnv[
         "MEETINGNOTES_TRANSCRIPT_PREVIEW_MAX_CHARS"
     ]
@@ -377,7 +417,6 @@ android.defaultConfig {
 
     // STT endpoint/model are build-time environment defaults. Access tokens are
     // provisioned at runtime and must never be embedded in the APK.
-    buildConfigField("String", "DEFAULT_STT_ENDPOINT", "\"$sttEndpoint\"")
     buildConfigField("String", "DEFAULT_STT_MODEL", "\"$sttModel\"")
     buildConfigField("String", "DEFAULT_STT_CLOUD_ENDPOINT", "\"$sttCloudEndpoint\"")
     buildConfigField("String", "DEFAULT_STT_CLOUD_MODEL", "\"$sttCloudModel\"")
@@ -496,7 +535,7 @@ tasks.register("generateIconPngs") {
     doLast {
         val configuredMaster = providers.gradleProperty("launcherIconMaster")
             .orElse(providers.environmentVariable("MEETINGNOTES_ICON_MASTER"))
-            .orElse("src/main/icon/launcher-master.png")
+            .orElse("src/main/icon/img.png")
             .get()
         val masterFile = file(configuredMaster)
         require(masterFile.isFile) {
@@ -505,11 +544,20 @@ tasks.register("generateIconPngs") {
         val master = ImageIO.read(masterFile)
         val contentScale = providers.gradleProperty("launcherIconContentScale")
             .orElse(providers.environmentVariable("MEETINGNOTES_ICON_CONTENT_SCALE"))
-            .orElse("0.92")
+            // Keep the logo inside the adaptive-icon safe zone so the wordmark remains legible.
+            .orElse("0.56")
             .get()
             .toDouble()
         require(contentScale in 0.5..1.0) {
             "Launcher icon content scale must be between 0.5 and 1.0"
+        }
+        val masterCropScale = providers.gradleProperty("launcherIconMasterCropScale")
+            .orElse(providers.environmentVariable("MEETINGNOTES_ICON_MASTER_CROP_SCALE"))
+            .orElse("0.88")
+            .get()
+            .toDouble()
+        require(masterCropScale in 0.7..1.0) {
+            "Launcher icon master crop scale must be between 0.7 and 1.0"
         }
         val brandCropScale = providers.gradleProperty("launcherBrandCropScale")
             .orElse(providers.environmentVariable("MEETINGNOTES_BRAND_ICON_CROP_SCALE"))
@@ -519,7 +567,16 @@ tasks.register("generateIconPngs") {
         require(brandCropScale in 0.7..1.0) {
             "Brand icon crop scale must be between 0.7 and 1.0"
         }
-        val launcherCanvasSize = maxOf(master.width, master.height)
+        val masterCropSize = (minOf(master.width, master.height) * masterCropScale).toInt()
+        val masterCropLeft = (master.width - masterCropSize) / 2
+        val masterCropTop = (master.height - masterCropSize) / 2
+        val croppedMaster = master.getSubimage(
+            masterCropLeft,
+            masterCropTop,
+            masterCropSize,
+            masterCropSize
+        )
+        val launcherCanvasSize = masterCropSize
         val launcherArtwork = BufferedImage(
             launcherCanvasSize,
             launcherCanvasSize,
@@ -529,16 +586,30 @@ tasks.register("generateIconPngs") {
         launcherGraphics.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
         launcherGraphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC)
         launcherGraphics.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY)
-        launcherGraphics.color = Color.WHITE
+        launcherGraphics.color = Color(0x02, 0x37, 0x88)
         launcherGraphics.fillRect(0, 0, launcherCanvasSize, launcherCanvasSize)
         val availableSize = launcherCanvasSize * contentScale
-        val imageScale = minOf(availableSize / master.width, availableSize / master.height)
-        val targetWidth = (master.width * imageScale).toInt()
-        val targetHeight = (master.height * imageScale).toInt()
+        val imageScale = minOf(availableSize / croppedMaster.width, availableSize / croppedMaster.height)
+        val targetWidth = (croppedMaster.width * imageScale).toInt()
+        val targetHeight = (croppedMaster.height * imageScale).toInt()
         val left = (launcherCanvasSize - targetWidth) / 2
         val top = (launcherCanvasSize - targetHeight) / 2
-        launcherGraphics.drawImage(master, left, top, targetWidth, targetHeight, null)
+        launcherGraphics.drawImage(croppedMaster, left, top, targetWidth, targetHeight, null)
         launcherGraphics.dispose()
+
+        val legacyArtwork = BufferedImage(
+            launcherCanvasSize,
+            launcherCanvasSize,
+            BufferedImage.TYPE_INT_ARGB
+        )
+        val legacyGraphics = legacyArtwork.createGraphics()
+        legacyGraphics.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+        legacyGraphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC)
+        legacyGraphics.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY)
+        legacyGraphics.color = Color(0x02, 0x37, 0x88)
+        legacyGraphics.fillRect(0, 0, launcherCanvasSize, launcherCanvasSize)
+        legacyGraphics.drawImage(launcherArtwork, 0, 0, null)
+        legacyGraphics.dispose()
 
         fun roundedArtwork(source: BufferedImage, size: Int): BufferedImage {
             val rounded = BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB)
@@ -560,22 +631,34 @@ tasks.register("generateIconPngs") {
             return rounded
         }
 
+        fun circularArtwork(source: BufferedImage, size: Int): BufferedImage {
+            val circular = BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB)
+            val graphics = circular.createGraphics()
+            graphics.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+            graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC)
+            graphics.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY)
+            graphics.clip = Ellipse2D.Double(0.0, 0.0, size.toDouble(), size.toDouble())
+            graphics.drawImage(source, 0, 0, size, size, null)
+            graphics.dispose()
+            return circular
+        }
+
         densities.forEach { (folder, size) ->
             val outDir = file("src/main/res/$folder")
             outDir.mkdirs()
-            listOf("ic_launcher.png", "ic_launcher_round.png").forEach { fileName ->
-                val img = roundedArtwork(launcherArtwork, size)
-                val outFile = outDir.resolve(fileName)
-                ImageIO.write(img, "png", outFile)
-                println("Generated: ${outFile.absolutePath}")
-            }
+            val launcherFile = outDir.resolve("ic_launcher.png")
+            ImageIO.write(roundedArtwork(legacyArtwork, size), "png", launcherFile)
+            println("Generated: ${launcherFile.absolutePath}")
+            val roundLauncherFile = outDir.resolve("ic_launcher_round.png")
+            ImageIO.write(circularArtwork(legacyArtwork, size), "png", roundLauncherFile)
+            println("Generated: ${roundLauncherFile.absolutePath}")
         }
         val brandIcon = file("src/main/res/drawable-nodpi/brand_icon.png")
         brandIcon.parentFile.mkdirs()
-        val brandCropSize = (minOf(master.width, master.height) * brandCropScale).toInt()
-        val brandCropLeft = (master.width - brandCropSize) / 2
-        val brandCropTop = (master.height - brandCropSize) / 2
-        val brandArtwork = master.getSubimage(
+        val brandCropSize = (minOf(croppedMaster.width, croppedMaster.height) * brandCropScale).toInt()
+        val brandCropLeft = (croppedMaster.width - brandCropSize) / 2
+        val brandCropTop = (croppedMaster.height - brandCropSize) / 2
+        val brandArtwork = croppedMaster.getSubimage(
             brandCropLeft,
             brandCropTop,
             brandCropSize,

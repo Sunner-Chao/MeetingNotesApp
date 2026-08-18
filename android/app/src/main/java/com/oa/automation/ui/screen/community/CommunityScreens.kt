@@ -3,8 +3,10 @@ package com.oa.automation.ui.screen.community
 import android.content.Context
 import android.content.Intent
 import android.graphics.BitmapFactory
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,22 +16,30 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AutoStories
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.Flag
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FilterAlt
@@ -41,7 +51,6 @@ import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material3.AlertDialog
@@ -69,15 +78,20 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.oa.automation.domain.model.MyCommunityPost
 import com.oa.automation.domain.model.CommunityComment
@@ -957,6 +971,9 @@ fun CommunityPostDetailScreen(
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val post = uiState.post
+    val context = LocalContext.current
+    var showActions by remember { mutableStateOf(false) }
+    var previewMediaIndex by remember { mutableStateOf<Int?>(null) }
     LaunchedEffect(postId) { viewModel.load(postId) }
     if (uiState.showReportDialog) {
         CommunityReportDialog(
@@ -982,22 +999,72 @@ fun CommunityPostDetailScreen(
             onSubmit = viewModel::submitCommentReport
         )
     }
+    if (post != null && previewMediaIndex != null) {
+        CommunityMediaPreviewDialog(
+            post = post,
+            mediaBaseUrl = uiState.mediaBaseUrl,
+            initialIndex = previewMediaIndex ?: 0,
+            onDismiss = { previewMediaIndex = null }
+        )
+    }
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
-                title = { Text("研学笔记", fontWeight = FontWeight.SemiBold) },
+                title = {
+                    Text(
+                        text = "见闻",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
                     }
                 },
                 actions = {
-                    IconButton(onClick = viewModel::openReportDialog) {
-                        Icon(Icons.Default.Flag, contentDescription = "举报")
+                    IconButton(
+                        onClick = { post?.let { shareCommunityPost(context, it) } },
+                        enabled = post != null
+                    ) {
+                        Icon(Icons.Default.Share, contentDescription = "分享")
+                    }
+                    Box {
+                        IconButton(onClick = { showActions = true }, enabled = post != null) {
+                            Icon(Icons.Default.MoreVert, contentDescription = "更多")
+                        }
+                        DropdownMenu(
+                            expanded = showActions,
+                            onDismissRequest = { showActions = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("举报内容") },
+                                leadingIcon = { Icon(Icons.Default.Flag, contentDescription = null) },
+                                onClick = {
+                                    showActions = false
+                                    viewModel.openReportDialog()
+                                }
+                            )
+                        }
                     }
                 }
             )
+        },
+        bottomBar = {
+            if (post != null) {
+                CommunityDetailBottomBar(
+                    interaction = uiState.interaction,
+                    isInteracting = uiState.isInteracting,
+                    isSubmitting = uiState.isSubmittingComment,
+                    writeEnabled = uiState.availability.writeEnabled,
+                    draft = uiState.commentDraft,
+                    onDraftChange = viewModel::updateCommentDraft,
+                    onSubmit = { viewModel.submitComment(postId) },
+                    onToggleLike = { viewModel.toggleLike(postId) },
+                    onToggleBookmark = { viewModel.toggleBookmark(postId) }
+                )
+            }
         }
     ) { padding ->
         when {
@@ -1022,16 +1089,10 @@ fun CommunityPostDetailScreen(
                     comments = uiState.comments,
                     commentsNextCursor = uiState.commentsNextCursor,
                     isLoadingComments = uiState.isLoadingComments,
-                    isInteracting = uiState.isInteracting,
                     isSubmittingComment = uiState.isSubmittingComment,
-                    writeEnabled = uiState.availability.writeEnabled,
-                    commentDraft = uiState.commentDraft,
                     mediaBaseUrl = uiState.mediaBaseUrl,
                     modifier = Modifier.weight(1f),
-                    onToggleLike = { viewModel.toggleLike(postId) },
-                    onToggleBookmark = { viewModel.toggleBookmark(postId) },
-                    onCommentDraftChange = viewModel::updateCommentDraft,
-                    onSubmitComment = { viewModel.submitComment(postId) },
+                    onOpenMedia = { previewMediaIndex = it },
                     onDeleteComment = viewModel::deleteComment,
                     onLoadMoreComments = { viewModel.loadMoreComments(postId) },
                     onReportComment = viewModel::openCommentReportDialog
@@ -1327,100 +1388,376 @@ private fun CommunityPostDetail(
     comments: List<CommunityComment>,
     commentsNextCursor: String?,
     isLoadingComments: Boolean,
-    isInteracting: Boolean,
     isSubmittingComment: Boolean,
-    writeEnabled: Boolean,
-    commentDraft: String,
     mediaBaseUrl: String,
     modifier: Modifier = Modifier,
-    onToggleLike: () -> Unit,
-    onToggleBookmark: () -> Unit,
-    onCommentDraftChange: (String) -> Unit,
-    onSubmitComment: () -> Unit,
+    onOpenMedia: (Int) -> Unit,
     onDeleteComment: (String) -> Unit,
     onLoadMoreComments: () -> Unit,
     onReportComment: (String) -> Unit
 ) {
     Column(
-        modifier = modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+        modifier = modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        Text(post.title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Default.Verified, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
-            Spacer(Modifier.width(6.dp))
-        Text(post.authorLabel, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(Modifier.width(10.dp))
-            Text(formatCommunityDate(post.publishedAt), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
-        }
         if (post.media.isNotEmpty()) {
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                items(post.media, key = { it.id }) { media ->
-                    CommunityThumbnail(
-                        url = "$mediaBaseUrl${media.thumbnailUrl}",
-                        contentDescription = "研学图片",
-                        modifier = Modifier.width(240.dp).height(160.dp)
+            CommunityMediaPager(
+                post = post,
+                mediaBaseUrl = mediaBaseUrl,
+                onOpenMedia = onOpenMedia
+            )
+        }
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(
+                text = post.title,
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Surface(
+                    modifier = Modifier.size(34.dp),
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.primaryContainer
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text(
+                            text = post.authorLabel.trim().take(1).ifBlank { "悟" },
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+                Spacer(Modifier.width(9.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            post.authorLabel,
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(Modifier.width(5.dp))
+                        Icon(
+                            Icons.Default.Verified,
+                            contentDescription = "已审核",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(15.dp)
+                        )
+                    }
+                    Text(
+                        "发布于 ${formatCommunityDate(post.publishedAt)}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
         }
         CommunityPostMetadata(post)
-        CommunityInteractionBar(
-            interaction = interaction,
-            isBusy = isInteracting,
-            writeEnabled = writeEnabled,
-            onToggleLike = onToggleLike,
-            onToggleBookmark = onToggleBookmark
-        )
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-        Text(post.content, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface)
+        SelectionContainer {
+            CommunityRichText(post.content)
+        }
+        if (post.stages.isNotEmpty()) {
+            CommunityStageTimeline(post.stages)
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                "现场讨论",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                "${interaction?.commentCount ?: post.commentCount} 条",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
         CommunityComments(
             comments = comments,
             isLoading = isLoadingComments,
             isSubmitting = isSubmittingComment,
-            writeEnabled = writeEnabled,
-            draft = commentDraft,
-            onDraftChange = onCommentDraftChange,
-            onSubmit = onSubmitComment,
-           onDelete = onDeleteComment,
-            commentCount = interaction?.commentCount ?: post.commentCount,
             nextCursor = commentsNextCursor,
             onLoadMore = onLoadMoreComments,
+            onDelete = onDeleteComment,
             onReport = onReportComment
         )
     }
 }
 
 @Composable
-private fun CommunityInteractionBar(
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+private fun CommunityMediaPager(
+    post: PublicCommunityPost,
+    mediaBaseUrl: String,
+    onOpenMedia: (Int) -> Unit
+) {
+    val pagerState = rememberPagerState(pageCount = { post.media.size })
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(1.02f)
+                .clip(RoundedCornerShape(10.dp))
+        ) { page ->
+            val media = post.media[page]
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clickable { onOpenMedia(page) }
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                contentAlignment = Alignment.Center
+            ) {
+                CommunityThumbnail(
+                    url = "$mediaBaseUrl${media.contentUrl.ifBlank { media.thumbnailUrl }}",
+                    contentDescription = "现场影像 ${page + 1}",
+                    modifier = Modifier.fillMaxSize()
+                )
+                Surface(
+                    modifier = Modifier.align(Alignment.BottomEnd).padding(10.dp),
+                    shape = RoundedCornerShape(6.dp),
+                    color = Color.Black.copy(alpha = 0.58f)
+                ) {
+                    Text(
+                        "${page + 1}/${post.media.size}",
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White
+                    )
+                }
+            }
+        }
+        if (post.media.size > 1) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                repeat(post.media.size) { index ->
+                    Surface(
+                        modifier = Modifier.padding(horizontal = 3.dp).size(
+                            if (index == pagerState.currentPage) 18.dp else 6.dp,
+                            6.dp
+                        ),
+                        shape = RoundedCornerShape(4.dp),
+                        color = if (index == pagerState.currentPage) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.outlineVariant
+                    ) {}
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CommunityRichText(content: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        parseCommunityRichText(content).forEach { block ->
+            when (block.kind) {
+                CommunityRichTextKind.SPACER -> Spacer(Modifier.height(4.dp))
+                CommunityRichTextKind.HEADING_THREE -> Text(
+                    block.text,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+                CommunityRichTextKind.HEADING_TWO -> Text(
+                    block.text,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(top = 8.dp)
+                )
+                CommunityRichTextKind.HEADING_ONE -> Text(
+                    block.text,
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                CommunityRichTextKind.BULLET -> {
+                    Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                        Text(
+                            "•",
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            block.text,
+                            style = MaterialTheme.typography.bodyLarge,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+                CommunityRichTextKind.PARAGRAPH -> Text(
+                    block.text,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    lineHeight = MaterialTheme.typography.bodyLarge.lineHeight
+                )
+            }
+        }
+    }
+}
+
+internal enum class CommunityRichTextKind {
+    HEADING_ONE,
+    HEADING_TWO,
+    HEADING_THREE,
+    BULLET,
+    PARAGRAPH,
+    SPACER
+}
+
+internal data class CommunityRichTextBlock(
+    val kind: CommunityRichTextKind,
+    val text: String = ""
+)
+
+internal fun parseCommunityRichText(content: String): List<CommunityRichTextBlock> =
+    content.lineSequence().map { rawLine ->
+        val line = rawLine.trimEnd()
+        when {
+            line.isBlank() -> CommunityRichTextBlock(CommunityRichTextKind.SPACER)
+            line.startsWith("### ") -> CommunityRichTextBlock(
+                CommunityRichTextKind.HEADING_THREE,
+                line.removePrefix("### ").trim()
+            )
+            line.startsWith("## ") -> CommunityRichTextBlock(
+                CommunityRichTextKind.HEADING_TWO,
+                line.removePrefix("## ").trim()
+            )
+            line.startsWith("# ") -> CommunityRichTextBlock(
+                CommunityRichTextKind.HEADING_ONE,
+                line.removePrefix("# ").trim()
+            )
+            line.startsWith("- ") || line.startsWith("* ") -> CommunityRichTextBlock(
+                CommunityRichTextKind.BULLET,
+                line.drop(2).trim()
+            )
+            else -> CommunityRichTextBlock(CommunityRichTextKind.PARAGRAPH, line)
+        }
+    }.toList()
+
+@Composable
+private fun CommunityStageTimeline(stages: List<String>) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            "行程分段",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold
+        )
+        stages.forEachIndexed { index, stage ->
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Surface(
+                    modifier = Modifier.size(24.dp),
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text(
+                            "${index + 1}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+                Text(
+                    stage,
+                    modifier = Modifier.padding(top = 2.dp),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun CommunityDetailBottomBar(
     interaction: CommunityInteractionState?,
-    isBusy: Boolean,
+    isInteracting: Boolean,
+    isSubmitting: Boolean,
     writeEnabled: Boolean,
+    draft: String,
+    onDraftChange: (String) -> Unit,
+    onSubmit: () -> Unit,
     onToggleLike: () -> Unit,
     onToggleBookmark: () -> Unit
 ) {
-    Row(
+    Surface(
         modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(4.dp)
+        color = MaterialTheme.colorScheme.surface,
+        shadowElevation = 10.dp,
+        tonalElevation = 1.dp
     ) {
-        IconButton(onClick = onToggleLike, enabled = writeEnabled && !isBusy) {
-            Icon(
-                imageVector = if (interaction?.liked == true) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                contentDescription = if (interaction?.liked == true) "取消点赞" else "点赞",
-                tint = if (interaction?.liked == true) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        Text((interaction?.likeCount ?: 0).toString(), style = MaterialTheme.typography.labelMedium)
-        Icon(Icons.Default.ChatBubbleOutline, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 10.dp).size(18.dp))
-        Text((interaction?.commentCount ?: 0).toString(), style = MaterialTheme.typography.labelMedium)
-        Spacer(Modifier.weight(1f))
-        IconButton(onClick = onToggleBookmark, enabled = writeEnabled && !isBusy) {
-            Icon(
-                imageVector = if (interaction?.bookmarked == true) Icons.Default.Bookmark else Icons.Default.BookmarkBorder,
-                contentDescription = if (interaction?.bookmarked == true) "取消收藏" else "收藏",
-                tint = if (interaction?.bookmarked == true) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-            )
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .imePadding()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = draft,
+                    onValueChange = onDraftChange,
+                    modifier = Modifier.weight(1f),
+                    enabled = writeEnabled && !isSubmitting,
+                    singleLine = true,
+                    placeholder = { Text("写下你的观察") },
+                    trailingIcon = {
+                        IconButton(
+                            onClick = onSubmit,
+                            enabled = writeEnabled && draft.isNotBlank() && !isSubmitting
+                        ) {
+                            if (isSubmitting) {
+                                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                            } else {
+                                Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "发表评论")
+                            }
+                        }
+                    },
+                    shape = RoundedCornerShape(8.dp)
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    if (writeEnabled) "记录一条有价值的现场观察" else "当前为只读状态",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f)
+                )
+                IconButton(onClick = onToggleLike, enabled = writeEnabled && !isInteracting) {
+                    Icon(
+                        if (interaction?.liked == true) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                        contentDescription = if (interaction?.liked == true) "取消点赞" else "点赞",
+                        tint = if (interaction?.liked == true) MaterialTheme.colorScheme.error
+                        else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Text(
+                    (interaction?.likeCount ?: 0).toString(),
+                    style = MaterialTheme.typography.labelSmall
+                )
+                IconButton(onClick = onToggleBookmark, enabled = writeEnabled && !isInteracting) {
+                    Icon(
+                        if (interaction?.bookmarked == true) Icons.Default.Bookmark else Icons.Default.BookmarkBorder,
+                        contentDescription = if (interaction?.bookmarked == true) "取消收藏" else "收藏",
+                        tint = if (interaction?.bookmarked == true) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
         }
     }
 }
@@ -1430,48 +1767,63 @@ private fun CommunityComments(
     comments: List<CommunityComment>,
     isLoading: Boolean,
     isSubmitting: Boolean,
-    writeEnabled: Boolean,
-    draft: String,
-    onDraftChange: (String) -> Unit,
-    onSubmit: () -> Unit,
-    onDelete: (String) -> Unit,
-    commentCount: Int,
     nextCursor: String?,
     onLoadMore: () -> Unit,
+    onDelete: (String) -> Unit,
     onReport: (String) -> Unit
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("评论 $commentCount", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
         if (isLoading) {
             CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
         }
         if (comments.isEmpty() && !isLoading) {
-            Text("还没有评论", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+            Text(
+                "还没有评论，先留下第一条观察",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.outline
+            )
         }
         comments.forEach { comment ->
             Surface(
                 modifier = Modifier.fillMaxWidth(),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-                shape = RoundedCornerShape(7.dp)
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.44f),
+                shape = RoundedCornerShape(8.dp)
             ) {
-                Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Column(Modifier.padding(horizontal = 11.dp, vertical = 9.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(comment.authorLabel, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            comment.authorLabel,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                         Spacer(Modifier.width(8.dp))
-                        Text(formatCommunityDate(comment.createdAt), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
-                        if (comment.canDelete) {
-                            Spacer(Modifier.weight(1f))
-                            IconButton(onClick = { onDelete(comment.id) }, enabled = !isSubmitting, modifier = Modifier.size(28.dp)) {
-                                Icon(Icons.Default.DeleteOutline, contentDescription = "删除评论", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.outline)
-                            }
-                        } else {
-                            Spacer(Modifier.weight(1f))
-                            IconButton(onClick = { onReport(comment.id) }, enabled = !isSubmitting, modifier = Modifier.size(28.dp)) {
-                                Icon(Icons.Default.Flag, contentDescription = "举报评论", modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.outline)
-                            }
+                        Text(
+                            formatCommunityDate(comment.createdAt),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.outline
+                        )
+                        Spacer(Modifier.weight(1f))
+                        IconButton(
+                            onClick = {
+                                if (comment.canDelete) onDelete(comment.id) else onReport(comment.id)
+                            },
+                            enabled = !isSubmitting,
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(
+                                if (comment.canDelete) Icons.Default.DeleteOutline else Icons.Default.Flag,
+                                contentDescription = if (comment.canDelete) "删除评论" else "举报评论",
+                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.outline
+                            )
                         }
                     }
-                    Text(comment.content, style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        comment.content,
+                        modifier = Modifier.padding(top = 5.dp),
+                        style = MaterialTheme.typography.bodyMedium
+                    )
                 }
             }
         }
@@ -1480,28 +1832,80 @@ private fun CommunityComments(
                 Text("加载更多评论")
             }
         }
-        OutlinedTextField(
-            value = draft,
-            onValueChange = onDraftChange,
-            modifier = Modifier.fillMaxWidth(),
-            enabled = writeEnabled && !isSubmitting,
-            minLines = 2,
-            maxLines = 4,
-            placeholder = { Text("写下你的观察") },
-            trailingIcon = {
-                IconButton(
-                    onClick = onSubmit,
-                    enabled = writeEnabled && draft.isNotBlank() && !isSubmitting
-                ) {
-                    if (isSubmitting) {
-                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                    } else {
-                        Icon(Icons.Default.Send, contentDescription = "发表评论")
-                    }
-                }
+    }
+}
+
+private fun shareCommunityPost(context: Context, post: PublicCommunityPost) {
+    val meta = listOfNotNull(
+        post.destination.takeIf(String::isNotBlank),
+        post.travelDate.takeIf(String::isNotBlank),
+        post.travelDays.takeIf { it > 0 }?.let { "$it 天" }
+    ).joinToString(" · ")
+    val text = buildString {
+        appendLine(post.title)
+        if (meta.isNotBlank()) appendLine(meta)
+        appendLine()
+        append(post.content.trim().take(800))
+        if (post.content.length > 800) append("...")
+    }.trim()
+    context.startActivity(
+        Intent.createChooser(
+            Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_SUBJECT, post.title)
+                putExtra(Intent.EXTRA_TEXT, text)
             },
-            shape = RoundedCornerShape(8.dp)
+            "分享见闻"
         )
+    )
+}
+
+@Composable
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+private fun CommunityMediaPreviewDialog(
+    post: PublicCommunityPost,
+    mediaBaseUrl: String,
+    initialIndex: Int,
+    onDismiss: () -> Unit
+) {
+    val pagerState = rememberPagerState(
+        initialPage = initialIndex.coerceIn(0, (post.media.size - 1).coerceAtLeast(0)),
+        pageCount = { post.media.size }
+    )
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            modifier = Modifier.fillMaxSize().background(Color.Black),
+            contentAlignment = Alignment.Center
+        ) {
+            HorizontalPager(state = pagerState, modifier = Modifier.fillMaxWidth()) { page ->
+                CommunityThumbnail(
+                    url = "$mediaBaseUrl${post.media[page].contentUrl.ifBlank { post.media[page].thumbnailUrl }}",
+                    contentDescription = "现场影像 ${page + 1}",
+                    modifier = Modifier.fillMaxWidth().aspectRatio(0.9f)
+                )
+            }
+            IconButton(
+                onClick = onDismiss,
+                modifier = Modifier.align(Alignment.TopEnd).padding(top = 20.dp, end = 12.dp)
+            ) {
+                Icon(Icons.Default.Close, contentDescription = "关闭预览", tint = Color.White)
+            }
+            Surface(
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 28.dp),
+                shape = RoundedCornerShape(6.dp),
+                color = Color.Black.copy(alpha = 0.58f)
+            ) {
+                Text(
+                    "${pagerState.currentPage + 1}/${post.media.size}",
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = Color.White
+                )
+            }
+        }
     }
 }
 

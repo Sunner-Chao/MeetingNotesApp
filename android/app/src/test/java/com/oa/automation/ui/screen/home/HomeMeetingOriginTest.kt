@@ -42,7 +42,7 @@ class HomeMeetingOriginTest {
             origin = MeetingOrigin.FILE_IMPORT
         )
 
-        assertEquals("文件导入 08-07 18:12", meeting.displayTitle())
+        assertEquals("顷刻成稿 08-07 18:12", meeting.displayTitle())
     }
 
     @Test

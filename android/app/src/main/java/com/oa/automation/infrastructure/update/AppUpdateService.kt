@@ -11,6 +11,7 @@ import java.io.File
 import java.security.MessageDigest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.CacheControl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
@@ -37,6 +38,11 @@ internal fun shouldPromptForUpdate(
 ): Boolean = update.versionCode > currentVersionCode &&
     (update.mandatory || update.versionCode != ignoredVersionCode)
 
+internal fun newerAppUpdate(
+    current: AndroidAppUpdate,
+    candidate: AndroidAppUpdate
+): AndroidAppUpdate = if (candidate.versionCode > current.versionCode) candidate else current
+
 data class DownloadedAppUpdate(val update: AndroidAppUpdate, val apk: File)
 
 /** Network and installer boundary for the server-managed Android release channel. */
@@ -47,7 +53,13 @@ class AppUpdateService(private val context: Context) {
         runCatching {
             val endpoint = BuildConfig.DEFAULT_APP_UPDATE_ENDPOINT.trim()
             require(endpoint.isNotBlank()) { "未配置版本更新服务" }
-            val response = client.newCall(Request.Builder().url(endpoint).get().build()).execute()
+            val response = client.newCall(
+                Request.Builder()
+                    .url(endpoint)
+                    .cacheControl(CacheControl.FORCE_NETWORK)
+                    .get()
+                    .build()
+            ).execute()
             response.use {
                 if (it.code == 204) return@runCatching AppUpdateCheck.UpToDate
                 require(it.isSuccessful) { "版本检查失败（HTTP ${it.code}）" }

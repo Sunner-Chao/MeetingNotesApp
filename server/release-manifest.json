@@ -87,7 +87,7 @@
     "chunk_threshold_sec": 2700,
     "chunk_seconds": 1800,
     "chunk_overlap_sec": 3,
-    "providers": ["faster-whisper", "sensevoice", "tencent-cloud"],
+    "providers": ["faster-whisper", "tencent-cloud"],
     "merge": "ordered boundary de-duplication with punctuation normalization"
   },
   "realtime_asr": {

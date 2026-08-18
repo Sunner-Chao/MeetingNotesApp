@@ -6,6 +6,7 @@ import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.oa.automation.application.usecase.StopRecordingUseCase
+import com.oa.automation.application.usecase.CloudAuthenticationRequiredException
 import com.oa.automation.domain.model.ProcessingProgress
 import java.io.File
 import org.koin.core.component.KoinComponent
@@ -56,6 +57,7 @@ class TranscriptionWorker(
         if (result.isSuccess) return Result.success()
 
         val message = result.exceptionOrNull()?.message ?: "STT 服务请求失败"
+        if (result.exceptionOrNull() is CloudAuthenticationRequiredException) return failure(message)
         return if (runAttemptCount < MAX_RETRIES) Result.retry() else failure(message)
     }
 

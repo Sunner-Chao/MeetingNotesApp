@@ -11,8 +11,7 @@ import com.oa.automation.BuildConfig
  * - P2: Zhiwu enhanced cloud model
  */
 enum class STTEngineType(val displayName: String, val defaultModel: String) {
-    FASTER_WHISPER("智悟本地模型", "small"),
-    SENSE_VOICE("智悟灵听模型", "SenseVoiceSmall"),
+    FASTER_WHISPER("智悟本地 Faster-Whisper", "large-v3-turbo"),
     TENCENT_HYBRID("智悟增强云模型", "tencent-standard")
 }
 
@@ -78,9 +77,23 @@ data class STTConfig(
         }
         const val PREVIOUS_PUBLIC_ENDPOINT = "http://ecobim.cn:57414"
         const val LEGACY_LOCAL_ENDPOINT = "http://localhost:8888"
+        const val AVD_HOST_ENDPOINT = "http://10.0.2.2:8888"
         val DEFAULT = STTConfig()
 
         // Common ports for STT services
         val COMMON_PORTS = listOf(8888, 8000, 8001, 8002, 8889, 8890)
     }
+}
+
+fun STTConfig.serviceEndpointFor(engineType: STTEngineType = this.engineType): String =
+    when (engineType) {
+        STTEngineType.TENCENT_HYBRID -> cloudEndpoint?.trim().orEmpty()
+        else -> localEndpoint.trim()
+    }
+
+fun String.isDevelopmentOnlySttEndpoint(): Boolean {
+    val normalized = trim().trimEnd('/').lowercase()
+    return normalized == STTConfig.LEGACY_LOCAL_ENDPOINT ||
+        normalized == STTConfig.AVD_HOST_ENDPOINT ||
+        normalized.startsWith("http://127.0.0.1:")
 }

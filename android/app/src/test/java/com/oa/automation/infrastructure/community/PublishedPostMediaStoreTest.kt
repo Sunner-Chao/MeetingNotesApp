@@ -111,6 +111,7 @@ class PublishedPostMediaStoreTest {
     private class FakePublishedPostDao(
         var post: PublishedPostEntity
     ) : PublishedPostDao {
+        override fun observeAll(): Flow<List<PublishedPostEntity>> = MutableStateFlow(listOf(post))
         override suspend fun insert(entity: PublishedPostEntity) = Unit
 
         override suspend fun findLatest(journeyId: String): PublishedPostEntity? = post

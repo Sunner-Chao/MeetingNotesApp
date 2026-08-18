@@ -17,7 +17,7 @@ class SocialAuthProviderTests(unittest.TestCase):
     def test_unconfigured_providers_are_visible_but_disabled(self) -> None:
         providers = load_social_auth_providers(environ={})
 
-        self.assertEqual([item["id"] for item in providers], ["wechat", "qq", "feishu"])
+        self.assertEqual([item["id"] for item in providers], ["wechat", "feishu"])
         self.assertTrue(all(not item["enabled"] for item in providers))
         self.assertTrue(all(item["authorization_url"] == "" for item in providers))
 
@@ -57,8 +57,8 @@ class SocialAuthProviderTests(unittest.TestCase):
             }
         )
 
-        self.assertFalse(providers[2]["enabled"])
-        self.assertEqual(providers[2]["authorization_url"], "")
+        self.assertFalse(providers[1]["enabled"])
+        self.assertEqual(providers[1]["authorization_url"], "")
 
 
 if __name__ == "__main__":

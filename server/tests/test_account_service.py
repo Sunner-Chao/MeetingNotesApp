@@ -12,8 +12,14 @@ from pathlib import Path
 BACKEND_DIR = Path(__file__).resolve().parents[1] / "backend-service"
 sys.path.insert(0, str(BACKEND_DIR))
 
-from account_service import AccountAuthError, AccountConflictError, AccountError, AccountService
-from agent_gateway import AgentAuthError, AgentGateway
+from account_service import (
+    AccountAuthError,
+    AccountConflictError,
+    AccountError,
+    AccountPermissionError,
+    AccountService,
+)
+from agent_gateway import AgentAuthError, AgentGateway, AgentProviderError
 from common.account_stt_token import verify_account_stt_token
 
 
@@ -32,6 +38,24 @@ class AccountServiceTests(unittest.TestCase):
                         "description": "test plan",
                         "price_cents": 100,
                         "quota_amount": 300,
+                        "included_minutes": 100,
+                        "ai_credits": 20,
+                        "team_seats": 1,
+                        "duration_days": 30,
+                        "construction_logs_unlocked": True,
+                        "active": True,
+                    }
+                    ,
+                    {
+                        "code": "team_test",
+                        "name": "Team Test",
+                        "description": "team plan",
+                        "price_cents": 500,
+                        "quota_amount": 500,
+                        "included_minutes": 500,
+                        "ai_credits": 50,
+                        "team_seats": 3,
+                        "duration_days": 30,
                         "construction_logs_unlocked": True,
                         "active": True,
                     }
@@ -52,6 +76,8 @@ class AccountServiceTests(unittest.TestCase):
             admin_username="admin",
             admin_password="admin-test-password",
             admin_request_limit=10_000,
+            expose_auth_code=True,
+            auth_code_cooldown_sec=1,
         )
         self.service.initialize()
 
@@ -110,6 +136,126 @@ class AccountServiceTests(unittest.TestCase):
             self.service.authenticate(f"Bearer {session['access_token']}")
         with self.assertRaises(AgentAuthError):
             self.gateway.authenticate(f"Bearer {session['agent_access_token']}")
+
+    def test_email_and_phone_codes_create_verified_identities_once(self) -> None:
+        requested = self.service.request_auth_code("email", "Owner@Example.com")
+        self.assertEqual(requested["masked_identifier"], "ow***@example.com")
+        code = requested["verification_code"]
+
+        session = self.service.verify_auth_code("email", "owner@example.com", code)
+        principal = self.service.authenticate(f"Bearer {session['access_token']}")
+        identities = self.service.list_identities(principal)
+        self.assertEqual(identities[0]["provider"], "email")
+        self.assertTrue(identities[0]["verified"])
+        with self.assertRaises(AccountAuthError):
+            self.service.verify_auth_code("email", "owner@example.com", code)
+
+        phone_request = self.service.request_auth_code("phone", "138-0013-8000")
+        phone_session = self.service.verify_auth_code(
+            "phone",
+            "+86 13800138000",
+            phone_request["verification_code"],
+        )
+        self.assertNotEqual(phone_session["user"]["id"], session["user"]["id"])
+
+    def test_auth_code_is_rate_limited_and_attempt_limited(self) -> None:
+        requested = self.service.request_auth_code("email", "rate@example.com")
+        with self.assertRaises(AccountConflictError):
+            self.service.request_auth_code("email", "rate@example.com")
+        wrong_code = "000000" if requested["verification_code"] != "000000" else "000001"
+        for _ in range(self.service.auth_code_max_attempts):
+            with self.assertRaises(AccountAuthError):
+                self.service.verify_auth_code("email", "rate@example.com", wrong_code)
+        with self.assertRaises(AccountAuthError):
+            self.service.verify_auth_code(
+                "email",
+                "rate@example.com",
+                requested["verification_code"],
+            )
+
+    def test_stt_usage_is_charged_after_success_and_is_idempotent(self) -> None:
+        session = self.service.register("stt_user", "strong-password")
+        principal = self.service.authenticate(f"Bearer {session['access_token']}")
+        first = self.service.record_stt_usage(
+            principal,
+            duration_ms=61_001,
+            meeting_id="meeting-1",
+            idempotency_key="stt:meeting-1:full",
+        )
+        duplicate = self.service.record_stt_usage(
+            principal,
+            duration_ms=61_001,
+            meeting_id="meeting-1",
+            idempotency_key="stt:meeting-1:full",
+        )
+        self.assertEqual(first["id"], duplicate["id"])
+        usage = self.service.usage_summary(principal)
+        self.assertEqual(usage["stt_seconds_used"], 62)
+
+        with self.service._connect() as conn:
+            conn.execute(
+                """
+                UPDATE account_usage_balances
+                SET ai_credits_used = 3, period_end = 1
+                WHERE user_id = ?
+                """,
+                (principal.user_id,),
+            )
+        rolled = self.service.usage_summary(principal)
+        self.assertEqual(rolled["stt_seconds_used"], 0)
+        self.assertEqual(rolled["ai_credits_used"], 0)
+
+    def test_agent_credits_refund_failures_and_allow_three_free_regenerations(self) -> None:
+        session = self.service.register("credit_user", "strong-password")
+        principal = self.gateway.authenticate(f"Bearer {session['agent_access_token']}")
+        root = Path(self.temp_dir.name)
+
+        def fail_runner(*_args):
+            raise RuntimeError("provider failed")
+
+        failing = AgentGateway(
+            db_path=self.db_path,
+            work_root=root / "failing-tasks",
+            runner=fail_runner,
+        )
+        failing.initialize()
+        with self.assertRaises(AgentProviderError):
+            failing.execute(
+                principal,
+                {
+                    "provider": "codex-cli",
+                    "operation": "generate_report",
+                    "transcript": "test",
+                    "meeting_id": "meeting-credit",
+                    "usage_key": "credit-failure",
+                },
+                [],
+            )
+        account = self.service.authenticate(f"Bearer {session['access_token']}")
+        self.assertEqual(self.service.usage_summary(account)["ai_credits_used"], 0)
+
+        succeeding = AgentGateway(
+            db_path=self.db_path,
+            work_root=root / "success-tasks",
+            runner=lambda *_args: "ok",
+        )
+        succeeding.initialize()
+        charges = []
+        for index in range(5):
+            result = succeeding.execute(
+                principal,
+                {
+                    "provider": "codex-cli",
+                    "operation": "generate_report",
+                    "transcript": "test",
+                    "meeting_id": "meeting-credit",
+                    "usage_key": f"credit-success-{index}",
+                },
+                [],
+            )
+            charges.append(result["charged"])
+        self.assertEqual(charges, [True, False, False, False, True])
+        self.assertEqual(self.service.usage_summary(account)["ai_credits_used"], 2)
 
     def test_profile_can_update_display_name_and_avatar(self) -> None:
         session = self.service.register("profile_user", "strong-password")
@@ -196,6 +342,8 @@ class AccountServiceTests(unittest.TestCase):
         self.assertEqual(profile["plan_code"], "vip_test")
         self.assertEqual(profile["plan_name"], "VIP Test")
         self.assertEqual(profile["quota"]["requests_remaining"], 310)
+        self.assertEqual(profile["usage"]["included_minutes"], 120)
+        self.assertEqual(profile["usage"]["ai_credits_remaining"], 20)
         agent = self.gateway.authenticate(f"Bearer {user_session['agent_access_token']}")
         self.assertEqual(agent.request_limit, 310)
 
@@ -263,6 +411,64 @@ class AccountServiceTests(unittest.TestCase):
 
         with self.assertRaises(AccountConflictError):
             self.service.delete_user(admin, admin.user_id)
+
+    def test_identity_binding_and_password_reset_require_the_right_verification_purpose(self) -> None:
+        session = self.service.register("identity_user", "strong-password")
+        principal = self.service.authenticate(f"Bearer {session['access_token']}")
+        requested = self.service.request_auth_code("email", "identity@example.com", "bind")
+        identities = self.service.bind_identity(
+            principal,
+            "email",
+            "identity@example.com",
+            requested["verification_code"],
+        )
+        self.assertEqual([item["provider"] for item in identities], ["password", "email"])
+
+        requested = self.service.request_auth_code("email", "identity@example.com", "reset_password")
+        self.assertEqual(
+            self.service.reset_password(
+                "email",
+                "identity@example.com",
+                requested["verification_code"],
+                "new-strong-password",
+            )["status"],
+            "password_reset",
+        )
+        with self.assertRaises(AccountAuthError):
+            self.service.authenticate(f"Bearer {session['access_token']}")
+        self.assertIn("access_token", self.service.login("identity_user", "new-strong-password"))
+
+    def test_team_seats_and_subscription_expiry_are_enforced(self) -> None:
+        owner_session = self.service.register("team_owner", "strong-password")
+        owner = self.service.authenticate(f"Bearer {owner_session['access_token']}")
+        members = [
+            self.service.authenticate(
+                f"Bearer {self.service.register(f'team_member_{index}', 'strong-password')['access_token']}"
+            )
+            for index in range(3)
+        ]
+        admin = self.service.authenticate(
+            f"Bearer {self.service.login('admin', 'admin-test-password')['access_token']}"
+        )
+        order = self.service.create_order(owner, "team_test")
+        self.service.approve_order(admin, order["id"])
+
+        team = self.service.team(owner)
+        self.assertEqual(team["seat_limit"], 3)
+        self.service.add_team_member(owner, members[0].user_id)
+        self.service.add_team_member(owner, members[1].user_id)
+        with self.assertRaises(AccountPermissionError):
+            self.service.add_team_member(owner, members[2].user_id)
+
+        with self.service._connect() as conn:
+            conn.execute(
+                "UPDATE user_entitlements SET vip_expires_at = ? WHERE user_id = ?",
+                (1, owner.user_id),
+            )
+        expired = self.service.profile(owner)
+        self.assertFalse(expired["vip_enabled"])
+        self.assertEqual(expired["usage"]["team_seats"], 1)
+        self.assertEqual(self.service.team(owner)["seats_used"], 1)
 
 
 if __name__ == "__main__":

@@ -45,7 +45,9 @@ class GenerateReportUseCase(
             onProgress(ProcessingProgress(35, "Agent 正在分析会议内容", isIndeterminate = true))
             val reportData = llmEngine.generateReport(
                 buildMarkerAwareTranscript(transcriptContent, attachments),
-                attachments
+                attachments,
+                meetingId = meetingId,
+                usageKey = "report:$meetingId:${UUID.randomUUID()}"
             )
 
             onProgress(ProcessingProgress(85, "整理纪要结构"))
@@ -63,7 +65,9 @@ class GenerateReportUseCase(
             val report = Report(
                 id = existingReportId ?: UUID.randomUUID().toString(),
                 meetingId = meetingId,
-                summary = reportData.summary,
+                summary = reportData.summary.ifBlank {
+                    extractReportSummary(reportData.rawContent)
+                },
                 keyPoints = reportData.keyPoints,
                 tasks = tasks,
                 decisions = reportData.decisions,
@@ -82,6 +86,31 @@ class GenerateReportUseCase(
             Result.failure(e)
         }
     }
+}
+
+internal fun extractReportSummary(rawContent: String): String {
+    return rawContent
+        .split(Regex("\\n\\s*\\n"))
+        .asSequence()
+        .map { block ->
+            block.lineSequence()
+                .map { line -> line.trim().removePrefix(">").trim() }
+                .joinToString(" ")
+                .replace("**", "")
+                .replace("__", "")
+                .trim()
+        }
+        .firstOrNull { block ->
+            block.length >= 20 &&
+                !block.startsWith("#") &&
+                !block.startsWith("|") &&
+                !block.startsWith("-") &&
+                !block.startsWith("[") &&
+                !block.startsWith("路线：") &&
+                !block.startsWith("同行与讲解：")
+        }
+        ?.take(600)
+        .orEmpty()
 }
 
 internal fun buildMarkerAwareTranscript(

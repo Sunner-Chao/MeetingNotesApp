@@ -91,6 +91,11 @@ ACCOUNT_SESSION_TTL_SEC = int(_env("ACCOUNT_SESSION_TTL_SEC", "2592000"))
 ACCOUNT_FREE_REQUEST_LIMIT = int(_env("ACCOUNT_FREE_REQUEST_LIMIT", "10"))
 ACCOUNT_FREE_PLAN_CODE = _env("ACCOUNT_FREE_PLAN_CODE", "free")
 ACCOUNT_FREE_PLAN_NAME = _env("ACCOUNT_FREE_PLAN_NAME", "Free")
+ACCOUNT_FREE_STT_MINUTES = int(_env("ACCOUNT_FREE_STT_MINUTES", "120"))
+ACCOUNT_FREE_AI_CREDITS = int(_env("ACCOUNT_FREE_AI_CREDITS", "5"))
+ACCOUNT_AUTH_CODE_DEBUG = _env_bool("ACCOUNT_AUTH_CODE_DEBUG", False)
+ACCOUNT_AUTH_CODE_WEBHOOK_URL = os.getenv("ACCOUNT_AUTH_CODE_WEBHOOK_URL", "").strip()
+ACCOUNT_AUTH_CODE_WEBHOOK_TOKEN = os.getenv("ACCOUNT_AUTH_CODE_WEBHOOK_TOKEN", "").strip()
 ACCOUNT_STT_TOKEN_TTL_SEC = int(_env("ACCOUNT_STT_TOKEN_TTL_SEC", "43200"))
 ACCOUNT_PROFILE_NAME_MAX_LENGTH = max(
     1, int(_env("ACCOUNT_PROFILE_NAME_MAX_LENGTH", "40"))
@@ -130,6 +135,23 @@ SERVER_VERSION = os.getenv("MEETINGNOTES_SERVER_VERSION", _release_value("VERSIO
 SERVER_RELEASE = os.getenv("MEETINGNOTES_RELEASE_ID", _release_value("RELEASE", SERVER_VERSION)).strip()
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 AGENT_GATEWAY = gateway_from_env(DB_PATH)
+
+
+def send_account_auth_code(channel: str, identifier: str, code: str) -> None:
+    if not ACCOUNT_AUTH_CODE_WEBHOOK_URL:
+        raise RuntimeError("ACCOUNT_AUTH_CODE_WEBHOOK_URL is not configured")
+    headers = {"Content-Type": "application/json"}
+    if ACCOUNT_AUTH_CODE_WEBHOOK_TOKEN:
+        headers["Authorization"] = f"Bearer {ACCOUNT_AUTH_CODE_WEBHOOK_TOKEN}"
+    response = requests.post(
+        ACCOUNT_AUTH_CODE_WEBHOOK_URL,
+        headers=headers,
+        json={"channel": channel, "identifier": identifier, "code": code},
+        timeout=(10, 30),
+    )
+    response.raise_for_status()
+
+
 ACCOUNT_SERVICE = AccountService(
     DB_PATH,
     token_secret=ACCOUNT_TOKEN_SECRET,
@@ -144,6 +166,10 @@ ACCOUNT_SERVICE = AccountService(
     stt_token_ttl_sec=ACCOUNT_STT_TOKEN_TTL_SEC,
     profile_name_max_length=ACCOUNT_PROFILE_NAME_MAX_LENGTH,
     profile_avatar_max_bytes=ACCOUNT_PROFILE_AVATAR_MAX_BYTES,
+    auth_code_sender=send_account_auth_code if ACCOUNT_AUTH_CODE_WEBHOOK_URL else None,
+    expose_auth_code=ACCOUNT_AUTH_CODE_DEBUG,
+    free_stt_minutes=ACCOUNT_FREE_STT_MINUTES,
+    free_ai_credits=ACCOUNT_FREE_AI_CREDITS,
 ) if ACCOUNT_TOKEN_SECRET else None
 
 
@@ -235,7 +261,7 @@ class ReportPayload(BaseModel):
 
 
 class SwitchSTTPayload(BaseModel):
-    engine: str = Field(pattern="^(faster-whisper|sensevoice)$")
+    engine: str = Field(pattern="^faster-whisper$")
     model: str | None = None
 
 
@@ -253,6 +279,25 @@ class AgentTokenStatePayload(BaseModel):
 class AccountCredentialsPayload(BaseModel):
     username: str = Field(min_length=3, max_length=32)
     password: str = Field(min_length=8, max_length=128)
+
+
+class AccountAuthCodeRequestPayload(BaseModel):
+    channel: str = Field(pattern="^(email|phone)$")
+    identifier: str = Field(min_length=3, max_length=254)
+    purpose: str = Field(default="login", pattern="^(login|bind|reset_password)$")
+
+
+class AccountAuthCodeVerifyPayload(AccountAuthCodeRequestPayload):
+    code: str = Field(pattern=r"^\d{6}$")
+
+
+class AccountPasswordResetPayload(AccountAuthCodeVerifyPayload):
+    purpose: str = Field(default="reset_password", pattern="^reset_password$")
+    new_password: str = Field(min_length=8, max_length=128)
+
+
+class AccountTeamMemberPayload(BaseModel):
+    user_id: str = Field(min_length=1, max_length=64)
 
 
 class AccountProfileUpdatePayload(BaseModel):
@@ -322,6 +367,10 @@ async def authenticate_web_api(request: Request, call_next):
     is_public_account_path = request.url.path in {
         "/api/auth/register",
         "/api/auth/login",
+        "/api/auth/password/login",
+        "/api/auth/password/reset",
+        "/api/auth/code/request",
+        "/api/auth/code/verify",
         "/api/auth/providers",
     }
     is_user_account_path = request.url.path.startswith("/api/account/")
@@ -482,7 +531,7 @@ def configured_android_app_update() -> dict | None:
 def android_app_update_metadata(request: Request) -> Response:
     configured = configured_android_app_update_with_artifact()
     if configured is None:
-        return Response(status_code=204)
+        return Response(status_code=204, headers={"Cache-Control": "no-store"})
     update, _ = configured
     return JSONResponse(
         content={
@@ -493,7 +542,8 @@ def android_app_update_metadata(request: Request) -> Response:
                     version_code=str(update["version_code"]),
                 )
             ),
-        }
+        },
+        headers={"Cache-Control": "no-store"},
     )
 
 
@@ -522,8 +572,18 @@ def android_app_update_download(version_code: int) -> FileResponse:
     if version_code == update["version_code"]:
         return android_app_update_file_response(current_apk)
 
+    retained_versions = sorted(
+        (
+            int(match.group(1))
+            for artifact in APP_UPDATE_ANDROID_APK_PATH.parent.glob("ZhiWuBen-Android-*.apk")
+            if (match := re.fullmatch(r"ZhiWuBen-Android-([0-9]+)\.apk", artifact.name))
+            and int(match.group(1)) < update["version_code"]
+        ),
+        reverse=True,
+    )
+    previous_version = retained_versions[0] if retained_versions else None
     retained_apk = APP_UPDATE_ANDROID_APK_PATH.parent / f"ZhiWuBen-Android-{version_code}.apk"
-    if not retained_apk.is_file():
+    if version_code != previous_version or not retained_apk.is_file():
         raise HTTPException(status_code=404, detail="Android update package is unavailable")
     return android_app_update_file_response(retained_apk)
 
@@ -567,9 +627,48 @@ def register_account(payload: AccountCredentialsPayload) -> dict:
 
 
 @app.post("/api/auth/login")
+@app.post("/api/auth/password/login")
 def login_account(payload: AccountCredentialsPayload) -> dict:
     try:
         return configured_account_service().login(payload.username, payload.password)
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+
+
+@app.post("/api/auth/code/request")
+def request_account_auth_code(payload: AccountAuthCodeRequestPayload) -> dict:
+    try:
+        return configured_account_service().request_auth_code(
+            payload.channel,
+            payload.identifier,
+            payload.purpose,
+        )
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+
+
+@app.post("/api/auth/code/verify")
+def verify_account_auth_code(payload: AccountAuthCodeVerifyPayload) -> dict:
+    try:
+        return configured_account_service().verify_auth_code(
+            payload.channel,
+            payload.identifier,
+            payload.code,
+            payload.purpose,
+        )
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+
+
+@app.post("/api/auth/password/reset")
+def reset_account_password(payload: AccountPasswordResetPayload) -> dict:
+    try:
+        return configured_account_service().reset_password(
+            payload.channel,
+            payload.identifier,
+            payload.code,
+            payload.new_password,
+        )
     except AccountError as exc:
         raise account_http_error(exc) from exc
 
@@ -617,6 +716,62 @@ def refresh_account_session(
         return configured_account_service().session_credentials(principal)
     except AccountError as exc:
         raise account_http_error(exc) from exc
+
+
+@app.get("/api/account/identities")
+def list_account_identities(
+    principal: Annotated[AccountPrincipal, Depends(require_account_principal)],
+) -> list[dict]:
+    return configured_account_service().list_identities(principal)
+
+
+@app.post("/api/account/identities/verify")
+def bind_account_identity(
+    payload: AccountAuthCodeVerifyPayload,
+    principal: Annotated[AccountPrincipal, Depends(require_account_principal)],
+) -> list[dict]:
+    try:
+        return configured_account_service().bind_identity(
+            principal, payload.channel, payload.identifier, payload.code
+        )
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+
+
+@app.get("/api/account/team")
+def get_account_team(
+    principal: Annotated[AccountPrincipal, Depends(require_account_principal)],
+) -> dict:
+    return configured_account_service().team(principal)
+
+
+@app.post("/api/account/team/members")
+def add_account_team_member(
+    payload: AccountTeamMemberPayload,
+    principal: Annotated[AccountPrincipal, Depends(require_account_principal)],
+) -> dict:
+    try:
+        return configured_account_service().add_team_member(principal, payload.user_id)
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+
+
+@app.delete("/api/account/team/members/{user_id}")
+def remove_account_team_member(
+    user_id: str,
+    principal: Annotated[AccountPrincipal, Depends(require_account_principal)],
+) -> dict:
+    try:
+        return configured_account_service().remove_team_member(principal, user_id)
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+
+
+@app.get("/api/account/usage")
+def get_account_usage(
+    principal: Annotated[AccountPrincipal, Depends(require_account_principal)],
+) -> dict:
+    return configured_account_service().usage_summary(principal)
 
 
 @app.get("/api/account/plans")
@@ -675,8 +830,10 @@ def transcribe_audio_for_account(
     file: Annotated[UploadFile, File()],
     principal: Annotated[AccountPrincipal, Depends(require_account_principal)],
     x_meeting_id: Annotated[str | None, Header(alias="X-Meeting-Id")] = None,
+    x_usage_key: Annotated[str | None, Header(alias="X-Usage-Key")] = None,
 ) -> Response:
     try:
+        configured_account_service().ensure_stt_available(principal)
         credentials = configured_account_service().session_credentials(principal)
     except AccountError as exc:
         raise account_http_error(exc) from exc
@@ -711,6 +868,25 @@ def transcribe_audio_for_account(
             status_code=upstream.status_code,
             detail=str(detail or f"STT service returned HTTP {upstream.status_code}"),
         )
+    if isinstance(payload, dict):
+        duration_ms = int(payload.get("duration_ms") or 0)
+        if duration_ms > 0:
+            usage_key = (x_usage_key or "").strip()
+            if not usage_key:
+                usage_key = (
+                    f"stt:{principal.user_id}:{x_meeting_id}:full"
+                    if x_meeting_id
+                    else f"stt:{principal.user_id}:{uuid.uuid4()}"
+                )
+            try:
+                payload["usage"] = configured_account_service().record_stt_usage(
+                    principal,
+                    duration_ms=duration_ms,
+                    meeting_id=x_meeting_id,
+                    idempotency_key=usage_key,
+                )
+            except AccountError as exc:
+                raise account_http_error(exc) from exc
     return JSONResponse(content=payload, status_code=upstream.status_code)
 
 
@@ -984,7 +1160,7 @@ def stt_health() -> dict:
 
 @app.post("/api/admin/stt/switch")
 def switch_stt(payload: SwitchSTTPayload) -> dict:
-    model = payload.model or ("SenseVoiceSmall" if payload.engine == "sensevoice" else "small")
+    model = payload.model or "large-v3-turbo"
     try:
         response = requests.post(
             f"{STT_SERVICE_BASE_URL}/admin/stt/switch",

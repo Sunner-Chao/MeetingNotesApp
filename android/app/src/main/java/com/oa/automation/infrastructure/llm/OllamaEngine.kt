@@ -39,7 +39,8 @@ class OllamaEngine(
     override suspend fun generateReport(
         transcript: String,
         template: ReportTemplateConfig,
-        attachments: List<AgentAttachment>
+        attachments: List<AgentAttachment>,
+        usageContext: AgentUsageContext?
     ): Result<ReportData> = withContext(Dispatchers.IO) {
         try {
             val endpoint = config.localEndpoint

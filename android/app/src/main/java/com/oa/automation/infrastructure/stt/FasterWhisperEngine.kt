@@ -30,7 +30,6 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okio.BufferedSink
 import okio.buffer
 import java.net.InetAddress
-import java.net.URI
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.TimeUnit
@@ -49,6 +48,7 @@ class FasterWhisperEngine(
 ) : SpeechToTextEngine {
 
     private val client = OkHttpClient.Builder()
+        .dns(STT_IPV4_RELAY_DNS)
         .connectTimeout(BuildConfig.STT_CLOUD_CONNECT_TIMEOUT_SECONDS.toLong(), TimeUnit.SECONDS)
         .readTimeout(BuildConfig.STT_CLOUD_READ_TIMEOUT_SECONDS.toLong(), TimeUnit.SECONDS)
         .writeTimeout(BuildConfig.STT_CLOUD_WRITE_TIMEOUT_SECONDS.toLong(), TimeUnit.SECONDS)
@@ -100,6 +100,9 @@ class FasterWhisperEngine(
                 .addHeader("Authorization", "Bearer $apiToken")
         meetingId?.takeIf { it.isNotBlank() }?.let {
             requestBuilder.addHeader("X-Meeting-Id", it)
+        }
+        archiveKey?.takeIf { it.isNotBlank() }?.let {
+            requestBuilder.addHeader("X-Usage-Key", "stt:${meetingId.orEmpty()}:$it")
         }
         archiveKey?.takeIf { it.isNotBlank() }?.let {
             requestBuilder.addHeader("X-Archive-Key", it)
@@ -168,13 +171,7 @@ class FasterWhisperEngine(
     override fun getEngineType(): STTEngineType = STTEngineType.FASTER_WHISPER
 
     override fun getDisplayName(): String {
-        val host = runCatching { URI(config.localEndpoint).host.orEmpty() }.getOrDefault("")
-        val isLocal = host.equals("localhost", ignoreCase = true) ||
-            host.startsWith("127.") ||
-            host.startsWith("10.") ||
-            host.startsWith("192.168.") ||
-            host.matches(Regex("^172\\.(1[6-9]|2\\d|3[0-1])\\..+"))
-        return if (isLocal) "智悟本地模型" else "智悟远程模型"
+        return STTEngineType.FASTER_WHISPER.displayName
     }
 
     override fun isAvailable(): Boolean {
@@ -234,6 +231,7 @@ private fun File.toMediaType() = when (extension.lowercase()) {
 object STTServiceClient {
 
     private val client = OkHttpClient.Builder()
+        .dns(STT_IPV4_RELAY_DNS)
         .connectTimeout(5, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .build()

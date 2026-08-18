@@ -60,7 +60,8 @@ fun MainWorkspaceScreen(
     onNavigateToCommunityModeration: () -> Unit,
     onNavigateToCommunityPost: (String) -> Unit,
     onNavigateToCommunityCollection: (String) -> Unit,
-    onLogout: () -> Unit
+    onLogout: () -> Unit,
+    onLogin: () -> Unit
 ) {
     var destination by rememberSaveable { mutableStateOf(MainDestination.HOME) }
     val stateHolder = rememberSaveableStateHolder()
@@ -93,7 +94,6 @@ fun MainWorkspaceScreen(
                         MainDestination.HOME -> HomeScreen(
                             onNavigateToRecording = onNavigateToRecording,
                             onNavigateToReport = onNavigateToReport,
-                            onNavigateToSettings = onNavigateToSettings,
                             onNavigateToNotifications = onNavigateToNotifications
                         )
 
@@ -108,7 +108,8 @@ fun MainWorkspaceScreen(
                             onNavigateToUserManagement = onNavigateToAccountUsers,
                             onNavigateToCommunityModeration = onNavigateToCommunityModeration,
                             onNavigateToSettings = onNavigateToSettings,
-                            onLogout = onLogout
+                            onLogout = onLogout,
+                            onLogin = onLogin
                         )
                     }
                 }

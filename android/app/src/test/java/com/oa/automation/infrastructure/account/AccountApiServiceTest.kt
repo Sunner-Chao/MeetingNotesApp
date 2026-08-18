@@ -60,7 +60,7 @@ class AccountApiServiceTest {
         assertEquals("专业月卡", session.user.planName)
         assertTrue(session.user.isAdmin)
         assertTrue(session.user.constructionLogsUnlocked)
-        assertEquals(995, session.user.quota.requestsRemaining)
+        assertEquals(995, session.user.quota?.requestsRemaining)
     }
 
     @Test
@@ -117,7 +117,36 @@ class AccountApiServiceTest {
         assertEquals("Bearer user-session", request.getHeader("Authorization"))
         assertEquals("stt-refreshed", credentials.sttAccessToken)
         assertEquals("轻享月卡", credentials.user.planName)
-        assertEquals(38, credentials.user.quota.requestsRemaining)
+        assertEquals(38, credentials.user.quota?.requestsRemaining)
+    }
+
+    @Test
+    fun refreshSessionAcceptsExplicitNullUsageAndQuotaFromLegacyServer() = runBlocking {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody(
+                    """{
+                      "agent_access_token":"agent-refreshed",
+                      "stt_access_token":"stt-refreshed",
+                      "expires_at":1893456000,
+                      "user":{
+                        "id":"legacy-user","username":"legacy","role":"user",
+                        "is_admin":false,"enabled":true,"vip_enabled":false,
+                        "construction_logs_unlocked":false,
+                        "plan_code":"free","plan_name":"Free","created_at":1,
+                        "usage":null,"quota":null
+                      }
+                    }"""
+                )
+        )
+
+        val endpoint = server.url("/api").toString().trimEnd('/')
+        val credentials = service.refreshSession(endpoint, "user-session").getOrThrow()
+
+        assertEquals(null, credentials.user.usage)
+        assertEquals(null, credentials.user.quota)
     }
 
     @Test
@@ -154,5 +183,50 @@ class AccountApiServiceTest {
         assertEquals("DELETE", request.method)
         assertEquals("/api/admin/accounts/users/user-123", request.path)
         assertEquals("Bearer admin-session", request.getHeader("Authorization"))
+    }
+
+    @Test
+    fun passwordResetUsesDedicatedPurposeAndPublicEndpoint() = runBlocking {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody("{\"status\":\"ok\"}")
+        )
+
+        val endpoint = server.url("/api").toString().trimEnd('/')
+        service.resetPassword(
+            endpoint = endpoint,
+            channel = "phone",
+            identifier = "13800138000",
+            code = "123456",
+            newPassword = "new-password"
+        ).getOrThrow()
+
+        val request = server.takeRequest()
+        val body = request.body.readUtf8()
+        assertEquals("POST", request.method)
+        assertEquals("/api/auth/password/reset", request.path)
+        assertTrue(body.contains("\"purpose\":\"reset_password\""))
+        assertTrue(body.contains("\"new_password\":\"new-password\""))
+    }
+
+    @Test
+    fun authCodeRequestCarriesResetPasswordPurpose() = runBlocking {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody(
+                    """{"status":"sent","channel":"email","masked_identifier":"a***@example.com","expires_in":300,"retry_after":60}"""
+                )
+        )
+
+        val endpoint = server.url("/api").toString().trimEnd('/')
+        service.requestAuthCode(endpoint, "email", "a@example.com", "reset_password").getOrThrow()
+
+        val request = server.takeRequest()
+        assertEquals("/api/auth/code/request", request.path)
+        assertTrue(request.body.readUtf8().contains("\"purpose\":\"reset_password\""))
     }
 }

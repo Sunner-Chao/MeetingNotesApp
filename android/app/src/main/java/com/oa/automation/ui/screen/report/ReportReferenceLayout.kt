@@ -101,6 +101,8 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.view.WindowCompat
 import com.oa.automation.domain.model.MeetingAttachment
+import com.oa.automation.domain.model.JourneyStage
+import com.oa.automation.domain.model.JourneyStageStatus
 import com.oa.automation.domain.model.PresetReportTemplate
 import com.oa.automation.domain.model.Report
 import com.oa.automation.domain.model.ReportTitleResolver
@@ -111,6 +113,7 @@ import com.oa.automation.ui.component.FlowingProgressBorder
 import com.oa.automation.ui.theme.LocalAppIsDarkTheme
 import java.io.File
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.delay
@@ -330,7 +333,6 @@ internal fun ReportReferenceContent(
     if (showTemplatePreview) {
         previewTemplate?.let { TemplatePreviewDialog(template = it, onDismiss = { showTemplatePreview = false }) }
     }
-
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val metrics = referenceMetrics(maxHeight)
         LazyColumn(
@@ -346,7 +348,14 @@ internal fun ReportReferenceContent(
             item {
                 ReferenceSummaryHeader(
                     title = ReportTitleResolver.resolve(report, uiState.meetingTitle),
-                    createdAt = uiState.meetingCreatedAt.takeIf { it > 0L } ?: report.generatedAt,
+                    createdAt = if (isStudyReport) {
+                        uiState.journeyStartedAt.takeIf { it > 0L }
+                            ?: uiState.meetingCreatedAt.takeIf { it > 0L }
+                            ?: report.generatedAt
+                    } else {
+                        uiState.meetingCreatedAt.takeIf { it > 0L } ?: report.generatedAt
+                    },
+                    endedAt = uiState.journeyEndedAt.takeIf { isStudyReport },
                     durationMs = uiState.archivedAudio.firstOrNull()?.durationSec
                             ?.times(1_000.0)
                             ?.toLong()
@@ -355,40 +364,61 @@ internal fun ReportReferenceContent(
                     height = metrics.headerHeight
                 )
             }
-            if (isStudyReport && uiState.attachments.isNotEmpty()) {
+            if (isStudyReport) {
                 item {
-                    ReferenceStudyJourneyCard(attachments = uiState.attachments)
+                    StudyJourneyArticleExperience(
+                        report = report,
+                        meetingTitle = uiState.meetingTitle,
+                        attachments = uiState.attachments,
+                        journeyStages = uiState.journeyStages,
+                        isProcessing = uiState.isGenerating,
+                        onDeleteAttachment = onDeleteAttachment,
+                        onAddImages = onAddImages,
+                        onCaptureImage = onCaptureImage
+                    )
                 }
-            }
-            item {
-                ReferenceAudioCard(
-                    audio = uiState.archivedAudio.firstOrNull(),
-                    isLoading = uiState.isLoadingAudio,
-                    height = metrics.audioHeight,
-                    onRefresh = onRefreshAudio,
-                    onPreparePlayback = onPrepareAudioPlayback,
-                    onShare = { uiState.archivedAudio.firstOrNull()?.let(onShareAudio) },
-                    onDelete = { uiState.archivedAudio.firstOrNull()?.let(onDeleteAudio) }
-                )
-            }
-            item {
-                ReferenceImagesCard(
-                    attachments = uiState.attachments,
-                    height = metrics.imageHeight,
-                    onDelete = onDeleteAttachment,
-                    onAddImages = onAddImages,
-                    onCaptureImage = onCaptureImage,
-                    isStudyReport = isStudyReport
-                )
-            }
-            item {
-                ReferenceReportCard(
-                    report = report,
-                    initiatorName = uiState.initiatorName,
-                    initiatorAvatarDataUrl = uiState.initiatorAvatarDataUrl,
-                    isProcessing = uiState.isGenerating,
-                    height = metrics.reportHeight
-                )
+                item {
+                    ReferenceAudioCard(
+                        audio = uiState.archivedAudio.firstOrNull(),
+                        isLoading = uiState.isLoadingAudio,
+                        height = metrics.audioHeight,
+                        onRefresh = onRefreshAudio,
+                        onPreparePlayback = onPrepareAudioPlayback,
+                        onShare = { uiState.archivedAudio.firstOrNull()?.let(onShareAudio) },
+                        onDelete = { uiState.archivedAudio.firstOrNull()?.let(onDeleteAudio) }
+                    )
+                }
+            } else {
+                item {
+                    ReferenceAudioCard(
+                        audio = uiState.archivedAudio.firstOrNull(),
+                        isLoading = uiState.isLoadingAudio,
+                        height = metrics.audioHeight,
+                        onRefresh = onRefreshAudio,
+                        onPreparePlayback = onPrepareAudioPlayback,
+                        onShare = { uiState.archivedAudio.firstOrNull()?.let(onShareAudio) },
+                        onDelete = { uiState.archivedAudio.firstOrNull()?.let(onDeleteAudio) }
+                    )
+                }
+                item {
+                    ReferenceImagesCard(
+                        attachments = uiState.attachments,
+                        height = metrics.imageHeight,
+                        onDelete = onDeleteAttachment,
+                        onAddImages = onAddImages,
+                        onCaptureImage = onCaptureImage,
+                        isStudyReport = false
+                    )
+                }
+                item {
+                    ReferenceReportCard(
+                        report = report,
+                        initiatorName = uiState.initiatorName,
+                        initiatorAvatarDataUrl = uiState.initiatorAvatarDataUrl,
+                        isProcessing = uiState.isGenerating,
+                        height = metrics.reportHeight
+                    )
+                }
             }
             if (uiState.showTranscript && uiState.transcriptText.isNotBlank()) {
                 item {
@@ -429,12 +459,36 @@ internal fun ReportReferenceContent(
 internal data class ReferenceJourneyStageSummary(
     val sequenceNumber: Int,
     val attachmentCount: Int,
-    val locationCount: Int
+    val locationCount: Int,
+    val id: String = "",
+    val title: String = "",
+    val status: JourneyStageStatus = JourneyStageStatus.SAVED,
+    val startedAt: Long = 0L,
+    val savedAt: Long? = null
 )
 
 internal fun referenceJourneyStageSummaries(
-    attachments: List<MeetingAttachment>
+    attachments: List<MeetingAttachment>,
+    journeyStages: List<JourneyStage> = emptyList()
 ): List<ReferenceJourneyStageSummary> {
+    val attachmentsByStage = attachments
+        .filter { !it.journeyStageId.isNullOrBlank() }
+        .groupBy { it.journeyStageId.orEmpty() }
+    if (journeyStages.isNotEmpty()) {
+        return journeyStages.sortedBy(JourneyStage::sequenceNumber).map { stage ->
+            val stageAttachments = attachmentsByStage[stage.id].orEmpty()
+            ReferenceJourneyStageSummary(
+                sequenceNumber = stage.sequenceNumber,
+                attachmentCount = stageAttachments.size,
+                locationCount = stageAttachments.count { it.latitude != null && it.longitude != null },
+                id = stage.id,
+                title = stage.title,
+                status = stage.status,
+                startedAt = stage.startedAt,
+                savedAt = stage.savedAt
+            )
+        }
+    }
     if (attachments.isEmpty()) return emptyList()
     val staged = attachments
         .filter { !it.journeyStageId.isNullOrBlank() }
@@ -455,11 +509,28 @@ internal fun referenceJourneyStageSummaries(
     }
 }
 
+internal fun referenceJourneyStageAnchors(
+    attachments: List<MeetingAttachment>
+): List<String> = attachments
+    .filter { !it.markerTranscriptAnchor.isNullOrBlank() }
+    .sortedWith(
+        compareBy<MeetingAttachment> { it.markerTimestampMs ?: Long.MAX_VALUE }
+            .thenBy { it.createdAt }
+    )
+    .mapNotNull { it.markerTranscriptAnchor?.trim()?.takeIf(String::isNotBlank) }
+    .distinct()
+
 @Composable
-private fun ReferenceStudyJourneyCard(attachments: List<MeetingAttachment>) {
-    val stages = remember(attachments) { referenceJourneyStageSummaries(attachments) }
+private fun ReferenceStudyJourneyCard(
+    journeyStages: List<JourneyStage>,
+    attachments: List<MeetingAttachment>,
+    onStageSelected: (ReferenceJourneyStageSummary) -> Unit
+) {
+    val stages = remember(journeyStages, attachments) {
+        referenceJourneyStageSummaries(attachments, journeyStages)
+    }
     val locationCount = attachments.count { it.latitude != null && it.longitude != null }
-    ReferenceGlassCard(modifier = Modifier.fillMaxWidth().height(92.dp)) {
+    ReferenceGlassCard(modifier = Modifier.fillMaxWidth().height(112.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
@@ -483,8 +554,8 @@ private fun ReferenceStudyJourneyCard(attachments: List<MeetingAttachment>) {
             contentPadding = PaddingValues(horizontal = 2.dp)
         ) {
             itemsIndexed(
-                items = stages.take(6),
-                key = { _, stage -> stage.sequenceNumber }
+                items = stages,
+                key = { _, stage -> stage.id.ifBlank { "stage-${stage.sequenceNumber}" } }
             ) { index, stage ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     if (index > 0) {
@@ -495,37 +566,47 @@ private fun ReferenceStudyJourneyCard(attachments: List<MeetingAttachment>) {
                                 .background(ReferenceMint.copy(alpha = .72f), RoundedCornerShape(50))
                         )
                     }
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Column(
+                        modifier = Modifier
+                            .width(92.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { onStageSelected(stage) }
+                            .padding(vertical = 3.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
                         Box(
                             modifier = Modifier
                                 .size(12.dp)
-                                .background(ReferenceMint, CircleShape)
+                                .background(
+                                    if (stage.status == JourneyStageStatus.ACTIVE) ReferenceSky else ReferenceMint,
+                                    CircleShape
+                                )
                                 .border(2.dp, ReferenceMint.copy(alpha = .28f), CircleShape)
                         )
                         Spacer(Modifier.height(2.dp))
                         Text(
-                            text = "第${stage.sequenceNumber}段",
+                            text = stage.title.ifBlank { "第${stage.sequenceNumber}段" },
                             color = ReferenceInk,
                             fontSize = 10.sp,
-                            fontWeight = FontWeight.Medium
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = "${stage.attachmentCount}影像${stage.locationCount.takeIf { it > 0 }?.let { " · ${it}地" }.orEmpty()}",
+                            text = "${if (stage.status == JourneyStageStatus.ACTIVE) "记录中" else "已暂存"} · ${stage.attachmentCount}影像",
                             color = ReferenceMuted,
                             fontSize = 9.sp,
                             maxLines = 1
                         )
+                        referenceJourneyStageTime(stage)?.let { time ->
+                            Text(
+                                text = time,
+                                color = ReferenceMuted.copy(alpha = .78f),
+                                fontSize = 8.sp,
+                                maxLines = 1
+                            )
+                        }
                     }
-                }
-            }
-            if (stages.size > 6) {
-                item(key = "more-stages") {
-                    Text(
-                        text = "+${stages.size - 6}",
-                        color = ReferenceMuted,
-                        fontSize = 10.sp,
-                        modifier = Modifier.padding(start = 1.dp)
-                    )
                 }
             }
         }
@@ -533,7 +614,97 @@ private fun ReferenceStudyJourneyCard(attachments: List<MeetingAttachment>) {
 }
 
 @Composable
-private fun ReferenceSummaryHeader(title: String, createdAt: Long, durationMs: Long, height: Dp) {
+private fun ReferenceJourneyStageDialog(
+    stage: ReferenceJourneyStageSummary,
+    transcript: String,
+    attachments: List<MeetingAttachment>,
+    onOpenAttachments: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val locationCount = attachments.count { it.latitude != null && it.longitude != null }
+    val anchors = remember(attachments) { referenceJourneyStageAnchors(attachments) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = stage.title.ifBlank { "第${stage.sequenceNumber}段" },
+                fontWeight = FontWeight.SemiBold
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 440.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = buildString {
+                        append(if (stage.status == JourneyStageStatus.ACTIVE) "记录中" else "已暂存")
+                        referenceJourneyStageTime(stage)?.let { append(" · $it") }
+                        append(" · ${attachments.size} 条影像 · $locationCount 个地点")
+                    },
+                    color = MaterialTheme.colorScheme.primary,
+                    fontSize = 12.sp
+                )
+                Text("阶段转写", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                SelectionContainer {
+                    Text(
+                        text = transcript.ifBlank { "本段没有可显示的转写文本" },
+                        color = if (transcript.isBlank()) {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        },
+                        fontSize = 13.sp,
+                        lineHeight = 21.sp
+                    )
+                }
+                if (anchors.isNotEmpty()) {
+                    Text("图文锚点", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    anchors.take(3).forEachIndexed { index, anchor ->
+                        Text(
+                            text = "（${index + 1}）$anchor",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 12.sp,
+                            lineHeight = 18.sp
+                        )
+                    }
+                    if (anchors.size > 3) {
+                        Text("另有 ${anchors.size - 3} 个锚点", fontSize = 11.sp)
+                    }
+                }
+                if (attachments.isNotEmpty()) {
+                    TextButton(onClick = onOpenAttachments) {
+                        Icon(Icons.Default.Image, null, modifier = Modifier.size(17.dp))
+                        Spacer(Modifier.width(5.dp))
+                        Text("查看本段影像")
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("完成") }
+        }
+    )
+}
+
+private fun referenceJourneyStageTime(stage: ReferenceJourneyStageSummary): String? {
+    if (stage.startedAt <= 0L) return null
+    val formatter = SimpleDateFormat("HH:mm", Locale.getDefault())
+    val start = formatter.format(Date(stage.startedAt))
+    val end = stage.savedAt?.takeIf { it >= stage.startedAt }?.let { formatter.format(Date(it)) }
+    return if (end == null) start else "$start-$end"
+}
+
+@Composable
+private fun ReferenceSummaryHeader(
+    title: String,
+    createdAt: Long,
+    endedAt: Long? = null,
+    durationMs: Long,
+    height: Dp
+) {
     Column(
         modifier = Modifier.fillMaxWidth().height(height),
         verticalArrangement = Arrangement.spacedBy(2.dp)
@@ -566,7 +737,7 @@ private fun ReferenceSummaryHeader(title: String, createdAt: Long, durationMs: L
             }
         }
         Text(
-            text = formatMeetingMeta(createdAt, durationMs),
+            text = formatMeetingMeta(createdAt, durationMs, endedAt),
             color = ReferenceMuted,
             fontSize = 10.sp,
             lineHeight = 14.sp,
@@ -1018,11 +1189,12 @@ private fun ReferenceAttachmentCell(
 }
 
 @Composable
-private fun ReferenceImageGalleryDialog(
+internal fun ReferenceImageGalleryDialog(
     attachments: List<MeetingAttachment>,
     initialIndex: Int,
     onDelete: (MeetingAttachment) -> Unit,
     isStudyReport: Boolean,
+    title: String? = null,
     onDismiss: () -> Unit
 ) {
     var selectedIndex by remember(initialIndex, attachments) {
@@ -1047,7 +1219,7 @@ private fun ReferenceImageGalleryDialog(
             Column(modifier = Modifier.padding(14.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                     Text(
-                        if (isStudyReport) "照片集锦" else "会议图片",
+                        title ?: if (isStudyReport) "照片集锦" else "会议图片",
                         color = ReferenceInk,
                         fontSize = 17.sp,
                         fontWeight = FontWeight.SemiBold
@@ -1479,17 +1651,32 @@ private fun String.cleanReportText(): String = trim()
     .replace("__", "")
     .trim()
 
-private fun formatMeetingMeta(createdAt: Long, durationMs: Long): String {
+internal fun formatMeetingMeta(createdAt: Long, durationMs: Long, endedAt: Long? = null): String {
     val date = Date(createdAt)
     val today = Date()
-    val isToday = SimpleDateFormat("yyyyMMdd", Locale.SIMPLIFIED_CHINESE).format(date) ==
-        SimpleDateFormat("yyyyMMdd", Locale.SIMPLIFIED_CHINESE).format(today)
-    val dateLabel = if (isToday) "今天" else SimpleDateFormat("yyyy年M月d日", Locale.SIMPLIFIED_CHINESE).format(date)
+    val dayFormat = SimpleDateFormat("yyyyMMdd", Locale.SIMPLIFIED_CHINESE)
+    val isToday = dayFormat.format(date) == dayFormat.format(today)
+    val dateLabel = if (isToday) "今天" else {
+        SimpleDateFormat("yyyy年M月d日", Locale.SIMPLIFIED_CHINESE).format(date)
+    }
     val includeSeconds = durationMs in 1L until 60_000L
     val timeFormat = if (includeSeconds) "HH:mm:ss" else "HH:mm"
     val start = SimpleDateFormat(timeFormat, Locale.SIMPLIFIED_CHINESE).format(date)
-    val end = durationMs.takeIf { it > 0L }?.let {
-        SimpleDateFormat(timeFormat, Locale.SIMPLIFIED_CHINESE).format(Date(createdAt + it))
+    val resolvedEndAt = endedAt?.takeIf { it > createdAt }
+        ?: durationMs.takeIf { it > 0L }?.let(createdAt::plus)
+    val endDate = resolvedEndAt?.let(::Date)
+    val sameDay = endDate?.let { dayFormat.format(date) == dayFormat.format(it) } ?: true
+    val sameYear = endDate?.let {
+        val calendar = Calendar.getInstance().apply { time = date }
+        val endCalendar = Calendar.getInstance().apply { time = it }
+        calendar.get(Calendar.YEAR) == endCalendar.get(Calendar.YEAR)
+    } ?: true
+    val end = endDate?.let {
+        when {
+            sameDay -> SimpleDateFormat(timeFormat, Locale.SIMPLIFIED_CHINESE).format(it)
+            sameYear -> SimpleDateFormat("M月d日 $timeFormat", Locale.SIMPLIFIED_CHINESE).format(it)
+            else -> SimpleDateFormat("yyyy年M月d日 $timeFormat", Locale.SIMPLIFIED_CHINESE).format(it)
+        }
     }
     val duration = durationMs.takeIf { it > 0L }?.let {
         val totalSeconds = it / 1_000L

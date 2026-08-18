@@ -9,7 +9,7 @@ if "%STT_MODEL_ROOT%"=="" set "STT_MODEL_ROOT=%SERVER_ROOT%\models"
 if not "%~1"=="" set "STT_ENGINE=%~1"
 if not "%~2"=="" set "STT_MODEL=%~2"
 if "%STT_ENGINE%"=="" set "STT_ENGINE=faster-whisper"
-if "%STT_MODEL%"=="" set "STT_MODEL=small"
+if "%STT_MODEL%"=="" set "STT_MODEL=large-v3-turbo"
 
 if not exist "%STT_MODEL_ROOT%" mkdir "%STT_MODEL_ROOT%"
 
@@ -47,7 +47,7 @@ echo [STT] Output log: %STT_OUT_LOG%
 echo [STT] Error log: %STT_ERR_LOG%
 echo [STT] Model will be saved to: %STT_MODEL_ROOT%
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:STT_MODEL_ROOT='%STT_MODEL_ROOT%'; $env:STT_ENGINE='%STT_ENGINE%'; Start-Process -FilePath '%PYTHON_EXE%' -ArgumentList @('-u','stt_server.py','--engine','%STT_ENGINE%','--model','%STT_MODEL%','--port','%STT_PORT%') -WorkingDirectory '%~dp0' -WindowStyle Hidden -RedirectStandardOutput '%STT_OUT_LOG%' -RedirectStandardError '%STT_ERR_LOG%'"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:STT_MODEL_ROOT='%STT_MODEL_ROOT%'; $env:STT_ENGINE='%STT_ENGINE%'; $env:STT_LOG_PATH='%STT_OUT_LOG%'; $env:STT_ERROR_LOG_PATH='%STT_ERR_LOG%'; Start-Process -FilePath '%PYTHON_EXE%' -ArgumentList @('-u','stt_server.py','--engine','%STT_ENGINE%','--model','%STT_MODEL%','--port','%STT_PORT%') -WorkingDirectory '%~dp0' -WindowStyle Hidden -RedirectStandardOutput '%STT_OUT_LOG%' -RedirectStandardError '%STT_ERR_LOG%'"
 
 echo [STT] Waiting for server to start...
 powershell -Command "Start-Sleep -Seconds 5"

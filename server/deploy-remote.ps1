@@ -34,8 +34,89 @@ param(
 $ErrorActionPreference = "Stop"
 $ServerRoot = $PSScriptRoot
 $ProjectRoot = Split-Path -Parent $ServerRoot
+$AndroidRoot = Join-Path $ProjectRoot "android"
 $VersionFile = Join-Path $ServerRoot "VERSION"
 $Installer = Join-Path $ServerRoot "scripts\install-native.sh"
+$AndroidSigningFingerprints = Join-Path $AndroidRoot "signing-fingerprints.properties"
+
+function Resolve-AndroidBuildTool {
+    param([Parameter(Mandatory = $true)][string]$Name)
+
+    $command = Get-Command $Name -ErrorAction SilentlyContinue
+    if ($command) {
+        return $command.Source
+    }
+    $sdkCandidates = @(
+        $env:ANDROID_HOME,
+        $env:ANDROID_SDK_ROOT,
+        (Join-Path $env:LOCALAPPDATA "Android\Sdk")
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and (Test-Path -LiteralPath $_ -PathType Container) }
+    foreach ($sdkRoot in ($sdkCandidates | Select-Object -Unique)) {
+        $buildToolsRoot = Join-Path $sdkRoot "build-tools"
+        if (-not (Test-Path -LiteralPath $buildToolsRoot -PathType Container)) { continue }
+        $tool = Get-ChildItem -LiteralPath $buildToolsRoot -Directory |
+            Sort-Object Name -Descending |
+            ForEach-Object {
+                foreach ($extension in @(".bat", ".cmd", ".exe")) {
+                    $candidate = Join-Path $_.FullName "$Name$extension"
+                    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+                        $candidate
+                        break
+                    }
+                }
+            } |
+            Select-Object -First 1
+        if ($tool) { return $tool }
+    }
+    throw "Android SDK build tool '$Name' is required to verify a release APK. Set ANDROID_HOME or add it to PATH."
+}
+
+function Get-ReleaseCertificateFingerprint {
+    if (-not (Test-Path -LiteralPath $AndroidSigningFingerprints -PathType Leaf)) {
+        throw "Missing Android signing fingerprint registry: $AndroidSigningFingerprints"
+    }
+    $line = Get-Content -LiteralPath $AndroidSigningFingerprints | Where-Object { $_ -match '^release\.sha256\s*=\s*([0-9a-fA-F]{64})\s*$' } | Select-Object -First 1
+    if (-not $line -or $line -notmatch '^release\.sha256\s*=\s*([0-9a-fA-F]{64})\s*$') {
+        throw "Android release SHA-256 fingerprint is missing or invalid."
+    }
+    return $Matches[1].ToLowerInvariant()
+}
+
+function Assert-AndroidReleaseApk {
+    param(
+        [Parameter(Mandatory = $true)][string]$ApkPath,
+        [Parameter(Mandatory = $true)][int]$ExpectedVersionCode,
+        [Parameter(Mandatory = $true)][string]$ExpectedVersionName
+    )
+
+    $apksigner = Resolve-AndroidBuildTool "apksigner"
+    $aapt = Resolve-AndroidBuildTool "aapt"
+    $signerOutput = & $apksigner verify --verbose --print-certs $ApkPath 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "APK signature verification failed: $signerOutput" }
+    $fingerprintLine = $signerOutput | Where-Object { $_ -match 'Signer #1 certificate SHA-256 digest:\s*([0-9a-fA-F:]+)' } | Select-Object -First 1
+    if (-not $fingerprintLine -or $fingerprintLine -notmatch 'Signer #1 certificate SHA-256 digest:\s*([0-9a-fA-F:]+)') {
+        throw "Could not read the APK signing certificate SHA-256."
+    }
+    $actualFingerprint = $Matches[1].Replace(":", "").ToLowerInvariant()
+    if ($actualFingerprint -ne (Get-ReleaseCertificateFingerprint)) {
+        throw "APK signing certificate does not match android/signing-fingerprints.properties."
+    }
+
+    $badging = & $aapt dump badging $ApkPath 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "Could not read Android APK manifest: $badging" }
+    $packageLine = $badging | Where-Object { $_ -match "^package: name='com\.oa\.automation' versionCode='([0-9]+)' versionName='([^']+)'" } | Select-Object -First 1
+    if (-not $packageLine -or $packageLine -notmatch "^package: name='com\.oa\.automation' versionCode='([0-9]+)' versionName='([^']+)'") {
+        throw "APK package must be com.oa.automation and expose versionCode/versionName."
+    }
+    if ([int]$Matches[1] -ne $ExpectedVersionCode -or $Matches[2] -ne $ExpectedVersionName) {
+        throw "APK version does not match server/config/app-update.json."
+    }
+    $manifestTree = & $aapt dump xmltree $ApkPath AndroidManifest.xml 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "Could not inspect Android APK manifest flags: $manifestTree" }
+    if ($manifestTree -match 'debuggable\(0x0101000f\).*0xffffffff') {
+        throw "Refusing to publish a debuggable APK through the release OTA channel."
+    }
+}
 
 if ([string]::IsNullOrWhiteSpace($PwaProject)) {
     $PwaProject = Join-Path $ProjectRoot "pwa"
@@ -121,6 +202,7 @@ try {
         if ($versionCode -le 0 -or [string]::IsNullOrWhiteSpace([string]$updateManifest.version_name)) {
             throw "Android update manifest must provide a positive version_code and version_name."
         }
+        Assert-AndroidReleaseApk -ApkPath $AndroidApk -ExpectedVersionCode $versionCode -ExpectedVersionName ([string]$updateManifest.version_name)
         $updateManifest | Add-Member -Force -NotePropertyName sha256 -NotePropertyValue (
             (Get-FileHash -LiteralPath $AndroidApk -Algorithm SHA256).Hash.ToLowerInvariant()
         )
@@ -242,10 +324,10 @@ try {
     if ($SkipPackages) { $installArgs += "--skip-packages" }
     $remoteCleanup = "rm -f $RemoteArchive $RemoteInstaller $RemoteModels $RemoteConfig $RemoteAndroidApk $RemoteAppUpdateManifest"
     $remotePublishAndroid = if ($AndroidApk) {
-        "; ${Privilege}bash /opt/meetingnotes-stt/current/scripts/publish-android-update.sh " +
+        " && ${Privilege}bash /opt/meetingnotes-stt/current/scripts/publish-android-update.sh " +
         "--apk $RemoteAndroidApk --manifest $RemoteAppUpdateManifest " +
         "--downloads-dir $RemoteAppUpdateDirectory --config $RemoteAppUpdateConfig " +
-        "--owner meetingnotes:meetingnotes --retain 2; " +
+        "--owner meetingnotes:meetingnotes --retain 2 && " +
         "${Privilege}systemctl restart meetingnotes-backend.service"
     } else { "" }
     $remoteCommand = "trap 'status=`$?; $remoteCleanup; exit `$status' EXIT; ${Privilege}bash $RemoteInstaller " + ($installArgs -join " ") + $remotePublishAndroid

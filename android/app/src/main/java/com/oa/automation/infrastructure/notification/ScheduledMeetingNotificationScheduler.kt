@@ -89,7 +89,11 @@ class ScheduledMeetingNotificationScheduler(private val context: Context) {
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .build()
-        NotificationManagerCompat.from(appContext).notify(requestCode(meetingId), notification)
+        try {
+            NotificationManagerCompat.from(appContext).notify(requestCode(meetingId), notification)
+        } catch (_: SecurityException) {
+            // Notification permission can be revoked after the check above.
+        }
     }
 
     private fun reminderIntent(meeting: ScheduledMeeting) =

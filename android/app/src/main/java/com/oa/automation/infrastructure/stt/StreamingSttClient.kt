@@ -34,10 +34,13 @@ class StreamingSttClient internal constructor(
             AudioRecorder.SAMPLE_RATE * AudioRecorder.CHANNEL_COUNT * 2 * 3
 
         fun createHttpClient(): OkHttpClient = OkHttpClient.Builder()
+            .dns(STT_IPV4_RELAY_DNS)
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(0, TimeUnit.SECONDS)
             .writeTimeout(15, TimeUnit.SECONDS)
-            .pingInterval(30, TimeUnit.SECONDS)
+            // Detect a half-open mobile/WireGuard connection before the audio
+            // queue has been silently filling for a full minute.
+            .pingInterval(15, TimeUnit.SECONDS)
             .build()
     }
 
@@ -82,11 +85,14 @@ class StreamingSttClient internal constructor(
     private var pendingProviderSwitch: PendingProviderSwitch? = null
     private val languageSwitchLock = Any()
     private var pendingLanguageSwitch: PendingLanguageSwitch? = null
+    @Volatile
+    private var connectionReady: CompletableDeferred<Unit>? = null
 
     // Callback holders (set during start(), cleared during stop())
     private var onPartialTextCallback: ((StreamingTranscriptUpdate) -> Unit)? = null
     private var onStatusCallback: ((String) -> Unit)? = null
     private var onErrorCallback: ((String) -> Unit)? = null
+    private var onProviderFailureCallback: ((StreamingSttProvider, String) -> Unit)? = null
 
     fun start(
         endpoint: String,
@@ -94,9 +100,12 @@ class StreamingSttClient internal constructor(
         apiToken: String? = null,
         streamProvider: StreamingSttProvider = StreamingSttProvider.LOCAL,
         language: STTLanguage = STTLanguage.CHINESE,
+        allowFinalization: Boolean = true,
         onPartialText: (StreamingTranscriptUpdate) -> Unit,
         onStatus: (String) -> Unit,
-        onError: (String) -> Unit
+        onError: (String) -> Unit,
+        onProviderFailure: (StreamingSttProvider, String) -> Unit = { _, _ -> },
+        connectionReady: CompletableDeferred<Unit>? = null
     ) {
         stop()  // tear down any existing connection before installing the new session
 
@@ -104,13 +113,15 @@ class StreamingSttClient internal constructor(
         onPartialTextCallback = onPartialText
         onStatusCallback = onStatus
         onErrorCallback = onError
+        onProviderFailureCallback = onProviderFailure
         this.endpoint = endpoint
         this.apiToken = apiToken
         this.meetingId = meetingId
         this.streamProvider = streamProvider
         this.language = language
+        this.connectionReady = connectionReady
         serverSessionId = null
-        streamCanFinalize = true
+        streamCanFinalize = allowFinalization
         authorizationRejected = false
         val generation = sessionGeneration.incrementAndGet()
         reconnectAttempt = 0
@@ -221,6 +232,13 @@ class StreamingSttClient internal constructor(
                             }
                             message.streamProvider?.let(::completeProviderSwitch)
                             message.language?.let(::completeLanguageSwitch)
+                            if (serverSessionId != null) {
+                                // A TCP/WebSocket handshake alone is not
+                                // enough: the server must accept the start
+                                // event and issue a session id.
+                                connectionReady?.complete(Unit)
+                                connectionReady = null
+                            }
                             if (!message.message.isNullOrBlank()) onStatus(message.message)
                         }
                         "error" -> if (!message.message.isNullOrBlank()) {
@@ -294,13 +312,19 @@ class StreamingSttClient internal constructor(
         isReconnecting = false
         if (authorizationFailure || authorizationRejected) {
             authorizationRejected = true
+            connectionReady?.completeExceptionally(IllegalStateException(detail))
+            connectionReady = null
             onError("STT 访问令牌无效或无权限，请到服务设置中更新令牌")
+            onProviderFailureCallback?.invoke(streamProvider, detail)
             return
         }
         if (scheduleReconnectIfNeeded(generation)) {
             onStatus("网络波动，正在恢复实时预览")
         } else {
+            connectionReady?.completeExceptionally(IllegalStateException(detail))
+            connectionReady = null
             onError("实时预览连接失败：$detail，请检查网络后重试")
+            onProviderFailureCallback?.invoke(streamProvider, detail)
         }
     }
 
@@ -390,6 +414,53 @@ class StreamingSttClient internal constructor(
         }
     }
 
+    suspend fun switchService(
+        nextEndpoint: String,
+        provider: StreamingSttProvider
+    ): Result<Unit> {
+        val normalizedEndpoint = nextEndpoint.trim().trimEnd('/')
+        require(normalizedEndpoint.isNotBlank()) { "STT 服务地址未配置" }
+        if (normalizedEndpoint == endpoint.trim().trimEnd('/')) {
+            return switchProvider(provider)
+        }
+
+        return runCatching {
+            val partialCallback = requireNotNull(onPartialTextCallback) { "实时预览尚未启动" }
+            val statusCallback = requireNotNull(onStatusCallback) { "实时预览尚未启动" }
+            val errorCallback = requireNotNull(onErrorCallback) { "实时预览尚未启动" }
+            val activeMeetingId = meetingId
+            val activeApiToken = apiToken
+            val activeLanguage = language
+            val providerFailureCallback = onProviderFailureCallback
+            require(activeMeetingId.isNotBlank()) { "实时预览会话无效" }
+
+            val readiness = CompletableDeferred<Unit>()
+            start(
+                endpoint = normalizedEndpoint,
+                meetingId = activeMeetingId,
+                apiToken = activeApiToken,
+                streamProvider = provider,
+                language = activeLanguage,
+                allowFinalization = false,
+                onPartialText = partialCallback,
+                onStatus = statusCallback,
+                onError = errorCallback,
+                onProviderFailure = providerFailureCallback ?: { _, _ -> },
+                connectionReady = readiness
+            )
+            try {
+                withTimeout(BuildConfig.STT_STREAM_SWITCH_TIMEOUT_SECONDS * 1_000L) {
+                    readiness.await()
+                }
+            } catch (error: Throwable) {
+                // Do not leave a failed cloud socket reconnecting in the
+                // background after the fallback operation has been reported.
+                if (connectionReady === readiness) stop()
+                throw error
+            }
+        }
+    }
+
     suspend fun switchLanguage(nextLanguage: STTLanguage): Result<Unit> = runCatching {
         if (nextLanguage == language) return@runCatching
         val socket = webSocket
@@ -422,6 +493,8 @@ class StreamingSttClient internal constructor(
         isReconnecting = false
         failProviderSwitch("流式识别已结束")
         failLanguageSwitch("流式识别已结束")
+        connectionReady?.cancel()
+        connectionReady = null
         if (isConnected) {
             val stopSent = webSocket?.send(gson.toJson(StreamControlMessage(event = "stop"))) == true
             if (!stopSent) finalizationSession = null
@@ -436,6 +509,7 @@ class StreamingSttClient internal constructor(
         onPartialTextCallback = null
         onStatusCallback = null
         onErrorCallback = null
+        onProviderFailureCallback = null
         apiToken = null
         meetingId = ""
         streamProvider = StreamingSttProvider.LOCAL

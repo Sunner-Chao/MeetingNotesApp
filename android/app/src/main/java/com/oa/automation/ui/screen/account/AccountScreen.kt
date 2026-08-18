@@ -37,6 +37,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.WorkspacePremium
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
@@ -77,6 +78,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.oa.automation.domain.model.AccountProfile
+import com.oa.automation.domain.model.AccountUsageSummary
 import com.oa.automation.infrastructure.llm.AgentQuota
 import com.oa.automation.ui.component.AppLauncherIcon
 import com.oa.automation.ui.theme.BrandCyan
@@ -147,6 +149,7 @@ fun AccountScreen(
     onNavigateToCommunityModeration: () -> Unit,
     onNavigateToSettings: () -> Unit,
     onLogout: () -> Unit,
+    onLogin: () -> Unit,
     viewModel: AccountViewModel = koinViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -200,41 +203,88 @@ fun AccountScreen(
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState())
             ) {
-                AccountHero(
-                    username = uiState.username,
-                    profile = uiState.profile,
-                    quota = uiState.quota,
-                    layout = layout,
-                    onOpenProfile = onNavigateToProfile,
-                    onLogout = { showLogoutDialog = true }
-                )
-
-                Column(
-                    modifier = Modifier.padding(horizontal = layout.pagePadding),
-                    verticalArrangement = Arrangement.spacedBy(layout.sectionSpacing)
-                ) {
-                    AccountQuotaPanel(
-                        quota = uiState.quota,
-                        profile = uiState.profile,
-                        isLoading = uiState.isQuotaLoading,
-                        tokenConfigured = uiState.tokenConfigured,
-                        errorMessage = uiState.quotaError,
+                if (uiState.profile == null) {
+                    GuestAccountPanel(
                         layout = layout,
-                        onRefresh = viewModel::refreshAccount,
-                        onConfigure = onNavigateToSettings,
-                        onOpenDetails = onNavigateToQuotaDetails
+                        onLogin = onLogin,
+                        onOpenSettings = onNavigateToSettings
                     )
-                    AccountActionGroup(
-                        isAdmin = uiState.profile?.isAdmin == true,
+                } else {
+                    AccountHero(
+                        username = uiState.username,
+                        profile = uiState.profile,
+                        quota = uiState.quota,
                         layout = layout,
                         onOpenProfile = onNavigateToProfile,
-                        onOpenSettings = onNavigateToSettings,
-                        onManageUsers = onNavigateToUserManagement,
-                        onModerateCommunity = onNavigateToCommunityModeration
+                        onLogout = { showLogoutDialog = true }
                     )
-                    Spacer(modifier = Modifier.height(12.dp))
+
+                    Column(
+                        modifier = Modifier.padding(horizontal = layout.pagePadding),
+                        verticalArrangement = Arrangement.spacedBy(layout.sectionSpacing)
+                    ) {
+                        AccountQuotaPanel(
+                            quota = uiState.quota,
+                            profile = uiState.profile,
+                            isLoading = uiState.isQuotaLoading,
+                            tokenConfigured = uiState.tokenConfigured,
+                            errorMessage = uiState.quotaError,
+                            layout = layout,
+                            onRefresh = viewModel::refreshAccount,
+                            onConfigure = onNavigateToSettings,
+                            onOpenDetails = onNavigateToQuotaDetails
+                        )
+                        AccountActionGroup(
+                            isAdmin = uiState.profile?.isAdmin == true,
+                            layout = layout,
+                            onOpenProfile = onNavigateToProfile,
+                            onOpenSettings = onNavigateToSettings,
+                            onManageUsers = onNavigateToUserManagement,
+                            onModerateCommunity = onNavigateToCommunityModeration
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                    }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun GuestAccountPanel(
+    layout: AccountLayoutSpec,
+    onLogin: () -> Unit,
+    onOpenSettings: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = layout.pagePadding, vertical = 28.dp),
+        verticalArrangement = Arrangement.spacedBy(18.dp)
+    ) {
+        Text(
+            text = "本地访客",
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold
+        )
+        Text(
+            text = "录音和草稿保存在此设备。开始云端转写或 AI 纪要时需要登录。",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Button(
+            onClick = onLogin,
+            modifier = Modifier.fillMaxWidth().height(50.dp),
+            shape = RoundedCornerShape(8.dp)
+        ) {
+            Text("登录或注册")
+        }
+        OutlinedButton(
+            onClick = onOpenSettings,
+            modifier = Modifier.fillMaxWidth().height(50.dp),
+            shape = RoundedCornerShape(8.dp)
+        ) {
+            Text("本地设置")
         }
     }
 }
@@ -478,8 +528,8 @@ private fun AccountQuotaPanel(
     onConfigure: () -> Unit,
     onOpenDetails: () -> Unit
 ) {
-    val limit = quota?.requestLimit ?: profile?.quota?.requestLimit ?: 0
-    val remaining = quota?.requestsRemaining ?: profile?.quota?.requestsRemaining ?: 0
+    val limit = quota?.aiCreditsGranted ?: profile?.usage?.aiCreditsGranted ?: 0
+    val remaining = quota?.aiCreditsRemaining ?: profile?.usage?.aiCreditsRemaining ?: 0
     val remainingFraction = when {
         limit > 0 -> (remaining.toFloat() / limit).coerceIn(0f, 1f)
         remaining > 0 -> 1f
@@ -587,7 +637,7 @@ private fun AccountQuotaPanel(
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = "剩余请求",
+                            text = "AI Credits",
                             color = Color.White,
                             fontSize = 15.sp,
                             lineHeight = 20.sp
@@ -870,11 +920,12 @@ internal fun ManagedUserRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
+            val usage = user.usage ?: AccountUsageSummary()
             Text(
                 text = when {
                     user.isAdmin -> "@${user.username} · 管理员 · 默认 VIP"
-                    user.vipEnabled -> "@${user.username} · ${user.planName} · 剩余 ${user.quota.requestsRemaining}"
-                    else -> "@${user.username} · ${user.planName} · 剩余 ${user.quota.requestsRemaining} 次试用"
+                    user.vipEnabled -> "@${user.username} · ${user.planName} · ${usage.aiCreditsRemaining} Credits"
+                    else -> "@${user.username} · ${user.planName} · ${usage.sttMinutesRemaining} 分钟"
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1041,7 +1092,10 @@ private fun membershipSummary(profile: AccountProfile?, quota: AgentQuota?): Str
     val membership = when {
         profile?.isAdmin == true -> "尊享会员"
         profile?.vipEnabled == true -> "${profile.planName} · 尊享会员"
-        profile != null -> "${profile.planName} · 剩余 ${profile.quota.requestsRemaining} 次体验"
+        profile != null -> {
+            val usage = profile.usage ?: AccountUsageSummary()
+            "${profile.planName} · ${usage.sttMinutesRemaining} 分钟 / ${usage.aiCreditsRemaining} Credits"
+        }
         else -> "Free 套餐"
     }
     val expiry = quota?.expiresAt?.let(::formatExpiry)

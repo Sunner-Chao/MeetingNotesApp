@@ -32,6 +32,7 @@ import com.oa.automation.infrastructure.service.RecordingSessionController
 import com.oa.automation.infrastructure.update.AndroidAppUpdate
 import com.oa.automation.infrastructure.update.AppUpdateCheck
 import com.oa.automation.infrastructure.update.AppUpdateService
+import com.oa.automation.infrastructure.update.newerAppUpdate
 import com.oa.automation.infrastructure.update.shouldPromptForUpdate
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.collect
@@ -153,7 +154,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun checkForAppUpdateIfNeeded() {
-        if (pendingAppUpdate != null) return
+        if (isDownloadingAppUpdate) return
         if (updateCheckJob?.isActive == true) {
             updateCheckQueued = true
             return
@@ -165,14 +166,18 @@ class MainActivity : ComponentActivity() {
             val result = appUpdateService.checkForUpdate().getOrNull()
             val update = (result as? AppUpdateCheck.Available)?.update
             if (update != null && shouldPromptForUpdate(update, ignoredVersion)) {
-                pendingAppUpdate = update
-                appUpdateMessage = null
+                val current = pendingAppUpdate
+                val latest = if (current == null) update else newerAppUpdate(current, update)
+                if (latest !== current) {
+                    pendingAppUpdate = latest
+                    appUpdateMessage = null
+                }
             }
         }.also { job ->
             job.invokeOnCompletion {
                 if (updateCheckJob !== job) return@invokeOnCompletion
                 updateCheckJob = null
-                if (updateCheckQueued && pendingAppUpdate == null) {
+                if (updateCheckQueued) {
                     updateCheckQueued = false
                     checkForAppUpdateIfNeeded()
                 } else {
@@ -203,7 +208,12 @@ class MainActivity : ComponentActivity() {
         appUpdateProgress = 0
         appUpdateMessage = null
         lifecycleScope.launch {
-            appUpdateService.download(update) { progress ->
+            val refreshed = (appUpdateService.checkForUpdate().getOrNull() as? AppUpdateCheck.Available)?.update
+            val latest = if (refreshed == null) update else newerAppUpdate(update, refreshed)
+            if (latest.versionCode != update.versionCode) {
+                pendingAppUpdate = latest
+            }
+            appUpdateService.download(latest) { progress ->
                 runOnUiThread { appUpdateProgress = progress }
             }.fold(
                 onSuccess = { downloaded ->

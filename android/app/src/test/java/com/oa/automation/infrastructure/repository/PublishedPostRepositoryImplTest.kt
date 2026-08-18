@@ -79,6 +79,9 @@ class PublishedPostRepositoryImplTest {
     private class FakePublishedPostDao : PublishedPostDao {
         private val values = linkedMapOf<String, PublishedPostEntity>()
 
+        override fun observeAll(): Flow<List<PublishedPostEntity>> =
+            MutableStateFlow(values.values.sortedByDescending { it.updatedAt })
+
         override suspend fun insert(entity: PublishedPostEntity) {
             check(values.putIfAbsent(entity.id, entity) == null)
         }

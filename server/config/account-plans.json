@@ -2,9 +2,13 @@
   {
     "code": "vip_starter",
     "name": "轻享月卡",
-    "description": "每月 30 次 AI 处理额度，解锁施工日志与专业纪要模板",
+    "description": "每月 600 分钟转写与 30 AI Credits，解锁专业纪要模板",
     "price_cents": 3900,
     "quota_amount": 30,
+    "included_minutes": 600,
+    "ai_credits": 30,
+    "team_seats": 1,
+    "duration_days": 30,
     "construction_logs_unlocked": true,
     "active": true,
     "sort_order": 10
@@ -12,11 +16,29 @@
   {
     "code": "vip_professional",
     "name": "专业月卡",
-    "description": "每月 150 次 AI 处理额度，解锁施工日志与专业纪要模板",
+    "description": "每月 2400 分钟转写与 120 AI Credits，适合高频会议",
     "price_cents": 12900,
-    "quota_amount": 150,
+    "quota_amount": 120,
+    "included_minutes": 2400,
+    "ai_credits": 120,
+    "team_seats": 1,
+    "duration_days": 30,
     "construction_logs_unlocked": true,
     "active": true,
     "sort_order": 20
+  },
+  {
+    "code": "team_standard",
+    "name": "团队标准月卡",
+    "description": "每月 6000 分钟转写、300 AI Credits 与 5 个团队席位",
+    "price_cents": 39900,
+    "quota_amount": 300,
+    "included_minutes": 6000,
+    "ai_credits": 300,
+    "team_seats": 5,
+    "duration_days": 30,
+    "construction_logs_unlocked": true,
+    "active": true,
+    "sort_order": 30
   }
 ]

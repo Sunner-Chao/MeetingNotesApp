@@ -8,13 +8,7 @@ if "%STT_MODEL_ROOT%"=="" set "STT_MODEL_ROOT=%SERVER_ROOT%\models"
 set "STT_PORT=8888"
 
 if "%STT_ENGINE%"=="" set "STT_ENGINE=faster-whisper"
-if "%STT_MODEL%"=="" (
-    if /I "%STT_ENGINE%"=="sensevoice" (
-        set "STT_MODEL=SenseVoiceSmall"
-    ) else (
-        set "STT_MODEL=small"
-    )
-)
+if "%STT_MODEL%"=="" set "STT_MODEL=large-v3-turbo"
 
 echo [STT] Switch request received.
 echo [STT] Target engine: %STT_ENGINE%

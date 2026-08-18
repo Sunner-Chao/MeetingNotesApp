@@ -413,6 +413,14 @@ fun SettingsScreen(
                             onTestConnection = viewModel::testLLMConnection
                         )
 
+                        if (BuildConfig.DEBUG) {
+                            DevelopmentTestDataSection(
+                                isUpdating = uiState.isUpdatingDemoData,
+                                onSeed = viewModel::seedDemoData,
+                                onClear = viewModel::clearDemoData
+                            )
+                        }
+
                         ResetSettingsCard(onClick = viewModel::resetToDefault)
                         Spacer(modifier = Modifier.height(24.dp))
                     }
@@ -816,6 +824,42 @@ private fun SettingsSummaryRow(
 }
 
 @Composable
+private fun DevelopmentTestDataSection(
+    isUpdating: Boolean,
+    onSeed: () -> Unit,
+    onClear: () -> Unit
+) {
+    GlassSurface(modifier = Modifier.fillMaxWidth(), accent = SettingsPink) {
+        Column(
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 22.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            SectionHeader(
+                title = "开发测试数据",
+                icon = Icons.Default.Science,
+                description = "仅 debug 构建可用；显式注入、稳定 ID、可重复且可清理。",
+                accentStart = SettingsPink,
+                accentEnd = SettingsCyan
+            )
+            Button(
+                onClick = onSeed,
+                enabled = !isUpdating,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (isUpdating) "处理中…" else "注入演示数据")
+            }
+            OutlinedButton(
+                onClick = onClear,
+                enabled = !isUpdating,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("清理演示数据")
+            }
+        }
+    }
+}
+
+@Composable
 private fun ResetSettingsCard(onClick: () -> Unit) {
     val palette = LocalSettingsPalette.current
     Surface(
@@ -899,8 +943,7 @@ private fun STTConfigSection(
     var cardExpanded by remember { mutableStateOf(false) }
 
     val modelOptions = when (config.engineType) {
-        STTEngineType.FASTER_WHISPER -> listOf("tiny", "base", "small", "medium", "large-v3")
-        STTEngineType.SENSE_VOICE -> listOf("SenseVoiceSmall", "iic/SenseVoiceSmall")
+        STTEngineType.FASTER_WHISPER -> listOf("large-v3-turbo", "large-v3", "medium", "small", "base", "tiny")
         STTEngineType.TENCENT_HYBRID -> emptyList()
     }
 
@@ -1025,7 +1068,6 @@ private fun STTConfigSection(
                         ModelDropdown(
                             currentModel = localModel,
                             options = modelOptions,
-                            engineType = config.engineType,
                             expanded = modelExpanded,
                             onExpandedChange = { modelExpanded = it },
                             onSelect = { option ->
@@ -1580,7 +1622,6 @@ private fun EngineTypeDropdown(
                 Icon(
                     imageVector = when (currentType) {
                         STTEngineType.FASTER_WHISPER -> Icons.Default.Speed
-                        STTEngineType.SENSE_VOICE -> Icons.Default.Language
                         STTEngineType.TENCENT_HYBRID -> Icons.Default.Cloud
                     },
                     contentDescription = null,
@@ -1604,7 +1645,6 @@ private fun EngineTypeDropdown(
                         Icon(
                             imageVector = when (type) {
                                 STTEngineType.FASTER_WHISPER -> Icons.Default.Speed
-                                STTEngineType.SENSE_VOICE -> Icons.Default.Language
                                 STTEngineType.TENCENT_HYBRID -> Icons.Default.Cloud
                             },
                             contentDescription = null,
@@ -1765,7 +1805,6 @@ private fun <T> ReasoningEffortDropdown(
 private fun ModelDropdown(
     currentModel: String,
     options: List<String>,
-    engineType: STTEngineType,
     expanded: Boolean,
     onExpandedChange: (Boolean) -> Unit,
     onSelect: (String) -> Unit
@@ -1775,10 +1814,10 @@ private fun ModelDropdown(
         onExpandedChange = onExpandedChange
     ) {
         OutlinedTextField(
-            value = localModelDisplayName(currentModel, engineType),
+            value = localModelDisplayName(currentModel),
             onValueChange = {},
             readOnly = true,
-            label = { Text("智悟本地模型") },
+            label = { Text("智悟本地识别模型") },
             leadingIcon = {
                 Icon(
                     imageVector = Icons.Default.Memory,
@@ -1788,8 +1827,8 @@ private fun ModelDropdown(
             },
             supportingText = {
                 Text(
-                    if (engineType == STTEngineType.SENSE_VOICE)
-                        "中文语音优选"
+                    if (currentModel == "large-v3-turbo")
+                        "中文会议优先，兼顾速度与准确度"
                     else
                         "平衡速度与准确度"
                 )
@@ -1806,7 +1845,7 @@ private fun ModelDropdown(
         ) {
             options.forEach { option ->
                 DropdownMenuItem(
-                    text = { Text(localModelDisplayName(option, engineType)) },
+                    text = { Text(localModelDisplayName(option)) },
                     onClick = {
                         onSelect(option)
                         onExpandedChange(false)
@@ -1817,17 +1856,15 @@ private fun ModelDropdown(
     }
 }
 
-private fun localModelDisplayName(model: String, engineType: STTEngineType): String {
-    if (engineType == STTEngineType.SENSE_VOICE) {
-        return "智悟灵听 · 中文优选"
-    }
+private fun localModelDisplayName(model: String): String {
     return when (model) {
-        "tiny" -> "智悟本地 · 轻盈"
-        "base" -> "智悟本地 · 标准"
-        "small" -> "智悟本地 · 均衡"
-        "medium" -> "智悟本地 · 进阶"
-        "large-v3" -> "智悟本地 · 旗舰"
-        else -> "智悟本地模型"
+        "large-v3-turbo" -> "智悟本地 Faster-Whisper · Turbo"
+        "tiny" -> "智悟本地通用 · 轻盈"
+        "base" -> "智悟本地通用 · 标准"
+        "small" -> "智悟本地通用 · 均衡"
+        "medium" -> "智悟本地通用 · 进阶"
+        "large-v3" -> "智悟本地通用 · 旗舰"
+        else -> STTEngineType.FASTER_WHISPER.displayName
     }
 }
 

@@ -4,6 +4,8 @@ import com.oa.automation.domain.model.PublishedPost
 import kotlinx.coroutines.flow.Flow
 
 interface PublishedPostRepository {
+    fun observeAll(): Flow<List<PublishedPost>>
+
     suspend fun createReviewSnapshot(
         journeyId: String,
         journeyEditionId: String,

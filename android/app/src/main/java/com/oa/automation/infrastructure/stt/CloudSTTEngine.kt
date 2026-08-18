@@ -67,6 +67,9 @@ class CloudSTTEngine(
                 requestBuilder.addHeader("X-Meeting-Id", it)
             }
             archiveKey?.takeIf { it.isNotBlank() }?.let {
+                requestBuilder.addHeader("X-Usage-Key", "stt:${meetingId.orEmpty()}:$it")
+            }
+            archiveKey?.takeIf { it.isNotBlank() }?.let {
                 requestBuilder.addHeader("X-Archive-Key", it)
             }
             val request = requestBuilder.build()
@@ -104,7 +107,7 @@ class CloudSTTEngine(
 
             onProgress(ProcessingProgress(45, "智悟增强云模型正在生成最终稿", isIndeterminate = true))
             val request = Request.Builder()
-                .url(managedStreamTranscriptionUrl(config.localEndpoint, sessionId))
+                .url(managedStreamTranscriptionUrl(config.cloudEndpoint.orEmpty(), sessionId))
                 .addHeader("Authorization", "Bearer $apiToken")
                 .post(ByteArray(0).toRequestBody(null))
                 .build()
@@ -132,7 +135,7 @@ class CloudSTTEngine(
 
     override fun isAvailable(): Boolean {
         if (config.engineType == STTEngineType.TENCENT_HYBRID) {
-            return config.localEndpoint.isNotBlank() && !config.apiToken.isNullOrBlank()
+            return !config.cloudEndpoint.isNullOrBlank() && !config.apiToken.isNullOrBlank()
         }
         return !config.cloudEndpoint.isNullOrBlank() &&
             (!config.cloudApiKey.isNullOrBlank() || !config.apiToken.isNullOrBlank()) &&
@@ -166,9 +169,9 @@ class CloudSTTEngine(
         }
 
         fun testHybridConnection(config: STTConfig): Result<Boolean> {
-            val endpoint = config.localEndpoint.trim()
+            val endpoint = config.cloudEndpoint?.trim().orEmpty()
             val apiToken = config.apiToken?.trim().orEmpty()
-            if (endpoint.isBlank()) return Result.failure(Exception("STT 服务地址未配置"))
+            if (endpoint.isBlank()) return Result.failure(Exception("智悟增强云模型地址未配置"))
             if (apiToken.isBlank()) return Result.failure(Exception("STT 访问令牌未配置"))
 
             return runCatching {
@@ -210,8 +213,7 @@ internal fun cloudModelsUrl(endpoint: String): HttpUrl =
 
 internal fun managedStreamTranscriptionUrl(endpoint: String, sessionId: String): HttpUrl {
     require(sessionId.matches(Regex("^[0-9a-f]{32}$"))) { "流式转写会话标识无效" }
-    val url = endpoint.trim().toHttpUrlOrNull()
-        ?: throw IllegalArgumentException("STT 服务地址格式无效")
+    val url = managedServiceRootUrl(endpoint)
     return url.newBuilder()
         .addPathSegment("transcribe")
         .addPathSegment("stream")
@@ -221,26 +223,28 @@ internal fun managedStreamTranscriptionUrl(endpoint: String, sessionId: String):
 }
 
 private fun managedHealthUrl(endpoint: String): HttpUrl {
-    val url = endpoint.trim().toHttpUrlOrNull()
-        ?: throw IllegalArgumentException("STT 服务地址格式无效")
+    val url = managedServiceRootUrl(endpoint)
     return url.newBuilder().addPathSegment("health").fragment(null).build()
 }
 
 private fun cloudApiUrl(endpoint: String, resource: List<String>): HttpUrl {
+    val url = managedServiceRootUrl(endpoint)
+    val builder = url.newBuilder()
+        .addPathSegment("cloud-asr")
+        .addPathSegment("v1")
+    resource.forEach(builder::addPathSegment)
+    return builder.fragment(null).build()
+}
+
+private fun managedServiceRootUrl(endpoint: String): HttpUrl {
     val url = endpoint.trim().toHttpUrlOrNull()
         ?: throw IllegalArgumentException("智悟增强云模型地址格式无效")
-    val path = url.pathSegments.filter { it.isNotBlank() }.toMutableList()
-    if (path.takeLast(2) == listOf("audio", "transcriptions")) {
-        repeat(2) { path.removeAt(path.lastIndex) }
-    } else if (path.lastOrNull() == "models") {
-        path.removeAt(path.lastIndex)
-    }
-    if (path.lastOrNull() != "v1") path += "v1"
-    path += resource
-
+    val path = url.pathSegments.filter { it.isNotBlank() }
+    val cloudAsrIndex = path.indexOf("cloud-asr")
+    val rootPath = if (cloudAsrIndex >= 0) path.take(cloudAsrIndex) else path
     val builder = url.newBuilder().encodedPath("/")
-    path.forEach(builder::addPathSegment)
-    return builder.fragment(null).build()
+    rootPath.forEach(builder::addPathSegment)
+    return builder.query(null).fragment(null).build()
 }
 
 internal fun parseCloudTranscript(responseBody: String): String {

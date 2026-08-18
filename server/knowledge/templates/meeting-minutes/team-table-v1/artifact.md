@@ -31,7 +31,7 @@
 5. Unresolved-issue table.
 6. Action tracking table.
 7. Pending confirmations.
-8. Backlog table.
+8. Research and reserve items (backlog) table.
 9. Risk table.
 10. Meeting conclusion.
 11. Meeting images with captions when supplied.

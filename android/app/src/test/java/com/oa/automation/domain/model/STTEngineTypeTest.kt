@@ -9,13 +9,24 @@ class STTEngineTypeTest {
     @Test
     fun `tencent hybrid is the only cloud transcription option`() {
         assertEquals(
-            setOf("FASTER_WHISPER", "SENSE_VOICE", "TENCENT_HYBRID"),
+            setOf("FASTER_WHISPER", "TENCENT_HYBRID"),
             STTEngineType.entries.map { it.name }.toSet()
         )
         assertEquals("tencent-standard", STTEngineType.TENCENT_HYBRID.defaultModel)
+        assertEquals("large-v3-turbo", STTEngineType.FASTER_WHISPER.defaultModel)
+        assertEquals("智悟本地 Faster-Whisper", STTEngineType.FASTER_WHISPER.displayName)
+        assertEquals("智悟增强云模型", STTEngineType.TENCENT_HYBRID.displayName)
         assertEquals("tencent-standard", TencentAsrTier.STANDARD_FREE.cloudModel)
         assertEquals("tencent-precision", TencentAsrTier.PRECISION_PAID.cloudModel)
         assertFalse(STTEngineType.entries.any { it.name == "CLOUD_ASR" })
         assertFalse(STTEngineType.entries.any { it.displayName.contains("仅最终稿") })
+    }
+
+    @Test
+    fun `release migration recognizes development-only STT endpoints`() {
+        assertEquals(true, "http://localhost:8888".isDevelopmentOnlySttEndpoint())
+        assertEquals(true, "http://10.0.2.2:8888/".isDevelopmentOnlySttEndpoint())
+        assertEquals(true, "http://127.0.0.1:8888".isDevelopmentOnlySttEndpoint())
+        assertFalse("https://stt.example.com".isDevelopmentOnlySttEndpoint())
     }
 }

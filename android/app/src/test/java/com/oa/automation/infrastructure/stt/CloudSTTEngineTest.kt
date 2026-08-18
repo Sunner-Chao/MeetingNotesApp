@@ -49,7 +49,7 @@ class CloudSTTEngineTest {
             assertTrue(result.isSuccess)
             assertEquals("方言转写结果", result.getOrThrow())
             val request = server.takeRequest()
-            assertEquals("/gateway/v1/audio/transcriptions", request.path)
+            assertEquals("/gateway/cloud-asr/v1/audio/transcriptions", request.path)
             assertEquals("Bearer cloud-secret", request.getHeader("Authorization"))
             val multipart = request.body.readUtf8()
             assertTrue(multipart.contains("name=\"model\""))
@@ -64,7 +64,7 @@ class CloudSTTEngineTest {
 
     @Test
     fun `full transcription endpoint is not duplicated`() {
-        val endpoint = server.url("/v1/audio/transcriptions").toString()
+        val endpoint = server.url("/cloud-asr/v1/audio/transcriptions").toString()
 
         assertEquals(endpoint, cloudTranscriptionUrl(endpoint).toString())
     }
@@ -74,7 +74,7 @@ class CloudSTTEngineTest {
         server.enqueue(MockResponse().setResponseCode(200).setBody("{\"data\":[]}"))
         val config = STTConfig(
             engineType = STTEngineType.TENCENT_HYBRID,
-            cloudEndpoint = server.url("/v1").toString(),
+            cloudEndpoint = server.url("/").toString(),
             cloudApiKey = "cloud-secret",
             cloudModel = "dialect-asr-model"
         )
@@ -83,7 +83,7 @@ class CloudSTTEngineTest {
 
         assertTrue(result.isSuccess)
         val request = server.takeRequest()
-        assertEquals("/v1/models", request.path)
+        assertEquals("/cloud-asr/v1/models", request.path)
         assertEquals("Bearer cloud-secret", request.getHeader("Authorization"))
     }
 
@@ -106,7 +106,7 @@ class CloudSTTEngineTest {
             val engine = CloudSTTEngine(
                 STTConfig(
                     engineType = STTEngineType.TENCENT_HYBRID,
-                    cloudEndpoint = server.url("/cloud-asr").toString(),
+                    cloudEndpoint = server.url("/").toString(),
                     cloudApiKey = "cloud-secret",
                     cloudModel = "tencent-flash"
                 )
@@ -133,7 +133,7 @@ class CloudSTTEngineTest {
                 STTConfig(
                     engineType = STTEngineType.TENCENT_HYBRID,
                     apiToken = "account-stt-token",
-                    cloudEndpoint = server.url("/cloud-asr").toString(),
+                    cloudEndpoint = server.url("/").toString(),
                     cloudApiKey = null,
                     cloudModel = "tencent-flash"
                 )
@@ -162,9 +162,8 @@ class CloudSTTEngineTest {
         val engine = CloudSTTEngine(
             STTConfig(
                 engineType = STTEngineType.TENCENT_HYBRID,
-                localEndpoint = server.url("/managed").toString(),
                 apiToken = "account-stt-token",
-                cloudEndpoint = server.url("/managed/cloud-asr").toString(),
+                cloudEndpoint = server.url("/managed").toString(),
                 cloudApiKey = null,
                 cloudModel = "tencent-flash"
             )
@@ -189,7 +188,7 @@ class CloudSTTEngineTest {
         )
         val config = STTConfig(
             engineType = STTEngineType.TENCENT_HYBRID,
-            localEndpoint = server.url("/managed").toString(),
+            cloudEndpoint = server.url("/managed").toString(),
             apiToken = "account-stt-token"
         )
 

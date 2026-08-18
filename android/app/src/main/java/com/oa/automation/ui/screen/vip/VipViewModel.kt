@@ -228,7 +228,7 @@ class VipViewModel(
             val hasAccess = state.profile?.let {
                 it.isAdmin || it.constructionLogsUnlocked
             } == true
-            if (!hasAccess || (state.quota?.requestsRemaining ?: 0) <= 0) {
+            if (!hasAccess || (state.quota?.aiCreditsRemaining ?: 0) <= 0) {
                 _uiState.update { it.copy(message = "VIP 权益或 AI 处理额度不可用") }
                 return@launch
             }

@@ -2,6 +2,8 @@ package com.oa.automation.ui.screen.community
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.util.LruCache
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -15,12 +17,17 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
+import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
+import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridItemSpan
+import androidx.compose.foundation.lazy.staggeredgrid.items as staggeredItems
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -92,11 +99,23 @@ import org.koin.androidx.compose.koinViewModel
 fun StudyCommunityScreen(
     onOpenPost: (String) -> Unit,
     onOpenCollection: (String) -> Unit,
-    viewModel: CommunityViewModel = koinViewModel()
+    viewModel: CommunityViewModel = koinViewModel(),
+    publishingViewModel: CommunityPublishingViewModel = koinViewModel()
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val publishingState by publishingViewModel.uiState.collectAsStateWithLifecycle()
     var showFilters by rememberSaveable { androidx.compose.runtime.mutableStateOf(false) }
     LaunchedEffect(Unit) { viewModel.refresh() }
+    val publishingSyncKey = publishingState.posts.joinToString(separator = "|") { item ->
+        "${item.post.id}:${item.sync?.status}:${item.sync?.remotePostId}"
+    }
+    LaunchedEffect(state.tab, publishingSyncKey) {
+        if (state.tab == CommunityTab.MINE &&
+            publishingState.posts.any { it.sync?.status == com.oa.automation.domain.model.CommunitySyncStatus.PUBLISHED }
+        ) {
+            viewModel.refresh()
+        }
+    }
 
     ZhiWuScreenBackground {
         Scaffold(containerColor = Color.Transparent) { padding ->
@@ -111,9 +130,13 @@ fun StudyCommunityScreen(
                 StudyCommunityFeed(
                     modifier = Modifier.weight(1f),
                     state = state,
+                    publishingState = publishingState,
+                    onOpenPublishedPost = publishingViewModel::openReview,
+                    onRetryPublishedPost = publishingViewModel::retry,
                     onOpenPost = onOpenPost,
                     onOpenCollection = onOpenCollection,
                     onQueryChange = viewModel::updateSearchQuery,
+                    onTopicSelect = viewModel::selectQuickTopic,
                     onSearch = viewModel::search,
                     onOpenFilters = { showFilters = true },
                     onRefresh = viewModel::refresh,
@@ -137,6 +160,21 @@ fun StudyCommunityScreen(
                 showFilters = false
                 viewModel.search()
             }
+        )
+    }
+
+    publishingState.selectedPost?.let { post ->
+        CommunityPublishingReviewDialog(
+            post = post,
+            media = publishingState.selectedMedia,
+            isSaving = publishingState.isSaving,
+            onSaveReview = publishingViewModel::saveReview,
+            onUpdateMetadata = publishingViewModel::updateMetadata,
+            onSetMediaIncluded = publishingViewModel::setMediaIncluded,
+            onMarkReady = publishingViewModel::markReady,
+            onPublish = publishingViewModel::publish,
+            onWithdraw = publishingViewModel::withdraw,
+            onDismiss = publishingViewModel::dismissReview
         )
     }
 }
@@ -219,12 +257,17 @@ private fun CommunitySegmentedTabs(
 }
 
 @Composable
+@OptIn(ExperimentalFoundationApi::class)
 private fun StudyCommunityFeed(
     modifier: Modifier,
     state: CommunityUiState,
+    publishingState: CommunityPublishingUiState,
+    onOpenPublishedPost: (String) -> Unit,
+    onRetryPublishedPost: (String) -> Unit,
     onOpenPost: (String) -> Unit,
     onOpenCollection: (String) -> Unit,
     onQueryChange: (String) -> Unit,
+    onTopicSelect: (String) -> Unit,
     onSearch: () -> Unit,
     onOpenFilters: () -> Unit,
     onRefresh: () -> Unit,
@@ -238,16 +281,18 @@ private fun StudyCommunityFeed(
     val isEmpty = when (state.tab) {
         CommunityTab.DISCOVER -> state.publicPosts.isEmpty()
         CommunityTab.SAVED -> state.savedPosts.isEmpty() && state.savedCollections.isEmpty()
-        CommunityTab.MINE -> state.myPosts.isEmpty()
+        CommunityTab.MINE -> state.myPosts.isEmpty() && publishingState.posts.isEmpty()
     }
 
-    LazyColumn(
+    LazyVerticalStaggeredGrid(
+        columns = StaggeredGridCells.Adaptive(minSize = 156.dp),
         modifier = modifier.fillMaxWidth(),
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 10.dp, bottom = 18.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        verticalItemSpacing = 10.dp,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         if (state.tab == CommunityTab.DISCOVER) {
-            item {
+            item(span = StaggeredGridItemSpan.FullLine) {
                 CommunitySearchSurface(
                     query = state.searchQuery,
                     activeFilterCount = activeCommunityFilterCount(state),
@@ -256,11 +301,20 @@ private fun StudyCommunityFeed(
                     onOpenFilters = onOpenFilters
                 )
             }
+            if (state.facets.tags.isNotEmpty()) {
+                item(span = StaggeredGridItemSpan.FullLine) {
+                    CommunityTopicStrip(
+                        topics = communityQuickTopics(state),
+                        selected = state.tagFilter,
+                        onSelected = onTopicSelect
+                    )
+                }
+            }
             if (!state.availability.writeEnabled) {
-                item { CommunityReadOnlyGlassNotice() }
+                item(span = StaggeredGridItemSpan.FullLine) { CommunityReadOnlyGlassNotice() }
             }
             if (state.collections.isNotEmpty()) {
-                item {
+                item(span = StaggeredGridItemSpan.FullLine) {
                     CommunityRouteStrip(
                         collections = state.collections,
                         mediaBaseUrl = state.mediaBaseUrl,
@@ -268,9 +322,32 @@ private fun StudyCommunityFeed(
                     )
                 }
             }
+            if (!isEmpty) {
+                item(span = StaggeredGridItemSpan.FullLine) {
+                    CommunityFeedSectionHeader(
+                        resultCount = state.publicPosts.size,
+                        hasActiveFilters = activeCommunityFilterCount(state) > 0
+                    )
+                }
+            }
+        }
+        if (state.tab == CommunityTab.MINE) {
+            item(span = StaggeredGridItemSpan.FullLine) {
+                CommunityPublishingWorkbench(
+                    state = publishingState,
+                    remotePosts = state.myPosts,
+                    onOpen = onOpenPublishedPost,
+                    onRetry = onRetryPublishedPost
+                )
+            }
+            if (visibleRemoteCommunityPosts(state.myPosts, publishingState.posts).isNotEmpty()) {
+                item(span = StaggeredGridItemSpan.FullLine) {
+                    Text("服务端审核记录", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                }
+            }
         }
         if (state.tab == CommunityTab.SAVED && state.savedCollections.isNotEmpty()) {
-            item {
+            item(span = StaggeredGridItemSpan.FullLine) {
                 CommunityRouteStrip(
                     title = "收藏路线",
                     collections = state.savedCollections,
@@ -281,8 +358,8 @@ private fun StudyCommunityFeed(
         }
 
         when {
-            state.isLoading && isEmpty -> item { CommunityLoadingState() }
-            isEmpty -> item {
+            state.isLoading && isEmpty -> item(span = StaggeredGridItemSpan.FullLine) { CommunityLoadingState() }
+            isEmpty -> item(span = StaggeredGridItemSpan.FullLine) {
                 StudyCommunityEmptyState(
                     tab = state.tab,
                     error = state.error,
@@ -291,14 +368,18 @@ private fun StudyCommunityFeed(
             }
             else -> {
                 state.error?.let { error ->
-                    item { StudyCommunityInlineError(error, onRefresh) }
+                    item(span = StaggeredGridItemSpan.FullLine) { StudyCommunityInlineError(error, onRefresh) }
                 }
-                if (state.tab == CommunityTab.MINE) {
-                    items(state.myPosts, key = { "mine-${it.id}" }) { post ->
+                if (state.tab == CommunityTab.MINE && state.myPosts.isNotEmpty()) {
+                    staggeredItems(
+                        items = visibleRemoteCommunityPosts(state.myPosts, publishingState.posts),
+                        key = { "mine-${it.id}" },
+                        span = { StaggeredGridItemSpan.FullLine }
+                    ) { post ->
                         StudyMyPostCard(post)
                     }
                 } else {
-                    items(posts, key = { "post-${it.id}" }) { post ->
+                    staggeredItems(posts, key = { "post-${it.id}" }) { post ->
                         StudyPostCard(
                             post = post,
                             mediaBaseUrl = state.mediaBaseUrl,
@@ -311,7 +392,7 @@ private fun StudyCommunityFeed(
                         CommunityTab.MINE -> false
                     }
                     if (hasMore) {
-                        item {
+                        item(span = StaggeredGridItemSpan.FullLine) {
                             TextButton(
                                 onClick = onLoadMore,
                                 enabled = !state.isLoadingMore,
@@ -328,6 +409,78 @@ private fun StudyCommunityFeed(
                 }
             }
         }
+    }
+}
+
+internal fun visibleRemoteCommunityPosts(
+    remotePosts: List<MyCommunityPost>,
+    localPosts: List<CommunityPublishingItem>
+): List<MyCommunityPost> {
+    val representedRemoteIds = localPosts.mapNotNull { it.sync?.remotePostId }.toSet()
+    return remotePosts.filterNot { it.id in representedRemoteIds }
+}
+
+@Composable
+private fun CommunityTopicStrip(
+    topics: List<String>,
+    selected: String,
+    onSelected: (String) -> Unit
+) {
+    LazyRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        contentPadding = PaddingValues(end = 2.dp)
+    ) {
+        items(topics, key = { "topic-$it" }) { topic ->
+            val isSelected = topic == selected
+            Surface(
+                onClick = { onSelected(topic) },
+                shape = RoundedCornerShape(8.dp),
+                color = if (isSelected) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.surface.copy(alpha = 0.84f),
+                border = if (isSelected) null else BorderStroke(
+                    1.dp,
+                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                )
+            ) {
+                Text(
+                    text = topic.ifBlank { "全部" },
+                    modifier = Modifier.padding(horizontal = 13.dp, vertical = 8.dp),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (isSelected) MaterialTheme.colorScheme.onPrimary
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal
+                )
+            }
+        }
+    }
+}
+
+internal fun communityQuickTopics(state: CommunityUiState): List<String> = buildList {
+    add("")
+    if (state.tagFilter.isNotBlank()) add(state.tagFilter)
+    addAll(state.facets.tags)
+}.map(String::trim).distinct().take(8)
+
+@Composable
+private fun CommunityFeedSectionHeader(
+    resultCount: Int,
+    hasActiveFilters: Boolean
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = if (hasActiveFilters) "筛选结果" else "同行见闻",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold
+        )
+        Spacer(Modifier.weight(1f))
+        Text(
+            text = "已加载 $resultCount 篇",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 
@@ -659,7 +812,9 @@ private fun StudyPostCard(
                 StudyCommunityImage(
                     url = "$mediaBaseUrl${media.thumbnailUrl}",
                     contentDescription = "${post.title}现场影像",
-                    modifier = Modifier.fillMaxWidth().height(172.dp)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(if (post.media.size > 1) 0.96f else 1.08f)
                 )
             }
             Column(
@@ -928,9 +1083,13 @@ private fun StudyCommunityImage(
     contentDescription: String,
     modifier: Modifier = Modifier
 ) {
-    val bitmap by produceState<Bitmap?>(initialValue = null, url) {
-        value = withContext(Dispatchers.IO) {
-            runCatching { URL(url).openStream().use(BitmapFactory::decodeStream) }.getOrNull()
+    val bitmap by produceState<Bitmap?>(initialValue = CommunityImageCache.get(url), url) {
+        if (value == null) {
+            value = withContext(Dispatchers.IO) {
+                runCatching { URL(url).openStream().use(BitmapFactory::decodeStream) }
+                    .getOrNull()
+                    ?.also { CommunityImageCache.put(url, it) }
+            }
         }
     }
     Box(
@@ -953,6 +1112,23 @@ private fun StudyCommunityImage(
             )
         }
     }
+}
+
+private object CommunityImageCache {
+    private val cache = object : LruCache<String, Bitmap>(cacheSizeKb()) {
+        override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount / 1024
+    }
+
+    @Synchronized
+    fun get(url: String): Bitmap? = cache.get(url)
+
+    @Synchronized
+    fun put(url: String, bitmap: Bitmap) {
+        cache.put(url, bitmap)
+    }
+
+    private fun cacheSizeKb(): Int =
+        ((Runtime.getRuntime().maxMemory() / 1024L) / 8L).toInt().coerceAtLeast(4 * 1024)
 }
 
 private fun formatStudyCommunityDate(timestamp: Long): String =

@@ -61,6 +61,9 @@ class CommunitySyncRepositoryImplTest {
         var value: CommunitySyncOutboxEntity? = null
         private val state = MutableStateFlow<CommunitySyncOutboxEntity?>(null)
 
+        override fun observeAll(): Flow<List<CommunitySyncOutboxEntity>> =
+            MutableStateFlow(listOfNotNull(value))
+
         override suspend fun upsert(entity: CommunitySyncOutboxEntity) {
             value = entity
             state.value = entity
@@ -87,6 +90,7 @@ class CommunitySyncRepositoryImplTest {
     private class FakePublishedPostDao(
         private val value: PublishedPostEntity
     ) : PublishedPostDao {
+        override fun observeAll(): Flow<List<PublishedPostEntity>> = MutableStateFlow(listOf(value))
         override suspend fun insert(entity: PublishedPostEntity) = Unit
         override suspend fun findLatest(journeyId: String): PublishedPostEntity? = value
         override fun observeLatest(journeyId: String): Flow<PublishedPostEntity?> = MutableStateFlow(value)

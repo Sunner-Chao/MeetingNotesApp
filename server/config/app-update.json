@@ -1,8 +1,9 @@
 {
-  "version_code": 10219,
-  "version_name": "1.2.19",
+  "version_code": 10225,
+  "version_name": "1.2.25",
   "mandatory": false,
-  "release_notes": "首页最近记录使用微软 Fluent 语义色区分已完成与待完善状态；桌面、启动页、登录页和应用内品牌入口统一升级为全新 W 形书页图标，并优化圆角与自适应图标安全边距。",
-  "published_at": "2026-08-10T07:51:49Z",
-  "sha256": "6ff73feef5bf9b3520e6743be9669b7b6657314f0eb53e465032c3fae7701519"
+  "release_notes": "修复移动蜂窝网络下本地 STT 长连接传输中断：正式包固定走云端 IPv4 中继，缩短 WebSocket 心跳并等待服务端会话确认；本地链路失败时可靠切换腾讯云实时识别。保留 lstwin.space 的 TLS 域名与 AAAA。",
+  "published_at": "2026-08-18T00:00:00Z",
+  "sha256": "ca565beb2d82fe4b0b39f2563203240865cdf19936ac5b56b963cb545aa4ac25",
+  "apk_filename": "ZhiWuBen-Android-10225.apk"
 }

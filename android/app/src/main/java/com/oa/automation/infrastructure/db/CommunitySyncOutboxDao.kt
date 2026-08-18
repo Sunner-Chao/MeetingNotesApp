@@ -8,6 +8,9 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface CommunitySyncOutboxDao {
+    @Query("SELECT * FROM community_sync_outbox ORDER BY updatedAt DESC")
+    fun observeAll(): Flow<List<CommunitySyncOutboxEntity>>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(entity: CommunitySyncOutboxEntity)
 

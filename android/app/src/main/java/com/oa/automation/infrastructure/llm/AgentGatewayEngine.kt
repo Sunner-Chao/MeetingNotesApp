@@ -38,7 +38,8 @@ class AgentGatewayEngine(
     override suspend fun generateReport(
         transcript: String,
         template: ReportTemplateConfig,
-        attachments: List<AgentAttachment>
+        attachments: List<AgentAttachment>,
+        usageContext: AgentUsageContext?
     ): Result<ReportData> = withContext(Dispatchers.IO) {
         val payload = AgentTaskRequest(
             provider = config.agentProvider.requestValue,
@@ -48,6 +49,8 @@ class AgentGatewayEngine(
             transcript = transcript,
             templateName = template.selectedName,
             templateContent = template.content,
+            meetingId = usageContext?.meetingId,
+            usageKey = usageContext?.usageKey,
             attachmentManifest = buildAttachmentManifest(attachments)
         )
         execute(payload, attachments).map { response ->
@@ -161,6 +164,8 @@ class AgentGatewayEngine(
         val transcript: String? = null,
         val templateName: String? = null,
         val templateContent: String? = null,
+        @SerializedName("meeting_id") val meetingId: String? = null,
+        @SerializedName("usage_key") val usageKey: String? = null,
         val messages: List<ChatMessage>? = null,
         val attachmentManifest: List<AgentAttachmentManifestEntry> = emptyList()
     )

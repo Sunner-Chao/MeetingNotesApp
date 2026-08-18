@@ -59,14 +59,14 @@ Android 客户端负责用户交互、麦克风录音、实时转写预览、最
 - 连续流式会话停止后优先按 `session_id` 复用服务端 WAV；流中断或会话不可用时才上传本机完整 WAV。
 - 最终稿可与会议已有转写合并，避免覆盖历史内容。
 - STT HTTP 和 WebSocket 请求均支持 Bearer Token。
-- 默认提供 Faster-Whisper、腾讯云混合识别和通用云端 ASR；SenseVoice 仅在管理员构建显式开启共享模型切换后提供。
+- 默认提供本地 Faster-Whisper `large-v3-turbo`，识别失败时自动回退到腾讯云；两者均支持文件转写和实时会议收尾。
 - 最终转录进度在可测阶段显示百分比；服务端识别阶段显示不确定进度和当前处理阶段。
 
 ### 5. STT 设置与服务发现
 
 - 配置 STT 引擎、模型、服务地址和访问 Token。
 - 登录、注册、会员刷新和录音启动会自动获取当前账户的短期 STT 用户令牌；APK 不内置生产凭证，也不下发全局 STT 服务密钥。
-- STT、Agent 和账户服务地址可在构建机的 `local.defaults.env` 中配置，示例见 `local.defaults.env.example`。
+- STT、Agent 和账户服务地址可在构建机的 `local.defaults.env` 中配置，示例见 `local.defaults.env.example`。STT 必须分别配置 `MEETINGNOTES_STT_DEBUG_ENDPOINT` 与 `MEETINGNOTES_STT_RELEASE_ENDPOINT`；AVD 默认使用 `10.0.2.2:8888`，正式包默认使用 `https://lstwin.space`，避免本地地址进入产品发布。
 - 配置云端 ASR 根地址、`/v1` 地址或完整 `/audio/transcriptions` 地址，以及 API Key 与模型名。
 - 腾讯云混合识别启动前刷新账户 STT 令牌，Android 不保存腾讯长期密钥；实时或最终云接口异常时由 Server 自动回退。
 - 通用云端 ASR 仅在停止录音后上传生成最终稿，不建立本地 STT WebSocket 预览连接。

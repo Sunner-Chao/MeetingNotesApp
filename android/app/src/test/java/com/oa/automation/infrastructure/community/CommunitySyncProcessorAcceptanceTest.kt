@@ -190,6 +190,9 @@ class CommunitySyncProcessorAcceptanceTest {
     private class FakeOutboxDao(private val store: ProcessorStore) : CommunitySyncOutboxDao {
         private val state = MutableStateFlow(store.outbox)
 
+        override fun observeAll(): Flow<List<CommunitySyncOutboxEntity>> =
+            MutableStateFlow(listOfNotNull(store.outbox))
+
         override suspend fun upsert(entity: CommunitySyncOutboxEntity) { store.outbox = entity; state.value = entity }
         override suspend fun findByPostId(postId: String) = store.outbox?.takeIf { it.postId == postId }
         override fun observe(postId: String): Flow<CommunitySyncOutboxEntity?> = state
@@ -219,6 +222,7 @@ class CommunitySyncProcessorAcceptanceTest {
     }
 
     private class FakePublishedPostDao(private val store: ProcessorStore) : PublishedPostDao {
+        override fun observeAll(): Flow<List<PublishedPostEntity>> = MutableStateFlow(listOf(store.post))
         override suspend fun insert(entity: PublishedPostEntity) = Unit
         override suspend fun findLatest(journeyId: String) = store.post
         override fun observeLatest(journeyId: String): Flow<PublishedPostEntity?> = MutableStateFlow(store.post)

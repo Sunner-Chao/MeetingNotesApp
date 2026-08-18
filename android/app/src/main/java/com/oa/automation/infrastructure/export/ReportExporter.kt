@@ -19,7 +19,12 @@ import java.io.FileOutputStream
 private fun String.usesStudyReportStyle(): Boolean =
     contains("研学") || contains("参观考察") || contains("游记") || contains("文旅")
 
-private val photoAnchorPattern = Regex("^\\s*\\[照片\\s*[:：]\\s*图\\s*(\\d+)]\\s*$")
+private fun String.usesProjectManagementReportStyle(): Boolean =
+    trim() == "项目管理" || contains("孔爵") && contains("表格")
+
+private val photoAnchorPattern = Regex(
+    "^\\s*\\[照片\\s*[:：]\\s*图\\s*(\\d+)(?:\\s*[|｜]\\s*([^]]+?))?]\\s*$"
+)
 
 /**
  * Report Exporter - Export meeting reports to various formats
@@ -173,32 +178,38 @@ object ReportExporter {
         val margin = 40f
         val contentWidth = pageWidth - 2 * margin
         val contentBottom = pageHeight - margin - 18f
+        val accentColor = Color.parseColor(if (isStudyReport) "#2563EB" else "#1A73E8")
+        val headingColor = Color.parseColor(if (isStudyReport) "#1F2937" else "#333333")
+        val bodyColor = Color.parseColor(if (isStudyReport) "#374151" else "#555555")
+        val mutedColor = Color.parseColor(if (isStudyReport) "#64748B" else "#999999")
+        val softAccentColor = Color.parseColor("#EAF2FF")
+        val softSurfaceColor = Color.parseColor("#F7F9FC")
 
         val titlePaint = TextPaint().apply {
             textSize = 20f
             typeface = Typeface.DEFAULT_BOLD
-            color = Color.parseColor("#1a73e8")
+            color = accentColor
             isAntiAlias = true
         }
 
         val headingPaint = TextPaint().apply {
             textSize = 16f
             typeface = Typeface.DEFAULT_BOLD
-            color = Color.parseColor("#333333")
+            color = headingColor
             isAntiAlias = true
         }
 
         val bodyPaint = TextPaint().apply {
             textSize = 12f
             typeface = Typeface.DEFAULT
-            color = Color.parseColor("#555555")
+            color = bodyColor
             isAntiAlias = true
         }
 
         val footerPaint = TextPaint().apply {
             textSize = 10f
             typeface = Typeface.DEFAULT
-            color = Color.parseColor("#999999")
+            color = mutedColor
             isAntiAlias = true
         }
 
@@ -209,8 +220,36 @@ object ReportExporter {
         }
 
         val linePaint = Paint().apply {
-            color = Color.parseColor("#1a73e8")
-            strokeWidth = 2f
+            color = if (isStudyReport) Color.parseColor("#CBD9EE") else accentColor
+            strokeWidth = if (isStudyReport) 1f else 2f
+        }
+
+        val studyLeadPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+            textSize = 12.5f
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.ITALIC)
+            color = Color.parseColor("#334155")
+        }
+
+        val studyMetaPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+            textSize = 11.5f
+            typeface = Typeface.DEFAULT_BOLD
+            color = Color.parseColor("#355EA8")
+        }
+
+        val studySurfacePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+            color = softSurfaceColor
+        }
+
+        val studyAccentSurfacePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+            color = softAccentColor
+        }
+
+        val studyBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = 0.8f
+            color = Color.parseColor("#D6E1F2")
         }
 
         var pageNumber = 1
@@ -298,6 +337,53 @@ object ReportExporter {
             return yPosition
         }
 
+        fun drawStudyLead(text: String) {
+            val horizontalPadding = 14f
+            val verticalPadding = 12f
+            val layout = createTextLayout(
+                text = cleanPdfMarkdown(text),
+                paint = studyLeadPaint,
+                width = (contentWidth - horizontalPadding * 2).toInt()
+            )
+            val blockHeight = layout.height + verticalPadding * 2
+            ensureSpace(blockHeight + 8f)
+            val bounds = RectF(margin, yPosition, pageWidth - margin, yPosition + blockHeight)
+            canvas.drawRoundRect(bounds, 8f, 8f, studyAccentSurfacePaint)
+            canvas.save()
+            canvas.translate(margin + horizontalPadding, yPosition + verticalPadding)
+            layout.draw(canvas)
+            canvas.restore()
+            yPosition += blockHeight + 12f
+        }
+
+        fun drawStudyHeading(text: String, primary: Boolean) {
+            val paint = TextPaint(headingPaint).apply {
+                textSize = if (primary) 15f else 13f
+                color = if (primary) Color.parseColor("#1E3A5F") else headingColor
+            }
+            val horizontalPadding = if (primary) 14f else 4f
+            val verticalPadding = if (primary) 9f else 4f
+            val layout = createTextLayout(
+                text = cleanPdfMarkdown(text),
+                paint = paint,
+                width = (contentWidth - horizontalPadding * 2).toInt()
+            )
+            val blockHeight = layout.height + verticalPadding * 2
+            ensureSpace(blockHeight + if (primary) 36f else 26f)
+            if (primary) {
+                val bounds = RectF(margin, yPosition, pageWidth - margin, yPosition + blockHeight)
+                canvas.drawRoundRect(bounds, 7f, 7f, studyAccentSurfacePaint)
+                canvas.drawRect(margin, yPosition, margin + 4f, yPosition + blockHeight, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = accentColor
+                })
+            }
+            canvas.save()
+            canvas.translate(margin + horizontalPadding, yPosition + verticalPadding)
+            layout.draw(canvas)
+            canvas.restore()
+            yPosition += blockHeight + if (primary) 10f else 6f
+        }
+
         fun drawTable(sourceRows: List<List<String>>) {
             if (sourceRows.isEmpty()) return
             val columnCount = sourceRows.maxOfOrNull { it.size }?.coerceAtLeast(1) ?: return
@@ -314,7 +400,7 @@ object ReportExporter {
             val headerTextPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
                 this.textSize = textSize
                 typeface = Typeface.DEFAULT_BOLD
-                color = Color.WHITE
+                color = if (isStudyReport) Color.parseColor("#1E3A5F") else Color.WHITE
             }
             val cellTextPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
                 this.textSize = textSize
@@ -323,11 +409,11 @@ object ReportExporter {
             }
             val headerBackgroundPaint = Paint().apply {
                 style = Paint.Style.FILL
-                color = Color.parseColor("#1A73E8")
+                color = if (isStudyReport) Color.parseColor("#DCE9FB") else accentColor
             }
             val alternateBackgroundPaint = Paint().apply {
                 style = Paint.Style.FILL
-                color = Color.parseColor("#F4F7FA")
+                color = if (isStudyReport) Color.parseColor("#F8FAFD") else Color.parseColor("#F4F7FA")
             }
             val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 style = Paint.Style.STROKE
@@ -391,33 +477,57 @@ object ReportExporter {
 
         val placedImageIndexes = mutableSetOf<Int>()
 
-        fun drawReportImage(index: Int) {
+        fun drawReportImage(index: Int, anchorCaption: String? = null) {
             val image = images.getOrNull(index) ?: return
             val bitmap = checkNotNull(
                 BitmapFactory.decodeByteArray(image.bytes, 0, image.bytes.size)
             ) { "无法解码图片：${image.caption}" }
             try {
-                val fallbackCaption = if (isStudyReport) "照片" else "会议图片"
-                val caption = "图 ${index + 1}：${image.caption.ifBlank { fallbackCaption }}"
+                val fallbackCaption = if (isStudyReport) "现场照片" else "会议图片"
+                val captionText = anchorCaption?.trim()?.takeIf(String::isNotBlank)
+                    ?: image.caption.ifBlank { fallbackCaption }
+                val caption = if (isStudyReport) {
+                    "图 ${index + 1}｜$captionText"
+                } else {
+                    "图 ${index + 1}：$captionText"
+                }
+                val imageHorizontalInset = if (isStudyReport) 10f else 0f
                 val captionLayout = createTextLayout(
                     caption,
                     footerPaint,
-                    Layout.Alignment.ALIGN_CENTER
+                    Layout.Alignment.ALIGN_CENTER,
+                    width = (contentWidth - imageHorizontalInset * 2).toInt()
                 )
-                val maxImageHeight = contentBottom - margin - captionLayout.height - 38f
+                val blockPadding = if (isStudyReport) 10f else 0f
+                val fullPageImageHeight = contentBottom - margin - captionLayout.height - 38f
+                val currentPageImageHeight = contentBottom - yPosition - captionLayout.height -
+                    24f - blockPadding * 2
+                val maxImageHeight = if (isStudyReport && currentPageImageHeight >= 160f) {
+                    minOf(fullPageImageHeight, currentPageImageHeight)
+                } else {
+                    fullPageImageHeight
+                }
+                val availableImageWidth = contentWidth - imageHorizontalInset * 2
                 val scale = minOf(
                     1f,
-                    contentWidth / bitmap.width,
+                    availableImageWidth / bitmap.width,
                     maxImageHeight / bitmap.height
                 )
                 val imageWidth = bitmap.width * scale
                 val imageHeight = bitmap.height * scale
-                val blockHeight = imageHeight + captionLayout.height + 24f
+                val blockHeight = imageHeight + captionLayout.height + 24f + blockPadding * 2
 
                 if (yPosition + blockHeight > contentBottom) {
                     startNewPage()
                 }
 
+                val blockTop = yPosition
+                if (isStudyReport) {
+                    val bounds = RectF(margin, blockTop, pageWidth - margin, blockTop + blockHeight)
+                    canvas.drawRoundRect(bounds, 8f, 8f, studySurfacePaint)
+                    canvas.drawRoundRect(bounds, 8f, 8f, studyBorderPaint)
+                    yPosition += blockPadding
+                }
                 val imageLeft = margin + (contentWidth - imageWidth) / 2f
                 canvas.drawBitmap(
                     bitmap,
@@ -427,10 +537,10 @@ object ReportExporter {
                 )
                 yPosition += imageHeight + 8f
                 canvas.save()
-                canvas.translate(margin, yPosition)
+                canvas.translate(margin + imageHorizontalInset, yPosition)
                 captionLayout.draw(canvas)
                 canvas.restore()
-                yPosition += captionLayout.height + 16f
+                yPosition += captionLayout.height + 16f + if (isStudyReport) blockPadding else 0f
                 placedImageIndexes += index
             } finally {
                 bitmap.recycle()
@@ -451,7 +561,12 @@ object ReportExporter {
 
         if (report.rawContent.isNotBlank()) {
             // Parse raw markdown content
-            val lines = ReportDocumentFormatter.normalizeLists(report.rawContent).lines()
+            val sourceContent = if (report.templateName.usesProjectManagementReportStyle()) {
+                ReportDocumentFormatter.normalizeProjectManagementSections(report.rawContent)
+            } else {
+                report.rawContent
+            }
+            val lines = ReportDocumentFormatter.normalizeLists(sourceContent).lines()
             var lineIndex = 0
             while (lineIndex < lines.size) {
                 val line = lines[lineIndex]
@@ -460,8 +575,9 @@ object ReportExporter {
                 when {
                     photoAnchor != null -> {
                         val imageIndex = photoAnchor.groupValues[1].toIntOrNull()?.minus(1)
+                        val anchorCaption = photoAnchor.groupValues.getOrNull(2)
                         if (imageIndex != null && imageIndex !in placedImageIndexes) {
-                            drawReportImage(imageIndex)
+                            drawReportImage(imageIndex, anchorCaption)
                         }
                         lineIndex++
                     }
@@ -495,21 +611,31 @@ object ReportExporter {
                             .firstOrNull { it.isNotBlank() }
                             ?.trim()
                             ?.startsWith("|") == true
-                        yPosition = drawText(
-                            trimmed.removePrefix("## ").trim(),
-                            headingPaint,
-                            minimumFollowingSpace = if (followedByTable) 80f else 28f
-                        )
+                        val heading = trimmed.removePrefix("## ").trim()
+                        if (isStudyReport) {
+                            drawStudyHeading(heading, primary = true)
+                        } else {
+                            yPosition = drawText(
+                                heading,
+                                headingPaint,
+                                minimumFollowingSpace = if (followedByTable) 80f else 28f
+                            )
+                        }
                         lineIndex++
                     }
                     trimmed.startsWith("### ") -> {
                         addVerticalSpace(4f)
                         val subHeadingPaint = TextPaint(headingPaint).apply { textSize = 14f }
-                        yPosition = drawText(
-                            trimmed.removePrefix("### ").trim(),
-                            subHeadingPaint,
-                            minimumFollowingSpace = 26f
-                        )
+                        val heading = trimmed.removePrefix("### ").trim()
+                        if (isStudyReport) {
+                            drawStudyHeading(heading, primary = false)
+                        } else {
+                            yPosition = drawText(
+                                heading,
+                                subHeadingPaint,
+                                minimumFollowingSpace = 26f
+                            )
+                        }
                         lineIndex++
                     }
                     trimmed.matches(Regex("^#{4,6}\\s+.+$")) -> {
@@ -530,6 +656,17 @@ object ReportExporter {
                         ensureSpace(20f)
                         canvas.drawLine(margin, yPosition + 4f, pageWidth - margin, yPosition + 4f, linePaint)
                         yPosition += 16f
+                        lineIndex++
+                    }
+                    isStudyReport && trimmed.startsWith(">") -> {
+                        drawStudyLead(trimmed)
+                        lineIndex++
+                    }
+                    isStudyReport && (
+                        trimmed.startsWith("**路线**") ||
+                            trimmed.startsWith("**同行与讲解**")
+                        ) -> {
+                        yPosition = drawText(cleanPdfMarkdown(line), studyMetaPaint)
                         lineIndex++
                     }
                     else -> {
@@ -599,7 +736,7 @@ object ReportExporter {
             )
             addVerticalSpace(4f)
 
-            remainingImageIndexes.forEach(::drawReportImage)
+            remainingImageIndexes.forEach { imageIndex -> drawReportImage(imageIndex) }
         }
 
         // Footer

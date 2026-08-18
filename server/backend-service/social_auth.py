@@ -11,9 +11,8 @@ from urllib.parse import urlparse
 
 
 PROVIDERS = (
-    ("wechat", "微信", "WECHAT"),
-    ("qq", "QQ", "QQ"),
-    ("feishu", "飞书", "FEISHU"),
+    ("wechat", "微信", "WECHAT", "consumer"),
+    ("feishu", "飞书团队版", "FEISHU", "team"),
 )
 
 
@@ -49,7 +48,7 @@ def load_social_auth_providers(
     file_config = _read_provider_file(path)
     discovered: list[dict] = []
 
-    for provider_id, default_name, env_name in PROVIDERS:
+    for provider_id, default_name, env_name, tier in PROVIDERS:
         item = file_config.get(provider_id, {})
         item = item if isinstance(item, dict) else {}
         enabled_value = env.get(f"ACCOUNT_AUTH_{env_name}_ENABLED", item.get("enabled", False))
@@ -62,6 +61,7 @@ def load_social_auth_providers(
                 "name": str(item.get("name", default_name)).strip() or default_name,
                 "enabled": _enabled(enabled_value) and bool(login_url),
                 "authorization_url": login_url,
+                "tier": tier,
             }
         )
     return discovered

@@ -6,7 +6,9 @@ import androidx.core.content.FileProvider
 import com.google.gson.Gson
 import com.oa.automation.data.local.ConfigDataStore
 import com.oa.automation.domain.model.STTConfig
+import com.oa.automation.domain.model.serviceEndpointFor
 import com.oa.automation.infrastructure.account.AccountSessionSynchronizer
+import com.oa.automation.infrastructure.stt.STT_IPV4_RELAY_DNS
 import java.io.File
 import java.io.IOException
 import java.time.Instant
@@ -30,7 +32,8 @@ data class ArchivedMeetingAudio(
     val filename: String,
     val source: String,
     val downloadPath: String,
-    val sha256: String = ""
+    val sha256: String = "",
+    val serviceEndpoint: String = ""
 )
 
 data class PreparedMeetingAudioShare(
@@ -50,6 +53,7 @@ class MeetingAudioArchiveService(
     private val accountSessionSynchronizer: AccountSessionSynchronizer? = null
 ) {
     private val client = OkHttpClient.Builder()
+        .dns(STT_IPV4_RELAY_DNS)
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.MINUTES)
         .build()
@@ -57,27 +61,43 @@ class MeetingAudioArchiveService(
 
     suspend fun list(meetingId: String): Result<List<ArchivedMeetingAudio>> = withContext(Dispatchers.IO) {
         runCatching {
-            executeAuthorizedRequest(
-                requestFactory = { config, token ->
-                    val url = config.localEndpoint.trim().trimEnd('/').toHttpUrlOrNull()
-                        ?.newBuilder()
-                        ?.addPathSegment("audio-archive")
-                        ?.addQueryParameter("meeting_id", meetingId)
-                        ?.build()
-                        ?: error("STT 服务地址格式无效")
-                    Request.Builder()
-                        .url(url)
-                        .addHeader("Authorization", "Bearer $token")
-                        .get()
-                        .build()
+            val config = loadSttConfig(refreshAccountSession = true, requireRefresh = false)
+            val endpoints = listOfNotNull(
+                config.localEndpoint.trim().trimEnd('/').takeIf { it.isNotBlank() },
+                config.cloudEndpoint?.trim()?.trimEnd('/')?.takeIf { it.isNotBlank() }
+            ).distinct()
+            val results = endpoints.map { endpoint ->
+                runCatching {
+                    executeAuthorizedRequest(
+                        endpointProvider = { endpoint },
+                        requestFactory = { serviceEndpoint, token ->
+                            val url = serviceEndpoint.toHttpUrlOrNull()
+                                ?.newBuilder()
+                                ?.addPathSegment("audio-archive")
+                                ?.addQueryParameter("meeting_id", meetingId)
+                                ?.build()
+                                ?: error("STT 服务地址格式无效")
+                            Request.Builder()
+                                .url(url)
+                                .addHeader("Authorization", "Bearer $token")
+                                .get()
+                                .build()
+                        }
+                    ) { response ->
+                        val body = response.body?.string().orEmpty()
+                        if (!response.isSuccessful) throw IOException(archiveHttpError(response.code, body))
+                        gson.fromJson(body, ArchivedAudioListPayload::class.java).items.map {
+                            it.toDomain(endpoint)
+                        }
+                    }
                 }
-            ) { response ->
-                val body = response.body?.string().orEmpty()
-                if (!response.isSuccessful) throw IOException(archiveHttpError(response.code, body))
-                deduplicateArchivedAudio(
-                    gson.fromJson(body, ArchivedAudioListPayload::class.java).items.map { it.toDomain() }
-                )
             }
+            val successful = results.mapNotNull { it.getOrNull() }
+            if (successful.isEmpty()) {
+                throw results.firstNotNullOfOrNull { it.exceptionOrNull() }
+                    ?: IOException("会议音频服务不可用")
+            }
+            deduplicateArchivedAudio(successful.flatten())
         }
     }
 
@@ -87,8 +107,9 @@ class MeetingAudioArchiveService(
     ): Result<PreparedMeetingAudioShare> = withContext(Dispatchers.IO) {
         runCatching {
             executeAuthorizedRequest(
-                requestFactory = { config, token ->
-                    val url = config.localEndpoint.trim().trimEnd('/').toHttpUrlOrNull()
+                endpointProvider = { config -> audio.serviceEndpoint.ifBlank { config.serviceEndpointFor() } },
+                requestFactory = { serviceEndpoint, token ->
+                    val url = serviceEndpoint.trim().trimEnd('/').toHttpUrlOrNull()
                         ?.newBuilder()
                         ?.addPathSegments(audio.downloadPath.trimStart('/'))
                         ?.build()
@@ -140,7 +161,8 @@ class MeetingAudioArchiveService(
             val config = loadSttConfig(refreshAccountSession = true, requireRefresh = false)
             val token = config.apiToken?.trim().orEmpty()
             require(token.isNotBlank()) { "STT 访问令牌未配置" }
-            val url = config.localEndpoint.trim().trimEnd('/').toHttpUrlOrNull()
+            val serviceEndpoint = audio.serviceEndpoint.ifBlank { config.serviceEndpointFor() }
+            val url = serviceEndpoint.trim().trimEnd('/').toHttpUrlOrNull()
                 ?.newBuilder()
                 ?.addPathSegments(audio.downloadPath.trimStart('/'))
                 ?.build()
@@ -152,15 +174,16 @@ class MeetingAudioArchiveService(
         }
     }
 
-    suspend fun delete(audioId: String): Result<Unit> = withContext(Dispatchers.IO) {
+    suspend fun delete(audio: ArchivedMeetingAudio): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
-            require(audioId.isNotBlank()) { "会议音频标识无效" }
+            require(audio.id.isNotBlank()) { "会议音频标识无效" }
             executeAuthorizedRequest(
-                requestFactory = { config, token ->
-                    val url = config.localEndpoint.trim().trimEnd('/').toHttpUrlOrNull()
+                endpointProvider = { config -> audio.serviceEndpoint.ifBlank { config.serviceEndpointFor() } },
+                requestFactory = { serviceEndpoint, token ->
+                    val url = serviceEndpoint.trim().trimEnd('/').toHttpUrlOrNull()
                         ?.newBuilder()
                         ?.addPathSegment("audio-archive")
-                        ?.addPathSegment(audioId)
+                        ?.addPathSegment(audio.id)
                         ?.build()
                         ?: error("STT 服务地址格式无效")
                     Request.Builder()
@@ -177,7 +200,8 @@ class MeetingAudioArchiveService(
     }
 
     private suspend fun <T> executeAuthorizedRequest(
-        requestFactory: (STTConfig, String) -> Request,
+        endpointProvider: (STTConfig) -> String = { it.serviceEndpointFor() },
+        requestFactory: (String, String) -> Request,
         responseHandler: suspend (okhttp3.Response) -> T
     ): T {
         var config = loadSttConfig(refreshAccountSession = true, requireRefresh = false)
@@ -185,7 +209,9 @@ class MeetingAudioArchiveService(
         while (true) {
             val token = config.apiToken?.trim().orEmpty()
             require(token.isNotBlank()) { "STT 访问令牌未配置" }
-            val response = client.newCall(requestFactory(config, token)).awaitResponse()
+            val endpoint = endpointProvider(config).trim().trimEnd('/')
+            require(endpoint.isNotBlank()) { "STT 服务地址未配置" }
+            val response = client.newCall(requestFactory(endpoint, token)).awaitResponse()
             if (response.code == 401 && !retriedAfterUnauthorized && hasAccountSession()) {
                 response.close()
                 config = loadSttConfig(refreshAccountSession = true, requireRefresh = true)
@@ -262,7 +288,7 @@ class MeetingAudioArchiveService(
         val sha256: String = "",
         @com.google.gson.annotations.SerializedName("download_path") val downloadPath: String = ""
     ) {
-        fun toDomain() = ArchivedMeetingAudio(
+        fun toDomain(serviceEndpoint: String) = ArchivedMeetingAudio(
             id = id,
             meetingId = meetingId,
             createdAt = createdAt,
@@ -271,7 +297,8 @@ class MeetingAudioArchiveService(
             filename = filename,
             source = source,
             downloadPath = downloadPath,
-            sha256 = sha256
+            sha256 = sha256,
+            serviceEndpoint = serviceEndpoint
         )
     }
 }

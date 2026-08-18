@@ -18,6 +18,29 @@ class ReportTitleResolverTest {
     }
 
     @Test
+    fun newProductPlaceholderIsAlsoReplaced() {
+        val report = Report(
+            meetingId = "meeting-new-placeholder",
+            rawContent = "# 城市更新项目协调会\n\n## 会议结论"
+        )
+
+        assertEquals(
+            "城市更新项目协调会",
+            ReportTitleResolver.resolve(report, "即刻洞见 08-12 13:30")
+        )
+    }
+
+    @Test
+    fun instantDraftPlaceholderIsNotUsedAsFallbackTitle() {
+        val report = Report(meetingId = "meeting-import-placeholder", templateName = "项目管理")
+
+        assertEquals(
+            "项目管理会议纪要",
+            ReportTitleResolver.resolve(report, "顷刻成稿 08-12 13:30")
+        )
+    }
+
+    @Test
     fun topicSectionIsUsedWhenTopHeadingIsGeneric() {
         val report = Report(
             meetingId = "meeting-2",

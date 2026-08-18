@@ -200,6 +200,7 @@ class AgentGateway:
                 ON agent_tasks(token_id, created_at DESC);
                 """
             )
+            self._ensure_task_billing_columns(conn)
             conn.execute(
                 """
                 UPDATE agent_tasks
@@ -279,9 +280,21 @@ class AgentGateway:
                 "SELECT request_limit, requests_used, expires_at FROM agent_tokens WHERE id = ?",
                 (principal.token_id,),
             ).fetchone()
+            usage = None
+            if (
+                principal.token_id.startswith("user:")
+                and self._table_exists(conn, "account_usage_balances")
+            ):
+                usage = conn.execute(
+                    """
+                    SELECT ai_credits_granted, ai_credits_used
+                    FROM account_usage_balances WHERE user_id = ?
+                    """,
+                    (principal.token_id[5:],),
+                ).fetchone()
         if row is None:
             raise AgentAuthError("Agent token no longer exists")
-        return {
+        payload = {
             "label": principal.label,
             "request_limit": row["request_limit"],
             "requests_used": row["requests_used"],
@@ -289,10 +302,132 @@ class AgentGateway:
             "allowed_providers": sorted(principal.allowed_providers),
             "expires_at": row["expires_at"],
         }
+        if usage is not None:
+            granted = int(usage["ai_credits_granted"])
+            used = int(usage["ai_credits_used"])
+            payload.update(
+                {
+                    "ai_credits_granted": granted,
+                    "ai_credits_used": used,
+                    "ai_credits_remaining": max(0, granted - used),
+                }
+            )
+        return payload
 
-    def _reserve_quota(self, principal: AgentPrincipal) -> None:
+    def _reserve_quota(
+        self,
+        principal: AgentPrincipal,
+        payload: dict,
+        task_id: str,
+    ) -> dict:
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            if principal.token_id.startswith("user:") and self._table_exists(
+                conn, "account_usage_balances"
+            ):
+                user_id = principal.token_id[5:]
+                now = int(time.time())
+                conn.execute(
+                    """
+                    UPDATE account_usage_balances
+                    SET ai_credits_used = 0,
+                        stt_seconds_used = 0,
+                        period_start = ?,
+                        period_end = ?,
+                        updated_at = ?
+                    WHERE user_id = ? AND period_end <= ?
+                    """,
+                    (now, now + 30 * 24 * 60 * 60, now, user_id, now),
+                )
+                operation = str(payload.get("operation") or "")
+                kind = "ai_summary" if operation == "generate_report" else "ai_chat"
+                meeting_id = str(payload.get("meeting_id") or "").strip() or None
+                usage_key = str(payload.get("usage_key") or "").strip()
+                if not usage_key:
+                    usage_key = f"agent:{user_id}:{task_id}"
+                if len(usage_key) > 200:
+                    raise AgentInputError("usage_key is too long")
+                existing = conn.execute(
+                    "SELECT id, status, charged FROM account_usage_events WHERE idempotency_key = ?",
+                    (usage_key,),
+                ).fetchone()
+                if existing is not None and existing["status"] == "succeeded":
+                    cached = conn.execute(
+                        """
+                        SELECT id, result_text FROM agent_tasks
+                        WHERE usage_event_id = ? AND status = 'succeeded'
+                        ORDER BY finished_at DESC LIMIT 1
+                        """,
+                        (existing["id"],),
+                    ).fetchone()
+                    if cached is not None:
+                        return {
+                            "mode": "cached",
+                            "event_id": existing["id"],
+                            "task_id": cached["id"],
+                            "text": cached["result_text"],
+                            "charged": bool(existing["charged"]),
+                            "meeting_id": meeting_id,
+                            "usage_key": usage_key,
+                        }
+                if existing is not None and existing["status"] == "reserved":
+                    raise AgentInputError("该请求正在处理中，请勿重复提交")
+                charge = True
+                if kind == "ai_summary" and meeting_id:
+                    since = int(time.time()) - 24 * 60 * 60
+                    previous = conn.execute(
+                        """
+                        SELECT COUNT(*) AS count FROM account_usage_events
+                        WHERE user_id = ? AND meeting_id = ? AND kind = 'ai_summary'
+                          AND status = 'succeeded' AND created_at >= ?
+                        """,
+                        (user_id, meeting_id, since),
+                    ).fetchone()
+                    previous_count = int(previous["count"] or 0)
+                    charge = previous_count == 0 or previous_count >= 4
+                if charge:
+                    result = conn.execute(
+                        """
+                        UPDATE account_usage_balances
+                        SET ai_credits_used = ai_credits_used + 1, updated_at = ?
+                        WHERE user_id = ? AND ai_credits_used < ai_credits_granted
+                        """,
+                        (int(time.time()), user_id),
+                    )
+                    if result.rowcount != 1:
+                        raise AgentQuotaError("AI Credits 已用完，请升级套餐后继续")
+                now = int(time.time())
+                if existing is None:
+                    event_id = str(uuid.uuid4())
+                    conn.execute(
+                        """
+                        INSERT INTO account_usage_events (
+                            id, idempotency_key, user_id, meeting_id, kind,
+                            quantity, unit, status, charged, metadata_json,
+                            created_at, completed_at
+                        ) VALUES (?, ?, ?, ?, ?, 1, 'credit', 'reserved', ?, '{}', ?, NULL)
+                        """,
+                        (event_id, usage_key, user_id, meeting_id, kind, int(charge), now),
+                    )
+                else:
+                    event_id = existing["id"]
+                    conn.execute(
+                        """
+                        UPDATE account_usage_events
+                        SET meeting_id = ?, kind = ?, status = 'reserved', charged = ?,
+                            created_at = ?, completed_at = NULL
+                        WHERE id = ?
+                        """,
+                        (meeting_id, kind, int(charge), now, event_id),
+                    )
+                return {
+                    "mode": "usage",
+                    "event_id": event_id,
+                    "charged": charge,
+                    "meeting_id": meeting_id,
+                    "usage_key": usage_key,
+                    "user_id": user_id,
+                }
             result = conn.execute(
                 """
                 UPDATE agent_tokens SET requests_used = requests_used + 1
@@ -303,6 +438,67 @@ class AgentGateway:
             )
             if result.rowcount != 1:
                 raise AgentQuotaError("Agent request quota exhausted")
+            return {"mode": "legacy", "charged": True}
+
+    @staticmethod
+    def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
+        return conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (name,),
+        ).fetchone() is not None
+
+    @staticmethod
+    def _ensure_task_billing_columns(conn: sqlite3.Connection) -> None:
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(agent_tasks)").fetchall()
+        }
+        for name, definition in (
+            ("usage_event_id", "TEXT"),
+            ("meeting_id", "TEXT"),
+            ("usage_key", "TEXT"),
+            ("charged", "INTEGER NOT NULL DEFAULT 1"),
+        ):
+            if name not in columns:
+                conn.execute(f"ALTER TABLE agent_tasks ADD COLUMN {name} {definition}")
+
+    def _settle_usage(self, reservation: dict, succeeded: bool) -> None:
+        if reservation.get("mode") != "usage":
+            return
+        now = int(time.time())
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            event = conn.execute(
+                "SELECT status, charged FROM account_usage_events WHERE id = ?",
+                (reservation["event_id"],),
+            ).fetchone()
+            if event is None or event["status"] != "reserved":
+                return
+            if succeeded:
+                conn.execute(
+                    """
+                    UPDATE account_usage_events
+                    SET status = 'succeeded', completed_at = ? WHERE id = ?
+                    """,
+                    (now, reservation["event_id"]),
+                )
+            else:
+                if event["charged"]:
+                    conn.execute(
+                        """
+                        UPDATE account_usage_balances
+                        SET ai_credits_used = MAX(0, ai_credits_used - 1), updated_at = ?
+                        WHERE user_id = ?
+                        """,
+                        (now, reservation["user_id"]),
+                    )
+                conn.execute(
+                    """
+                    UPDATE account_usage_events
+                    SET status = 'refunded', charged = 0, completed_at = ? WHERE id = ?
+                    """,
+                    (now, reservation["event_id"]),
+                )
 
     def issue_token(
         self,
@@ -483,11 +679,27 @@ class AgentGateway:
 
         task_id = str(uuid.uuid4())
         task_root = self.work_root / task_id
+        reservation: dict = {"mode": "none", "charged": False}
         try:
-            self._reserve_quota(principal)
+            reservation = self._reserve_quota(principal, payload, task_id)
+            if reservation.get("mode") == "cached":
+                return {
+                    "task_id": reservation["task_id"],
+                    "status": "succeeded",
+                    "text": reservation["text"],
+                    "charged": reservation["charged"],
+                    "cached": True,
+                }
             task_root.mkdir(parents=True, mode=0o700)
             stored = self._store_attachments(task_root, incoming)
-            self._create_task(task_id, principal.token_id, provider, operation, len(stored))
+            self._create_task(
+                task_id,
+                principal.token_id,
+                provider,
+                operation,
+                len(stored),
+                reservation,
+            )
             fallback_provider = (
                 "codex-cli"
                 if provider == "claude-cli"
@@ -507,14 +719,24 @@ class AgentGateway:
                 fallback_provider,
             )
             text = future.result(timeout=self.timeout_sec + 30)
-            return {"task_id": task_id, "status": "succeeded", "text": text}
+            self._settle_usage(reservation, True)
+            return {
+                "task_id": task_id,
+                "status": "succeeded",
+                "text": text,
+                "charged": bool(reservation.get("charged", True)),
+                "cached": False,
+            }
         except AgentError:
+            self._settle_usage(reservation, False)
             raise
         except TimeoutError as exc:
             self._fail_task(task_id, "Agent task timed out")
+            self._settle_usage(reservation, False)
             raise AgentProviderError("Agent task timed out") from exc
         except Exception as exc:
             self._fail_task(task_id, str(exc))
+            self._settle_usage(reservation, False)
             raise AgentProviderError(str(exc)) from exc
         finally:
             shutil.rmtree(task_root, ignore_errors=True)
@@ -605,16 +827,30 @@ class AgentGateway:
                 scenario_rules = (
                     "\n参观考察/研学/文旅导览专用规则：\n"
                     "- 场景可能包含导游、讲解员、接待方、受访方和参观者；逐段记录谁在什么点位讲了什么，不能把角色混为一谈。\n"
-                    "- 先写首屏亮点和真实路线，再按时间、地点、转场、分组或主题切换展开行程段；午间转场、座谈和体验活动单独成段。\n"
-                    "- 每个行程段把现场事实、对方介绍、参观者观点、图片可见事实和学习收获分开标注。\n"
-                    "- 图片只描述可见内容，并按上传顺序与行程段关联；无法确认点位、人物、文字或时间时写“待确认”。\n"
-                    "- GPS、EXIF 或网络定位只作为空间辅助证据，结合图片、转写和时间判断；室内漂移或相邻点位无法区分时写“待确认”，不得把坐标直接当作确切地点名称。\n"
-                    "- 交通、预约、开放时间、费用和适合人群缺失时写“未提及”，不得依据常识或网络印象补全。\n"
-                    "- 可以借鉴小红书/携程游记的可读性和现场感，但不得夸张营销；导游或场馆宣传语不能自动当作事实结论。\n"
+                    "- 采用游记式主叙事：开篇直接进入现场，先写真实路线，再按时间、地点、转场、分组或主题切换展开行程段；午间转场、座谈和体验活动单独成段。\n"
+                    "- 每个行程段自然融合游览者体验、讲解精要和互动发现；保持现场事实、对方介绍、参观者观点和图片可见事实的来源边界，但不要机械拆成审计表。\n"
+                    "- 输出面向阅读与分享的图文游记，不是会议纪要、审计报告或调研报告；禁止生成事实与待确认、已确认信息、仍待确认、证据附录等章节。\n"
+                    "- 每一站只保留一个站点标题，正文使用 3-5 个连续短段落；禁止输出‘时间与点位’‘现场事实’‘对方介绍’‘参观者观点与互动’‘学习收获’等固定标签或审计式栏目。\n"
+                    "- 每个短段落只承载一个现场画面、讲解观点或互动发现，避免逐句断行，也避免堆成长段文字墙。\n"
+                    "- ‘同行与讲解’只概括同行团队和主要讲解角色，不逐个罗列所有发言角色。\n"
+                    "- 不要输出‘旅程与篇章状态’‘首屏摘要’‘行程总览’‘图片叙事索引’等内部管理章节。无法确认且不影响阅读的信息直接省略，确需保留时用自然的审慎表达放回对应段落。\n"
+                    "- 图片只描述可见内容，并按上传顺序与行程段关联；无法确认点位、人物、文字或时间时直接省略相关判断，不创建待确认清单。\n"
+                    "- GPS、EXIF 或网络定位只作为空间辅助证据，结合图片、转写和时间判断；室内漂移或相邻点位无法区分时不得把坐标直接当作确切地点名称。\n"
+                    "- 交通、预约、开放时间、费用和适合人群缺失时直接省略对应正文小节，不得依据常识或网络印象补全。\n"
+                    "- 先按证据选择一种主形态：默认故事游记；多个明确点位和顺序可用路线攻略；可靠预约、开放时间、交通或拍摄信息充分时可用实用指南；原始材料明确给出准备物品、步骤或注意事项时才可用清单笔记。不要向用户解释选择过程。\n"
+                    "- 每篇只突出一种主形态，真实行程段叙事始终是核心；路线板、清单页和实用贴士只能按需择一辅助，不得把全部模块拼在一起。\n"
+                    "- 材料明确包含观察题、寻找目标或记录任务时，可在对应站点生成研学任务卡；多个展品或设备分别具有可靠名称与讲解时，可生成重点展品图鉴；工厂、实验室或工程现场存在明确步骤时，可生成参访流程；明确问题、回答和现场观察能够可靠配对时，可生成问题线索页。它们均为按需页面，不固定出现。\n"
+                    "- 展品知识只能来自本次图片、标牌、讲解或人工记录，不得引入网络排名。只有材料明确提到禁止拍摄、保密或手机封存时才写拍摄受限；没有图片不等于禁止拍摄。\n"
+                    "- 问题线索页使用‘### 问题｜具体问题’‘### 现场回答’‘### 观察印证’和可选‘### 继续探索’。问题与回答必须来自同一阶段的明确材料，无法确认归属时不得强行配对或调用网络知识补齐。\n"
+                    "- 自然观察围绕一个主要对象，且材料明确提供环境、可见特征、资源/威胁或继续观察中的至少两项时，可使用‘### 现场环境’‘### 可见特征’‘### 资源或威胁’‘### 继续观察’形成田野观察板。物种不确定时只描述可见特征，不调用网络知识命名。\n"
+                    "- 同一阶段至少有三张相关照片，且材料明确说明整体与局部关系时，可使用‘### 整体观察’和‘### 细节｜具体对象’组织整体与细节页。构件、材料、年代和空间关系不明确时使用普通图文页。\n"
+                    "- 可以借鉴小红书/携程游记的信息层级、图文节奏和收藏价值，但不得复制其商标、专有视觉资产、固定页面或作者原文。\n"
+                    "- 语气亲切、具体、有画面感，但不得虚构天气、心情、气味、路线、体验或评价；每段最多使用 1-2 个 emoji，禁止夸张营销。\n"
                     "- 研学输出不得混入项目管理或工程管理字段（负责人、协作方、截止时间、验收标准、优先级、行动项、风险清单、状态流转等），除非原始材料明确把它们作为行程事实提及。\n"
-                    "- 讲解人员只记录讲解角色、姓名和单位；没有依据时写“待确认”，不得补写或推断职务。\n"
-                    "- 图片需要放入正文时，在对应段落单独使用“[照片：图 N]”锚点；图片章节标题使用“照片集锦”，不要写“会议图片”。\n"
+                    "- 讲解人员只记录有依据的讲解角色、姓名和单位；没有依据时省略姓名或单位，不得补写或推断职务。\n"
+                    "- 图片需要放入正文时，在对应段落单独使用“[照片：图 N｜事实型图注]”锚点；图片充足时每 1-3 个短段落至少安排一张，同一场景可连续放置两个锚点供客户端形成双图拼贴。没有图片时不要输出空照片章节。\n"
                     "- 附件清单若包含录音标记和转写锚点，必须把“[照片：图 N]”放在与该转写锚点语义对应的正文段落之后；同一标记绑定多图时按图号连续插入。没有标记的图片不要强行插入正文，可放入照片集锦。\n"
+                    "- 每个行程段应能独立形成一张轮播内容页：一个短标题、1-2 个核心画面、1-2 张现场图和少量文字；不要把完整长文塞进单页。\n"
                     "- 输出给用户的正文只保留排版后的中文内容，不要向用户解释 Markdown 语法，也不要让标题符号（如 ##）或引用符号（如 >）成为可见正文。\n"
                     "- 模板中的适用场景、写作说明、图片边界、多阶段边界和输出约束仅用于指导生成，禁止复制进游记正文；禁止用代码围栏包裹整篇输出。\n"
                 )
@@ -753,15 +989,28 @@ class AgentGateway:
         provider: str,
         operation: str,
         attachment_count: int,
+        reservation: dict,
     ) -> None:
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO agent_tasks (
-                    id, token_id, provider, operation, status, attachment_count, created_at
-                ) VALUES (?, ?, ?, ?, 'queued', ?, ?)
+                    id, token_id, provider, operation, status, attachment_count,
+                    usage_event_id, meeting_id, usage_key, charged, created_at
+                ) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)
                 """,
-                (task_id, token_id, provider, operation, attachment_count, int(time.time())),
+                (
+                    task_id,
+                    token_id,
+                    provider,
+                    operation,
+                    attachment_count,
+                    reservation.get("event_id"),
+                    reservation.get("meeting_id"),
+                    reservation.get("usage_key"),
+                    int(bool(reservation.get("charged", True))),
+                    int(time.time()),
+                ),
             )
 
     def _execute_task(
@@ -838,14 +1087,17 @@ class AgentGateway:
             row = conn.execute(
                 """
                 SELECT id, provider, operation, status, attachment_count, result_text,
-                       error, created_at, started_at, finished_at
+                       error, usage_event_id, meeting_id, usage_key, charged,
+                       created_at, started_at, finished_at
                 FROM agent_tasks WHERE id = ? AND token_id = ?
                 """,
                 (task_id, principal.token_id),
             ).fetchone()
         if row is None:
             raise AgentInputError("Agent task not found")
-        return dict(row)
+        payload = dict(row)
+        payload["charged"] = bool(payload["charged"])
+        return payload
 
     def _run_provider(
         self,

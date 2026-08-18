@@ -92,6 +92,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.oa.automation.BuildConfig
 import com.oa.automation.domain.model.PresetReportTemplate
 import com.oa.automation.domain.model.Journey
 import com.oa.automation.domain.model.JourneyStage
@@ -198,7 +199,6 @@ internal fun SiriRecorderContent(
             .background(Brush.verticalGradient(palette.background))
     ) {
         SiriAmbientBackdrop(palette = palette, modifier = Modifier.matchParentSize())
-        SiriEdgeGlow(palette = palette, modifier = Modifier.matchParentSize())
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -1049,7 +1049,17 @@ private fun SiriTranscriptCard(
 ) {
     val scrollState = rememberScrollState()
     val isDark = com.oa.automation.ui.theme.LocalAppIsDarkTheme.current
-    LaunchedEffect(transcript) { scrollState.animateScrollTo(scrollState.maxValue) }
+    val visibleTranscript = remember(transcript, isRecording) {
+        if (isRecording) {
+            transcriptPreviewWindow(transcript, BuildConfig.TRANSCRIPT_PREVIEW_MAX_CHARS)
+        } else {
+            transcript
+        }
+    }
+    LaunchedEffect(visibleTranscript) {
+        kotlinx.coroutines.yield()
+        scrollState.scrollTo(scrollState.maxValue)
+    }
     Surface(
         modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp),
@@ -1114,7 +1124,7 @@ private fun SiriTranscriptCard(
                 )
                 Spacer(Modifier.height(8.dp))
             }
-            if (transcript.isBlank()) {
+            if (visibleTranscript.isBlank()) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1138,7 +1148,7 @@ private fun SiriTranscriptCard(
                 ) {
                     Text(
                         text = buildMarkerAwareTranscriptText(
-                            transcript = transcript,
+                            transcript = visibleTranscript,
                             markerAnchors = markerAnchors,
                             defaultColor = palette.text,
                             markerColor = palette.red
@@ -1452,42 +1462,6 @@ private fun SiriAmbientBackdrop(palette: SiriRecorderPalette, modifier: Modifier
                     palette.violet.copy(alpha = 0.10f)
                 )
             )
-        )
-    }
-}
-
-@Composable
-private fun SiriEdgeGlow(palette: SiriRecorderPalette, modifier: Modifier) {
-    val transition = rememberInfiniteTransition(label = "siriEdge")
-    val phase by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(5200, easing = FastOutSlowInEasing), RepeatMode.Restart),
-        label = "siriEdgePhase"
-    )
-    Canvas(modifier.padding(1.dp)) {
-        val inset = 1.dp.toPx()
-        val size = Size(size.width - inset * 2, size.height - inset * 2)
-        val corner = CornerRadius(36.dp.toPx(), 36.dp.toPx())
-        val shift = phase * size.width
-        val brush = Brush.linearGradient(
-            colors = listOf(palette.pink, palette.violet, palette.cyan, palette.pink),
-            start = Offset(shift - size.width, 0f),
-            end = Offset(shift + size.width, size.height)
-        )
-        drawRoundRect(
-            brush = brush,
-            topLeft = Offset(inset, inset),
-            size = size,
-            cornerRadius = corner,
-            style = Stroke(width = 4.dp.toPx())
-        )
-        drawRoundRect(
-            brush = brush,
-            topLeft = Offset(inset, inset),
-            size = size,
-            cornerRadius = corner,
-            style = Stroke(width = 1.2.dp.toPx())
         )
     }
 }

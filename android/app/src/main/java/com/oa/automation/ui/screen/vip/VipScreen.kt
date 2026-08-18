@@ -170,7 +170,8 @@ fun VipScreen(
                     selectedType = uiState.activeTemplateType,
                     onSelect = viewModel::selectTemplate,
                     isStarting = uiState.isStarting,
-                    quotaRemaining = uiState.quota?.requestsRemaining,
+                    quotaRemaining = profile?.usage?.aiCreditsRemaining
+                        ?: uiState.quota?.requestsRemaining,
                     onStart = viewModel::startRecording,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -232,7 +233,7 @@ private fun MembershipPromotion(
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = "剩余 ${profile?.quota?.requestsRemaining ?: 10} 次试用 · VIP 可解锁专业模板",
+                    text = "剩余 ${profile?.usage?.sttMinutesRemaining ?: 120.0} 分钟转写 · ${profile?.usage?.aiCreditsRemaining ?: 5} AI Credits",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onPrimaryContainer
                 )
@@ -390,17 +391,25 @@ private fun CompactPlanCard(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(
-                    text = "${plan.quotaAmount} 次",
+                    text = "${plan.includedMinutes} 分钟",
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary
                 )
                 Text(
-                    text = "¥%.0f/月".format(plan.priceCents / 100.0),
+                    text = "¥%.0f/${plan.durationDays}天".format(plan.priceCents / 100.0),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.secondary
                 )
             }
+            Text(
+                text = buildString {
+                    append("${plan.aiCredits} AI Credits")
+                    if (plan.teamSeats > 1) append(" · ${plan.teamSeats} 席")
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
             Button(
                 onClick = onSubmit,
                 enabled = enabled,
@@ -453,7 +462,7 @@ private fun AdminRechargeSection(
             ) {
                 Text(order.username, style = MaterialTheme.typography.titleSmall)
                 Text(
-                    text = "${order.planName} · ${order.quotaAmount} 次 · ¥%.2f".format(order.amountCents / 100.0),
+                    text = "${order.planName} · ${order.includedMinutes} 分钟 + ${order.aiCredits} Credits · ¥%.2f".format(order.amountCents / 100.0),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

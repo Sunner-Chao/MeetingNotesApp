@@ -254,9 +254,9 @@
           <div class="layout-equal" style="margin-top:16px">
             <article class="card panel">
               <div class="panel-head"><h3>STT 引擎</h3><span id="stt-model">模型：-</span></div>
-              <div class="engine-bar"><div><span id="stt-engine" class="engine-name">检查中...</span><span class="engine-model">两个引擎共用 8888 端口，切换会排空当前队列</span></div><span id="engine-state" class="status-text">待检查</span></div>
-              <div class="engine-actions"><button class="button primary" type="button" onclick="switchStt('faster-whisper','small')">切换 Faster-Whisper</button><button class="button secondary" type="button" onclick="switchStt('sensevoice','SenseVoiceSmall')">切换 SenseVoice</button></div>
-              <p id="switch-result" class="switch-note">可以从这里切换当前语音识别引擎。</p>
+              <div class="engine-bar"><div><span id="stt-engine" class="engine-name">检查中...</span><span class="engine-model">Faster-Whisper · large-v3-turbo，切换会排空当前队列</span></div><span id="engine-state" class="status-text">待检查</span></div>
+              <div class="engine-actions"><button class="button primary" type="button" onclick="switchStt('faster-whisper','large-v3-turbo')">应用 Faster-Whisper · large-v3-turbo</button></div>
+              <p id="switch-result" class="switch-note">本地服务默认使用 Faster-Whisper · large-v3-turbo。</p>
             </article>
             <article class="card panel">
               <div class="panel-head"><h3>服务操作</h3><span>调试功能</span></div>

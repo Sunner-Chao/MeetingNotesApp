@@ -25,13 +25,23 @@ class LLMEngine(
      */
     suspend fun generateReport(
         transcript: String,
-        attachments: List<AgentAttachment> = emptyList()
+        attachments: List<AgentAttachment> = emptyList(),
+        meetingId: String? = null,
+        usageKey: String? = null
     ): ReportData {
         val appConfig = configDataStore.appConfigFlow.first()
         val config = appConfig.llmConfig
         val engine = LLMReportEngine.fromConfig(config)
 
-        return engine.generateReport(transcript, appConfig.reportTemplateConfig, attachments)
+        val usageContext = meetingId?.takeIf { it.isNotBlank() }?.let {
+            AgentUsageContext(it, usageKey?.takeIf(String::isNotBlank) ?: java.util.UUID.randomUUID().toString())
+        }
+        return engine.generateReport(
+            transcript,
+            appConfig.reportTemplateConfig,
+            attachments,
+            usageContext
+        )
             .getOrElse { error ->
                 if (error is CancellationException) throw error
                 throw error

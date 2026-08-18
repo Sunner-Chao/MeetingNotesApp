@@ -28,4 +28,22 @@ class ReportDocumentFormatterTest {
         assertFalse(formatted.lines().any { it.startsWith("- ") })
         assertEquals("（3）事项", ReportDocumentFormatter.numbered("事项", 2))
     }
+
+    @Test
+    fun normalizesLegacyProjectBacklogHeadingsForAllExportFormats() {
+        val formatted = ReportDocumentFormatter.normalizeProjectManagementSections(
+            """
+                ## 8. 后续沉淀事项
+                | 事项 | 状态 |
+                | --- | --- |
+                | 验证同步 | 待研究 |
+
+                ## 9. 风险提醒
+            """.trimIndent()
+        )
+
+        assertTrue(formatted.contains("## 8. 后续研究与储备事项"))
+        assertTrue(formatted.contains("验证同步"))
+        assertFalse(formatted.contains("后续沉淀事项"))
+    }
 }

@@ -103,6 +103,9 @@ class RecordingUiStateTest {
             isGeneratingReport = true,
             reportProgressPercent = 40,
             reportReadyToOpen = true,
+            isImportingImages = true,
+            imageImportCompleted = 4,
+            imageImportTotal = 10,
             audioExportBusyId = "audio-1",
             audioExportMessage = "stale export",
             journey = Journey(
@@ -190,6 +193,9 @@ class RecordingUiStateTest {
         assertFalse(next.isGeneratingReport)
         assertNull(next.reportProgressPercent)
         assertFalse(next.reportReadyToOpen)
+        assertFalse(next.isImportingImages)
+        assertEquals(0, next.imageImportCompleted)
+        assertEquals(0, next.imageImportTotal)
         assertNull(next.audioExportBusyId)
         assertEquals("", next.audioExportMessage)
         assertNull(next.journey)
@@ -295,9 +301,97 @@ class RecordingUiStateTest {
     }
 
     @Test
+    fun `study stage finalization keeps the frozen pause boundary`() {
+        val snapshot = StudyStageFinalizationSnapshot(
+            stageId = "stage-1",
+            transcript = "第一段内容。暂停前最后一句。",
+            durationSeconds = 125L,
+            markerCount = 0,
+            attachmentCount = 1
+        )
+
+        val evidence = resolveStudyStageEvidence(
+            baseline = "第一段内容。",
+            startedDurationSeconds = 60L,
+            snapshot = snapshot
+        )
+
+        assertEquals("暂停前最后一句。", evidence.transcriptDelta)
+        assertFalse(evidence.transcriptDelta.contains("恢复后的第二段内容"))
+        assertEquals(60_000L, evidence.startTimeMs)
+        assertEquals(125_000L, evidence.endTimeMs)
+        assertTrue(evidence.isMeaningful)
+    }
+
+    @Test
     fun `active photo marker closes only after a linked image succeeds`() {
         assertFalse(shouldCloseActivePhotoMarker("marker-1", "marker-1", importedCount = 0))
         assertFalse(shouldCloseActivePhotoMarker("marker-1", "marker-2", importedCount = 1))
         assertTrue(shouldCloseActivePhotoMarker("marker-1", "marker-1", importedCount = 1))
+    }
+
+    @Test
+    fun `image import exposes compact progress and rejects concurrent work`() {
+        val importing = RecordingUiState(
+            isImportingImages = true,
+            imageImportCompleted = 7,
+            imageImportTotal = 24
+        )
+
+        assertFalse(canStartImageImport(importing))
+        assertEquals("正在导入图片 7/24", imageImportProgressLabel(importing))
+        assertTrue(canStartImageImport(RecordingUiState()))
+        assertNull(imageImportProgressLabel(RecordingUiState()))
+    }
+
+    @Test
+    fun `image import summary keeps all successes and reports partial failures once`() {
+        val summary = summarizeImageImport(
+            listOf(
+                Result.success(Unit),
+                Result.failure(IllegalStateException("文件已损坏")),
+                Result.success(Unit),
+                Result.failure(IllegalArgumentException("格式不支持"))
+            )
+        )
+
+        assertEquals(4, summary.total)
+        assertEquals(2, summary.succeeded)
+        assertEquals(2, summary.failed)
+        assertEquals("文件已损坏", summary.firstFailureMessage)
+        assertEquals("已导入 2 张，2 张失败：文件已损坏", summary.failureMessage())
+    }
+
+    @Test
+    fun `image import target remains frozen when the active journey stage changes`() {
+        val marker = RecordingMarker(
+            id = "marker-1",
+            meetingId = "meeting-1",
+            journeyStageId = "stage-1",
+            timestampMs = 12_000L,
+            transcriptAnchor = "第一段现场讲解"
+        )
+        val initialState = RecordingUiState(
+            currentJourneyStage = JourneyStage(
+                id = "stage-1",
+                journeyId = "journey-1",
+                sequenceNumber = 1,
+                title = "第一段"
+            )
+        )
+
+        val frozenTarget = resolveImageImportTarget(initialState, listOf(marker), marker.id)
+        val resumedState = initialState.copy(
+            currentJourneyStage = JourneyStage(
+                id = "stage-2",
+                journeyId = "journey-1",
+                sequenceNumber = 2,
+                title = "第二段"
+            )
+        )
+
+        assertEquals("stage-1", frozenTarget?.journeyStageId)
+        assertEquals(marker, frozenTarget?.recordingMarker)
+        assertEquals("stage-2", resumedState.currentJourneyStage?.id)
     }
 }

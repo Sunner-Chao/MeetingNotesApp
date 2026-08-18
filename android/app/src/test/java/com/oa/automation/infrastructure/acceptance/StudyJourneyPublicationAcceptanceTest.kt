@@ -325,6 +325,9 @@ class StudyJourneyPublicationAcceptanceTest {
     }
 
     private class FakePublishedPostDao(private val store: AcceptanceStore) : PublishedPostDao {
+        override fun observeAll(): Flow<List<PublishedPostEntity>> =
+            MutableStateFlow(store.posts.values.sortedByDescending { it.updatedAt })
+
         override suspend fun insert(entity: PublishedPostEntity) {
             check(store.posts.putIfAbsent(entity.id, entity) == null)
         }
@@ -369,6 +372,9 @@ class StudyJourneyPublicationAcceptanceTest {
 
     private class FakeOutboxDao(private val store: AcceptanceStore) : CommunitySyncOutboxDao {
         private val state = MutableStateFlow<CommunitySyncOutboxEntity?>(store.outbox)
+
+        override fun observeAll(): Flow<List<CommunitySyncOutboxEntity>> =
+            MutableStateFlow(listOfNotNull(store.outbox))
 
         override suspend fun upsert(entity: CommunitySyncOutboxEntity) {
             store.outbox = entity

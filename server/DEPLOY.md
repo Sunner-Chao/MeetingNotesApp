@@ -34,11 +34,7 @@ cd D:\MeetingNotesApp\server
 init-server.bat
 ```
 
-脚本会清理并重建 STT/Backend 各自的 `runtime`，使用精确锁文件安装依赖。SenseVoice/CUDA 不属于冻结生产配置，需要研发时另行运行：
-
-```bat
-stt-service\install-sensevoice-cuda.bat
-```
+脚本会清理并重建 STT/Backend 各自的 `runtime`，使用精确锁文件安装依赖。生产 STT 统一使用 Faster-Whisper，GPU 主机默认加载 `large-v3-turbo`。
 
 ## 启动与停止
 
@@ -48,11 +44,10 @@ stt-service\install-sensevoice-cuda.bat
 start-all.bat
 ```
 
-单独选择 STT 引擎：
+单独启动 STT：
 
 ```bat
 start-stt-faster-whisper.bat
-start-stt-sensevoice.bat
 ```
 
 停止：
@@ -75,12 +70,11 @@ stop-all.bat
 
 ```text
 server/models/
-|-- faster-whisper/small/
+|-- faster-whisper/large-v3-turbo/
 |   |-- model.bin
 |   |-- config.json
 |   |-- tokenizer.json
 |   `-- vocabulary.txt
-`-- sensevoice/SenseVoiceSmall/
 ```
 
 本地模型不存在时，Faster-Whisper 会按模型名称下载到该目录。

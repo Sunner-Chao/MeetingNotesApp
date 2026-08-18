@@ -7,6 +7,7 @@ import com.oa.automation.domain.model.AccountPlan
 import com.oa.automation.domain.model.AccountProfile
 import com.oa.automation.domain.model.AccountSessionCredentials
 import com.oa.automation.domain.model.AuthSession
+import com.oa.automation.domain.model.AuthCodeRequestResult
 import com.oa.automation.domain.model.RechargeOrder
 import com.oa.automation.domain.model.SocialAuthProvider
 import com.oa.automation.domain.model.PublishedPost
@@ -713,6 +714,64 @@ class AccountApiService(
     suspend fun register(endpoint: String, username: String, password: String): Result<AuthSession> =
         postCredentials(endpoint, "auth/register", username, password)
 
+    suspend fun requestAuthCode(
+        endpoint: String,
+        channel: String,
+        identifier: String,
+        purpose: String = "login"
+    ): Result<AuthCodeRequestResult> = request(
+        endpoint = endpoint,
+        path = "auth/code/request",
+        method = "POST",
+        jsonBody = gson.toJson(
+            mapOf(
+                "channel" to channel,
+                "identifier" to identifier,
+                "purpose" to purpose
+            )
+        )
+    ) { body -> gson.fromJson(body, AuthCodeRequestResult::class.java) }
+
+    suspend fun verifyAuthCode(
+        endpoint: String,
+        channel: String,
+        identifier: String,
+        code: String
+    ): Result<AuthSession> = request(
+        endpoint = endpoint,
+        path = "auth/code/verify",
+        method = "POST",
+        jsonBody = gson.toJson(
+            mapOf(
+                "channel" to channel,
+                "identifier" to identifier,
+                "code" to code,
+                "purpose" to "login"
+            )
+        )
+    ) { body -> gson.fromJson(body, AuthSession::class.java) }
+
+    suspend fun resetPassword(
+        endpoint: String,
+        channel: String,
+        identifier: String,
+        code: String,
+        newPassword: String
+    ): Result<Unit> = request(
+        endpoint = endpoint,
+        path = "auth/password/reset",
+        method = "POST",
+        jsonBody = gson.toJson(
+            mapOf(
+                "channel" to channel,
+                "identifier" to identifier,
+                "code" to code,
+                "purpose" to "reset_password",
+                "new_password" to newPassword
+            )
+        )
+    ) { Unit }
+
     suspend fun authProviders(endpoint: String): Result<List<SocialAuthProvider>> = request(
         endpoint = endpoint,
         path = "auth/providers",
@@ -727,6 +786,34 @@ class AccountApiService(
         token = token,
         method = "GET"
     ) { body -> gson.fromJson(body, AccountProfile::class.java) }
+
+    suspend fun upsertAccountMeeting(
+        endpoint: String,
+        token: String,
+        meetingId: String,
+        title: String,
+        createdAt: Long,
+        updatedAt: Long,
+        durationSeconds: Long,
+        transcript: String,
+        report: String
+    ): Result<Unit> = request(
+        endpoint = endpoint,
+        path = "account/meetings/$meetingId",
+        token = token,
+        method = "PUT",
+        jsonBody = gson.toJson(
+            mapOf(
+                "title" to title,
+                "template_key" to "administrative",
+                "created_at" to createdAt,
+                "updated_at" to updatedAt,
+                "duration_seconds" to durationSeconds,
+                "transcript" to transcript,
+                "report" to report
+            )
+        )
+    ) { Unit }
 
     suspend fun updateProfile(
         endpoint: String,

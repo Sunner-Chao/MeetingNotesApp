@@ -16,6 +16,10 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
 
+class CloudAuthenticationRequiredException : IllegalStateException(AUTH_REQUIRED_MESSAGE)
+
+const val AUTH_REQUIRED_MESSAGE = "登录后即可上传转写，本地录音不会丢失"
+
 class StopRecordingUseCase(
     private val meetingRepository: MeetingRepository,
     private val audioRecorder: AudioRecorder,
@@ -38,6 +42,9 @@ class StopRecordingUseCase(
             val file = audioFile ?: audioRecorder.stop()
                 ?: return@withContext Result.failure(Exception("No audio file recorded"))
             _isRecording.value = false
+            if (configDataStore.authSessionFlow.first() == null) {
+                return@withContext Result.failure(CloudAuthenticationRequiredException())
+            }
 
             // Get STT config and create appropriate engine
             onProgress(ProcessingProgress(12, "读取转录配置"))

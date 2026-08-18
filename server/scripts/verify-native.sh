@@ -40,4 +40,75 @@ if [[ -f "$CURRENT/BACKEND_ENABLED" ]]; then
     -H "Authorization: Bearer ${AGENT_TOKEN}" \
     "http://127.0.0.1:${BACKEND_PORT}/api/agent/health"
   echo
+
+  UPDATE_CONFIG="$(sed -n 's/^APP_UPDATE_CONFIG_PATH=//p' "$CONFIG_FILE" | tail -n1)"
+  UPDATE_CONFIG="${UPDATE_CONFIG:-$STATE_ROOT/app-update.json}"
+  UPDATE_APK="$(sed -n 's/^APP_UPDATE_ANDROID_APK_PATH=//p' "$CONFIG_FILE" | tail -n1)"
+  UPDATE_APK="${UPDATE_APK:-$STATE_ROOT/downloads/ZhiWuBen-Android.apk}"
+  UPDATE_DOWNLOADS="$(dirname "$UPDATE_APK")"
+  if compgen -G "$UPDATE_DOWNLOADS/ZhiWuBen-Android*.apk" >/dev/null; then
+    "$APP_ROOT/current-venv/bin/python" - "$UPDATE_CONFIG" "$UPDATE_DOWNLOADS" "$BACKEND_PORT" <<'PY'
+import hashlib
+import json
+import re
+import sys
+import urllib.request
+from pathlib import Path
+
+config_path = Path(sys.argv[1])
+downloads_dir = Path(sys.argv[2])
+backend_port = int(sys.argv[3])
+manifest = json.loads(config_path.read_text(encoding="utf-8"))
+version_code = int(manifest["version_code"])
+expected_sha256 = str(manifest.get("sha256", "")).strip().lower()
+expected_filename = f"ZhiWuBen-Android-{version_code}.apk"
+if manifest.get("apk_filename") != expected_filename:
+    raise SystemExit("published Android manifest does not name the current versioned APK")
+
+artifacts: list[tuple[int, Path]] = []
+for artifact in downloads_dir.glob("ZhiWuBen-Android-*.apk"):
+    match = re.fullmatch(r"ZhiWuBen-Android-([0-9]+)\.apk", artifact.name)
+    if match:
+        artifacts.append((int(match.group(1)), artifact))
+artifacts.sort(reverse=True)
+if not artifacts or artifacts[0][0] != version_code:
+    raise SystemExit("latest retained APK does not match the published Android manifest")
+if len(artifacts) > 2:
+    raise SystemExit("more than two Android APK releases are retained")
+if (downloads_dir / "ZhiWuBen-Android.apk").exists():
+    raise SystemExit("legacy unversioned Android APK must not remain after publication")
+
+base_url = f"http://127.0.0.1:{backend_port}"
+metadata_request = urllib.request.Request(
+    f"{base_url}/api/app-update/android",
+    headers={"Cache-Control": "no-cache"},
+)
+with urllib.request.urlopen(metadata_request, timeout=15) as response:
+    if response.headers.get("Cache-Control") != "no-store":
+        raise SystemExit("Android update metadata is missing Cache-Control: no-store")
+    metadata = json.load(response)
+if int(metadata["version_code"]) != version_code:
+    raise SystemExit("Android update endpoint does not expose the latest version")
+if str(metadata.get("sha256") or "").lower() != expected_sha256:
+    raise SystemExit("Android update endpoint SHA-256 differs from the published manifest")
+
+digest = hashlib.sha256()
+with urllib.request.urlopen(metadata["download_url"], timeout=60) as response:
+    while chunk := response.read(1024 * 1024):
+        digest.update(chunk)
+if not expected_sha256 or digest.hexdigest() != expected_sha256:
+    raise SystemExit("downloaded latest Android APK failed SHA-256 verification")
+
+if len(artifacts) == 2:
+    previous_version = artifacts[1][0]
+    with urllib.request.urlopen(
+        f"{base_url}/api/app-update/android/apk/{previous_version}",
+        timeout=60,
+    ) as response:
+        if not response.read(1):
+            raise SystemExit("retained previous Android APK is empty")
+
+print(f"Android OTA verified: current={version_code}, retained={len(artifacts)}")
+PY
+  fi
 fi

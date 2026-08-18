@@ -125,13 +125,13 @@ private fun QuotaDetails(quota: AgentQuota) {
     ) {
         Column {
             Text(
-                text = quota.requestsRemaining.toString(),
+                text = quota.aiCreditsRemaining.toString(),
                 style = MaterialTheme.typography.headlineMedium,
                 color = MaterialTheme.colorScheme.primary,
                 fontWeight = FontWeight.Bold
             )
             Text(
-                text = "剩余请求",
+                text = "AI Credits",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -147,7 +147,7 @@ private fun QuotaDetails(quota: AgentQuota) {
         modifier = Modifier
             .fillMaxWidth()
             .height(6.dp),
-        color = if (quota.requestsRemaining > 0) {
+        color = if (quota.aiCreditsRemaining > 0) {
             MaterialTheme.colorScheme.primary
         } else {
             MaterialTheme.colorScheme.error

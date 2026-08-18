@@ -211,6 +211,15 @@ class RecordingService : Service() {
                 )
             ).getOrThrow()
 
+            if (stopped.requiresLogin) {
+                recordingController.updatePostProcessingStatus(
+                    stopped.meetingId,
+                    status = "录音已保存在本地",
+                    error = AUTH_REQUIRED_MESSAGE
+                )
+                return@runCatching
+            }
+
             val transcriptText = stopped.transcriptText.trim()
             if (transcriptText.isBlank()) {
                 Log.w(TAG, "Live transcript was empty for ${stopped.meetingId}; report was not queued")
@@ -405,5 +414,6 @@ class RecordingService : Service() {
         const val EXTRA_MEETING_TITLE = "meeting_title"
         const val EXTRA_JOURNEY_STAGE_ID = "journey_stage_id"
         const val EXTRA_AUTO_GENERATE_REPORT = "auto_generate_report"
+        const val AUTH_REQUIRED_MESSAGE = "登录后即可上传转写，本地录音不会丢失"
     }
 }

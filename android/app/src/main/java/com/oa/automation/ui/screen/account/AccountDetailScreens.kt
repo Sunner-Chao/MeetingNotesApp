@@ -234,7 +234,9 @@ private fun MembershipDetailCard(
                 Text(
                     text = buildString {
                         append(profile?.planName ?: "Free")
-                        quota?.expiresAt?.let { append(" · 有效期至 ${formatDetailDate(it)}") }
+                        (profile?.vipExpiresAt ?: quota?.expiresAt)?.let {
+                            append(" · 有效期至 ${formatDetailDate(it)}")
+                        }
                     },
                     color = Color.White.copy(alpha = 0.64f),
                     style = MaterialTheme.typography.bodySmall,
@@ -272,7 +274,14 @@ private fun ProfileInformationCard(profile: AccountProfile?, username: String) {
                 DetailRow("账户角色", if (profile?.isAdmin == true) "管理员" else "普通用户")
                 DetailRow("账户状态", if (profile?.enabled != false) "正常" else "已停用")
                 DetailRow("当前套餐", profile?.planName ?: "Free")
-                DetailRow("剩余次数", "${profile?.quota?.requestsRemaining ?: 0} 次")
+                DetailRow(
+                    "会员有效期",
+                    profile?.vipExpiresAt?.let(::formatDetailDate)
+                        ?: if (profile?.vipEnabled == true) "有效" else "未开通"
+                )
+                DetailRow("剩余转写", "${profile?.usage?.sttMinutesRemaining ?: 0.0} 分钟")
+                DetailRow("AI Credits", "${profile?.usage?.aiCreditsRemaining ?: 0}")
+                DetailRow("团队席位", "${profile?.usage?.teamSeats ?: 1} 席")
                 DetailRow("注册时间", profile?.createdAt?.let(::formatDetailDateTime) ?: "-")
             }
         }
@@ -341,7 +350,7 @@ fun AccountQuotaDetailsScreen(
 @Composable
 private fun QuotaDetailsHero(quota: AgentQuota?, profile: AccountProfile?) {
     val limit = quota?.requestLimit ?: profile?.quota?.requestLimit ?: 0
-    val remaining = quota?.requestsRemaining ?: profile?.quota?.requestsRemaining ?: 0
+    val remaining = quota?.aiCreditsRemaining ?: profile?.usage?.aiCreditsRemaining ?: 0
     val fraction = if (limit > 0) (remaining.toFloat() / limit).coerceIn(0f, 1f) else 0f
     val percent = floor(fraction * 10_000f) / 100f
     val formatter = remember { NumberFormat.getIntegerInstance(Locale.US) }
@@ -382,7 +391,7 @@ private fun QuotaDetailsHero(quota: AgentQuota?, profile: AccountProfile?) {
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    Text("剩余请求", color = Color.White.copy(alpha = 0.84f))
+                    Text("AI Credits", color = Color.White.copy(alpha = 0.84f))
                     Spacer(Modifier.height(15.dp))
                     Text(
                         "总额度 ${formatter.format(limit)} 请求",
@@ -419,7 +428,7 @@ private fun QuotaInformationCard(quota: AgentQuota?, profile: AccountProfile?) {
     val formatter = remember { NumberFormat.getIntegerInstance(Locale.US) }
     val limit = quota?.requestLimit ?: profile?.quota?.requestLimit ?: 0
     val used = quota?.requestsUsed ?: profile?.quota?.requestsUsed ?: 0
-    val remaining = quota?.requestsRemaining ?: profile?.quota?.requestsRemaining ?: 0
+    val remaining = quota?.aiCreditsRemaining ?: profile?.usage?.aiCreditsRemaining ?: 0
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(18.dp),
@@ -437,7 +446,11 @@ private fun QuotaInformationCard(quota: AgentQuota?, profile: AccountProfile?) {
             DetailRow("总额度", "${formatter.format(limit)} 次")
             DetailRow("已使用", "${formatter.format(used)} 次")
             DetailRow("剩余额度", "${formatter.format(remaining)} 次")
-            DetailRow("有效期", quota?.expiresAt?.let(::formatDetailDate) ?: "长期有效")
+            DetailRow(
+                "有效期",
+                (profile?.vipExpiresAt ?: quota?.expiresAt)?.let(::formatDetailDate) ?: "长期有效"
+            )
+            DetailRow("团队席位", "${profile?.usage?.teamSeats ?: 1} 席")
             DetailRow(
                 "可用智能体",
                 quota?.allowedProviders

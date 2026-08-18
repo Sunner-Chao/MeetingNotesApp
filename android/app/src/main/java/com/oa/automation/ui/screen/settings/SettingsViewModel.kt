@@ -19,6 +19,8 @@ import com.oa.automation.domain.model.STTEngineType
 import com.oa.automation.domain.model.TencentAsrBudgetPolicy
 import com.oa.automation.domain.model.TencentAsrTier
 import com.oa.automation.domain.model.TencentAsrUsage
+import com.oa.automation.domain.model.serviceEndpointFor
+import com.oa.automation.debug.DevelopmentDemoDataSeeder
 import com.oa.automation.infrastructure.account.AccountSessionSynchronizer
 import com.oa.automation.infrastructure.llm.OllamaEngine
 import com.oa.automation.infrastructure.llm.AgentGatewayEngine
@@ -67,6 +69,7 @@ data class SettingsUiState(
     val isDownloadingUpdate: Boolean = false,
     val updateProgress: Int? = null,
     val availableUpdate: AndroidAppUpdate? = null,
+    val isUpdatingDemoData: Boolean = false,
     val message: String? = null
 )
 
@@ -76,7 +79,8 @@ data class SettingsUiState(
 class SettingsViewModel(
     private val configDataStore: ConfigDataStore,
     private val appUpdateService: AppUpdateService,
-    private val accountSessionSynchronizer: AccountSessionSynchronizer
+    private val accountSessionSynchronizer: AccountSessionSynchronizer,
+    private val demoDataSeeder: DevelopmentDemoDataSeeder? = null
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(SettingsUiState())
@@ -260,11 +264,14 @@ class SettingsViewModel(
     ) = TencentAsrStatusResult(
         configKey = config.tencentUsageConfigKey(),
         usage = STTServiceClient.fetchTencentAsrUsage(
-            config.localEndpoint,
+            config.serviceEndpointFor(STTEngineType.TENCENT_HYBRID),
             config.apiToken,
             forceRefresh = forceUsageRefresh
         ),
-        policy = STTServiceClient.fetchTencentAsrPolicy(config.localEndpoint, config.apiToken)
+        policy = STTServiceClient.fetchTencentAsrPolicy(
+            config.serviceEndpointFor(STTEngineType.TENCENT_HYBRID),
+            config.apiToken
+        )
     )
 
     /**
@@ -279,11 +286,14 @@ class SettingsViewModel(
             return
         }
         val usesManagedTencent = engineType == STTEngineType.TENCENT_HYBRID
-        val managedCloudEndpoint = "${currentConfig.localEndpoint.trimEnd('/')}/cloud-asr"
         val nextConfig = currentConfig.copy(
             engineType = engineType,
             localModel = engineType.defaultModel.ifBlank { currentConfig.localModel },
-            cloudEndpoint = if (usesManagedTencent) managedCloudEndpoint else currentConfig.cloudEndpoint,
+            cloudEndpoint = if (usesManagedTencent) {
+                currentConfig.cloudEndpoint ?: STTConfig.DEFAULT_CLOUD_ENDPOINT
+            } else {
+                currentConfig.cloudEndpoint
+            },
             cloudApiKey = if (usesManagedTencent) null else currentConfig.cloudApiKey,
             cloudModel = if (usesManagedTencent) {
                 currentConfig.tencentAsrTier.cloudModel
@@ -320,16 +330,7 @@ class SettingsViewModel(
      */
     fun updateSTTLocalEndpoint(endpoint: String) {
         val config = _uiState.value.appConfig.sttConfig
-        updateSTTConfig(
-            config.copy(
-                localEndpoint = endpoint,
-                cloudEndpoint = if (config.engineType == STTEngineType.TENCENT_HYBRID) {
-                    "${endpoint.trimEnd('/')}/cloud-asr"
-                } else {
-                    config.cloudEndpoint
-                }
-            )
-        )
+        updateSTTConfig(config.copy(localEndpoint = endpoint))
     }
 
     /**
@@ -357,7 +358,6 @@ class SettingsViewModel(
             currentConfig.copy(
                 tencentAsrTier = tier,
                 cloudModel = tier.cloudModel,
-                cloudEndpoint = "${currentConfig.localEndpoint.trimEnd('/')}/cloud-asr",
                 cloudApiKey = null
             )
         )
@@ -495,6 +495,42 @@ class SettingsViewModel(
         _uiState.value = _uiState.value.copy(message = null)
     }
 
+    fun seedDemoData() {
+        val seeder = demoDataSeeder ?: return
+        if (_uiState.value.isUpdatingDemoData) return
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isUpdatingDemoData = true, message = null)
+            seeder.seed().fold(
+                onSuccess = { created ->
+                    _uiState.value = _uiState.value.copy(
+                        isUpdatingDemoData = false,
+                        message = if (created == 0) "演示数据已存在（未重复创建）" else "已注入 $created 组演示数据"
+                    )
+                },
+                onFailure = { error ->
+                    _uiState.value = _uiState.value.copy(isUpdatingDemoData = false, message = "演示数据注入失败: ${error.message ?: "未知错误"}")
+                }
+            )
+        }
+    }
+
+    fun clearDemoData() {
+        val seeder = demoDataSeeder ?: return
+        if (_uiState.value.isUpdatingDemoData) return
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isUpdatingDemoData = true, message = null)
+            seeder.clear().fold(
+                onSuccess = { removed ->
+                    _uiState.value = _uiState.value.copy(
+                        isUpdatingDemoData = false,
+                        message = if (removed == 0) "没有需要清理的演示数据" else "已清理 $removed 组演示数据"
+                    )
+                },
+                onFailure = { error -> _uiState.value = _uiState.value.copy(isUpdatingDemoData = false, message = "演示数据清理失败: ${error.message ?: "未知错误"}") }
+            )
+        }
+    }
+
     /**
      * Scan for available STT servers
      */
@@ -528,13 +564,14 @@ class SettingsViewModel(
      */
     fun applyDiscoveredServer(server: DiscoveredSTTServer) {
         val engineType = when {
-            server.engine.contains("sense", ignoreCase = true) -> STTEngineType.SENSE_VOICE
             server.engine.contains("whisper", ignoreCase = true) -> STTEngineType.FASTER_WHISPER
             server.port == 8888 -> STTEngineType.FASTER_WHISPER  // Port 8888 is typical for Faster-Whisper
-            server.port == 8000 -> STTEngineType.SENSE_VOICE     // Port 8000 is typical for SenseVoice
             else -> _uiState.value.appConfig.sttConfig.engineType
         }
-        val model = server.model.ifBlank { engineType.defaultModel }
+        val model = server.model
+            .takeUnless { it.equals("small", ignoreCase = true) }
+            ?.takeIf { it.isNotBlank() }
+            ?: engineType.defaultModel
         updateSTTConfig(
             _uiState.value.appConfig.sttConfig.copy(
                 engineType = engineType,
@@ -714,7 +751,6 @@ class SettingsViewModel(
 
         val engine = when (config.engineType) {
             STTEngineType.FASTER_WHISPER -> "faster-whisper"
-            STTEngineType.SENSE_VOICE -> "sensevoice"
             STTEngineType.TENCENT_HYBRID -> return Result.success("已切换为智悟增强云模型")
         }
         val model = config.localModel.ifBlank { config.engineType.defaultModel }
@@ -795,7 +831,7 @@ class SettingsViewModel(
 
 private fun STTConfig.tencentUsageConfigKey(): String? {
     if (engineType != STTEngineType.TENCENT_HYBRID) return null
-    val endpoint = localEndpoint.trim().trimEnd('/')
+    val endpoint = serviceEndpointFor(STTEngineType.TENCENT_HYBRID).trimEnd('/')
     val token = apiToken?.trim().orEmpty()
     if (endpoint.isBlank() || token.isBlank()) return null
     return "$endpoint|${token.hashCode()}"

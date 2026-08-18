@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+from fastapi.testclient import TestClient
 
 
 STT_SERVICE_DIR = Path(__file__).resolve().parents[1] / "stt-service"
@@ -24,6 +25,45 @@ from common.account_stt_token import issue_account_stt_token  # noqa: E402
 
 
 class SttRuntimeTest(unittest.TestCase):
+    def test_faster_whisper_model_directory_accepts_json_vocabulary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            model_dir = Path(directory)
+            (model_dir / "model.bin").write_bytes(b"0" * 2048)
+            (model_dir / "tokenizer.json").write_text("{}", encoding="utf-8")
+            (model_dir / "vocabulary.json").write_text("{}", encoding="utf-8")
+
+            self.assertTrue(stt.has_valid_fw_model_dir(model_dir))
+
+    def test_local_stt_admin_requires_basic_auth_and_renders_dashboard(self) -> None:
+        with (
+            patch.object(stt, "WEB_API_USERNAME", "operator"),
+            patch.object(stt, "WEB_API_TOKEN", "web-secret"),
+            TestClient(stt.app) as client,
+        ):
+            unauthorized = client.get("/admin/")
+            authorized = client.get("/admin/", auth=("operator", "web-secret"))
+
+        self.assertEqual(unauthorized.status_code, 401)
+        self.assertIn("Basic", unauthorized.headers.get("www-authenticate", ""))
+        self.assertEqual(authorized.status_code, 200)
+        self.assertIn("智悟本 本地 STT", authorized.text)
+
+    def test_local_stt_admin_status_does_not_accept_account_bearer_token(self) -> None:
+        with (
+            patch.object(stt, "WEB_API_USERNAME", "operator"),
+            patch.object(stt, "WEB_API_TOKEN", "web-secret"),
+            TestClient(stt.app) as client,
+        ):
+            bearer = client.get(
+                "/admin/api/status",
+                headers={"Authorization": "Bearer account-token"},
+            )
+            basic = client.get("/admin/api/status", auth=("operator", "web-secret"))
+
+        self.assertEqual(bearer.status_code, 401)
+        self.assertEqual(basic.status_code, 200)
+        self.assertIn("inference", basic.json())
+
     def test_chunk_merge_ignores_boundary_punctuation_variants(self) -> None:
         self.assertEqual(
             stt.merge_chunk_transcript_text(
@@ -148,12 +188,25 @@ class SttRuntimeTest(unittest.TestCase):
         self.assertEqual(stt.STREAM_STEP_SEC, 4)
         self.assertEqual(stt.STREAM_BEAM_SIZE, 1)
         self.assertEqual(stt.STREAM_FINAL_COMPAT_MIN_AUDIO_SEC, 2)
-        self.assertEqual(stt.STT_STREAM_MODEL, "small")
+        self.assertEqual(stt.STT_STREAM_MODEL, "large-v3-turbo")
         self.assertEqual(stt.STREAM_MIN_CONFIDENCE, -0.90)
         self.assertEqual(stt.STREAM_MAX_NO_SPEECH_PROB, 0.35)
         self.assertEqual(stt.STT_FINAL_RETRY_MIN_CHARS, 8)
         self.assertEqual(stt.FINAL_BEAM_SIZE, 5)
         self.assertEqual(stt.STT_FINAL_BATCH_SIZE, 1)
+
+    def test_stream_preview_starts_at_minimum_then_uses_steady_step(self) -> None:
+        min_bytes = 2 * 16000 * 2
+        step_bytes = 4 * 16000 * 2
+
+        self.assertEqual(
+            stt.stream_required_new_bytes(0, min_bytes, step_bytes),
+            min_bytes,
+        )
+        self.assertEqual(
+            stt.stream_required_new_bytes(min_bytes, min_bytes, step_bytes),
+            step_bytes,
+        )
 
     def test_stream_merge_keeps_non_overlapping_updates(self) -> None:
         self.assertEqual(stt.merge_transcript_text("第一项", "第二项"), "第一项 第二项")

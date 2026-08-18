@@ -31,7 +31,9 @@ class AppUpdateRouteTests(unittest.TestCase):
 
     def test_update_is_unpublished_without_a_manifest_and_apk(self) -> None:
         with TestClient(backend.app) as client:
-            self.assertEqual(client.get("/api/app-update/android").status_code, 204)
+            response = client.get("/api/app-update/android")
+            self.assertEqual(response.status_code, 204)
+            self.assertEqual(response.headers["cache-control"], "no-store")
 
     def test_metadata_and_apk_are_served_after_publication(self) -> None:
         backend.APP_UPDATE_CONFIG_PATH.write_text(
@@ -42,6 +44,7 @@ class AppUpdateRouteTests(unittest.TestCase):
         with TestClient(backend.app) as client:
             response = client.get("/api/app-update/android")
             self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.headers["cache-control"], "no-store")
             self.assertEqual(response.json()["version_code"], 10210)
             self.assertTrue(response.json()["download_url"].endswith("/api/app-update/android/apk/10210"))
             apk_response = client.get("/api/app-update/android/apk/10210")
@@ -69,6 +72,27 @@ class AppUpdateRouteTests(unittest.TestCase):
             current_response = client.get("/api/app-update/android/apk/10211")
             self.assertEqual(current_response.status_code, 200)
             self.assertEqual(current_response.content, b"current-apk")
+
+    def test_only_current_and_immediately_previous_artifacts_are_downloadable(self) -> None:
+        for version_code in (10209, 10210, 10211):
+            backend.APP_UPDATE_ANDROID_APK_PATH.parent.joinpath(
+                f"ZhiWuBen-Android-{version_code}.apk"
+            ).write_bytes(f"apk-{version_code}".encode())
+        backend.APP_UPDATE_CONFIG_PATH.write_text(
+            json.dumps(
+                {
+                    "version_code": 10211,
+                    "version_name": "1.2.11",
+                    "apk_filename": "ZhiWuBen-Android-10211.apk",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with TestClient(backend.app) as client:
+            self.assertEqual(client.get("/api/app-update/android/apk/10211").status_code, 200)
+            self.assertEqual(client.get("/api/app-update/android/apk/10210").status_code, 200)
+            self.assertEqual(client.get("/api/app-update/android/apk/10209").status_code, 404)
 
     def test_manifest_rejects_an_unsafe_artifact_filename(self) -> None:
         backend.APP_UPDATE_CONFIG_PATH.write_text(

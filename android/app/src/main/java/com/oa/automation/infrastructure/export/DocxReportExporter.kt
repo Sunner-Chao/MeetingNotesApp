@@ -19,7 +19,9 @@ private fun String.usesProjectManagementDocxTemplate(): Boolean =
 private fun String.usesStudyReportStyle(): Boolean =
     contains("研学") || contains("参观考察") || contains("游记") || contains("文旅")
 
-private val photoAnchorPattern = Regex("^\\s*\\[照片\\s*[:：]\\s*图\\s*(\\d+)]\\s*$")
+private val photoAnchorPattern = Regex(
+    "^\\s*\\[照片\\s*[:：]\\s*图\\s*(\\d+)(?:\\s*[|｜]\\s*([^]]+?))?]\\s*$"
+)
 
 object DocxReportExporter {
     private const val KONGJUE_TEMPLATE_ASSET = "kongjue-team-table-v1.docx"
@@ -67,7 +69,11 @@ internal data class DocxImage(
 private sealed interface DocxBlock
 private data class ParagraphBlock(val text: String, val style: String = "Normal") : DocxBlock
 private data class TableBlock(val rows: List<List<String>>) : DocxBlock
-private data class ImageBlock(val index: Int, val image: DocxImage) : DocxBlock
+private data class ImageBlock(
+    val index: Int,
+    val image: DocxImage,
+    val caption: String = image.caption
+) : DocxBlock
 private object PageBreakBlock : DocxBlock
 private data class ParsedMarkdownSection(
     val heading: String,
@@ -157,7 +163,7 @@ internal class DocxPackageWriter(
                 val image = images[index]
                 add(if (position == 0) ParagraphBlock(imageSectionTitle, "Heading1") else ParagraphBlock("", "Spacer"))
                 add(ImageBlock(index, image))
-                add(ParagraphBlock("图 ${index + 1}  ${image.caption}", "Caption"))
+                add(ParagraphBlock(imageCaption(index, image.caption), captionStyle()))
             }
         }
 
@@ -173,7 +179,7 @@ internal class DocxPackageWriter(
                 when (block) {
                     is ParagraphBlock -> append(paragraphXml(block))
                     is TableBlock -> append(tableXml(block.rows))
-                    is ImageBlock -> append(imageXml(block.index, block.image))
+                    is ImageBlock -> append(imageXml(block.index, block.image, block.caption))
                     PageBreakBlock -> append(pageBreakXml())
                 }
             }
@@ -193,6 +199,7 @@ internal class DocxPackageWriter(
     private fun markdownBlocks(): List<DocxBlock> {
         if (report.rawContent.isBlank()) return structuredBlocks()
 
+        val isStudyReport = report.templateName.usesStudyReportStyle()
         val lines = ReportDocumentFormatter.normalizeLists(report.rawContent).lines()
         val blocks = mutableListOf<DocxBlock>()
         var index = 0
@@ -207,10 +214,16 @@ internal class DocxPackageWriter(
                         ?.getOrNull(1)
                         ?.toIntOrNull()
                         ?.minus(1)
+                    val anchorCaption = photoAnchorPattern.matchEntire(line)
+                        ?.groupValues
+                        ?.getOrNull(2)
+                        ?.trim()
+                        ?.takeIf(String::isNotBlank)
                     val image = imageIndex?.let { images.getOrNull(it) }
                     if (imageIndex != null && image != null && blocks.none { it is ImageBlock && it.index == imageIndex }) {
-                        blocks += ImageBlock(imageIndex, image)
-                        blocks += ParagraphBlock("图 ${imageIndex + 1}  ${image.caption}", "Caption")
+                        val caption = anchorCaption ?: image.caption
+                        blocks += ImageBlock(imageIndex, image, caption)
+                        blocks += ParagraphBlock(imageCaption(imageIndex, caption), captionStyle())
                     }
                     index++
                 }
@@ -225,20 +238,48 @@ internal class DocxPackageWriter(
                     if (rows.isNotEmpty()) blocks += TableBlock(rows)
                 }
                 line.startsWith("### ") -> {
-                    blocks += ParagraphBlock(cleanMarkdown(line.removePrefix("### ")), "Heading2")
+                    blocks += ParagraphBlock(
+                        cleanMarkdown(line.removePrefix("### ")),
+                        if (isStudyReport) "StudyHeading2" else "Heading2"
+                    )
                     index++
                 }
                 line.matches(Regex("^#{4,6}\\s+.+$")) -> {
-                    blocks += ParagraphBlock(cleanMarkdown(line), "Heading2")
+                    blocks += ParagraphBlock(
+                        cleanMarkdown(line),
+                        if (isStudyReport) "StudyHeading2" else "Heading2"
+                    )
                     index++
                 }
                 line.startsWith("## ") -> {
-                    blocks += ParagraphBlock(cleanMarkdown(line.removePrefix("## ")), "Heading1")
+                    blocks += ParagraphBlock(
+                        cleanMarkdown(line.removePrefix("## ")),
+                        if (isStudyReport) "StudyHeading1" else "Heading1"
+                    )
                     index++
                 }
                 line.startsWith("# ") -> {
-                    blocks += ParagraphBlock(cleanMarkdown(line.removePrefix("# ")), if (!hasTitle) "Title" else "Heading1")
+                    blocks += ParagraphBlock(
+                        cleanMarkdown(line.removePrefix("# ")),
+                        when {
+                            !hasTitle && isStudyReport -> "StudyTitle"
+                            !hasTitle -> "Title"
+                            isStudyReport -> "StudyHeading1"
+                            else -> "Heading1"
+                        }
+                    )
                     hasTitle = true
+                    index++
+                }
+                isStudyReport && line.startsWith(">") -> {
+                    blocks += ParagraphBlock(cleanMarkdown(line), "StudyLead")
+                    index++
+                }
+                isStudyReport && (
+                    line.startsWith("**路线**") ||
+                        line.startsWith("**同行与讲解**")
+                    ) -> {
+                    blocks += ParagraphBlock(cleanMarkdown(line), "StudyMetadata")
                     index++
                 }
                 ReportDocumentFormatter.isNumberedListItem(line) -> {
@@ -252,6 +293,7 @@ internal class DocxPackageWriter(
                         val next = lines[index].trim()
                         if (
                             next.isBlank() || next.startsWith("#") || next.startsWith("|") ||
+                            photoAnchorPattern.matches(next) ||
                             ReportDocumentFormatter.isNumberedListItem(next)
                         ) break
                         paragraph += next
@@ -263,11 +305,33 @@ internal class DocxPackageWriter(
         }
 
         if (!hasTitle) {
-            blocks.add(0, ParagraphBlock(report.templateName.ifBlank { "会议纪要" }, "Title"))
+            blocks.add(
+                0,
+                ParagraphBlock(
+                    report.templateName.ifBlank { "会议纪要" },
+                    if (isStudyReport) "StudyTitle" else "Title"
+                )
+            )
         }
-        blocks.add(1, ParagraphBlock("生成时间：${generatedAt.substring(0, 10)}", "Metadata"))
+        blocks.add(
+            1,
+            ParagraphBlock(
+                "生成时间：${generatedAt.substring(0, 10)}",
+                if (isStudyReport) "StudyMetadata" else "Metadata"
+            )
+        )
         return blocks
     }
+
+    private fun captionStyle(): String =
+        if (report.templateName.usesStudyReportStyle()) "StudyCaption" else "Caption"
+
+    private fun imageCaption(index: Int, caption: String): String =
+        if (report.templateName.usesStudyReportStyle()) {
+            "图 ${index + 1}｜${caption.ifBlank { "现场照片" }}"
+        } else {
+            "图 ${index + 1}  ${caption.ifBlank { "会议图片" }}"
+        }
 
     private fun structuredBlocks(): List<DocxBlock> = buildList {
         add(ParagraphBlock(report.templateName.ifBlank { "会议纪要" }, "Title"))
@@ -416,12 +480,20 @@ internal class DocxPackageWriter(
                     add(ParagraphBlock(ReportDocumentFormatter.numbered(value, index), "ListNumber"))
                 }
 
-            add(ParagraphBlock("8. 后续沉淀事项", "Heading1"))
+            add(ParagraphBlock("8. 后续研究与储备事项", "Heading1"))
             add(
                 TableBlock(
                     teamTableRows(
                         markdown,
-                        listOf("后续沉淀事项", "沉淀事项", "backlog", "Backlog"),
+                        listOf(
+                            "后续研究与储备事项",
+                            "后续研究及储备事项",
+                            "待研究与储备事项",
+                            "后续沉淀事项",
+                            "沉淀事项",
+                            "backlog",
+                            "Backlog"
+                        ),
                         backlogHeaders,
                         emptyList(),
                         "BLG",
@@ -656,8 +728,10 @@ internal class DocxPackageWriter(
             append("<w:top w:w=\"80\" w:type=\"dxa\"/><w:left w:w=\"80\" w:type=\"dxa\"/>")
             append("<w:bottom w:w=\"80\" w:type=\"dxa\"/><w:right w:w=\"80\" w:type=\"dxa\"/>")
             append("</w:tblCellMar><w:tblBorders>")
+            val borderColor = if (report.templateName.usesStudyReportStyle()) "D6E1F2" else "AAB7C4"
             listOf("top", "left", "bottom", "right", "insideH", "insideV").forEach { edge ->
-                append("<w:").append(edge).append(" w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"AAB7C4\"/>")
+                append("<w:").append(edge).append(" w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"")
+                    .append(borderColor).append("\"/>")
             }
             append("</w:tblBorders></w:tblPr><w:tblGrid>")
             columnWidths.forEach { width -> append("<w:gridCol w:w=\"").append(width).append("\"/>") }
@@ -669,7 +743,11 @@ internal class DocxPackageWriter(
                 repeat(columns) { columnIndex ->
                     val value = row.getOrNull(columnIndex).orEmpty()
                     append("<w:tc><w:tcPr><w:tcW w:w=\"").append(columnWidths[columnIndex]).append("\" w:type=\"dxa\"/>")
-                    if (rowIndex == 0) append("<w:shd w:val=\"clear\" w:fill=\"D9EAF7\"/>")
+                    if (rowIndex == 0) {
+                        append("<w:shd w:val=\"clear\" w:fill=\"")
+                            .append(if (report.templateName.usesStudyReportStyle()) "EAF2FF" else "D9EAF7")
+                            .append("\"/>")
+                    }
                     append("<w:vAlign w:val=\"center\"/></w:tcPr><w:p><w:pPr><w:spacing w:after=\"0\"/><w:keepLines/><w:widowControl/></w:pPr>")
                     append("<w:r><w:rPr><w:sz w:val=\"").append(fontSize).append("\"/><w:szCs w:val=\"").append(fontSize).append("\"/>")
                     if (rowIndex == 0) append("<w:b/>")
@@ -690,7 +768,7 @@ internal class DocxPackageWriter(
         else -> List(columns) { 9734 / columns }
     }
 
-    private fun imageXml(index: Int, image: DocxImage): String {
+    private fun imageXml(index: Int, image: DocxImage, caption: String): String {
         val maxWidth = 5_669_280L
         val maxHeight = 5_943_600L
         val sourceWidth = image.widthPx.coerceAtLeast(1).toLong()
@@ -703,7 +781,7 @@ internal class DocxPackageWriter(
             <w:p><w:pPr><w:jc w:val="center"/><w:keepNext/></w:pPr><w:r><w:drawing>
               <wp:inline distT="0" distB="0" distL="0" distR="0">
                 <wp:extent cx="$width" cy="$height"/><wp:effectExtent l="0" t="0" r="0" b="0"/>
-                <wp:docPr id="$pictureId" name="Meeting image $pictureId" descr="${image.caption.escapeXml()}"/>
+                <wp:docPr id="$pictureId" name="Meeting image $pictureId" descr="${caption.escapeXml()}"/>
                 <wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect="1"/></wp:cNvGraphicFramePr>
                 <a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
                   <pic:pic><pic:nvPicPr><pic:cNvPr id="$pictureId" name="image$pictureId.jpg"/><pic:cNvPicPr/></pic:nvPicPr>
@@ -856,6 +934,23 @@ internal class DocxPackageWriter(
           <w:style w:type="paragraph" w:styleId="ListNumber"><w:name w:val="编号列表"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:after="60"/></w:pPr></w:style>
           <w:style w:type="paragraph" w:styleId="Caption"><w:name w:val="图注"/><w:basedOn w:val="Normal"/>
             <w:pPr><w:jc w:val="center"/><w:spacing w:before="60" w:after="140"/><w:keepLines/><w:widowControl/></w:pPr><w:rPr><w:color w:val="687887"/><w:sz w:val="18"/></w:rPr></w:style>
+          <w:style w:type="paragraph" w:styleId="StudyTitle"><w:name w:val="研学标题"/><w:basedOn w:val="Normal"/><w:next w:val="StudyMetadata"/>
+            <w:pPr><w:jc w:val="left"/><w:spacing w:before="0" w:after="160"/><w:keepNext/><w:keepLines/></w:pPr>
+            <w:rPr><w:b/><w:color w:val="1E3A5F"/><w:sz w:val="38"/><w:szCs w:val="38"/></w:rPr></w:style>
+          <w:style w:type="paragraph" w:styleId="StudyMetadata"><w:name w:val="研学元数据"/><w:basedOn w:val="Normal"/>
+            <w:pPr><w:spacing w:after="140"/><w:keepLines/></w:pPr><w:rPr><w:b/><w:color w:val="355EA8"/><w:sz w:val="19"/></w:rPr></w:style>
+          <w:style w:type="paragraph" w:styleId="StudyLead"><w:name w:val="研学导语"/><w:basedOn w:val="Normal"/>
+            <w:pPr><w:ind w:left="260" w:right="260"/><w:spacing w:before="80" w:after="200" w:line="340" w:lineRule="auto"/><w:pBdr><w:left w:val="single" w:sz="18" w:space="8" w:color="8BB4F0"/></w:pBdr><w:keepLines/><w:widowControl/></w:pPr>
+            <w:rPr><w:i/><w:color w:val="334155"/><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr></w:style>
+          <w:style w:type="paragraph" w:styleId="StudyHeading1"><w:name w:val="研学一级标题"/><w:basedOn w:val="Normal"/>
+            <w:pPr><w:spacing w:before="260" w:after="120"/><w:keepNext/><w:keepLines/><w:outlineLvl w:val="0"/><w:pBdr><w:left w:val="single" w:sz="20" w:space="8" w:color="2563EB"/><w:bottom w:val="single" w:sz="4" w:space="5" w:color="D6E1F2"/></w:pBdr></w:pPr>
+            <w:rPr><w:b/><w:color w:val="1E3A5F"/><w:sz w:val="28"/><w:szCs w:val="28"/></w:rPr></w:style>
+          <w:style w:type="paragraph" w:styleId="StudyHeading2"><w:name w:val="研学二级标题"/><w:basedOn w:val="Normal"/>
+            <w:pPr><w:spacing w:before="180" w:after="80"/><w:keepNext/><w:keepLines/><w:outlineLvl w:val="1"/></w:pPr>
+            <w:rPr><w:b/><w:color w:val="355EA8"/><w:sz w:val="23"/><w:szCs w:val="23"/></w:rPr></w:style>
+          <w:style w:type="paragraph" w:styleId="StudyCaption"><w:name w:val="研学图注"/><w:basedOn w:val="Normal"/>
+            <w:pPr><w:jc w:val="center"/><w:spacing w:before="60" w:after="180"/><w:keepLines/><w:widowControl/></w:pPr>
+            <w:rPr><w:color w:val="64748B"/><w:sz w:val="18"/><w:szCs w:val="18"/></w:rPr></w:style>
         </w:styles>
     """.trimIndent()
 

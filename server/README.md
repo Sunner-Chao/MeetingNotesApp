@@ -26,6 +26,7 @@
 - 启动及周期性清理服务专属的过期临时文件，不处理其他应用文件。
 - Bearer Token 鉴权；生产配置禁止空 Token。
 - 运行时模型切换接口会暂停接单并排空已经接受的任务。
+- Windows 本地节点提供独立 Web 管理台，用 Basic 鉴权查看状态、事件和日志，并执行受控模型切换。
 
 ### 并发与过载保护
 
@@ -92,7 +93,7 @@ cd <项目根目录>\server
 
 脚本会完成源码打包、首次模型上传、Python 3.11/ffmpeg 安装、固定依赖安装、systemd 注册、健康等待和自动回退。远端管理配置会同步到本地 `.env.remote`，发布元数据会写入 `.deployment-state.json`；两者均被 Git 忽略。
 
-发布 Android 更新时，先将 `server/config/app-update.json` 的 `version_code` 和 `version_name` 改为与 APK 一致的版本，再附加 `-WithBackend -AndroidApk <APK 路径>`。脚本会计算 SHA-256、按版本原子发布 APK、保留当前与上一版本各一份，并清理更旧的安装包；手机端登录或回到前台时会静默检查，用户可立即更新、稍后提醒或忽略该可选版本。
+发布 Android 更新时，先将 `server/config/app-update.json` 的 `version_code` 和 `version_name` 改为与 APK 一致的版本，再附加 `-WithBackend -AndroidApk <APK 路径>`。脚本会计算 SHA-256、按严格递增的版本号原子发布 APK，并强制只保留当前与上一版本各一份。手机端登录或回到前台时强制从服务端检查，只提示最后一次成功发布的最新版本；连续跨版本发布不会逐级提示中间版本。
 
 已经在 Ubuntu 本机取得 `server/` 目录时：
 
@@ -166,6 +167,20 @@ STT_AUDIO_ARCHIVE_MAX_GB=10
 
 环境文件必须保持 `root:meetingnotes 0640`，Codex 配置必须保持 `meetingnotes:meetingnotes 0600`。修改后重启 `meetingnotes-backend.service`，通过 `/api/agent/health` 检查两个 provider 的 `authenticated` 和 `auth_method`。
 
+## STT 运行策略
+
+默认链路使用本地 Faster-Whisper `small`。Windows 临时服务使用 CPU `int8`，后续迁移到 LS-Server 后使用 Tesla V100 的 CUDA `float16`。腾讯云是唯一保留的云端方案，只在用户明确选择云端识别或本地链路失败时使用。
+
+Windows 本机启动：
+
+```bat
+server\stt-service\start-windows-local.bat
+```
+
+本机管理入口为 `https://lstwin.space/admin/`，由 Caddy 反向代理至 `127.0.0.1:8888`。`lstwin.space` 使用 AliDNS DNS-01 自动续期的 Let’s Encrypt 公网证书，证书和 ACME 账户只保存在用户私有目录；管理账号从私有环境文件读取，不写入仓库。`lstwin.cloud` 的权威 DNS 位于 DNSPod，当前独立使用本机已信任的 Caddy 本地 CA，避免两个 DNS 服务商的证书生命周期互相阻塞。
+
+AVD 数据面使用 `http://10.0.2.2:8888` 访问 Windows Host；真机使用 Windows 工作站的局域网地址。正式 Android 包不内置 Caddy 私有 CA。长录音由服务端按重叠窗口分段并顺序去重合并，上传总上限默认 1 GiB。
+
 ## API
 
 | 服务 | 方法与路径 | 鉴权 | 用途 |
@@ -179,6 +194,11 @@ STT_AUDIO_ARCHIVE_MAX_GB=10
 | STT | `GET/DELETE /audio-archive/{archive_id}` | Bearer | 下载或删除当前账户的归档音频 |
 | STT | `POST /admin/stt/switch` | Bearer | 切换引擎/模型 |
 | STT | `GET/DELETE /debug/stream-events` | Bearer | 流式调试事件 |
+| STT Admin | `GET /admin/` | Web Basic | Windows 本地 STT 管理页面 |
+| STT Admin | `GET /admin/api/status` | Web Basic | 服务、模型、设备、队列和会话状态 |
+| STT Admin | `GET /admin/api/events` | Web Basic | 最近实时转写事件 |
+| STT Admin | `GET /admin/api/logs` | Web Basic | 最近服务输出和错误日志 |
+| STT Admin | `POST /admin/api/stt/switch` | Web Basic | 从管理台切换引擎和模型 |
 | Backend | `GET /health` | 无 | 后端和数据库健康 |
 | Backend | `/api/meetings` 等 | Bearer/Basic | 可选会议数据 API |
 | Agent | `GET /api/agent/health` | 独立 Bearer | 提供方、中转凭证、队列和额度状态 |

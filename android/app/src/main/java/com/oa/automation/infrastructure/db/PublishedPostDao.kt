@@ -8,6 +8,9 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface PublishedPostDao {
+    @Query("SELECT * FROM published_posts ORDER BY updatedAt DESC")
+    fun observeAll(): Flow<List<PublishedPostEntity>>
+
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insert(entity: PublishedPostEntity)
 

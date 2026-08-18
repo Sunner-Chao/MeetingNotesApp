@@ -2,7 +2,7 @@ package com.oa.automation.domain.model
 
 object ReportTitleResolver {
     private val placeholderMeetingTitle = Regex(
-        pattern = "^(快速录音|快速会议|新建会议|会议记录)(\\s|[-_]|\\d|$).*$"
+        pattern = "^(快速录音|快速会议|即刻洞见|即刻倾听|新建会议|会议记录|资料导入|文件导入|顷刻解析|顷刻成稿)(\\s|[-_：:]|\\d|$).*$"
     )
 
     fun resolve(report: Report, fallbackMeetingTitle: String = ""): String {

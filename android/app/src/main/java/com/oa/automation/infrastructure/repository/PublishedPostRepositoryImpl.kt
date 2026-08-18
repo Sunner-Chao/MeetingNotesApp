@@ -14,6 +14,9 @@ import java.util.UUID
 class PublishedPostRepositoryImpl(
     private val dao: PublishedPostDao
 ) : PublishedPostRepository {
+    override fun observeAll(): Flow<List<PublishedPost>> =
+        dao.observeAll().map { posts -> posts.map { it.toDomain() } }
+
     suspend fun createReviewSnapshot(
         journeyId: String,
         journeyEditionId: String,
