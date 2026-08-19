@@ -18,8 +18,24 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import com.oa.automation.infrastructure.service.RecordingSessionState
+import com.oa.automation.infrastructure.service.RealtimeSttRouteState
 
 class RecordingUiStateTest {
+    @Test
+    fun `fallback status clearly tells the user that cloud has taken over`() {
+        val switching = realtimeSttStatusPresentation(
+            RealtimeSttRouteState.SWITCHING_TO_CLOUD
+        )
+        val active = realtimeSttStatusPresentation(
+            RealtimeSttRouteState.CLOUD_FALLBACK_ACTIVE
+        )
+
+        assertEquals("正在转接云端识别", switching?.title)
+        assertTrue(switching?.detail.orEmpty().contains("录音持续保存"))
+        assertEquals("云端识别已接管", active?.title)
+        assertTrue(active?.detail.orEmpty().contains("录音未中断"))
+    }
+
     @Test
     fun `failed imported audio is recovered once when its local file still exists`() {
         val meeting = Meeting(title = "文件导入", origin = MeetingOrigin.FILE_IMPORT)
@@ -83,9 +99,21 @@ class RecordingUiStateTest {
     }
 
     @Test
+    fun `recording requires an explicit template selection before start`() {
+        assertFalse(isRecordingMainActionEnabled(RecordingUiState()))
+        assertTrue(
+            isRecordingMainActionEnabled(
+                RecordingUiState(selectedRecordingTemplateName = "通用会议")
+            )
+        )
+        assertTrue(isRecordingMainActionEnabled(RecordingUiState(isRecording = true)))
+    }
+
+    @Test
     fun `changing meeting clears transient recording and processing state`() {
         val previous = RecordingUiState(
             meetingTitle = "Previous meeting",
+            selectedRecordingTemplateName = "项目讨论",
             isRecordingActionPending = true,
             isFinalizingRecording = true,
             isRecording = true,
@@ -177,6 +205,7 @@ class RecordingUiStateTest {
         val next = previous.resetForMeetingChange()
 
         assertFalse(next.isRecordingActionPending)
+        assertNull(next.selectedRecordingTemplateName)
         assertFalse(next.isFinalizingRecording)
         assertFalse(next.isRecording)
         assertFalse(next.isPaused)
@@ -279,6 +308,18 @@ class RecordingUiStateTest {
             listOf(12..17),
             findRecordingMarkerAnchorRanges(transcript, listOf("查看数字看板"))
         )
+    }
+
+    @Test
+    fun `marker transcript segments preserve text and expose insertion boundaries`() {
+        val segments = recordingMarkerTranscriptSegments(
+            transcript = "先介绍展馆。重点观察数字看板。继续参观。",
+            anchors = listOf("重点观察数字看板。")
+        )
+
+        assertEquals("先介绍展馆。重点观察数字看板。继续参观。", segments.joinToString("") { it.text })
+        assertEquals(listOf(false, true, false), segments.map { it.isMarker })
+        assertEquals("重点观察数字看板。", segments.single { it.isMarker }.text)
     }
 
     @Test

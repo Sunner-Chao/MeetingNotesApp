@@ -1,5 +1,7 @@
 package com.oa.automation.infrastructure.service
 
+import com.oa.automation.infrastructure.stt.CLOUD_STREAM_READY_STATUS
+import com.oa.automation.infrastructure.stt.LOCAL_STREAM_READY_STATUS
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -7,6 +9,31 @@ import org.junit.Test
 import com.oa.automation.ui.screen.recording.isActiveRecordingSessionForMeeting
 
 class RecordingSessionStateTest {
+    @Test
+    fun `stream route exposes local recovery and confirmed cloud takeover`() {
+        assertEquals(
+            RealtimeSttRouteState.LOCAL_RECOVERING,
+            realtimeSttRouteAfterStatus(
+                RealtimeSttRouteState.LOCAL_ACTIVE,
+                "本地快速恢复 1/3"
+            )
+        )
+        assertEquals(
+            RealtimeSttRouteState.LOCAL_ACTIVE,
+            realtimeSttRouteAfterStatus(
+                RealtimeSttRouteState.LOCAL_RECOVERING,
+                LOCAL_STREAM_READY_STATUS
+            )
+        )
+        assertEquals(
+            RealtimeSttRouteState.CLOUD_FALLBACK_ACTIVE,
+            realtimeSttRouteAfterStatus(
+                RealtimeSttRouteState.SWITCHING_TO_CLOUD,
+                CLOUD_STREAM_READY_STATUS
+            )
+        )
+    }
+
     @Test
     fun `active session counts elapsed whole seconds`() {
         val state = RecordingSessionState(

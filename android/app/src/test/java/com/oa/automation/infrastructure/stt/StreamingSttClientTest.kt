@@ -5,6 +5,8 @@ import com.oa.automation.domain.model.STTLanguage
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
@@ -18,6 +20,36 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class StreamingSttClientTest {
+    @Test
+    fun `local stream uses three one-second recovery attempts`() {
+        assertEquals(3, LOCAL_STREAM_RECONNECT_ATTEMPTS)
+        assertEquals(3L, STREAM_PING_INTERVAL_SECONDS)
+        assertEquals(
+            listOf(1_000L, 1_000L, 1_000L),
+            (1..LOCAL_STREAM_RECONNECT_ATTEMPTS).map { attempt ->
+                streamingReconnectDelayMs(
+                    attempt = attempt,
+                    provider = StreamingSttProvider.LOCAL,
+                    baseDelayMs = LOCAL_STREAM_RECONNECT_DELAY_MS
+                )
+            }
+        )
+    }
+
+    @Test
+    fun `cloud reconnect retains bounded exponential backoff`() {
+        assertEquals(
+            listOf(1_000L, 2_000L, 4_000L, 8_000L, 16_000L),
+            (1..5).map { attempt ->
+                streamingReconnectDelayMs(
+                    attempt = attempt,
+                    provider = StreamingSttProvider.TENCENT_REALTIME_STANDARD,
+                    baseDelayMs = 1_000L
+                )
+            }
+        )
+    }
+
     @Test
     fun `tencent realtime provider is included in start control message`() {
         val payload = JsonParser.parseString(
@@ -167,6 +199,59 @@ class StreamingSttClientTest {
             assertEquals(StreamingSttProvider.LOCAL, failedProvider.get())
             assertTrue(failureDetail.get().isNotBlank())
         } finally {
+            client.stop()
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun `local recovery deadline reports one provider failure after three seconds`() {
+        val server = MockWebServer()
+        val deadlineStarted = CountDownLatch(1)
+        val releaseDeadline = CountDownLatch(1)
+        val providerFailed = CountDownLatch(1)
+        val callbackCount = AtomicInteger(0)
+        val requestedDeadlineMs = AtomicLong(-1L)
+        val failureDetail = AtomicReference<String>()
+        server.enqueue(MockResponse().setResponseCode(503))
+        server.start()
+        val client = StreamingSttClient(
+            client = OkHttpClient.Builder().build(),
+            reconnectDelay = { Thread.sleep(500) },
+            maxReconnectAttempts = LOCAL_STREAM_RECONNECT_ATTEMPTS,
+            localRecoveryDelay = { delayMs ->
+                requestedDeadlineMs.set(delayMs)
+                deadlineStarted.countDown()
+                releaseDeadline.await(5, TimeUnit.SECONDS)
+            },
+            debugLog = {},
+            warningLog = {}
+        )
+        try {
+            client.start(
+                endpoint = server.url("/local").toString(),
+                meetingId = "meeting-local-deadline",
+                streamProvider = StreamingSttProvider.LOCAL,
+                onPartialText = {},
+                onStatus = {},
+                onError = {},
+                onProviderFailure = { provider, detail ->
+                    assertEquals(StreamingSttProvider.LOCAL, provider)
+                    callbackCount.incrementAndGet()
+                    failureDetail.set(detail)
+                    providerFailed.countDown()
+                }
+            )
+
+            assertTrue("local recovery deadline was not scheduled", deadlineStarted.await(5, TimeUnit.SECONDS))
+            assertEquals(LOCAL_STREAM_FAILOVER_WINDOW_MS, requestedDeadlineMs.get())
+            releaseDeadline.countDown()
+            assertTrue("provider failure was not reported", providerFailed.await(5, TimeUnit.SECONDS))
+            Thread.sleep(100)
+            assertEquals(1, callbackCount.get())
+            assertTrue(failureDetail.get().contains("3 秒快速恢复窗口"))
+        } finally {
+            releaseDeadline.countDown()
             client.stop()
             server.shutdown()
         }

@@ -19,11 +19,30 @@ import com.oa.automation.locale.SimplifiedChineseText
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.withTimeout
 
+internal const val LOCAL_STREAM_RECONNECT_ATTEMPTS = 3
+internal const val LOCAL_STREAM_RECONNECT_DELAY_MS = 1_000L
+internal const val LOCAL_STREAM_FAILOVER_WINDOW_MS = 3_000L
+internal const val STREAM_PING_INTERVAL_SECONDS = 3L
+internal const val LOCAL_STREAM_READY_STATUS = "本地实时识别已就绪"
+internal const val CLOUD_STREAM_READY_STATUS = "云端实时识别已接管"
+
+internal fun streamingReconnectDelayMs(
+    attempt: Int,
+    provider: StreamingSttProvider,
+    baseDelayMs: Long
+): Long {
+    val safeBase = baseDelayMs.coerceAtLeast(0L)
+    if (provider == StreamingSttProvider.LOCAL) return safeBase
+    return (safeBase * (1L shl (attempt - 1).coerceIn(0, 30))).coerceAtMost(30_000L)
+}
+
 class StreamingSttClient internal constructor(
     private val client: OkHttpClient = createHttpClient(),
     private val reconnectDelay: (Long) -> Unit = { delayMs -> Thread.sleep(delayMs) },
-    private val maxReconnectAttempts: Int = 5,
-    private val baseDelayMs: Long = 2000L,
+    private val maxReconnectAttempts: Int = LOCAL_STREAM_RECONNECT_ATTEMPTS,
+    private val baseDelayMs: Long = LOCAL_STREAM_RECONNECT_DELAY_MS,
+    private val maxCloudReconnectAttempts: Int = 5,
+    private val localRecoveryDelay: (Long) -> Unit = { delayMs -> Thread.sleep(delayMs) },
     private val debugLog: (String) -> Unit = { message -> Log.d(TAG, message) },
     private val warningLog: (String) -> Unit = { message -> Log.w(TAG, message) }
 ) {
@@ -38,9 +57,10 @@ class StreamingSttClient internal constructor(
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(0, TimeUnit.SECONDS)
             .writeTimeout(15, TimeUnit.SECONDS)
-            // Detect a half-open mobile/WireGuard connection before the audio
-            // queue has been silently filling for a full minute.
-            .pingInterval(15, TimeUnit.SECONDS)
+            // Mobile proxy paths can become half-open while PCM frames appear
+            // to send normally. A short ping makes local-to-cloud failover
+            // observable within seconds instead of about a minute.
+            .pingInterval(STREAM_PING_INTERVAL_SECONDS, TimeUnit.SECONDS)
             .build()
     }
 
@@ -78,6 +98,8 @@ class StreamingSttClient internal constructor(
     private val sessionGeneration = AtomicLong(0)
     private val connectionGeneration = AtomicLong(0)
     private val terminalConnectionGeneration = AtomicLong(-1)
+    private val providerFailureGeneration = AtomicLong(-1)
+    private val localRecoveryEpoch = AtomicLong(0)
     private val audioLock = Any()
     private val pendingAudio = ArrayDeque<ByteArray>()
     private var pendingAudioBytes = 0
@@ -87,6 +109,9 @@ class StreamingSttClient internal constructor(
     private var pendingLanguageSwitch: PendingLanguageSwitch? = null
     @Volatile
     private var connectionReady: CompletableDeferred<Unit>? = null
+    private var serverReady = false
+    @Volatile
+    private var localRecoveryDeadlineScheduled = false
 
     // Callback holders (set during start(), cleared during stop())
     private var onPartialTextCallback: ((StreamingTranscriptUpdate) -> Unit)? = null
@@ -121,6 +146,10 @@ class StreamingSttClient internal constructor(
         this.language = language
         this.connectionReady = connectionReady
         serverSessionId = null
+        serverReady = false
+        localRecoveryDeadlineScheduled = false
+        localRecoveryEpoch.incrementAndGet()
+        providerFailureGeneration.set(-1)
         streamCanFinalize = allowFinalization
         authorizationRejected = false
         val generation = sessionGeneration.incrementAndGet()
@@ -223,7 +252,9 @@ class StreamingSttClient internal constructor(
                             }
                         }
                         "status" -> {
-                            message.sessionId?.takeIf { it.matches(Regex("^[0-9a-f]{32}$")) }?.let { id ->
+                            val acceptedSessionId = message.sessionId
+                                ?.takeIf { it.matches(Regex("^[0-9a-f]{32}$")) }
+                            acceptedSessionId?.let { id ->
                                 val previousId = serverSessionId
                                 if (previousId != null && previousId != id) {
                                     streamCanFinalize = false
@@ -232,12 +263,24 @@ class StreamingSttClient internal constructor(
                             }
                             message.streamProvider?.let(::completeProviderSwitch)
                             message.language?.let(::completeLanguageSwitch)
-                            if (serverSessionId != null) {
+                            if (acceptedSessionId != null) {
                                 // A TCP/WebSocket handshake alone is not
                                 // enough: the server must accept the start
                                 // event and issue a session id.
                                 connectionReady?.complete(Unit)
                                 connectionReady = null
+                                serverReady = true
+                                synchronized(reconnectLock) {
+                                    localRecoveryDeadlineScheduled = false
+                                    localRecoveryEpoch.incrementAndGet()
+                                }
+                                onStatus(
+                                    if (streamProvider == StreamingSttProvider.LOCAL) {
+                                        LOCAL_STREAM_READY_STATUS
+                                    } else {
+                                        CLOUD_STREAM_READY_STATUS
+                                    }
+                                )
                             }
                             if (!message.message.isNullOrBlank()) onStatus(message.message)
                         }
@@ -305,6 +348,7 @@ class StreamingSttClient internal constructor(
         synchronized(audioLock) {
             isConnected = false
         }
+        serverReady = false
         webSocket = null
         streamCanFinalize = false
         failProviderSwitch(detail)
@@ -315,17 +359,66 @@ class StreamingSttClient internal constructor(
             connectionReady?.completeExceptionally(IllegalStateException(detail))
             connectionReady = null
             onError("STT 访问令牌无效或无权限，请到服务设置中更新令牌")
-            onProviderFailureCallback?.invoke(streamProvider, detail)
+            notifyProviderFailureOnce(generation, detail)
             return
         }
+        scheduleLocalFailoverDeadline(generation, detail)
         if (scheduleReconnectIfNeeded(generation)) {
-            onStatus("网络波动，正在恢复实时预览")
+            onStatus(
+                if (streamProvider == StreamingSttProvider.LOCAL) {
+                    "本地连接波动，正在快速恢复"
+                } else {
+                    "云端连接波动，正在恢复实时识别"
+                }
+            )
         } else {
             connectionReady?.completeExceptionally(IllegalStateException(detail))
             connectionReady = null
             onError("实时预览连接失败：$detail，请检查网络后重试")
-            onProviderFailureCallback?.invoke(streamProvider, detail)
+            notifyProviderFailureOnce(generation, detail)
         }
+    }
+
+    private fun scheduleLocalFailoverDeadline(generation: Long, detail: String) {
+        if (streamProvider != StreamingSttProvider.LOCAL) return
+        val epoch: Long
+        synchronized(reconnectLock) {
+            if (generation != sessionGeneration.get() || localRecoveryDeadlineScheduled) return
+            localRecoveryDeadlineScheduled = true
+            epoch = localRecoveryEpoch.incrementAndGet()
+        }
+        Thread {
+            localRecoveryDelay(LOCAL_STREAM_FAILOVER_WINDOW_MS)
+            val shouldFailover = synchronized(reconnectLock) {
+                val valid = generation == sessionGeneration.get() &&
+                    epoch == localRecoveryEpoch.get() &&
+                    !serverReady &&
+                    streamProvider == StreamingSttProvider.LOCAL
+                if (valid) {
+                    reconnectAttempt = maxReconnectAttempts
+                    isReconnecting = false
+                }
+                if (epoch == localRecoveryEpoch.get()) localRecoveryDeadlineScheduled = false
+                valid
+            }
+            if (shouldFailover) {
+                webSocket?.cancel()
+                notifyProviderFailureOnce(
+                    generation,
+                    "本地实时识别在 3 秒快速恢复窗口内未就绪：$detail"
+                )
+            }
+        }.apply {
+            name = "StreamingSttLocalFailover"
+            isDaemon = true
+            start()
+        }
+    }
+
+    private fun notifyProviderFailureOnce(generation: Long, detail: String) {
+        if (generation != sessionGeneration.get()) return
+        if (providerFailureGeneration.getAndSet(generation) == generation) return
+        onProviderFailureCallback?.invoke(streamProvider, detail)
     }
 
     private fun isCurrentConnection(generation: Long, connectionId: Long): Boolean =
@@ -333,16 +426,25 @@ class StreamingSttClient internal constructor(
 
     private fun scheduleReconnectIfNeeded(generation: Long): Boolean {
         val attempt: Int
+        val retryLimit = if (streamProvider == StreamingSttProvider.LOCAL) {
+            maxReconnectAttempts
+        } else {
+            maxCloudReconnectAttempts
+        }
         synchronized(reconnectLock) {
             if (generation != sessionGeneration.get()) return false
             if (isReconnecting) return true
-            if (reconnectAttempt >= maxReconnectAttempts) return false
+            if (reconnectAttempt >= retryLimit) return false
             isReconnecting = true
             reconnectAttempt++
             attempt = reconnectAttempt
         }
 
-        val delayMs = (baseDelayMs * (1 shl (attempt - 1).coerceAtLeast(0))).coerceAtMost(30000L)
+        val delayMs = streamingReconnectDelayMs(
+            attempt = attempt,
+            provider = streamProvider,
+            baseDelayMs = baseDelayMs
+        )
 
         Thread {
             reconnectDelay(delayMs)
@@ -354,7 +456,13 @@ class StreamingSttClient internal constructor(
             val statusCb = onStatusCallback
             val errorCb = onErrorCallback
             if (partialCb != null && statusCb != null && errorCb != null) {
-                statusCb("正在重连流式预览 ($attempt/$maxReconnectAttempts)...")
+                statusCb(
+                    if (streamProvider == StreamingSttProvider.LOCAL) {
+                        "本地快速恢复 $attempt/$retryLimit"
+                    } else {
+                        "云端连接恢复 $attempt/$retryLimit"
+                    }
+                )
                 connect(endpoint, generation, partialCb, statusCb, errorCb)
             } else {
                 isReconnecting = false
@@ -489,12 +597,15 @@ class StreamingSttClient internal constructor(
         var finalizationSession = serverSessionId?.takeIf { isConnected && streamCanFinalize }
         sessionGeneration.incrementAndGet()
         connectionGeneration.incrementAndGet()
-        reconnectAttempt = maxReconnectAttempts  // prevent auto-reconnect
+        reconnectAttempt = maxOf(maxReconnectAttempts, maxCloudReconnectAttempts)
         isReconnecting = false
         failProviderSwitch("流式识别已结束")
         failLanguageSwitch("流式识别已结束")
         connectionReady?.cancel()
         connectionReady = null
+        serverReady = false
+        localRecoveryDeadlineScheduled = false
+        localRecoveryEpoch.incrementAndGet()
         if (isConnected) {
             val stopSent = webSocket?.send(gson.toJson(StreamControlMessage(event = "stop"))) == true
             if (!stopSent) finalizationSession = null

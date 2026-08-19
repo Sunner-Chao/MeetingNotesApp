@@ -9,6 +9,8 @@ import com.oa.automation.infrastructure.account.AccountSessionSynchronizer
 import com.oa.automation.infrastructure.stt.StreamingTranscriptUpdate
 import com.oa.automation.infrastructure.stt.StreamingTranscriptAccumulator
 import com.oa.automation.infrastructure.stt.CloudSTTEngine
+import com.oa.automation.infrastructure.stt.CLOUD_STREAM_READY_STATUS
+import com.oa.automation.infrastructure.stt.LOCAL_STREAM_READY_STATUS
 import com.oa.automation.domain.model.STTEngineType
 import com.oa.automation.domain.model.STTLanguage
 import com.oa.automation.domain.model.TencentAsrTier
@@ -30,6 +32,33 @@ import kotlinx.coroutines.CancellationException
 import kotlin.math.log10
 import kotlin.math.sqrt
 
+enum class RealtimeSttRouteState {
+    IDLE,
+    LOCAL_CONNECTING,
+    LOCAL_ACTIVE,
+    LOCAL_RECOVERING,
+    CLOUD_CONNECTING,
+    SWITCHING_TO_CLOUD,
+    CLOUD_ACTIVE,
+    CLOUD_FALLBACK_ACTIVE,
+    UNAVAILABLE
+}
+
+internal fun realtimeSttRouteAfterStatus(
+    current: RealtimeSttRouteState,
+    status: String
+): RealtimeSttRouteState = when {
+    status == LOCAL_STREAM_READY_STATUS -> RealtimeSttRouteState.LOCAL_ACTIVE
+    status.startsWith("本地连接波动") || status.startsWith("本地快速恢复") ->
+        RealtimeSttRouteState.LOCAL_RECOVERING
+    status == CLOUD_STREAM_READY_STATUS && current == RealtimeSttRouteState.SWITCHING_TO_CLOUD ->
+        RealtimeSttRouteState.CLOUD_FALLBACK_ACTIVE
+    status == CLOUD_STREAM_READY_STATUS -> RealtimeSttRouteState.CLOUD_ACTIVE
+    status.startsWith("云端连接波动") || status.startsWith("云端连接恢复") ->
+        RealtimeSttRouteState.CLOUD_CONNECTING
+    else -> current
+}
+
 data class RecordingSessionState(
     val meetingId: String = "",
     val meetingTitle: String = "",
@@ -43,6 +72,7 @@ data class RecordingSessionState(
     val streamUpdate: StreamingTranscriptUpdate? = null,
     val accumulatedTranscript: String = "",
     val status: String = "流式预览",
+    val realtimeSttRoute: RealtimeSttRouteState = RealtimeSttRouteState.IDLE,
     val error: String? = null
 )
 
@@ -142,6 +172,11 @@ class RecordingSessionController(
                 meetingId = meetingId,
                 meetingTitle = meetingTitle,
                 isStarting = true,
+                realtimeSttRoute = when {
+                    useCloudInitially -> RealtimeSttRouteState.CLOUD_CONNECTING
+                    initialEndpoint.isNotBlank() -> RealtimeSttRouteState.LOCAL_CONNECTING
+                    else -> RealtimeSttRouteState.IDLE
+                },
                 status = when {
                     useCloudInitially -> "正在连接智悟增强云模型"
                     initialEndpoint.isBlank() -> "正在启动本地录音"
@@ -186,18 +221,56 @@ class RecordingSessionController(
                     onPartialText = { update ->
                         val accumulatedText = transcriptAccumulator.update(update)
                         _state.update {
+                            val route = when (it.realtimeSttRoute) {
+                                RealtimeSttRouteState.SWITCHING_TO_CLOUD ->
+                                    RealtimeSttRouteState.CLOUD_FALLBACK_ACTIVE
+                                RealtimeSttRouteState.CLOUD_CONNECTING ->
+                                    RealtimeSttRouteState.CLOUD_ACTIVE
+                                RealtimeSttRouteState.CLOUD_ACTIVE,
+                                RealtimeSttRouteState.CLOUD_FALLBACK_ACTIVE ->
+                                    it.realtimeSttRoute
+                                else -> RealtimeSttRouteState.LOCAL_ACTIVE
+                            }
                             it.copy(
                                 streamUpdate = update,
                                 accumulatedTranscript = accumulatedText,
+                                realtimeSttRoute = route,
                                 status = "实时预览（可修订）"
                             )
                         }
                     },
-                    onStatus = { status -> _state.update { it.copy(status = status, error = null) } },
-                    onError = { error -> _state.update { it.copy(error = error) } },
+                    onStatus = { status ->
+                        _state.update {
+                            it.copy(
+                                status = status,
+                                realtimeSttRoute = realtimeSttRouteAfterStatus(
+                                    current = it.realtimeSttRoute,
+                                    status = status
+                                ),
+                                error = null
+                            )
+                        }
+                    },
+                    onError = { error ->
+                        _state.update {
+                            val localWillFallback = cloudFallbackAvailable &&
+                                !automaticCloudFallbackAttempted &&
+                                it.realtimeSttRoute in LOCAL_ROUTE_STATES
+                            if (localWillFallback) it else it.copy(error = error)
+                        }
+                    },
                     onProviderFailure = { provider, detail ->
                         if (provider == StreamingSttProvider.LOCAL) {
-                            requestAutomaticCloudFallback(detail)
+                            if (cloudFallbackAvailable) {
+                                requestAutomaticCloudFallback(detail)
+                            } else {
+                                _state.update {
+                                    it.copy(
+                                        realtimeSttRoute = RealtimeSttRouteState.UNAVAILABLE,
+                                        error = "本地实时识别不可用，录音仍会保存在本机"
+                                    )
+                                }
+                            }
                         }
                     }
                 )
@@ -231,6 +304,7 @@ class RecordingSessionController(
                         initialEndpoint.isBlank() -> "本地录音中"
                         else -> "本地实时预览处理中"
                     },
+                    realtimeSttRoute = it.realtimeSttRoute,
                     error = null
                 )
             }
@@ -282,6 +356,7 @@ class RecordingSessionController(
                     audioLevel = 0f,
                     accumulatedTranscript = transcriptText,
                     status = if (transcriptText.isBlank()) "实时转写未产生文本" else "正在保存实时转写",
+                    realtimeSttRoute = RealtimeSttRouteState.IDLE,
                     error = null
                 )
             }
@@ -377,32 +452,63 @@ class RecordingSessionController(
                     }
                 }
                 _state.update {
+                    val previousRoute = it.realtimeSttRoute
+                    val nextRoute = when {
+                        engineType != STTEngineType.TENCENT_HYBRID ->
+                            RealtimeSttRouteState.LOCAL_CONNECTING
+                        previousRoute in LOCAL_ROUTE_STATES || automaticCloudFallbackAttempted ->
+                            RealtimeSttRouteState.SWITCHING_TO_CLOUD
+                        else -> RealtimeSttRouteState.CLOUD_CONNECTING
+                    }
                     it.copy(
-                        status = "正在切换至${engineType.displayName}",
+                        status = if (nextRoute == RealtimeSttRouteState.SWITCHING_TO_CLOUD) {
+                            "本地识别中断，正在接入云端识别"
+                        } else {
+                            "正在连接${engineType.displayName}"
+                        },
+                        realtimeSttRoute = nextRoute,
                         error = null
                     )
                 }
                 streamingSttClient.switchService(endpoint, provider).getOrThrow()
                 _state.update {
+                    val connectedRoute = when {
+                        engineType != STTEngineType.TENCENT_HYBRID ->
+                            RealtimeSttRouteState.LOCAL_ACTIVE
+                        automaticCloudFallbackAttempted ->
+                            RealtimeSttRouteState.CLOUD_FALLBACK_ACTIVE
+                        else -> RealtimeSttRouteState.CLOUD_ACTIVE
+                    }
                     it.copy(
-                        status = "${engineType.displayName}已启用",
+                        status = if (connectedRoute == RealtimeSttRouteState.CLOUD_FALLBACK_ACTIVE) {
+                            "云端识别已接管，录音未中断"
+                        } else {
+                            "${engineType.displayName}已启用"
+                        },
+                        realtimeSttRoute = connectedRoute,
                         error = null
                     )
                 }
             }.onFailure { error ->
+                streamingPreviewActive = false
                 _state.update {
-                    it.copy(error = "识别引擎切换失败: ${error.message}")
+                    it.copy(
+                        realtimeSttRoute = RealtimeSttRouteState.UNAVAILABLE,
+                        error = "识别引擎切换失败: ${error.message}"
+                    )
                 }
             }
         }
 
     private fun requestAutomaticCloudFallback(detail: String) {
         if (!cloudFallbackAvailable || automaticCloudFallbackAttempted) return
-        if (!_state.value.isRecording || _state.value.isStopping) return
+        val current = _state.value
+        if ((!current.isRecording && !current.isStarting) || current.isStopping) return
         automaticCloudFallbackAttempted = true
         _state.update {
             it.copy(
                 status = "本地实时识别暂不可用，正在切换云端兜底",
+                realtimeSttRoute = RealtimeSttRouteState.SWITCHING_TO_CLOUD,
                 error = null
             )
         }
@@ -412,12 +518,14 @@ class RecordingSessionController(
                 if (!it.isRecording || it.isStopping) return@update it
                 if (result.isSuccess) {
                     it.copy(
-                        status = "云端兜底实时识别中",
+                        status = "云端识别已接管，录音未中断",
+                        realtimeSttRoute = RealtimeSttRouteState.CLOUD_FALLBACK_ACTIVE,
                         error = null
                     )
                 } else {
                     it.copy(
                         status = "本地与云端实时识别均不可用",
+                        realtimeSttRoute = RealtimeSttRouteState.UNAVAILABLE,
                         error = "本地实时识别失败：$detail；云端兜底失败：${result.exceptionOrNull()?.message ?: "未知错误"}"
                     )
                 }
@@ -463,11 +571,18 @@ class RecordingSessionController(
                 startedAtElapsedRealtimeMs = null,
                 recordedDurationSeconds = if (deleteFile) 0 else completedDuration,
                 status = if (deleteFile) "本次录音已放弃" else it.status,
+                realtimeSttRoute = RealtimeSttRouteState.IDLE,
                 error = null
             )
         }
     }
 }
+
+private val LOCAL_ROUTE_STATES = setOf(
+    RealtimeSttRouteState.LOCAL_CONNECTING,
+    RealtimeSttRouteState.LOCAL_ACTIVE,
+    RealtimeSttRouteState.LOCAL_RECOVERING
+)
 
 /** Convert 16-bit mono PCM into a UI-friendly 0..1 sound level. */
 private fun normalizedPcmLevel(bytes: ByteArray, length: Int): Float {

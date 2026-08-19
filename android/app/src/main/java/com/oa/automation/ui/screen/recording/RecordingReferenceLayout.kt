@@ -1102,7 +1102,7 @@ private fun VoiceRecordingContent(
     ) {
         MeetingTemplateStrip(
             templates = uiState.presetTemplates,
-            selectedTemplateName = uiState.reportTemplate.selectedName,
+            selectedTemplateName = uiState.selectedRecordingTemplateName.orEmpty(),
             cardHeight = layout.templateCardHeight,
             onSelectTemplate = onSelectTemplate
         )
@@ -1142,6 +1142,7 @@ private fun VoiceRecordingContent(
             transcript = uiState.liveTranscript,
             previewMode = imageImportProgressLabel(uiState) ?: uiState.transcriptPreviewMode,
             isRecording = uiState.isRecording,
+            realtimeSttRoute = uiState.realtimeSttRoute,
             modifier = Modifier
                 .weight(1f)
                 .heightIn(min = layout.transcriptMinHeight)
@@ -1201,7 +1202,7 @@ private fun ImportRecordingContent(
     ) {
         MeetingTemplateStrip(
             templates = uiState.presetTemplates,
-            selectedTemplateName = uiState.reportTemplate.selectedName,
+            selectedTemplateName = uiState.selectedRecordingTemplateName.orEmpty(),
             cardHeight = layout.templateCardHeight,
             onSelectTemplate = onSelectTemplate
         )
@@ -1875,6 +1876,7 @@ private fun ReferenceTranscriptPanel(
     transcript: String,
     previewMode: String,
     isRecording: Boolean,
+    realtimeSttRoute: com.oa.automation.infrastructure.service.RealtimeSttRouteState,
     modifier: Modifier = Modifier
 ) {
     val scrollState = rememberScrollState()
@@ -1978,6 +1980,9 @@ private fun ReferenceTranscriptPanel(
                         )
                     }
                 }
+            }
+            if (isRecording) {
+                RealtimeSttStatusBar(route = realtimeSttRoute)
             }
             Surface(
                 modifier = Modifier

@@ -52,6 +52,7 @@ import com.oa.automation.infrastructure.background.BackgroundTaskState
 import com.oa.automation.infrastructure.service.RecordingService
 import com.oa.automation.infrastructure.service.RecordingSessionController
 import com.oa.automation.infrastructure.service.RecordingSessionState
+import com.oa.automation.infrastructure.service.RealtimeSttRouteState
 import com.oa.automation.infrastructure.stt.StreamingTranscriptUpdate
 import com.oa.automation.infrastructure.service.durationSecondsAt
 import com.oa.automation.infrastructure.stt.STTServiceClient
@@ -108,8 +109,10 @@ data class RecordingUiState(
     val transcriptionProgressIndeterminate: Boolean = false,
     val isSavingTitle: Boolean = false,
     val transcriptPreviewMode: String = "流式预览",
+    val realtimeSttRoute: RealtimeSttRouteState = RealtimeSttRouteState.IDLE,
     val presetTemplates: List<PresetReportTemplate> = emptyList(),
     val reportTemplate: ReportTemplateConfig = ReportTemplateConfig(),
+    val selectedRecordingTemplateName: String? = null,
     val journey: Journey? = null,
     val currentJourneyStage: JourneyStage? = null,
     val latestSavedJourneyStage: JourneyStage? = null,
@@ -251,11 +254,18 @@ internal fun isActiveRecordingSessionForMeeting(
     session.meetingId == meetingId &&
     (session.isRecording || session.isStarting || session.isStopping)
 
+internal const val RECORDING_TEMPLATE_REQUIRED_MESSAGE =
+    "请首先选择上方的模板，然后再进行录音！"
+
 internal fun isRecordingActionEnabled(state: RecordingUiState): Boolean =
     !state.isRecordingActionPending &&
         !state.isFinalizingRecording &&
         !state.isJourneyActionPending &&
         !state.isGeneratingReport
+
+internal fun isRecordingMainActionEnabled(state: RecordingUiState): Boolean =
+    isRecordingActionEnabled(state) &&
+        (state.isRecording || !state.selectedRecordingTemplateName.isNullOrBlank())
 
 internal fun canStartImageImport(state: RecordingUiState): Boolean = !state.isImportingImages
 
@@ -323,6 +333,8 @@ internal fun RecordingUiState.resetForMeetingChange(): RecordingUiState = copy(
     transcriptionProgressIndeterminate = false,
     isSavingTitle = false,
     transcriptPreviewMode = "流式预览",
+    realtimeSttRoute = RealtimeSttRouteState.IDLE,
+    selectedRecordingTemplateName = null,
     journey = null,
     currentJourneyStage = null,
     latestSavedJourneyStage = null,
@@ -483,6 +495,7 @@ class RecordingViewModel(
                         recordingDuration = session.durationSecondsAt(SystemClock.elapsedRealtime()),
                         audioLevel = session.audioLevel,
                         transcriptPreviewMode = session.status,
+                        realtimeSttRoute = session.realtimeSttRoute,
                         isTranscribing = if (clearTranscriptionState) false else it.isTranscribing,
                         transcriptionProgressPercent = if (clearTranscriptionState) {
                             null
@@ -684,6 +697,11 @@ class RecordingViewModel(
                         hasReport = hasReport,
                         recordingDuration = restoredDurationSeconds,
                         audioLevel = recordingState.audioLevel,
+                        realtimeSttRoute = if (isGlobalRecording) {
+                            recordingState.realtimeSttRoute
+                        } else {
+                            RealtimeSttRouteState.IDLE
+                        },
                         liveTranscript = when {
                             isGlobalRecording && it.liveTranscript.isNotBlank() -> it.liveTranscript
                             else -> transcriptText
@@ -700,7 +718,9 @@ class RecordingViewModel(
                             else -> "流式预览"
                         },
                         presetTemplates = configDataStore.loadPresetTemplates(),
-                        reportTemplate = appConfig.reportTemplateConfig
+                        reportTemplate = appConfig.reportTemplateConfig,
+                        selectedRecordingTemplateName = appConfig.reportTemplateConfig.selectedName
+                            .takeIf { isGlobalRecording }
                     )
                 }
                 if (isGlobalRecording) {
@@ -1100,6 +1120,12 @@ class RecordingViewModel(
         }
         val state = _uiState.value
         if (state.isRecordingActionPending || state.isJourneyActionPending) return
+        if (state.selectedRecordingTemplateName.isNullOrBlank()) {
+            _uiState.update {
+                it.copy(error = RECORDING_TEMPLATE_REQUIRED_MESSAGE)
+            }
+            return
+        }
         val active = recordingController.state.value
         if (active.isStopping) {
             if (pendingRecordingStartJob?.isActive == true) return
@@ -1292,11 +1318,10 @@ class RecordingViewModel(
                 transcriptPreviewMode = "已定位 ${formatRecordingMarker(timestampSeconds)} · 请选择图片"
             )
         }
+        emitMediaRequest(request, marker.id)
         viewModelScope.launch {
             meetingRepository.saveRecordingMarker(marker).fold(
-                onSuccess = {
-                    if (isCurrentMeeting(meetingId)) emitMediaRequest(request, marker.id)
-                },
+                onSuccess = {},
                 onFailure = { error ->
                     if (isCurrentMeeting(meetingId)) {
                         recordingMarkerRecords = recordingMarkerRecords.filterNot { it.id == marker.id }
@@ -2793,9 +2818,15 @@ class RecordingViewModel(
             content = template.content,
             isCustom = false
         )
+        _uiState.update {
+            it.copy(
+                reportTemplate = config,
+                selectedRecordingTemplateName = template.name,
+                error = it.error.takeUnless { message -> message == RECORDING_TEMPLATE_REQUIRED_MESSAGE }
+            )
+        }
         viewModelScope.launch {
             configDataStore.updateReportTemplate(config)
-            updateState { it.copy(reportTemplate = config) }
         }
     }
 
@@ -3585,6 +3616,43 @@ internal fun findRecordingMarkerAnchorRanges(
             }
         }
     return occupied.sortedBy(IntRange::first)
+}
+
+internal data class RecordingMarkerTranscriptSegment(
+    val text: String,
+    val isMarker: Boolean
+)
+
+internal fun recordingMarkerTranscriptSegments(
+    transcript: String,
+    anchors: List<String>
+): List<RecordingMarkerTranscriptSegment> {
+    if (transcript.isEmpty()) return emptyList()
+    val ranges = findRecordingMarkerAnchorRanges(transcript, anchors)
+    if (ranges.isEmpty()) return listOf(RecordingMarkerTranscriptSegment(transcript, isMarker = false))
+
+    val segments = mutableListOf<RecordingMarkerTranscriptSegment>()
+    var cursor = 0
+    ranges.forEach { range ->
+        if (cursor < range.first) {
+            segments += RecordingMarkerTranscriptSegment(
+                text = transcript.substring(cursor, range.first),
+                isMarker = false
+            )
+        }
+        segments += RecordingMarkerTranscriptSegment(
+            text = transcript.substring(range.first, range.last + 1),
+            isMarker = true
+        )
+        cursor = range.last + 1
+    }
+    if (cursor < transcript.length) {
+        segments += RecordingMarkerTranscriptSegment(
+            text = transcript.substring(cursor),
+            isMarker = false
+        )
+    }
+    return segments
 }
 
 internal fun studyStageTranscriptDelta(

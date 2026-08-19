@@ -48,6 +48,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -88,6 +89,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -271,7 +273,7 @@ internal fun SiriRecorderContent(
             Spacer(Modifier.height(7.dp))
             SiriTemplateChips(
                 templates = uiState.presetTemplates,
-                selectedTemplateName = uiState.reportTemplate.selectedName,
+                selectedTemplateName = uiState.selectedRecordingTemplateName.orEmpty(),
                 palette = palette,
                 onSelectTemplate = onSelectTemplate
             )
@@ -292,6 +294,7 @@ internal fun SiriRecorderContent(
                     uiState.reportProgressPercent
                 },
                 status = uiState.transcriptPreviewMode,
+                realtimeSttRoute = uiState.realtimeSttRoute,
                 palette = palette,
                 onCancelTranscription = onCancelTranscription,
                 onCancelReport = onCancelReport,
@@ -306,6 +309,7 @@ internal fun SiriRecorderContent(
                 isPaused = uiState.isPaused,
                 audioLevel = uiState.audioLevel,
                 actionEnabled = isRecordingActionEnabled(uiState),
+                hasSelectedTemplate = !uiState.selectedRecordingTemplateName.isNullOrBlank(),
                 markerCount = uiState.recordingMarkers.size,
                 hasActivePhotoMarker = uiState.activePhotoMarker != null,
                 onAddMarker = onAddMarker,
@@ -1010,20 +1014,18 @@ private fun buildMarkerAwareTranscriptText(
     defaultColor: Color,
     markerColor: Color
 ): AnnotatedString = buildAnnotatedString {
-    append(transcript)
-    if (transcript.isNotEmpty()) {
-        addStyle(
-            style = SpanStyle(color = defaultColor),
-            start = 0,
-            end = transcript.length
-        )
-    }
-    findRecordingMarkerAnchorRanges(transcript, markerAnchors).forEach { range ->
-        addStyle(
-            style = SpanStyle(color = markerColor, fontWeight = FontWeight.SemiBold),
-            start = range.first,
-            end = range.last + 1
-        )
+    recordingMarkerTranscriptSegments(transcript, markerAnchors).forEach { segment ->
+        withStyle(
+            SpanStyle(
+                color = if (segment.isMarker) markerColor else defaultColor,
+                fontWeight = if (segment.isMarker) FontWeight.SemiBold else FontWeight.Normal,
+                background = if (segment.isMarker) markerColor.copy(alpha = 0.08f) else Color.Transparent
+            )
+        ) {
+            if (segment.isMarker) append("「")
+            append(segment.text)
+            if (segment.isMarker) append("」")
+        }
     }
 }
 
@@ -1040,6 +1042,7 @@ private fun SiriTranscriptCard(
     isGeneratingReport: Boolean,
     progressPercent: Int?,
     status: String,
+    realtimeSttRoute: com.oa.automation.infrastructure.service.RealtimeSttRouteState,
     palette: SiriRecorderPalette,
     onCancelTranscription: () -> Unit,
     onCancelReport: () -> Unit,
@@ -1082,6 +1085,10 @@ private fun SiriTranscriptCard(
                 Spacer(Modifier.weight(1f))
             }
             Spacer(Modifier.height(10.dp))
+            if (isRecording) {
+                RealtimeSttStatusBar(route = realtimeSttRoute)
+                Spacer(Modifier.height(9.dp))
+            }
             if (error != null) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(error, color = palette.red, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f), maxLines = 2)
@@ -1117,7 +1124,7 @@ private fun SiriTranscriptCard(
             }
             if (hasActivePhotoMarker) {
                 Text(
-                    text = "红色文字已定位，等待关联现场图片",
+                    text = "红色「」已圈定插图位置，请拍照或上传图片",
                     color = palette.red,
                     style = MaterialTheme.typography.bodySmall,
                     fontWeight = FontWeight.Medium
@@ -1171,12 +1178,14 @@ private fun SiriBottomControls(
     isPaused: Boolean,
     audioLevel: Float,
     actionEnabled: Boolean,
+    hasSelectedTemplate: Boolean,
     markerCount: Int,
     hasActivePhotoMarker: Boolean,
     onAddMarker: () -> Unit,
     onTogglePause: () -> Unit,
     onMainAction: () -> Unit
 ) {
+    val mainActionEnabled = actionEnabled && (isRecording || hasSelectedTemplate)
     Row(
         modifier = Modifier.fillMaxWidth().height(166.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -1184,23 +1193,39 @@ private fun SiriBottomControls(
     ) {
         SiriRoundAction(
             palette = palette,
-            icon = Icons.Default.BookmarkBorder,
+            icon = Icons.Default.PhotoCamera,
             label = when {
-                hasActivePhotoMarker -> "待配图"
-                markerCount > 0 -> "标记 $markerCount"
-                else -> "标记"
+                hasActivePhotoMarker -> "待插图"
+                markerCount > 0 -> "插图 $markerCount"
+                else -> "插图"
             },
             enabled = isRecording && !isPaused && actionEnabled,
             onClick = onAddMarker
         )
-        SiriMicOrb(
-            palette = palette,
-            isRecording = isRecording,
-            isPaused = isPaused,
-            audioLevel = audioLevel,
-            enabled = actionEnabled,
-            onClick = onMainAction
-        )
+        Column(
+            modifier = Modifier.width(190.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            SiriMicOrb(
+                palette = palette,
+                isRecording = isRecording,
+                isPaused = isPaused,
+                audioLevel = audioLevel,
+                enabled = mainActionEnabled,
+                onClick = onMainAction
+            )
+            if (!isRecording && !hasSelectedTemplate) {
+                Text(
+                    text = RECORDING_TEMPLATE_REQUIRED_MESSAGE,
+                    color = palette.red,
+                    fontSize = 11.sp,
+                    lineHeight = 15.sp,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    maxLines = 2
+                )
+            }
+        }
         SiriRoundAction(
             palette = palette,
             icon = if (isPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
@@ -1267,6 +1292,7 @@ private fun SiriMicOrb(
     Box(
         modifier = Modifier
             .size(118.dp)
+            .graphicsLayer { alpha = if (enabled) 1f else 0.46f }
             .clip(CircleShape)
             .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier),
         contentAlignment = Alignment.Center

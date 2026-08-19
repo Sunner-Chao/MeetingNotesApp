@@ -1,9 +1,9 @@
 {
-  "version_code": 10225,
-  "version_name": "1.2.25",
+  "version_code": 10227,
+  "version_name": "1.2.27",
   "mandatory": false,
-  "release_notes": "修复移动蜂窝网络下本地 STT 长连接传输中断：正式包固定走云端 IPv4 中继，缩短 WebSocket 心跳并等待服务端会话确认；本地链路失败时可靠切换腾讯云实时识别。保留 lstwin.space 的 TLS 域名与 AAAA。",
-  "published_at": "2026-08-18T00:00:00Z",
-  "sha256": "ca565beb2d82fe4b0b39f2563203240865cdf19936ac5b56b963cb545aa4ac25",
-  "apk_filename": "ZhiWuBen-Android-10225.apk"
+  "release_notes": "实时识别更快恢复：本地 STT 连接异常时在 3 秒窗口内快速重试，仍不可用则自动切换腾讯云兜底；录音全程持续保存，并在录音页清晰显示本地恢复、云端转接和接管状态。",
+  "published_at": "2026-08-19T01:11:21Z",
+  "sha256": "94cdabe4a1a651f13df12677c8ef6fadf259de86d014db5f1081b892ddf1bd99",
+  "apk_filename": "ZhiWuBen-Android-10227.apk"
 }

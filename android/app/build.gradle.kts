@@ -195,8 +195,8 @@ android {
         applicationId = "com.oa.automation"
         minSdk = 26
         targetSdk = 34
-        versionCode = 10225
-        versionName = "1.2.25"
+        versionCode = 10227
+        versionName = "1.2.27"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -269,6 +269,12 @@ android {
     sourceSets {
         getByName("main") {
             assets.srcDirs("src/main/assets")
+        }
+        getByName("androidTest") {
+            assets.srcDirs(
+                "../../docs/test-materials/report-fixtures",
+                "../../docs/test-materials/images/curated"
+            )
         }
     }
 
