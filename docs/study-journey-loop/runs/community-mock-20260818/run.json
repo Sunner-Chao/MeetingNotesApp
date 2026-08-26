@@ -1,0 +1,110 @@
+{
+  "schema_version": "1.0",
+  "run_id": "community-mock-20260818",
+  "mode": "integrate",
+  "approval_policy": "trusted-owner",
+  "status": "verified",
+  "limits": {
+    "max_prototypes": 5,
+    "max_iterations": 2
+  },
+  "inputs": [
+    "owner-brief-community-mock-20260818",
+    "internal-competitor-research-20260807",
+    "xiaohongshu-public-patterns",
+    "uinotes-xhs-archive",
+    "wikimedia-curated-community-images"
+  ],
+  "prototypes": [
+    {
+      "id": "community-sample-live-bridge",
+      "title": "示例内容到真实社区的可替换桥接",
+      "problem": "社区首屏在服务端没有公开帖子时为空，无法展示产品价值。",
+      "new_structure": "状态流先展示原创示例，再以非空真实响应作为唯一替换边界。",
+      "narrative_rhythm": "搜索 -> 精选场景 -> 示例边界 -> 主题 -> 路线 -> 帖子流。",
+      "visual_rule": "大图先行，使用现有 Fluent tokens、8dp corners 和稳定图片尺寸。",
+      "evidence_rule": "示例 copy 原创，图片逐项有许可证记录；示例互动不冒充服务端统计。",
+      "source_ids": [
+        "owner-brief-community-mock-20260818",
+        "internal-competitor-research-20260807",
+        "wikimedia-curated-community-images"
+      ],
+      "existing_comparison": "Extends the existing CommunityViewModel and StudyCommunityScreen without changing the remote API.",
+      "fixture_validation": "fixtures/community-sample-live-bridge.json and MockStudyCommunityDataTest",
+      "recommendation": "new-candidate"
+    },
+    {
+      "id": "community-featured-story-window",
+      "title": "研学现场精选轮播",
+      "problem": "瀑布流容易掩盖多阶段图片叙事。",
+      "new_structure": "从当前帖子提取最多七张图，使用可手动滑动、定时切换的 HorizontalPager。",
+      "narrative_rhythm": "每 4.2 秒切换一个现场页，保留标题、目的地和阶段提示。",
+      "visual_rule": "214dp fixed-height image window with caption band and small counter.",
+      "evidence_rule": "caption 只使用已记录的标题、目的地和阶段，不新增事实。",
+      "source_ids": [
+        "owner-brief-community-mock-20260818",
+        "internal-competitor-research-20260807",
+        "wikimedia-curated-community-images"
+      ],
+      "existing_comparison": "Adds a reusable composition inside the existing feed and uses the existing image abstraction.",
+      "fixture_validation": "fixtures/community-featured-carousel.json and assembleDebug",
+      "recommendation": "merge-existing"
+    },
+    {
+      "id": "community-route-collections",
+      "title": "路线专题带",
+      "problem": "单篇帖子之外，研学者需要按主题进入连续路线。",
+      "new_structure": "在主题之后提供三个轻量专题，每个专题绑定封面、地点、主题和帖子集合。",
+      "narrative_rhythm": "专题目的先说清，再进入连续帖子阅读。",
+      "visual_rule": "One compact horizontal strip; the featured image remains the only full-width hero.",
+      "evidence_rule": "专题描述来自原创示例内容，数量标记为示例状态而非实时 analytics。",
+      "source_ids": [
+        "owner-brief-community-mock-20260818",
+        "internal-competitor-research-20260807",
+        "wikimedia-curated-community-images"
+      ],
+      "existing_comparison": "Reuses existing collection model, route strip and detail navigation.",
+      "fixture_validation": "fixtures/community-route-collections.json and MockStudyCommunityDataTest",
+      "recommendation": "merge-existing"
+    },
+    {
+      "id": "community-social-chrome-copy",
+      "title": "复制社交平台外壳",
+      "problem": "用仿制贴纸、品牌标记和假互动数字制造内容丰富感。",
+      "new_structure": "none; intentionally rejected.",
+      "narrative_rhythm": "none.",
+      "visual_rule": "Reject cosmetic imitation and keep the existing restrained app language.",
+      "evidence_rule": "Proprietary screenshots, author copy, fonts, stickers, marks and code remain non-shippable.",
+      "source_ids": [
+        "xiaohongshu-public-patterns",
+        "uinotes-xhs-archive",
+        "internal-competitor-research-20260807"
+      ],
+      "existing_comparison": "Original Fluent components are more maintainable and safer than a page clone.",
+      "fixture_validation": "rejection recorded in reviews/community-sample-live-bridge.md",
+      "recommendation": "reject"
+    }
+  ],
+  "candidates": [
+    {
+      "id": "community-sample-live-bridge",
+      "prototype_id": "community-sample-live-bridge",
+      "template_path": "candidates/community-sample-live-bridge.study-template.md",
+      "status": "integrated",
+      "de_sloppify_passed": true,
+      "score": 15,
+      "review_path": "reviews/community-sample-live-bridge.md",
+      "implementation": "CommunityViewModel + MockStudyCommunityData + CommunityImageSource + StudyCommunityScreen",
+      "approval_ref": "owner-brief-community-mock-20260818 / trusted-owner"
+    }
+  ],
+  "quality_gate": {
+    "status": "passed",
+    "findings": [
+      "Focused unit tests and assembleDebug passed on 2026-08-18.",
+      "All bundled sample photos have an attribution record.",
+      "Proprietary research inputs are marked ship_allowed=false.",
+      "Manual visual review remains before production community publication."
+    ]
+  }
+}

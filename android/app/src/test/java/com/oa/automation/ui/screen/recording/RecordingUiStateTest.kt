@@ -10,7 +10,10 @@ import com.oa.automation.domain.model.Meeting
 import com.oa.automation.domain.model.MeetingOrigin
 import com.oa.automation.domain.model.PublishedPost
 import com.oa.automation.domain.model.PublishedPostStatus
+import com.oa.automation.domain.model.PresetReportTemplate
+import com.oa.automation.domain.model.ReportTemplateConfig
 import com.oa.automation.domain.model.RecordingMarker
+import com.oa.automation.domain.model.STTEngineType
 import com.oa.automation.infrastructure.background.BackgroundTaskState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -21,6 +24,132 @@ import com.oa.automation.infrastructure.service.RecordingSessionState
 import com.oa.automation.infrastructure.service.RealtimeSttRouteState
 
 class RecordingUiStateTest {
+    @Test
+    fun `unfinished meeting restores its saved template while new meeting stays unselected`() {
+        val presets = listOf(
+            PresetReportTemplate("通用会议", "通用内容"),
+            PresetReportTemplate("项目管理", "项目内容")
+        )
+        val appConfig = ReportTemplateConfig(
+            selectedName = "项目管理",
+            content = "项目内容"
+        )
+
+        assertEquals(
+            "项目管理",
+            resolveRestoredRecordingTemplateName(
+                meeting = Meeting(selectedTemplateName = "项目管理", title = "待完善会议"),
+                appConfig = appConfig,
+                isGlobalRecording = false
+            )
+        )
+        assertNull(
+            resolveRestoredRecordingTemplateName(
+                meeting = Meeting(title = "新会议"),
+                appConfig = appConfig,
+                isGlobalRecording = false
+            )
+        )
+        assertEquals(
+            "项目管理",
+            resolveRestoredRecordingTemplateName(
+                meeting = Meeting(title = "旧待完善会议", durationMs = 12_000L),
+                appConfig = appConfig,
+                isGlobalRecording = false,
+                hasPriorWork = true
+            )
+        )
+        assertEquals(
+            "项目内容",
+            resolveRestoredRecordingTemplateConfig(
+                selectedName = "项目管理",
+                presetTemplates = presets,
+                appConfig = appConfig,
+                isGlobalRecording = false
+            ).content
+        )
+    }
+
+    @Test
+    fun `active recording can recover the global template for a process restart`() {
+        val config = ReportTemplateConfig(selectedName = "研学考察", content = "旅程")
+
+        assertEquals(
+            "研学考察",
+            resolveRestoredRecordingTemplateName(
+                meeting = Meeting(title = "正在录音"),
+                appConfig = config,
+                isGlobalRecording = true
+            )
+        )
+    }
+
+    @Test
+    fun `resumed meeting restores its saved speech engine without changing active session`() {
+        assertEquals(
+            STTEngineType.TENCENT_HYBRID,
+            resolveRestoredSttEngineType(
+                meeting = Meeting(
+                    title = "待完善会议",
+                    selectedSttEngineName = STTEngineType.TENCENT_HYBRID.name
+                ),
+                appEngineType = STTEngineType.FASTER_WHISPER,
+                isGlobalRecording = false
+            )
+        )
+        assertEquals(
+            STTEngineType.FASTER_WHISPER,
+            resolveRestoredSttEngineType(
+                meeting = Meeting(
+                    title = "正在录音",
+                    selectedSttEngineName = STTEngineType.TENCENT_HYBRID.name
+                ),
+                appEngineType = STTEngineType.FASTER_WHISPER,
+                isGlobalRecording = true
+            )
+        )
+    }
+
+    @Test
+    fun `legacy unfinished meetings receive a one-time compatible template`() {
+        assertEquals(
+            "通用会议",
+            inferLegacyRecordingTemplateName(
+                meeting = Meeting(title = "即刻倾听 08-19 17:02"),
+                hasPriorWork = true
+            )
+        )
+        assertEquals(
+            "研学考察",
+            inferLegacyRecordingTemplateName(
+                meeting = Meeting(title = "暑期研学考察"),
+                hasPriorWork = true
+            )
+        )
+        assertNull(
+            inferLegacyRecordingTemplateName(
+                meeting = Meeting(title = "新会议"),
+                hasPriorWork = false
+            )
+        )
+    }
+
+    @Test
+    fun `resumed recording duration keeps the persisted meeting baseline`() {
+        val active = RecordingSessionState(
+            meetingId = "meeting-1",
+            isRecording = true,
+            recordedDurationSeconds = 12
+        )
+        val idle = active.copy(
+            isRecording = false,
+            recordedDurationSeconds = 12
+        )
+
+        assertEquals(72L, restoredRecordingDurationSeconds(60L, active))
+        assertEquals(60L, restoredRecordingDurationSeconds(60L, idle))
+    }
+
     @Test
     fun `fallback status clearly tells the user that cloud has taken over`() {
         val switching = realtimeSttStatusPresentation(
@@ -37,11 +166,54 @@ class RecordingUiStateTest {
     }
 
     @Test
-    fun `failed imported audio is recovered once when its local file still exists`() {
-        val meeting = Meeting(title = "文件导入", origin = MeetingOrigin.FILE_IMPORT)
+    fun `live route drives the displayed stt engine`() {
+        assertEquals(
+            STTEngineType.TENCENT_HYBRID,
+            effectiveSttEngineType(
+                preferred = STTEngineType.FASTER_WHISPER,
+                route = RealtimeSttRouteState.CLOUD_FALLBACK_ACTIVE,
+                isRecording = true
+            )
+        )
+        assertEquals(
+            STTEngineType.FASTER_WHISPER,
+            effectiveSttEngineType(
+                preferred = STTEngineType.TENCENT_HYBRID,
+                route = RealtimeSttRouteState.LOCAL_ACTIVE,
+                isRecording = true
+            )
+        )
+    }
+
+    @Test
+    fun `paused recording with live text can generate a report`() {
+        assertTrue(
+            canGenerateReportFromRecording(
+                RecordingUiState(
+                    isRecording = true,
+                    isPaused = true,
+                    hasRecording = true,
+                    liveTranscript = "已暂停的会议内容"
+                )
+            )
+        )
+        assertFalse(
+            canGenerateReportFromRecording(
+                RecordingUiState(
+                    isRecording = true,
+                    hasRecording = true,
+                    liveTranscript = "仍在录音"
+                )
+            )
+        )
+    }
+
+    @Test
+    fun `failed recording is recovered once when its local file still exists`() {
+        val meeting = Meeting(title = "研学考察")
 
         assertTrue(
-            shouldRecoverImportedTranscription(
+            shouldRecoverInterruptedTranscription(
                 meeting = meeting,
                 hasTranscript = false,
                 taskState = BackgroundTaskState.FAILED,
@@ -50,7 +222,7 @@ class RecordingUiStateTest {
             )
         )
         assertFalse(
-            shouldRecoverImportedTranscription(
+            shouldRecoverInterruptedTranscription(
                 meeting = meeting,
                 hasTranscript = false,
                 taskState = BackgroundTaskState.FAILED,
@@ -61,17 +233,16 @@ class RecordingUiStateTest {
     }
 
     @Test
-    fun `active or deliberately cancelled import is not auto restarted`() {
+    fun `active and completed recordings are not auto restarted`() {
         val meeting = Meeting(title = "文件导入", origin = MeetingOrigin.FILE_IMPORT)
 
         listOf(
             BackgroundTaskState.QUEUED,
             BackgroundTaskState.RUNNING,
-            BackgroundTaskState.CANCELLED,
             BackgroundTaskState.SUCCEEDED
         ).forEach { taskState ->
             assertFalse(
-                shouldRecoverImportedTranscription(
+                shouldRecoverInterruptedTranscription(
                     meeting = meeting,
                     hasTranscript = false,
                     taskState = taskState,
@@ -83,13 +254,26 @@ class RecordingUiStateTest {
     }
 
     @Test
-    fun `paused recording keeps terminate available while continue remains separate`() {
+    fun `cancelled recording with saved audio is eligible for one recovery attempt`() {
+        assertTrue(
+            shouldRecoverInterruptedTranscription(
+                meeting = Meeting(title = "即刻倾听"),
+                hasTranscript = false,
+                taskState = BackgroundTaskState.CANCELLED,
+                audioFileAvailable = true,
+                recoveryAlreadyAttempted = false
+            )
+        )
+    }
+
+    @Test
+    fun `recording main action pauses or continues an active session`() {
         assertEquals(
-            RecordingMainAction.STOP,
+            RecordingMainAction.TOGGLE_PAUSE,
             recordingMainAction(RecordingUiState(isRecording = true, isPaused = true))
         )
         assertEquals(
-            RecordingMainAction.STOP,
+            RecordingMainAction.TOGGLE_PAUSE,
             recordingMainAction(RecordingUiState(isRecording = true))
         )
         assertEquals(

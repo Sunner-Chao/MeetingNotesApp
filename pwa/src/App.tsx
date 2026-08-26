@@ -8,12 +8,13 @@ import { HistoryScreen } from "./components/HistoryScreen";
 import { HomeScreen } from "./components/HomeScreen";
 import { MeetingWorkspace } from "./components/MeetingWorkspace";
 import { ProfileScreen } from "./components/ProfileScreen";
+import { GrowthCampaignDialog } from "./components/GrowthCampaignDialog";
 import { Toast, type ToastState } from "./components/Toast";
-import { authenticate, refreshSession, updateProfile } from "./lib/api";
-import { clearMeetings, deleteMeetingRecord, listMeetings, recoverInterruptedRecordings, saveMeeting } from "./lib/db";
+import { fetchGrowthOverview, login, redeemGrowthCode, refreshSession, requestRegistrationCode, updateProfile, verifyEmailRegistration } from "./lib/api";
+import { claimLegacyGuestData, clearMeetings, deleteMeetingRecord, listMeetings, recoverInterruptedRecordings, saveMeeting } from "./lib/db";
 import { synchronizeCloudMeetings } from "./lib/cloudSync";
 import { audioExtension } from "./lib/format";
-import type { AuthSession, Meeting, RuntimeConfig, TemplateKey } from "./types";
+import type { AuthCodeDelivery, AuthSession, GrowthOverview, Meeting, RuntimeConfig, TemplateKey } from "./types";
 
 const CONFIG_KEY = "zhiwuben.pwa.config";
 const SESSION_KEY = "zhiwuben.pwa.session";
@@ -63,6 +64,8 @@ export default function App() {
   });
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [selectedMeetingId, setSelectedMeetingId] = useState<string>();
+  const [selectedCampaignId, setSelectedCampaignId] = useState<string>();
+  const [growth, setGrowth] = useState<GrowthOverview>();
   const [startMode, setStartMode] = useState<"record" | "text" | "transcribe">();
   const [tab, setTab] = useState<AppTab>("home");
   const [busy, setBusy] = useState(false);
@@ -80,6 +83,7 @@ export default function App() {
   const sessionRef = useRef(session);
   const configRef = useRef(config);
   const onlineRef = useRef(online);
+  const claimedAccountId = useRef<string>();
   sessionRef.current = session;
   configRef.current = config;
   onlineRef.current = online;
@@ -94,9 +98,24 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    let active = true;
     void (async () => {
-      const recovered = await recoverInterruptedRecordings();
-      const storedMeetings = await listMeetings();
+      const accountId = session?.user.id;
+      if (accountId && claimedAccountId.current !== accountId) {
+        claimedAccountId.current = accountId;
+        await claimLegacyGuestData(accountId);
+      }
+      if (!accountId) {
+        if (active) {
+          setMeetings([]);
+          setSelectedMeetingId(undefined);
+          setReady(true);
+        }
+        return;
+      }
+      const recovered = await recoverInterruptedRecordings(accountId);
+      const storedMeetings = await listMeetings(accountId);
+      if (!active) return;
       setMeetings(storedMeetings);
       if (recovered.length > 0) notify(`已恢复 ${recovered.length} 条中断录音`, "success");
       setReady(true);
@@ -104,7 +123,8 @@ export default function App() {
       notify(error instanceof Error ? error.message : "无法读取本机会议库", "error");
       setReady(true);
     });
-  }, [notify]);
+    return () => { active = false; };
+  }, [notify, session?.user.id]);
 
   useEffect(() => {
     const onOnline = () => setOnline(true);
@@ -140,16 +160,20 @@ export default function App() {
     setCloudState("syncing");
     try {
       const synchronized = await synchronizeCloudMeetings(configRef.current, activeSession);
-      if (meetingRevision.current === revisionAtStart) {
+      const sameAccount = sessionRef.current?.user.id === activeSession.user.id;
+      if (sameAccount && meetingRevision.current === revisionAtStart) {
         setMeetings(synchronized);
         setCloudState("synced");
-      } else {
+      } else if (sameAccount) {
         setCloudState("pending");
       }
     } catch {
       setCloudState("pending");
     } finally {
       cloudSyncRunning.current = false;
+      if (sessionRef.current?.user.id && sessionRef.current.user.id !== activeSession.user.id) {
+        window.setTimeout(() => void syncCloud(), 0);
+      }
     }
   }, []);
 
@@ -172,19 +196,68 @@ export default function App() {
     if (cloudSyncTimer.current) window.clearTimeout(cloudSyncTimer.current);
   }, []);
 
-  const authenticateUser = async (nextConfig: RuntimeConfig, username: string, password: string, register: boolean) => {
+  const loginUser = async (nextConfig: RuntimeConfig, username: string, password: string) => {
     setBusy(true);
     setConfig(nextConfig);
     try {
-      const authenticated = await authenticate(nextConfig, username, password, register);
+      const authenticated = await login(nextConfig, username, password);
+      setReady(false);
+      setMeetings([]);
+      setSelectedMeetingId(undefined);
       setSession(authenticated);
-      notify(register ? "账户已创建，Free 试用已启用" : "登录成功", "success");
+      notify("登录成功", "success");
     } catch (error) {
       notify(error instanceof Error ? error.message : "登录失败", "error");
     } finally {
       setBusy(false);
     }
   };
+
+  const requestRegistrationEmailCode = async (nextConfig: RuntimeConfig, email: string): Promise<AuthCodeDelivery | undefined> => {
+    setBusy(true);
+    setConfig(nextConfig);
+    try {
+      const delivery = await requestRegistrationCode(nextConfig, email);
+      notify(`验证码已发送至 ${delivery.masked_identifier}`, "success");
+      return delivery;
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "验证码发送失败", "error");
+      return undefined;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const registerUser = async (nextConfig: RuntimeConfig, username: string, email: string, password: string, code: string, referralCode?: string) => {
+    setBusy(true);
+    setConfig(nextConfig);
+    try {
+      const authenticated = await verifyEmailRegistration(nextConfig, username, email, password, code, referralCode);
+      setReady(false);
+      setMeetings([]);
+      setSelectedMeetingId(undefined);
+      setSession(authenticated);
+      const points = authenticated.user.usage?.points_remaining;
+      notify(points === undefined ? "账户已创建，体验积分已到账" : `账户已创建，已获得 ${points.toLocaleString()} 体验积分`, "success");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "注册失败", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!session) { setGrowth(undefined); return; }
+    void fetchGrowthOverview(config, session).then(setGrowth).catch(() => undefined);
+  }, [config, session]);
+
+  const refreshGrowth = useCallback(async () => {
+    const active = sessionRef.current;
+    if (!active) return;
+    const latest = await fetchGrowthOverview(configRef.current, active);
+    setGrowth(latest);
+    setSession(await refreshSession(configRef.current, active));
+  }, []);
 
   const refresh = useCallback(async () => {
     if (!session) throw new Error("请先登录账户");
@@ -196,7 +269,12 @@ export default function App() {
   const updateMeeting = useCallback((meeting: Meeting) => {
     meetingRevision.current += 1;
     setMeetings((current) => [meeting, ...current.filter((item) => item.id !== meeting.id)].sort((left, right) => right.updatedAt - left.updatedAt));
-    void saveMeeting(meeting).catch((error) => notify(error instanceof Error ? error.message : "会议保存失败", "error"));
+    const accountId = sessionRef.current?.user.id;
+    if (!accountId) {
+      notify("请先登录账户", "error");
+      return;
+    }
+    void saveMeeting(meeting, accountId).catch((error) => notify(error instanceof Error ? error.message : "会议保存失败", "error"));
     scheduleCloudSync();
   }, [notify, scheduleCloudSync]);
 
@@ -226,13 +304,17 @@ export default function App() {
     if (!confirm) return;
     if (confirm.kind === "delete") {
       meetingRevision.current += 1;
-      await deleteMeetingRecord(confirm.meeting.id);
+      const accountId = sessionRef.current?.user.id;
+      if (!accountId) return;
+      await deleteMeetingRecord(confirm.meeting.id, accountId);
       setMeetings((current) => current.filter((meeting) => meeting.id !== confirm.meeting.id));
       if (selectedMeetingId === confirm.meeting.id) setSelectedMeetingId(undefined);
       notify("会议记录已删除", "success");
     } else {
       meetingRevision.current += 1;
-      await clearMeetings();
+      const accountId = sessionRef.current?.user.id;
+      if (!accountId) return;
+      await clearMeetings(accountId);
       setMeetings([]);
       setSelectedMeetingId(undefined);
       notify("会议记录已清空", "success");
@@ -256,7 +338,7 @@ export default function App() {
   }
 
   if (!session) {
-    return <><AuthScreen config={config} busy={busy} onAuthenticate={authenticateUser} /><Toast toast={toast} onClose={() => setToast(undefined)} /></>;
+    return <><AuthScreen config={config} busy={busy} onLogin={loginUser} onRequestRegistrationCode={requestRegistrationEmailCode} onRegister={registerUser} /><Toast toast={toast} onClose={() => setToast(undefined)} /></>;
   }
 
   if (selectedMeeting) {
@@ -283,6 +365,7 @@ export default function App() {
         {tab === "home" && (
           <HomeScreen
             profile={session.user}
+            growth={growth}
             meetings={meetings}
             selectedTemplate={config.defaultTemplate}
             onTemplateChange={(defaultTemplate) => setConfig((current) => ({ ...current, defaultTemplate }))}
@@ -290,6 +373,7 @@ export default function App() {
             onImportAudio={importAudio}
             onOpenMeeting={(meeting) => { setStartMode(undefined); setSelectedMeetingId(meeting.id); }}
             onOpenHistory={() => setTab("history")}
+            onOpenCampaign={(campaignId) => setSelectedCampaignId(campaignId)}
           />
         )}
         {tab === "history" && (
@@ -304,6 +388,7 @@ export default function App() {
         {tab === "profile" && (
           <ProfileScreen
             profile={session.user}
+            growth={growth}
             config={config}
             online={online}
             cloudState={cloudState}
@@ -319,8 +404,18 @@ export default function App() {
               }
             }}
             onSaveConfig={(next) => { setConfig(next); notify("服务设置已保存", "success"); }}
+            onRedeem={async (code) => {
+              const result = await redeemGrowthCode(config, session, code);
+              setSession((current) => current ? { ...current, user: result.profile } : current);
+              notify(result.message, "success");
+              await refreshGrowth();
+            }}
+            onOpenCampaign={(campaignId) => setSelectedCampaignId(campaignId)}
             onLogout={() => {
               if (cloudSyncTimer.current) window.clearTimeout(cloudSyncTimer.current);
+              meetingRevision.current += 1;
+              setMeetings([]);
+              setSelectedMeetingId(undefined);
               setSession(undefined);
               setCloudState("idle");
               setTab("home");
@@ -339,6 +434,8 @@ export default function App() {
         onConfirm={() => void confirmAction()}
         onCancel={() => setConfirm(undefined)}
       />
+
+      {selectedCampaignId && <GrowthCampaignDialog campaignId={selectedCampaignId} config={config} session={session} onClose={() => setSelectedCampaignId(undefined)} onChanged={refreshGrowth} onNotify={notify} />}
 
       {showIosInstall && (
         <div className="dialog-backdrop" onMouseDown={() => setShowIosInstall(false)}>

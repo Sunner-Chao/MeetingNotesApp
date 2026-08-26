@@ -16,7 +16,8 @@ const session = {
     role: "user",
     is_admin: false,
     vip_enabled: false,
-    plan_name: "Free",
+    plan_name: "免费体验",
+    usage: { points_granted: 1000, points_used: 120, points_remaining: 880 },
     quota: { request_limit: 10, requests_used: 2, requests_remaining: 8 }
   }
 };
@@ -118,10 +119,13 @@ try {
   await assertLayout(authPage, "desktop auth");
   await authPage.screenshot({ path: resolve(outputDir, "desktop-auth.png"), fullPage: true });
   await authPage.getByRole("button", { name: "注册" }).click();
+  await assertLayout(authPage, "desktop registration");
+  await authPage.screenshot({ path: resolve(outputDir, "desktop-registration.png"), fullPage: true });
   await authPage.getByLabel("用户名").fill("ab");
+  await authPage.getByLabel("邮箱").fill("user@example.com");
   await authPage.getByLabel("密码").fill("123456");
-  await authPage.getByRole("button", { name: /创建账户/ }).click();
-  await authPage.getByRole("alert").filter({ hasText: "用户名至少需要 3 个字符" }).waitFor();
+  await authPage.getByRole("button", { name: /发送邮箱验证码/ }).click();
+  await authPage.getByRole("alert").filter({ hasText: "密码需要 8 至 128 个字符" }).waitFor();
   assertAuthErrors();
   await authContext.close();
 
@@ -133,8 +137,24 @@ try {
   await desktopPage.getByRole("heading", { name: "林项目，开始记录" }).waitFor();
   await assertLayout(desktopPage, "desktop home");
   await desktopPage.screenshot({ path: resolve(outputDir, "desktop-home.png"), fullPage: true });
+  await desktopPage.locator(".desktop-rail").getByRole("button", { name: "我的" }).click();
+  await desktopPage.getByRole("heading", { name: "我的" }).waitFor();
+  await desktopPage.getByText("880 积分", { exact: true }).waitFor();
+  await assertLayout(desktopPage, "desktop profile");
+  await desktopPage.screenshot({ path: resolve(outputDir, "desktop-profile.png"), fullPage: true });
   assertDesktopErrors();
   await desktopContext.close();
+
+  const mobileAuthContext = await browser.newContext({ ...devices["iPhone 14"], locale: "zh-CN" });
+  const mobileAuthPage = await mobileAuthContext.newPage();
+  const assertMobileAuthErrors = trackErrors(mobileAuthPage, "iPhone registration");
+  await mobileAuthPage.goto(baseUrl, { waitUntil: "domcontentloaded" });
+  await mobileAuthPage.getByRole("button", { name: "注册" }).click();
+  await mobileAuthPage.getByText("用户名 + 邮箱", { exact: true }).waitFor();
+  await assertLayout(mobileAuthPage, "iPhone registration");
+  await mobileAuthPage.screenshot({ path: resolve(outputDir, "iphone-registration.png"), fullPage: true });
+  assertMobileAuthErrors();
+  await mobileAuthContext.close();
 
   const transcriptionContext = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "zh-CN" });
   const transcriptionPage = await transcriptionContext.newPage();

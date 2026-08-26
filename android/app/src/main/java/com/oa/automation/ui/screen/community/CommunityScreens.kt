@@ -2,7 +2,6 @@ package com.oa.automation.ui.screen.community
 
 import android.content.Context
 import android.content.Intent
-import android.graphics.BitmapFactory
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -98,10 +97,7 @@ import com.oa.automation.domain.model.CommunityComment
 import com.oa.automation.domain.model.CommunityCollection
 import com.oa.automation.domain.model.CommunityInteractionState
 import com.oa.automation.domain.model.PublicCommunityPost
-import java.text.SimpleDateFormat
-import java.net.URL
-import java.util.Date
-import java.util.Locale
+import com.oa.automation.ui.formatBeijingTime
 import org.koin.androidx.compose.koinViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -477,7 +473,7 @@ private fun CommunityCollectionStrip(
                         ) {
                             if (collection.coverThumbnailUrl.isNotBlank()) {
                             CommunityThumbnail(
-                                url = "$mediaBaseUrl${collection.coverThumbnailUrl}",
+                                url = resolveCommunityMediaUrl(mediaBaseUrl, collection.coverThumbnailUrl),
                                 contentDescription = "专题封面",
                                     modifier = Modifier.fillMaxSize()
                             )
@@ -580,7 +576,7 @@ private fun CommunitySavedCollectionStrip(
                         ) {
                             if (collection.coverThumbnailUrl.isNotBlank()) {
                                 CommunityThumbnail(
-                                    url = "$mediaBaseUrl${collection.coverThumbnailUrl}",
+                                    url = resolveCommunityMediaUrl(mediaBaseUrl, collection.coverThumbnailUrl),
                                     contentDescription = "专题封面",
                                     modifier = Modifier.fillMaxSize()
                                 )
@@ -798,7 +794,7 @@ private fun PublicPostCard(
         ) {
             post.media.firstOrNull()?.let { media ->
                 CommunityThumbnail(
-                    url = "$mediaBaseUrl${media.thumbnailUrl}",
+                    url = resolveCommunityMediaUrl(mediaBaseUrl, media.thumbnailUrl),
                     contentDescription = "研学图片",
                     modifier = Modifier.fillMaxWidth().height(184.dp)
                 )
@@ -971,6 +967,7 @@ fun CommunityPostDetailScreen(
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val post = uiState.post
+    val isSamplePost = post?.id?.let(MockStudyCommunityData::isSampleId) == true
     val context = LocalContext.current
     var showActions by remember { mutableStateOf(false) }
     var previewMediaIndex by remember { mutableStateOf<Int?>(null) }
@@ -1030,7 +1027,7 @@ fun CommunityPostDetailScreen(
                     ) {
                         Icon(Icons.Default.Share, contentDescription = "分享")
                     }
-                    Box {
+                    if (!isSamplePost) Box {
                         IconButton(onClick = { showActions = true }, enabled = post != null) {
                             Icon(Icons.Default.MoreVert, contentDescription = "更多")
                         }
@@ -1058,6 +1055,7 @@ fun CommunityPostDetailScreen(
                     isInteracting = uiState.isInteracting,
                     isSubmitting = uiState.isSubmittingComment,
                     writeEnabled = uiState.availability.writeEnabled,
+                    isSample = isSamplePost,
                     draft = uiState.commentDraft,
                     onDraftChange = viewModel::updateCommentDraft,
                     onSubmit = { viewModel.submitComment(postId) },
@@ -1087,6 +1085,7 @@ fun CommunityPostDetailScreen(
                     post = post,
                     interaction = uiState.interaction,
                     comments = uiState.comments,
+                    isSample = isSamplePost,
                     commentsNextCursor = uiState.commentsNextCursor,
                     isLoadingComments = uiState.isLoadingComments,
                     isSubmittingComment = uiState.isSubmittingComment,
@@ -1226,6 +1225,21 @@ private fun shareCommunityCollection(
     state: CommunityCollectionDetailUiState
 ) {
     val collection = state.collection ?: return
+    val text = communityCollectionShareText(state)
+    context.startActivity(
+        Intent.createChooser(
+            Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_SUBJECT, collection.title)
+                putExtra(Intent.EXTRA_TEXT, text)
+            },
+            "分享专题"
+        )
+    )
+}
+
+internal fun communityCollectionShareText(state: CommunityCollectionDetailUiState): String {
+    val collection = state.collection ?: return ""
     val share = state.share
     val meta = listOfNotNull(
         collection.destination.takeIf(String::isNotBlank),
@@ -1240,16 +1254,7 @@ private fun shareCommunityCollection(
         }
         if (state.shareUrl.isNotBlank()) append(state.shareUrl)
     }.trim()
-    context.startActivity(
-        Intent.createChooser(
-            Intent(Intent.ACTION_SEND).apply {
-                type = "text/plain"
-                putExtra(Intent.EXTRA_SUBJECT, collection.title)
-                putExtra(Intent.EXTRA_TEXT, text)
-            },
-            "分享专题"
-        )
-    )
+    return text
 }
 
 @Composable
@@ -1386,6 +1391,7 @@ private fun CommunityPostDetail(
     post: PublicCommunityPost,
     interaction: CommunityInteractionState?,
     comments: List<CommunityComment>,
+    isSample: Boolean,
     commentsNextCursor: String?,
     isLoadingComments: Boolean,
     isSubmittingComment: Boolean,
@@ -1481,6 +1487,7 @@ private fun CommunityPostDetail(
         }
         CommunityComments(
             comments = comments,
+            isSample = isSample,
             isLoading = isLoadingComments,
             isSubmitting = isSubmittingComment,
             nextCursor = commentsNextCursor,
@@ -1516,7 +1523,10 @@ private fun CommunityMediaPager(
                 contentAlignment = Alignment.Center
             ) {
                 CommunityThumbnail(
-                    url = "$mediaBaseUrl${media.contentUrl.ifBlank { media.thumbnailUrl }}",
+                    url = resolveCommunityMediaUrl(
+                        mediaBaseUrl,
+                        media.contentUrl.ifBlank { media.thumbnailUrl }
+                    ),
                     contentDescription = "现场影像 ${page + 1}",
                     modifier = Modifier.fillMaxSize()
                 )
@@ -1684,6 +1694,7 @@ private fun CommunityDetailBottomBar(
     isInteracting: Boolean,
     isSubmitting: Boolean,
     writeEnabled: Boolean,
+    isSample: Boolean,
     draft: String,
     onDraftChange: (String) -> Unit,
     onSubmit: () -> Unit,
@@ -1727,7 +1738,7 @@ private fun CommunityDetailBottomBar(
                     shape = RoundedCornerShape(8.dp)
                 )
             }
-            Row(
+            if (!isSample) Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -1765,6 +1776,7 @@ private fun CommunityDetailBottomBar(
 @Composable
 private fun CommunityComments(
     comments: List<CommunityComment>,
+    isSample: Boolean,
     isLoading: Boolean,
     isSubmitting: Boolean,
     nextCursor: String?,
@@ -1827,7 +1839,7 @@ private fun CommunityComments(
                 }
             }
         }
-        if (nextCursor != null) {
+        if (!isSample && nextCursor != null) {
             TextButton(onClick = onLoadMore, enabled = !isLoading && !isSubmitting) {
                 Text("加载更多评论")
             }
@@ -1836,6 +1848,20 @@ private fun CommunityComments(
 }
 
 private fun shareCommunityPost(context: Context, post: PublicCommunityPost) {
+    val text = communityPostShareText(post)
+    context.startActivity(
+        Intent.createChooser(
+            Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_SUBJECT, post.title)
+                putExtra(Intent.EXTRA_TEXT, text)
+            },
+            "分享见闻"
+        )
+    )
+}
+
+internal fun communityPostShareText(post: PublicCommunityPost): String {
     val meta = listOfNotNull(
         post.destination.takeIf(String::isNotBlank),
         post.travelDate.takeIf(String::isNotBlank),
@@ -1848,16 +1874,7 @@ private fun shareCommunityPost(context: Context, post: PublicCommunityPost) {
         append(post.content.trim().take(800))
         if (post.content.length > 800) append("...")
     }.trim()
-    context.startActivity(
-        Intent.createChooser(
-            Intent(Intent.ACTION_SEND).apply {
-                type = "text/plain"
-                putExtra(Intent.EXTRA_SUBJECT, post.title)
-                putExtra(Intent.EXTRA_TEXT, text)
-            },
-            "分享见闻"
-        )
-    )
+    return text
 }
 
 @Composable
@@ -1882,7 +1899,10 @@ private fun CommunityMediaPreviewDialog(
         ) {
             HorizontalPager(state = pagerState, modifier = Modifier.fillMaxWidth()) { page ->
                 CommunityThumbnail(
-                    url = "$mediaBaseUrl${post.media[page].contentUrl.ifBlank { post.media[page].thumbnailUrl }}",
+                    url = resolveCommunityMediaUrl(
+                        mediaBaseUrl,
+                        post.media[page].contentUrl.ifBlank { post.media[page].thumbnailUrl }
+                    ),
                     contentDescription = "现场影像 ${page + 1}",
                     modifier = Modifier.fillMaxWidth().aspectRatio(0.9f)
                 )
@@ -1915,11 +1935,10 @@ private fun CommunityThumbnail(
     contentDescription: String,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     val bitmap by produceState<android.graphics.Bitmap?>(initialValue = null, url) {
         value = withContext(Dispatchers.IO) {
-            runCatching {
-                URL(url).openStream().use(BitmapFactory::decodeStream)
-            }.getOrNull()
+            runCatching { decodeCommunityBitmap(context, url) }.getOrNull()
         }
     }
     if (bitmap != null) {
@@ -1939,4 +1958,4 @@ private fun CommunityThumbnail(
 }
 
 private fun formatCommunityDate(timestamp: Long): String =
-    SimpleDateFormat("yyyy/MM/dd", Locale.SIMPLIFIED_CHINESE).format(Date(timestamp))
+    formatBeijingTime(timestamp, "yyyy/MM/dd")

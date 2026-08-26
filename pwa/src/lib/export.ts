@@ -57,7 +57,7 @@ export async function printPdf(meeting: Meeting): Promise<void> {
     const safeTitle = escapeHtml(meeting.title);
     popup.document.write(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>${safeTitle}</title>
       <style>@page{size:A4;margin:18mm}body{font-family:"Noto Sans SC","PingFang SC",sans-serif;color:#17211d;line-height:1.65;font-size:12pt}h1{text-align:center;font-size:22pt}h2{font-size:16pt;margin-top:24px;border-bottom:1px solid #c9d3ce;padding-bottom:6px}table{width:100%;border-collapse:collapse;margin:12px 0;font-size:10.5pt}th,td{border:1px solid #8e9c95;padding:7px;vertical-align:top}th{background:#edf3f0}img{display:block;max-width:100%;max-height:220mm;margin:14px auto 4px}.caption{text-align:center;color:#59665f;font-size:9pt}.meta{text-align:center;color:#59665f;margin-bottom:28px}</style>
-      </head><body><h1>${safeTitle}</h1><div class="meta">${templateFor(meeting.templateKey).name} · 智能体 · 小Woo</div>${renderMarkdown(content)}${images.length ? "<h2>会议图片</h2>" : ""}${images.map((image) => `<img src="${image.src}" alt=""><div class="caption">${escapeHtml(image.name)}</div>`).join("")}</body></html>`);
+      </head><body><h1>${safeTitle}</h1><div class="meta">${templateFor(meeting.templateKey).name} · 会议整理</div>${renderMarkdown(content)}${images.length ? "<h2>会议图片</h2>" : ""}${images.map((image) => `<img src="${image.src}" alt=""><div class="caption">${escapeHtml(image.name)}</div>`).join("")}</body></html>`);
     popup.document.close();
     popup.addEventListener("load", () => window.setTimeout(() => popup.print(), 250), { once: true });
   } catch (error) {

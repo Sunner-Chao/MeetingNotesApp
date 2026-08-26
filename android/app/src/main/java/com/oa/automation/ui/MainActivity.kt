@@ -29,6 +29,8 @@ import com.oa.automation.locale.withSimplifiedChineseLocale
 import com.oa.automation.infrastructure.textimport.SharedTextImportCoordinator
 import com.oa.automation.infrastructure.service.FloatingStatusService
 import com.oa.automation.infrastructure.service.RecordingSessionController
+import com.oa.automation.infrastructure.audio.OrphanedMeetingAudioRecovery
+import com.oa.automation.infrastructure.attachment.LegacyMeetingAttachmentRecovery
 import com.oa.automation.infrastructure.update.AndroidAppUpdate
 import com.oa.automation.infrastructure.update.AppUpdateCheck
 import com.oa.automation.infrastructure.update.AppUpdateService
@@ -46,6 +48,8 @@ class MainActivity : ComponentActivity() {
     private val sharedTextImportCoordinator: SharedTextImportCoordinator by inject()
     private val configDataStore: ConfigDataStore by inject()
     private val recordingController: RecordingSessionController by inject()
+    private val orphanedMeetingAudioRecovery: OrphanedMeetingAudioRecovery by inject()
+    private val legacyMeetingAttachmentRecovery: LegacyMeetingAttachmentRecovery by inject()
     private val appUpdateService: AppUpdateService by inject()
     private var updateCheckJob: Job? = null
     private var pendingAppUpdate by mutableStateOf<AndroidAppUpdate?>(null)
@@ -53,6 +57,7 @@ class MainActivity : ComponentActivity() {
     private var appUpdateProgress by mutableIntStateOf(0)
     private var appUpdateMessage by mutableStateOf<String?>(null)
     private var updateCheckQueued = false
+    private var pendingRecordingNavigationMeetingId by mutableStateOf<String?>(null)
 
     override fun attachBaseContext(newBase: Context) {
         super.attachBaseContext(newBase.withSimplifiedChineseLocale())
@@ -68,10 +73,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        acceptRecordingNavigation(intent)
 
         // Request microphone permission if not granted
         requestAudioPermission()
         lifecycleScope.launch { sharedTextImportCoordinator.accept(intent) }
+        lifecycleScope.launch { orphanedMeetingAudioRecovery.recover() }
+        lifecycleScope.launch { legacyMeetingAttachmentRecovery.recover() }
         observeAppUpdatesAfterLogin()
 
         setContent {
@@ -84,7 +92,14 @@ class MainActivity : ComponentActivity() {
                     color = MaterialTheme.colorScheme.background
                 ) {
                     Box(modifier = Modifier.fillMaxSize()) {
-                        OAAutomationNavHost()
+                        OAAutomationNavHost(
+                            openRecordingMeetingId = pendingRecordingNavigationMeetingId,
+                            onRecordingMeetingOpened = { meetingId ->
+                                if (pendingRecordingNavigationMeetingId == meetingId) {
+                                    pendingRecordingNavigationMeetingId = null
+                                }
+                            }
+                        )
                         AppUpdatePrompt(
                             update = pendingAppUpdate,
                             isDownloading = isDownloadingAppUpdate,
@@ -103,6 +118,7 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        acceptRecordingNavigation(intent)
         lifecycleScope.launch { sharedTextImportCoordinator.accept(intent) }
     }
 
@@ -120,12 +136,18 @@ class MainActivity : ComponentActivity() {
             val recordingActive = recordingState.isRecording ||
                 recordingState.isStarting ||
                 recordingState.isStopping
-            if (!recordingActive && enabled && Settings.canDrawOverlays(this@MainActivity)) {
-                FloatingStatusService.show(this@MainActivity, "")
+            if (recordingActive && enabled && Settings.canDrawOverlays(this@MainActivity)) {
+                FloatingStatusService.show(this@MainActivity, recordingState.meetingId)
             } else {
                 FloatingStatusService.hide(this@MainActivity)
             }
         }
+    }
+
+    private fun acceptRecordingNavigation(intent: Intent) {
+        intent.getStringExtra(EXTRA_OPEN_RECORDING_MEETING_ID)
+            ?.takeIf { it.isNotBlank() }
+            ?.let { pendingRecordingNavigationMeetingId = it }
     }
 
     private fun requestAudioPermission() {
@@ -227,5 +249,9 @@ class MainActivity : ComponentActivity() {
                 }
             )
         }
+    }
+
+    companion object {
+        const val EXTRA_OPEN_RECORDING_MEETING_ID = "open_recording_meeting_id"
     }
 }

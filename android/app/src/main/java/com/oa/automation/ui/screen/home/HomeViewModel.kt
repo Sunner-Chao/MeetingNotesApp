@@ -14,6 +14,7 @@ import com.oa.automation.domain.repository.ScheduledMeetingRepository
 import com.oa.automation.infrastructure.background.BackgroundTaskScheduler
 import com.oa.automation.infrastructure.notification.ScheduledMeetingNotificationScheduler
 import com.oa.automation.infrastructure.service.RecordingSessionController
+import com.oa.automation.infrastructure.service.RecordingSessionState
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -54,10 +55,18 @@ data class PendingMeetingNavigation(
     val action: HomeLaunchAction
 )
 
+data class ActiveRecordingSummary(
+    val meetingId: String,
+    val meetingTitle: String,
+    val isPaused: Boolean
+)
+
 data class HomeUiState(
     val meetings: List<MeetingWithReport> = emptyList(),
     val scheduledMeetings: List<ScheduledMeeting> = emptyList(),
     val reportTemplates: List<PresetReportTemplate> = emptyList(),
+    val activeRecording: ActiveRecordingSummary? = null,
+    val showActiveRecordingNotice: Boolean = false,
     val isLoading: Boolean = false,
     val configLoaded: Boolean = false,
     val regeneratingMeetingId: String? = null,
@@ -102,23 +111,9 @@ class HomeViewModel(
                 meetingRepository.getAllMeetingsFlow(),
                 reportRepository.getAllReportsFlow()
             ) { meetings, reports ->
-                val sortedMeetings = meetings.sortedByDescending { m -> m.createdAt }
-                val reportMeetingIds = reports.map { it.meetingId }.toSet()
-                val meetingsWithReport = sortedMeetings.map { meeting ->
-                    MeetingWithReport(
-                        meeting = meeting,
-                        hasReport = meeting.id in reportMeetingIds
-                    )
-                }
-                meetingsWithReport
+                meetingsWithReports(meetings, reports.map { it.meetingId }.toSet())
             }.collect { meetingsWithReport ->
-                _uiState.update { state ->
-                    state.copy(
-                        meetings = meetingsWithReport,
-                        hasUnreadNotifications = notificationEvents(meetingsWithReport)
-                            .any { it !in state.seenNotificationEvents }
-                    )
-                }
+                applyMeetings(meetingsWithReport)
             }
         }
         viewModelScope.launch {
@@ -143,12 +138,52 @@ class HomeViewModel(
                 _uiState.update { it.copy(scheduledMeetings = scheduled) }
             }
         }
+        viewModelScope.launch {
+            recordingController.state.collect { session ->
+                val activeRecording = session.toActiveRecordingSummary()
+                _uiState.update { state ->
+                    state.copy(
+                        activeRecording = activeRecording,
+                        showActiveRecordingNotice = state.showActiveRecordingNotice && activeRecording != null
+                    )
+                }
+            }
+        }
+    }
+
+    /** Refreshes the list after returning from recording or notifications. */
+    fun refreshMeetings() {
+        viewModelScope.launch {
+            runCatching {
+                val meetings = meetingRepository.getAllMeetings()
+                val reportIds = reportRepository.getAllReportsFlow().value
+                    .map { it.meetingId }
+                    .toSet()
+                meetingsWithReports(meetings, reportIds)
+            }.onSuccess(::applyMeetings)
+        }
+    }
+
+    private fun applyMeetings(meetings: List<MeetingWithReport>) {
+        _uiState.update { state ->
+            state.copy(
+                meetings = meetings,
+                hasUnreadNotifications = notificationEvents(meetings)
+                    .any { it !in state.seenNotificationEvents }
+            )
+        }
     }
 
     fun startNewMeeting(
         title: String,
         action: HomeLaunchAction = HomeLaunchAction.STANDARD
     ) {
+        if (action != HomeLaunchAction.OPEN_IMPORT &&
+            recordingController.state.value.blocksNewRecording()
+        ) {
+            _uiState.update { it.copy(showActiveRecordingNotice = true) }
+            return
+        }
         viewModelScope.launch {
             val result = startRecordingUseCase(title, action.toMeetingOrigin())
             result
@@ -160,6 +195,25 @@ class HomeViewModel(
                 .onFailure { error ->
                     _uiState.update { it.copy(message = "创建会议失败: ${error.message}") }
                 }
+        }
+    }
+
+    fun dismissActiveRecordingNotice() {
+        _uiState.update { it.copy(showActiveRecordingNotice = false) }
+    }
+
+    fun openActiveRecording() {
+        val active = _uiState.value.activeRecording ?: return
+        val action = _uiState.value.meetings
+            .firstOrNull { it.meeting.id == active.meetingId }
+            ?.meeting
+            ?.resumeLaunchAction()
+            ?: HomeLaunchAction.STANDARD
+        _uiState.update {
+            it.copy(
+                showActiveRecordingNotice = false,
+                pendingNavigation = PendingMeetingNavigation(active.meetingId, action)
+            )
         }
     }
 
@@ -323,7 +377,33 @@ class HomeViewModel(
     }
 }
 
+private fun RecordingSessionState.toActiveRecordingSummary(): ActiveRecordingSummary? {
+    val isActive = isRecording || isStarting || isStopping
+    if (!isActive || meetingId.isBlank()) return null
+    return ActiveRecordingSummary(
+        meetingId = meetingId,
+        meetingTitle = meetingTitle.ifBlank { "当前记录" },
+        isPaused = isPaused
+    )
+}
+
+/** A paused session has released the microphone and may be switched away. */
+internal fun RecordingSessionState.blocksNewRecording(): Boolean =
+    isStarting || isStopping || (isRecording && !isPaused)
+
 private fun notificationEvents(meetings: List<MeetingWithReport>): Set<String> = meetings
     .mapTo(linkedSetOf()) { item ->
         "${item.meeting.id}:${if (item.hasReport) "report" else "meeting"}"
+    }
+
+internal fun meetingsWithReports(
+    meetings: List<Meeting>,
+    reportMeetingIds: Set<String>
+): List<MeetingWithReport> = meetings
+    .sortedByDescending { it.createdAt }
+    .map { meeting ->
+        MeetingWithReport(
+            meeting = meeting,
+            hasReport = meeting.id in reportMeetingIds
+        )
     }

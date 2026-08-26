@@ -2,6 +2,7 @@ package com.oa.automation.infrastructure.repository
 
 import com.oa.automation.domain.model.Meeting
 import com.oa.automation.domain.model.MeetingAttachment
+import com.oa.automation.domain.model.MeetingAudioSegment
 import com.oa.automation.domain.model.RecordingMarker
 import com.oa.automation.domain.model.Transcript
 import com.oa.automation.domain.repository.MeetingRepository
@@ -42,10 +43,25 @@ class MeetingRepositoryImpl(
         return meetingsFlow
     }
 
+    override suspend fun getAllMeetings(): List<Meeting> = meetingDao.findAllMeetings()
+        .map { it.toDomain() }
+
     override suspend fun delete(id: String): Result<Unit> {
         return runCatching {
             meetingDao.deleteMeeting(id)
         }
+    }
+
+    override suspend fun saveAudioSegment(segment: MeetingAudioSegment): Result<MeetingAudioSegment> =
+        runCatching {
+            meetingDao.upsertAudioSegment(segment.toEntity())
+            segment
+        }
+
+    override suspend fun findAudioSegmentsByMeetingId(
+        meetingId: String
+    ): Result<List<MeetingAudioSegment>> = runCatching {
+        meetingDao.findAudioSegmentsByMeetingId(meetingId).map { it.toDomain() }
     }
 
     override suspend fun updateTitle(id: String, title: String): Result<Meeting> {
@@ -81,6 +97,9 @@ class MeetingRepositoryImpl(
         meetingDao.upsertAttachment(attachment.toEntity())
         attachment
     }
+
+    override suspend fun getAllAttachments(): List<MeetingAttachment> =
+        meetingDao.findAllAttachments().map { it.toDomain() }
 
     override fun observeAttachments(meetingId: String) =
         meetingDao.observeAttachmentsByMeetingId(meetingId).map { list -> list.map { it.toDomain() } }

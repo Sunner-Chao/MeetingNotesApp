@@ -15,8 +15,20 @@ interface MeetingDao {
     @Query("SELECT * FROM meetings WHERE id = :id LIMIT 1")
     suspend fun findMeetingById(id: String): MeetingEntity?
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAudioSegment(entity: MeetingAudioSegmentEntity)
+
+    @Query("SELECT * FROM meeting_audio_segments WHERE meetingId = :meetingId ORDER BY sequenceNumber ASC")
+    suspend fun findAudioSegmentsByMeetingId(meetingId: String): List<MeetingAudioSegmentEntity>
+
+    @Query("DELETE FROM meeting_audio_segments WHERE meetingId = :meetingId")
+    suspend fun deleteAudioSegmentsForMeeting(meetingId: String)
+
     @Query("SELECT * FROM meetings ORDER BY createdAt DESC")
     fun observeAllMeetings(): Flow<List<MeetingEntity>>
+
+    @Query("SELECT * FROM meetings ORDER BY createdAt DESC")
+    suspend fun findAllMeetings(): List<MeetingEntity>
 
     @Query("DELETE FROM reports WHERE meetingId = :meetingId")
     suspend fun deleteReportsForMeeting(meetingId: String)
@@ -39,6 +51,7 @@ interface MeetingDao {
         deleteTranscriptsForMeeting(id)
         deleteAttachmentsForMeeting(id)
         deleteRecordingMarkersForMeeting(id)
+        deleteAudioSegmentsForMeeting(id)
         deleteMeetingRow(id)
     }
 
@@ -59,6 +72,9 @@ interface MeetingDao {
 
     @Query("SELECT * FROM meeting_attachments WHERE meetingId = :meetingId ORDER BY createdAt ASC")
     fun observeAttachmentsByMeetingId(meetingId: String): Flow<List<MeetingAttachmentEntity>>
+
+    @Query("SELECT * FROM meeting_attachments ORDER BY createdAt ASC")
+    suspend fun findAllAttachments(): List<MeetingAttachmentEntity>
 
     @Query("SELECT * FROM meeting_attachments WHERE journeyStageId = :journeyStageId ORDER BY createdAt ASC")
     fun observeAttachmentsByJourneyStageId(journeyStageId: String): Flow<List<MeetingAttachmentEntity>>

@@ -168,6 +168,40 @@ class AccountApiServiceTest {
     }
 
     @Test
+    fun plansAndOrdersExposePointBasedEntitlements() = runBlocking {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody(
+                    """[
+                      {"code":"points_starter","name":"轻享积分包","description":"日常记录","price_cents":3900,"quota_amount":10000,"points":10000,"duration_days":30,"team_seats":1,"construction_logs_unlocked":true}
+                    ]"""
+                )
+        )
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody(
+                    """[
+                      {"id":"order-1","user_id":"u1","username":"member","plan_code":"points_starter","plan_name":"轻享积分包","amount_cents":3900,"quota_amount":10000,"points":10000,"duration_days":30,"team_seats":1,"construction_logs_unlocked":true,"status":"pending","created_at":1700000000}
+                    ]"""
+                )
+        )
+
+        val endpoint = server.url("/api").toString().trimEnd('/')
+        val plans = service.plans(endpoint, "user-session").getOrThrow()
+        val orders = service.orders(endpoint, "user-session").getOrThrow()
+
+        assertEquals("/api/account/plans", server.takeRequest().path)
+        assertEquals("Bearer user-session", server.takeRequest().getHeader("Authorization"))
+        assertEquals(10000, plans.single().points)
+        assertEquals(10000, orders.single().points)
+        assertEquals("pending", orders.single().status)
+    }
+
+    @Test
     fun deleteUserUsesAdminBearerAndDeleteMethod() = runBlocking {
         server.enqueue(
             MockResponse()

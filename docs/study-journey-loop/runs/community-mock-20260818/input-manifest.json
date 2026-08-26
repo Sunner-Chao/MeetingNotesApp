@@ -1,0 +1,65 @@
+{
+  "schema_version": "1.0",
+  "sources": [
+    {
+      "id": "owner-brief-community-mock-20260818",
+      "source_type": "owner-brief",
+      "location": "conversation:MeetingNotesApp/community-mock-20260818",
+      "observed_at": "2026-08-18",
+      "note": "Populate the new 社区 tab with useful study-tour mock content, use a timed image rotation, and keep Simple and effective as the product rule.",
+      "rights": {
+        "license": "project-owner-direction",
+        "usage": "Product requirements and standing authorization for low-risk original UI composition.",
+        "ship_allowed": true
+      }
+    },
+    {
+      "id": "internal-competitor-research-20260807",
+      "source_type": "internal-research-note",
+      "location": "knowledge:MeetingNotesApp/04-架构与关系/07-考察游记竞品调研-小红书与携程.md",
+      "observed_at": "2026-08-07",
+      "note": "Use media-first reading, multi-image detail, stages, destinations, collections, and restrained interactions as research observations.",
+      "rights": {
+        "license": "project-internal-research",
+        "usage": "Structure and interaction research only; no third-party screenshot, copy, mark, font, or code reuse.",
+        "ship_allowed": false
+      }
+    },
+    {
+      "id": "xiaohongshu-public-patterns",
+      "source_type": "link",
+      "location": "https://www.xiaohongshu.com/search_result?keyword=%E7%A0%94%E5%AD%A6%E8%80%83%E5%AF%9F%E6%B8%B8%E8%AE%B0%E6%94%BB%E7%95%A5&source=web_explore_feed",
+      "observed_at": "2026-08-18",
+      "note": "Research source for media-first feed rhythm and photo-led narrative patterns.",
+      "rights": {
+        "license": "proprietary",
+        "usage": "Research only; do not ship screenshots, author copy, stickers, fonts, or brand marks.",
+        "ship_allowed": false
+      }
+    },
+    {
+      "id": "uinotes-xhs-archive",
+      "source_type": "link",
+      "location": "https://uinotes.com/app/748340650660839052",
+      "observed_at": "2026-08-18",
+      "note": "Historical UI reference for content density and creator publishing flow.",
+      "rights": {
+        "license": "proprietary",
+        "usage": "Internal pattern research only; not a product asset source.",
+        "ship_allowed": false
+      }
+    },
+    {
+      "id": "wikimedia-curated-community-images",
+      "source_type": "licensed-image-manifest",
+      "location": "repo:docs/test-materials/images/curated/README.md",
+      "observed_at": "2026-08-18",
+      "note": "Eight field-oriented photos are bundled with per-file attribution and license records for replaceable sample content.",
+      "rights": {
+        "license": "per-file Creative Commons or public domain",
+        "usage": "Bundled sample media only, with attribution retained in the app assets and repository manifest.",
+        "ship_allowed": true
+      }
+    }
+  ]
+}

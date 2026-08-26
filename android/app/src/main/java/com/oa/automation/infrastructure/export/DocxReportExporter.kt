@@ -1,13 +1,16 @@
 package com.oa.automation.infrastructure.export
 
 import android.content.Context
+import com.oa.automation.domain.model.ForumParticipant
 import com.oa.automation.domain.model.MeetingAttachment
 import com.oa.automation.domain.model.Report
+import com.oa.automation.domain.model.isForumMeetingTemplate
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.time.Instant
+import java.util.Base64
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
@@ -30,7 +33,8 @@ object DocxReportExporter {
         context: Context,
         report: Report,
         attachments: List<MeetingAttachment>,
-        meetingTitle: String = ""
+        meetingTitle: String = "",
+        forumParticipants: List<ForumParticipant> = emptyList()
     ): File {
         val images = attachments.map { attachment ->
             val image = MeetingImagePreparer.prepare(attachment)
@@ -54,7 +58,7 @@ object DocxReportExporter {
             exportDir,
             ReportExportFileNaming.build(report, meetingTitle, "docx")
         )
-        DocxPackageWriter(report, images, templatePackage).write(output)
+        DocxPackageWriter(report, images, templatePackage, forumParticipants).write(output)
         return output
     }
 }
@@ -74,7 +78,12 @@ private data class ImageBlock(
     val image: DocxImage,
     val caption: String = image.caption
 ) : DocxBlock
+private object ForumParticipantWallBlock : DocxBlock
 private object PageBreakBlock : DocxBlock
+private data class ForumAvatarImage(
+    val participant: ForumParticipant,
+    val image: DocxImage
+)
 private data class ParsedMarkdownSection(
     val heading: String,
     val level: Int,
@@ -89,8 +98,39 @@ private data class ParsedMarkdownDocument(
 internal class DocxPackageWriter(
     private val report: Report,
     private val images: List<DocxImage>,
-    private val templatePackage: ByteArray? = null
+    private val templatePackage: ByteArray? = null,
+    private val forumParticipants: List<ForumParticipant> = emptyList()
 ) {
+    private val forumAvatarImages: List<ForumAvatarImage> by lazy {
+        forumParticipants.mapNotNull { participant ->
+            if (!participant.photoAuthorized) return@mapNotNull null
+            val encoded = participant.avatarDataUrl
+                ?.substringAfter("base64,", "")
+                ?.takeIf(String::isNotBlank)
+                ?: return@mapNotNull null
+            runCatching {
+                val bytes = Base64.getMimeDecoder().decode(encoded)
+                if (!bytes.isJpegImage()) return@runCatching null
+                ForumAvatarImage(
+                    participant = participant,
+                    image = DocxImage(
+                        bytes = bytes,
+                        widthPx = 256,
+                        heightPx = 256,
+                        caption = "${participant.name}的授权头像"
+                    )
+                )
+            }.getOrNull()
+        }
+    }
+    private val forumAvatarIndexes: Map<ForumParticipant, Int> by lazy {
+        forumAvatarImages.mapIndexed { offset, avatar ->
+            avatar.participant to images.size + offset
+        }.toMap()
+    }
+    private val allImages: List<DocxImage> by lazy {
+        images + forumAvatarImages.map { it.image }
+    }
     private val generatedAt = Instant.ofEpochMilli(report.generatedAt).toString()
     private val templateEntries: Map<String, ByteArray> by lazy {
         templatePackage?.let(::readZipEntries).orEmpty()
@@ -116,7 +156,7 @@ internal class DocxPackageWriter(
             zip.addText("word/settings.xml", settingsXml())
             zip.addText("word/footer1.xml", footerXml())
             zip.addText("word/_rels/document.xml.rels", documentRelationships())
-            images.forEachIndexed { index, image ->
+            allImages.forEachIndexed { index, image ->
                 zip.addBytes("word/media/image${index + 1}.jpg", image.bytes)
             }
         }
@@ -139,7 +179,7 @@ internal class DocxPackageWriter(
             zip.addText("docProps/core.xml", coreProperties())
             zip.addText("word/document.xml", documentXml())
             zip.addText("word/_rels/document.xml.rels", templateDocumentRelationships())
-            images.forEachIndexed { index, image ->
+            allImages.forEachIndexed { index, image ->
                 zip.addBytes("word/media/image${index + 1}.jpg", image.bytes)
             }
         }
@@ -156,8 +196,27 @@ internal class DocxPackageWriter(
         } else {
             "会议影像资料"
         }
+        val reportAndParticipantBlocks = if (
+            report.templateName.isForumMeetingTemplate() && forumParticipants.isNotEmpty()
+        ) {
+            val titleIndex = reportBlocks.indexOfFirst { block ->
+                block is ParagraphBlock && block.style in setOf("Title", "StudyTitle")
+            }
+            buildList {
+                if (titleIndex >= 0) {
+                    addAll(reportBlocks.take(titleIndex + 1))
+                    add(ForumParticipantWallBlock)
+                    addAll(reportBlocks.drop(titleIndex + 1))
+                } else {
+                    add(ForumParticipantWallBlock)
+                    addAll(reportBlocks)
+                }
+            }
+        } else {
+            reportBlocks
+        }
         val blocks = buildList {
-            addAll(reportBlocks)
+            addAll(reportAndParticipantBlocks)
             if (remainingImageIndexes.isNotEmpty()) add(PageBreakBlock)
             remainingImageIndexes.forEachIndexed { position, index ->
                 val image = images[index]
@@ -180,12 +239,58 @@ internal class DocxPackageWriter(
                     is ParagraphBlock -> append(paragraphXml(block))
                     is TableBlock -> append(tableXml(block.rows))
                     is ImageBlock -> append(imageXml(block.index, block.image, block.caption))
+                    ForumParticipantWallBlock -> append(forumParticipantWallXml())
                     PageBreakBlock -> append(pageBreakXml())
                 }
             }
             append(sectionPropertiesXml())
             append("</w:body></w:document>")
         }
+    }
+
+    private fun forumParticipantWallXml(): String {
+        val visible = forumParticipants.filter { it.name.isNotBlank() }.take(24)
+        if (visible.isEmpty()) return ""
+        return buildString {
+            append(paragraphXml(ParagraphBlock("论坛参会名录", "Heading1")))
+            append(paragraphXml(ParagraphBlock("照片墙名单 · ${visible.size} 人 · 未采集头像以姓名首字显示", "Caption")))
+            append("<w:tbl><w:tblPr><w:tblW w:w=\"9734\" w:type=\"dxa\"/><w:tblLayout w:type=\"fixed\"/><w:tblBorders>")
+            listOf("top", "left", "bottom", "right", "insideH", "insideV").forEach { edge ->
+                append("<w:").append(edge).append(" w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"D6E1F2\"/>")
+            }
+            append("</w:tblBorders></w:tblPr><w:tblGrid>")
+            repeat(4) { append("<w:gridCol w:w=\"2433\"/>") }
+            append("</w:tblGrid>")
+            visible.chunked(4).forEach { row ->
+                append("<w:tr><w:trPr><w:cantSplit/></w:trPr>")
+                row.forEach { participant ->
+                    append("<w:tc><w:tcPr><w:tcW w:w=\"2433\" w:type=\"dxa\"/><w:shd w:val=\"clear\" w:fill=\"F7F9FC\"/></w:tcPr>")
+                    val avatarIndex = forumAvatarIndexes[participant]
+                    avatarIndex?.let { index ->
+                        allImages.getOrNull(index)?.let { image ->
+                            append(imageXml(index, image, "${participant.name}的授权头像", 700_000L, 700_000L))
+                        }
+                    } ?: append(forumInitialBadgeXml(participant.name))
+                    val meta = listOf(participant.name, participant.role, participant.organization)
+                        .filter(String::isNotBlank)
+                        .joinToString(" · ")
+                    append(paragraphXml(ParagraphBlock(meta, "Caption")))
+                    append("</w:tc>")
+                }
+                repeat(4 - row.size) {
+                    append("<w:tc><w:tcPr><w:tcW w:w=\"2433\" w:type=\"dxa\"/></w:tcPr><w:p/></w:tc>")
+                }
+                append("</w:tr>")
+            }
+            append("</w:tbl><w:p/>")
+        }
+    }
+
+    private fun forumInitialBadgeXml(name: String): String = buildString {
+        append("<w:p><w:pPr><w:jc w:val=\"center\"/><w:spacing w:before=\"40\" w:after=\"70\"/></w:pPr>")
+        append("<w:r><w:rPr><w:b/><w:color w:val=\"FFFFFF\"/><w:shd w:val=\"clear\" w:fill=\"5B8DEF\"/>")
+        append("<w:sz w:val=\"24\"/><w:szCs w:val=\"24\"/></w:rPr><w:t>")
+        append(name.take(1).escapeXml()).append("</w:t></w:r></w:p>")
     }
 
     private fun parseReport(): List<DocxBlock> {
@@ -206,6 +311,14 @@ internal class DocxPackageWriter(
         var hasTitle = false
         while (index < lines.size) {
             val line = lines[index].trim()
+            if (
+                report.templateName.isForumMeetingTemplate() && forumParticipants.isNotEmpty() &&
+                line.isForumRosterHeading()
+            ) {
+                index++
+                while (index < lines.size && !lines[index].trim().isMarkdownHeading()) index++
+                continue
+            }
             when {
                 line.isBlank() || line == "---" -> index++
                 photoAnchorPattern.matches(line) -> {
@@ -768,9 +881,13 @@ internal class DocxPackageWriter(
         else -> List(columns) { 9734 / columns }
     }
 
-    private fun imageXml(index: Int, image: DocxImage, caption: String): String {
-        val maxWidth = 5_669_280L
-        val maxHeight = 5_943_600L
+    private fun imageXml(
+        index: Int,
+        image: DocxImage,
+        caption: String,
+        maxWidth: Long = 5_669_280L,
+        maxHeight: Long = 5_943_600L
+    ): String {
         val sourceWidth = image.widthPx.coerceAtLeast(1).toLong()
         val sourceHeight = image.heightPx.coerceAtLeast(1).toLong()
         val scale = minOf(maxWidth.toDouble() / sourceWidth, maxHeight.toDouble() / sourceHeight)
@@ -802,7 +919,7 @@ internal class DocxPackageWriter(
         append("<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">")
         append("<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>")
         append("<Default Extension=\"xml\" ContentType=\"application/xml\"/>")
-        if (images.isNotEmpty()) append("<Default Extension=\"jpg\" ContentType=\"image/jpeg\"/>")
+        if (allImages.isNotEmpty()) append("<Default Extension=\"jpg\" ContentType=\"image/jpeg\"/>")
         append("<Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/>")
         append("<Override PartName=\"/word/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml\"/>")
         append("<Override PartName=\"/word/settings.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml\"/>")
@@ -816,7 +933,7 @@ internal class DocxPackageWriter(
         val original = templateEntries["[Content_Types].xml"]
             ?.toString(Charsets.UTF_8)
             ?: return contentTypes()
-        if (images.isEmpty() || Regex("Extension=\"jpe?g\"", RegexOption.IGNORE_CASE).containsMatchIn(original)) {
+        if (allImages.isEmpty() || Regex("Extension=\"jpe?g\"", RegexOption.IGNORE_CASE).containsMatchIn(original)) {
             return original
         }
         return original.replace(
@@ -840,7 +957,7 @@ internal class DocxPackageWriter(
         append("<Relationship Id=\"rIdStyles\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/>")
         append("<Relationship Id=\"rIdSettings\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings\" Target=\"settings.xml\"/>")
         append("<Relationship Id=\"rIdFooter\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer\" Target=\"footer1.xml\"/>")
-        images.indices.forEach { index ->
+        allImages.indices.forEach { index ->
             append("<Relationship Id=\"rIdImage").append(index + 1)
                 .append("\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"media/image")
                 .append(index + 1).append(".jpg\"/>")
@@ -853,7 +970,7 @@ internal class DocxPackageWriter(
             ?.toString(Charsets.UTF_8)
             ?: return documentRelationships()
         val imageRelationships = buildString {
-            images.indices.forEach { index ->
+            allImages.indices.forEach { index ->
                 append("<Relationship Id=\"rIdImage").append(index + 1)
                     .append("\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"media/image")
                     .append(index + 1).append(".jpg\"/>")
@@ -1015,4 +1132,21 @@ internal class DocxPackageWriter(
         }
         return entries
     }
+}
+
+private fun ByteArray.isJpegImage(): Boolean =
+    size >= 4 &&
+        (this[0].toInt() and 0xFF) == 0xFF &&
+        (this[1].toInt() and 0xFF) == 0xD8 &&
+        (this[size - 2].toInt() and 0xFF) == 0xFF &&
+        (this[size - 1].toInt() and 0xFF) == 0xD9
+
+private fun String.isMarkdownHeading(): Boolean = matches(Regex("^#{1,6}\\s+.+$"))
+
+private fun String.isForumRosterHeading(): Boolean {
+    if (!isMarkdownHeading()) return false
+    val heading = replaceFirst(Regex("^#{1,6}\\s+"), "")
+        .replaceFirst(Regex("^\\d+[.、]\\s*"), "")
+        .trim()
+    return heading.contains("参会") && (heading.contains("名录") || heading.contains("通讯录"))
 }

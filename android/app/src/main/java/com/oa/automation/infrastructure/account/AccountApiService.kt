@@ -714,6 +714,28 @@ class AccountApiService(
     suspend fun register(endpoint: String, username: String, password: String): Result<AuthSession> =
         postCredentials(endpoint, "auth/register", username, password)
 
+    suspend fun registerWithCode(
+        endpoint: String,
+        channel: String,
+        identifier: String,
+        code: String,
+        username: String,
+        password: String
+    ): Result<AuthSession> = request(
+        endpoint = endpoint,
+        path = "auth/register/verify",
+        method = "POST",
+        jsonBody = gson.toJson(
+            mapOf(
+                "channel" to channel,
+                "identifier" to identifier,
+                "code" to code,
+                "username" to username,
+                "password" to password
+            )
+        )
+    ) { body -> gson.fromJson(body, AuthSession::class.java) }
+
     suspend fun requestAuthCode(
         endpoint: String,
         channel: String,

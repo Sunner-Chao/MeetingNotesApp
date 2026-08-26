@@ -35,7 +35,8 @@ class CloudSTTEngine(
         audioFile: File,
         onProgress: (ProcessingProgress) -> Unit,
         meetingId: String?,
-        archiveKey: String?
+        archiveKey: String?,
+        contextHint: String?
     ): Result<String> = withContext(Dispatchers.IO) {
         try {
             require(audioFile.isFile && audioFile.length() > 0L) { "录音文件为空或不可用" }
@@ -57,6 +58,7 @@ class CloudSTTEngine(
                 )
                 .addFormDataPart("model", model)
                 .addFormDataPart("language", config.language.requestValue)
+                .addFormDataPart("speaker_diarization", config.speakerDiarizationEnabled.toString())
                 .build()
 
             val requestBuilder = Request.Builder()

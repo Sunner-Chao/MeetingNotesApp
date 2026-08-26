@@ -3,10 +3,15 @@ package com.oa.automation.ui.screen.home
 import android.app.DatePickerDialog
 import android.app.TimePickerDialog
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -68,6 +73,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -84,16 +90,16 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.Dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.oa.automation.R
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.oa.automation.domain.model.Meeting
 import com.oa.automation.domain.model.MeetingOrigin
 import com.oa.automation.domain.model.PresetReportTemplate
@@ -230,9 +236,14 @@ fun HomeScreen(
     viewModel: HomeViewModel = koinViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val lifecycleOwner = LocalLifecycleOwner.current
     val snackbarHostState = remember { SnackbarHostState() }
     var showAllMeetings by remember { mutableStateOf(false) }
     var showClearMeetingsDialog by remember { mutableStateOf(false) }
+    val orderedMeetings = uiState.meetings.sortedWith(
+        compareBy<MeetingWithReport> { it.meeting.id != uiState.activeRecording?.meetingId }
+            .thenByDescending { it.meeting.createdAt }
+    )
 
     LaunchedEffect(uiState.message) {
         uiState.message?.let {
@@ -246,6 +257,37 @@ fun HomeScreen(
             viewModel.clearPendingMeeting()
         }
     }
+    // A recording can finish in the foreground service while this destination
+    // is off screen. Re-read the Room snapshot whenever Home becomes visible.
+    LaunchedEffect(Unit) {
+        viewModel.refreshMeetings()
+    }
+    DisposableEffect(lifecycleOwner, viewModel) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                viewModel.refreshMeetings()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    uiState.activeRecording
+        ?.takeIf { uiState.showActiveRecordingNotice }
+        ?.let { active ->
+            AlertDialog(
+                onDismissRequest = viewModel::dismissActiveRecordingNotice,
+                icon = { Icon(Icons.Default.Mic, contentDescription = null, tint = BrandBlue) },
+                title = { Text("当前记录正在进行") },
+                text = { Text("“${active.meetingTitle}”正在记录，请先暂停后再开始新记录。") },
+                confirmButton = {
+                    TextButton(onClick = viewModel::openActiveRecording) { Text("回到录音") }
+                },
+                dismissButton = {
+                    TextButton(onClick = viewModel::dismissActiveRecordingNotice) { Text("稍后再说") }
+                }
+            )
+        }
 
     if (showClearMeetingsDialog) {
         AlertDialog(
@@ -338,7 +380,7 @@ fun HomeScreen(
                             onQuickRecording = {
                                 viewModel.startNewMeeting(
                                     viewModel.suggestMeetingTitle("即刻倾听"),
-                                    HomeLaunchAction.START_RECORDING
+                                    HomeLaunchAction.STANDARD
                                 )
                             },
                             onImportFile = {
@@ -361,7 +403,7 @@ fun HomeScreen(
                             EmptyHistory {
                                 viewModel.startNewMeeting(
                                     viewModel.suggestMeetingTitle("即刻倾听"),
-                                    HomeLaunchAction.START_RECORDING
+                                    HomeLaunchAction.STANDARD
                                 )
                             }
                         } else {
@@ -371,12 +413,14 @@ fun HomeScreen(
                                 contentPadding = PaddingValues(bottom = 4.dp)
                             ) {
                                 items(
-                                    items = uiState.meetings,
+                                    items = orderedMeetings,
                                     key = { item -> item.meeting.id }
                                 ) { item ->
                                         HomeMeetingRow(
                                             item = item,
                                             layout = layout,
+                                            activeRecording = uiState.activeRecording
+                                                ?.takeIf { it.meetingId == item.meeting.id },
                                             onClick = {
                                             if (item.hasReport) onNavigateToReport(item.meeting.id)
                                             else onNavigateToRecording(
@@ -479,8 +523,8 @@ private fun QuickActionGrid(
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         HomeHeroActionCard(
             title = "即刻倾听",
-            subtitle = "一键录音，AI 智能转写",
-            buttonLabel = "开始会议",
+            subtitle = "选择模板后，开始 AI 智能转写",
+            buttonLabel = "开始记录",
             kind = HomeHeroArt.MICROPHONE,
             layout = layout,
             onClick = onQuickRecording
@@ -577,10 +621,7 @@ private fun HomeHeroActionCard(
                 }
             }
             when (kind) {
-                HomeHeroArt.MICROPHONE -> Image(
-                    painter = painterResource(R.drawable.action_mic_3d_clean),
-                    contentDescription = null,
-                    contentScale = ContentScale.Fit,
+                HomeHeroArt.MICROPHONE -> MicrophoneHeroArtwork(
                     modifier = Modifier
                         .align(Alignment.CenterEnd)
                         .padding(end = 20.dp, top = 7.dp, bottom = 3.dp)
@@ -596,6 +637,77 @@ private fun HomeHeroActionCard(
                 )
             }
         }
+    }
+}
+
+/** A single, closed-path microphone illustration shared by the hero and recent rows. */
+@Composable
+private fun MicrophoneHeroArtwork(modifier: Modifier = Modifier) {
+    Canvas(modifier = modifier) {
+        val w = size.width
+        val h = size.height
+        val centerX = w * 0.50f
+        val bodyWidth = w * 0.36f
+        val bodyLeft = centerX - bodyWidth / 2f
+        val bodyTop = h * 0.12f
+        val bodyHeight = h * 0.47f
+        val bodyRadius = bodyWidth * 0.38f
+
+        drawOval(
+            color = Color(0xFF0A6DB5).copy(alpha = 0.22f),
+            topLeft = Offset(w * 0.12f, h * 0.82f),
+            size = Size(w * 0.76f, h * 0.09f)
+        )
+        drawRoundRect(
+            brush = Brush.verticalGradient(
+                colors = listOf(Color(0xFFEAF7FF), Color(0xFF8CC9FF), Color(0xFF4E91E7))
+            ),
+            topLeft = Offset(bodyLeft, bodyTop),
+            size = Size(bodyWidth, bodyHeight),
+            cornerRadius = androidx.compose.ui.geometry.CornerRadius(bodyRadius)
+        )
+        drawRoundRect(
+            color = Color.White.copy(alpha = 0.76f),
+            topLeft = Offset(bodyLeft, bodyTop),
+            size = Size(bodyWidth, bodyHeight),
+            cornerRadius = androidx.compose.ui.geometry.CornerRadius(bodyRadius),
+            style = Stroke(width = w * 0.025f)
+        )
+        drawRoundRect(
+            color = Color.White.copy(alpha = 0.28f),
+            topLeft = Offset(bodyLeft + bodyWidth * 0.13f, bodyTop + bodyHeight * 0.10f),
+            size = Size(bodyWidth * 0.20f, bodyHeight * 0.64f),
+            cornerRadius = androidx.compose.ui.geometry.CornerRadius(bodyWidth * 0.10f)
+        )
+
+        val cradleTop = bodyTop + bodyHeight * 0.68f
+        drawArc(
+            color = Color.White.copy(alpha = 0.88f),
+            startAngle = 205f,
+            sweepAngle = 130f,
+            useCenter = false,
+            topLeft = Offset(centerX - bodyWidth * 0.72f, cradleTop),
+            size = Size(bodyWidth * 1.44f, bodyWidth * 1.44f),
+            style = Stroke(width = w * 0.035f)
+        )
+        drawLine(
+            color = Color.White.copy(alpha = 0.90f),
+            start = Offset(centerX, cradleTop + bodyWidth * 0.70f),
+            end = Offset(centerX, h * 0.79f),
+            strokeWidth = w * 0.035f
+        )
+        drawRoundRect(
+            color = Color(0xFF2D7CC7),
+            topLeft = Offset(w * 0.25f, h * 0.79f),
+            size = Size(w * 0.50f, h * 0.07f),
+            cornerRadius = androidx.compose.ui.geometry.CornerRadius(h * 0.035f)
+        )
+        drawRoundRect(
+            brush = Brush.verticalGradient(listOf(Color.White, Color(0xFFB7DDF7))),
+            topLeft = Offset(w * 0.20f, h * 0.76f),
+            size = Size(w * 0.60f, h * 0.08f),
+            cornerRadius = androidx.compose.ui.geometry.CornerRadius(h * 0.04f)
+        )
     }
 }
 
@@ -1090,6 +1202,7 @@ private fun RecentMeetingsHeader(
 private fun HomeMeetingRow(
     item: MeetingWithReport,
     layout: HomeLayoutSpec,
+    activeRecording: ActiveRecordingSummary?,
     onClick: () -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit
@@ -1099,6 +1212,17 @@ private fun HomeMeetingRow(
     var showDeleteDialog by remember { mutableStateOf(false) }
     val source = item.meeting.origin
     val displayTitle = item.meeting.displayTitle()
+    val isRecordingActive = activeRecording != null
+    val frameTransition = rememberInfiniteTransition(label = "activeRecordingFrame")
+    val frameAlpha by frameTransition.animateFloat(
+        initialValue = 0.38f,
+        targetValue = 0.92f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1_100),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "activeRecordingFrameAlpha"
+    )
     val iconTint = when (source) {
         MeetingOrigin.QUICK -> Color(0xFF08799A)
         MeetingOrigin.SCHEDULED -> Color(0xFF08799A)
@@ -1122,6 +1246,11 @@ private fun HomeMeetingRow(
     Card(
         modifier = Modifier
             .fillMaxWidth()
+            .border(
+                width = if (isRecordingActive) 1.5.dp else 0.dp,
+                color = BrandBlue.copy(alpha = if (isRecordingActive) frameAlpha else 0f),
+                shape = RoundedCornerShape(16.dp)
+            )
             .combinedClickable(
                 onClick = onClick,
                 onLongClickLabel = "会议操作",
@@ -1138,23 +1267,12 @@ private fun HomeMeetingRow(
                 .padding(horizontal = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Surface(
-                modifier = Modifier.size(layout.recordIconSize),
-                shape = RoundedCornerShape(12.dp),
-                color = Color.Transparent
-            ) {
-                Image(
-                    painter = painterResource(
-                        if (source == MeetingOrigin.FILE_IMPORT) {
-                            R.drawable.action_folder_3d_clean
-                        } else {
-                            R.drawable.action_mic_3d_clean
-                        }
-                    ),
-                    contentDescription = if (source == MeetingOrigin.FILE_IMPORT) "文件记录" else "录音记录",
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier.fillMaxSize()
-                )
+            Box(modifier = Modifier.size(layout.recordIconSize)) {
+                if (source == MeetingOrigin.FILE_IMPORT) {
+                    FileImportHeroArtwork(modifier = Modifier.fillMaxSize())
+                } else {
+                    MicrophoneHeroArtwork(modifier = Modifier.fillMaxSize())
+                }
             }
             Spacer(Modifier.width(10.dp))
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -1186,8 +1304,16 @@ private fun HomeMeetingRow(
                     )
                 }
             }
-            val statusContainer = if (item.hasReport) colors.completedContainer else colors.pendingContainer
-            val statusContent = if (item.hasReport) colors.completedContent else colors.pendingContent
+            val statusContainer = when {
+                isRecordingActive -> BrandBlue.copy(alpha = 0.12f)
+                item.hasReport -> colors.completedContainer
+                else -> colors.pendingContainer
+            }
+            val statusContent = when {
+                isRecordingActive -> BrandBlue
+                item.hasReport -> colors.completedContent
+                else -> colors.pendingContent
+            }
             Surface(
                 shape = RoundedCornerShape(50),
                 color = statusContainer
@@ -1203,7 +1329,12 @@ private fun HomeMeetingRow(
                             .background(statusContent, CircleShape)
                     )
                     Text(
-                        text = if (item.hasReport) "已完成" else "待完善",
+                        text = when {
+                            isRecordingActive && activeRecording?.isPaused == true -> "已暂停"
+                            isRecordingActive -> "录音中"
+                            item.hasReport -> "已完成"
+                            else -> "待完善"
+                        },
                         style = MaterialTheme.typography.labelMedium,
                         color = statusContent
                     )
@@ -1589,9 +1720,9 @@ private fun meetingMeta(meeting: Meeting): String {
 }
 
 internal fun meetingOriginLabel(origin: MeetingOrigin): String = when (origin) {
-    MeetingOrigin.QUICK -> "快速"
+    MeetingOrigin.QUICK -> "实时转录"
     MeetingOrigin.SCHEDULED -> "预定"
-    MeetingOrigin.FILE_IMPORT -> "导入"
+    MeetingOrigin.FILE_IMPORT -> "历史解析"
 }
 
 private fun formatDuration(durationMs: Long): String {

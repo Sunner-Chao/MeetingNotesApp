@@ -1,0 +1,12 @@
+{
+  "source_posts": 6,
+  "media_selection": "first_two_media_per_post",
+  "page_limit": 7,
+  "interval_ms": 4200,
+  "height_dp": 214,
+  "interaction": {
+    "manual_swipe": true,
+    "tap_opens_post": true,
+    "drag_blocks_auto_advance": true
+  }
+}

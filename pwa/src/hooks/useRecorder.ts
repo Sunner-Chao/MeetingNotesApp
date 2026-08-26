@@ -9,7 +9,7 @@ interface RecorderResult {
 
 const MIME_TYPES = ["audio/mp4", "audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus"];
 
-export function useRecorder(onCompleted: (result: RecorderResult) => Promise<void> | void) {
+export function useRecorder(accountId: string, onCompleted: (result: RecorderResult) => Promise<void> | void) {
   const [isRecording, setIsRecording] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [backgroundRisk, setBackgroundRisk] = useState(false);
@@ -40,7 +40,7 @@ export function useRecorder(onCompleted: (result: RecorderResult) => Promise<voi
     startingRef.current = true;
     let stream: MediaStream;
     try {
-      await clearRecordingChunks(meetingId);
+      await clearRecordingChunks(meetingId, accountId);
       stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
       });
@@ -56,14 +56,14 @@ export function useRecorder(onCompleted: (result: RecorderResult) => Promise<voi
     recorder.ondataavailable = (event) => {
       if (event.data.size === 0) return;
       const sequence = sequenceRef.current++;
-      writeQueueRef.current = writeQueueRef.current.then(() => saveRecordingChunk(meetingId, sequence, event.data));
+      writeQueueRef.current = writeQueueRef.current.then(() => saveRecordingChunk(meetingId, sequence, event.data, accountId));
     };
     recorder.onstop = async () => {
       await writeQueueRef.current;
       const durationSeconds = Math.max(1, Math.round((Date.now() - startedAtRef.current) / 1000));
-      const blob = await assembleRecording(meetingId, recorder.mimeType || "audio/webm");
+      const blob = await assembleRecording(meetingId, recorder.mimeType || "audio/webm", accountId);
       if (blob) await onCompleted({ blob, durationSeconds, mimeType: blob.type || recorder.mimeType });
-      await clearRecordingChunks(meetingId);
+      await clearRecordingChunks(meetingId, accountId);
       await releaseResources();
       setIsRecording(false);
     };
@@ -81,7 +81,7 @@ export function useRecorder(onCompleted: (result: RecorderResult) => Promise<voi
       setElapsedSeconds(Math.floor((Date.now() - startedAtRef.current) / 1000));
     }, 500);
     wakeLockRef.current = await navigator.wakeLock?.request("screen").catch(() => undefined);
-  }, [onCompleted, releaseResources]);
+  }, [accountId, onCompleted, releaseResources]);
 
   const stop = useCallback(() => {
     if (recorderRef.current?.state === "recording") recorderRef.current.stop();

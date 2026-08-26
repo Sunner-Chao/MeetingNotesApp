@@ -1,5 +1,6 @@
 package com.oa.automation.infrastructure.export
 
+import com.oa.automation.domain.model.ForumParticipant
 import com.oa.automation.domain.model.Report
 import com.oa.automation.domain.model.ReportTemplateConfig
 import org.junit.Assert.assertEquals
@@ -7,6 +8,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.nio.file.Files
+import java.util.Base64
 import java.util.zip.ZipFile
 
 class DocxPackageWriterTest {
@@ -216,6 +218,79 @@ class DocxPackageWriterTest {
                 assertTrue(!documentXml.contains("照片集锦"))
                 assertEquals(1, Regex("<w:tbl>").findAll(documentXml).count())
                 assertTrue(documentXml.contains("<w:cantSplit/>"))
+            }
+        } finally {
+            output.delete()
+        }
+    }
+
+    @Test
+    fun writesForumPhotoWallAfterTitleAndIgnoresInvalidAvatarData() {
+        val output = Files.createTempFile("forum-photo-wall-", ".docx").toFile()
+        try {
+            val report = Report(
+                meetingId = "forum-1",
+                rawContent = """
+                    # 城市更新主题论坛纪要
+
+                    ## 1. 论坛信息
+                    论坛围绕城市更新展开。
+
+                    ## 参会人员名录
+                    | 姓名/称谓 | 单位 | 角色 |
+                    | --- | --- | --- |
+                    | 坏头像 | 示例机构 | 嘉宾 |
+                    | 周岚 | 智悟本 | 主持人 |
+
+                    ## 2. 全场亮点
+                    现场形成了三项共识。
+                """.trimIndent(),
+                templateName = "论坛会议",
+                generatedAt = 1_700_000_000_000
+            )
+            val avatarBytes = javaClass.classLoader
+                ?.getResourceAsStream("meeting-photo-fixture.jpg")
+                ?.use { it.readBytes() }
+                ?: error("Meeting photo fixture is missing")
+            val participants = listOf(
+                ForumParticipant(
+                    name = "坏头像",
+                    role = "嘉宾",
+                    organization = "示例机构",
+                    avatarDataUrl = "data:image/jpeg;base64,not-an-image",
+                    photoAuthorized = true
+                ),
+                ForumParticipant(
+                    name = "周岚",
+                    role = "主持人",
+                    organization = "智悟本",
+                    avatarDataUrl = "data:image/jpeg;base64," + Base64.getEncoder().encodeToString(avatarBytes),
+                    photoAuthorized = true
+                )
+            )
+
+            DocxPackageWriter(
+                report = report,
+                images = emptyList(),
+                forumParticipants = participants
+            ).write(output)
+
+            ZipFile(output).use { zip ->
+                val documentXml = zip.getInputStream(zip.getEntry("word/document.xml"))
+                    .bufferedReader().use { it.readText() }
+                val relationships = zip.getInputStream(zip.getEntry("word/_rels/document.xml.rels"))
+                    .bufferedReader().use { it.readText() }
+
+                assertTrue(documentXml.indexOf("城市更新主题论坛纪要") < documentXml.indexOf("论坛参会名录"))
+                assertTrue(documentXml.indexOf("论坛参会名录") < documentXml.indexOf("1. 论坛信息"))
+                assertEquals(1, Regex("论坛参会名录").findAll(documentXml).count())
+                assertTrue(documentXml.contains("坏头像"))
+                assertTrue(documentXml.contains("rIdImage1"))
+                assertTrue(!documentXml.contains("rIdImage2"))
+                assertNotNull(zip.getEntry("word/media/image1.jpg"))
+                assertTrue(zip.getEntry("word/media/image2.jpg") == null)
+                assertTrue(relationships.contains("media/image1.jpg"))
+                assertTrue(!relationships.contains("media/image2.jpg"))
             }
         } finally {
             output.delete()

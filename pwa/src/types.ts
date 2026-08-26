@@ -8,6 +8,20 @@ export interface AccountQuota {
   requests_remaining: number;
 }
 
+export interface AccountUsage {
+  points_granted: number;
+  points_used: number;
+  points_remaining: number;
+}
+
+export interface AuthCodeDelivery {
+  status: "sent";
+  channel: "email";
+  masked_identifier: string;
+  expires_in: number;
+  retry_after: number;
+}
+
 export interface AccountProfile {
   id: string;
   username: string;
@@ -18,7 +32,48 @@ export interface AccountProfile {
   vip_enabled: boolean;
   plan_code?: string;
   plan_name: string;
+  usage?: AccountUsage;
   quota: AccountQuota;
+}
+
+export interface PrivateChannel {
+  id: string;
+  name: string;
+  qr_image_url: string;
+  join_url: string;
+  short_url: string;
+  slogan: string;
+  reward_type: string;
+  reward?: { quantity?: number };
+  enabled: boolean;
+}
+
+export interface GrowthCampaign {
+  id: string;
+  title: string;
+  campaign_type: string;
+  summary: string;
+  rules: Record<string, unknown>;
+  reward_pool: Record<string, unknown>;
+  starts_at: number;
+  ends_at: number;
+  status: string;
+}
+
+export interface GrowthCampaignDetail extends GrowthCampaign {
+  settled_at?: number | null;
+  joined: boolean;
+  my_score: number;
+  my_rank?: number | null;
+  actions: Array<{ action_type: string; action_key: string; score: number; status: string; created_at: number }>;
+  leaderboard: Array<{ user_id: string; display_name: string; score: number; rank?: number | null }>;
+}
+
+export interface GrowthOverview {
+  referral: { code: string; successful_invites: number; pending_rewards: number; share_path: string };
+  rewards: Record<string, number>;
+  campaigns: GrowthCampaign[];
+  private_channel?: PrivateChannel | null;
 }
 
 export interface AuthSession {

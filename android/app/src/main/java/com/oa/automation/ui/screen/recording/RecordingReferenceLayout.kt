@@ -291,7 +291,6 @@ internal fun RecordingReferenceScaffold(
     onSwitchToVoice: () -> Unit,
     onSwitchToImport: () -> Unit,
     onStartRecording: () -> Unit,
-    onStopRecording: () -> Unit,
     onTogglePause: () -> Unit,
     onAddMarker: () -> Unit,
     onGenerateStageDraft: () -> Unit,
@@ -313,21 +312,18 @@ internal fun RecordingReferenceScaffold(
     onPublishPublishedPost: () -> Unit,
     onWithdrawPublishedPost: () -> Unit,
     onDismissPublishedPostReview: () -> Unit,
-    onAbandonRecording: () -> Unit,
     onGenerateReport: () -> Unit,
     onCancelTranscription: () -> Unit,
     onCancelReport: () -> Unit,
     onTextChange: (String) -> Unit,
     onPasteText: () -> Unit,
-    onOpenExternalTextSource: (ExternalTextSource) -> Unit,
+    onPickExternalFile: () -> Unit,
     onImportTextFile: () -> Unit,
     onImportAudioFile: () -> Unit,
     onGenerateFromImport: () -> Unit,
     onTakePhoto: () -> Unit,
     onPickImages: () -> Unit,
     onDeleteAttachment: (MeetingAttachment) -> Unit,
-    onRefreshAudio: () -> Unit,
-    onSaveAudio: (ArchivedMeetingAudio) -> Unit,
     onShareAudio: (ArchivedMeetingAudio) -> Unit,
     onDismissError: () -> Unit,
     onSelectStreamingTranscript: () -> Unit,
@@ -339,8 +335,6 @@ internal fun RecordingReferenceScaffold(
     var moreMenuExpanded by remember { mutableStateOf(false) }
     var serviceDialogVisible by remember { mutableStateOf(false) }
     var imageDialogVisible by remember { mutableStateOf(false) }
-    var audioDialogVisible by remember { mutableStateOf(false) }
-    var abandonDialogVisible by remember { mutableStateOf(false) }
     val recordingColors = if (LocalAppIsDarkTheme.current) DarkRecordingColors else LightRecordingColors
 
     CompositionLocalProvider(LocalRecordingColors provides recordingColors) {
@@ -383,7 +377,11 @@ internal fun RecordingReferenceScaffold(
     if (serviceDialogVisible) {
         UtilityDialog(title = "识别设置", onDismiss = { serviceDialogVisible = false }) {
             RuntimeServiceSwitcher(
-                sttEngineType = uiState.sttEngineType,
+                sttEngineType = effectiveSttEngineType(
+                    preferred = uiState.sttEngineType,
+                    route = uiState.realtimeSttRoute,
+                    isRecording = uiState.isRecording
+                ),
                 sttLanguage = uiState.sttLanguage,
                 isSwitchingStt = uiState.isSwitchingSttEngine,
                 isSwitchingLanguage = uiState.isSwitchingSttLanguage,
@@ -394,7 +392,7 @@ internal fun RecordingReferenceScaffold(
     }
 
     if (imageDialogVisible) {
-        UtilityDialog(title = "会议图片", onDismiss = { imageDialogVisible = false }) {
+        UtilityDialog(title = "插图管理", onDismiss = { imageDialogVisible = false }) {
             MeetingImagesSection(
                 attachments = uiState.attachments,
                 isImporting = uiState.isImportingImages,
@@ -405,46 +403,6 @@ internal fun RecordingReferenceScaffold(
                 onDelete = onDeleteAttachment
             )
         }
-    }
-
-    LaunchedEffect(audioDialogVisible) {
-        if (audioDialogVisible) onRefreshAudio()
-    }
-    if (audioDialogVisible) {
-        UtilityDialog(title = "会议音频", onDismiss = { audioDialogVisible = false }) {
-            MeetingAudioExportCard(
-                items = uiState.archivedAudio,
-                isLoading = uiState.isLoadingAudio,
-                busyAudioId = uiState.audioExportBusyId,
-                statusMessage = uiState.audioExportMessage,
-                isTranscribing = uiState.isTranscribing,
-                onRefresh = onRefreshAudio,
-                onSave = onSaveAudio,
-                onShare = onShareAudio
-            )
-        }
-    }
-
-    if (abandonDialogVisible) {
-        AlertDialog(
-            onDismissRequest = { abandonDialogVisible = false },
-            title = { Text("放弃本次录音") },
-            text = { Text("本次尚未提交的录音和实时预览将被丢弃，是否继续？") },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        abandonDialogVisible = false
-                        onAbandonRecording()
-                    }
-                ) {
-                    Text("放弃", color = MaterialTheme.colorScheme.error)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { abandonDialogVisible = false }) { Text("继续录音") }
-            },
-            shape = RoundedCornerShape(18.dp)
-        )
     }
 
     if (uiState.showTranscriptPicker) {
@@ -533,6 +491,19 @@ internal fun RecordingReferenceScaffold(
                     }
                 },
                 actions = {
+                    val importHasContent = uiState.manualTextInput.isNotBlank() ||
+                        (uiState.hasRecording && uiState.liveTranscript.isNotBlank())
+                    IconButton(
+                        onClick = onGenerateFromImport,
+                        enabled = importHasContent && !uiState.isImportingAudio &&
+                            !uiState.isTranscribing && !uiState.isGeneratingReport
+                    ) {
+                        if (uiState.isGeneratingReport) {
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                        } else {
+                            Icon(Icons.Default.Summarize, contentDescription = "生成会议纪要")
+                        }
+                    }
                     Box {
                         IconButton(onClick = { moreMenuExpanded = true }) {
                             Icon(Icons.Default.MoreVert, contentDescription = "更多功能")
@@ -557,14 +528,6 @@ internal fun RecordingReferenceScaffold(
                                     imageDialogVisible = true
                                 }
                             )
-                            RecordingMenuItem(
-                                icon = Icons.Default.Headphones,
-                                text = "保存或分享音频",
-                                onClick = {
-                                    moreMenuExpanded = false
-                                    audioDialogVisible = true
-                                }
-                            )
                             if (uiState.hasReport && !uiState.isGeneratingReport) {
                                 RecordingMenuItem(
                                     icon = Icons.Default.Description,
@@ -572,18 +535,6 @@ internal fun RecordingReferenceScaffold(
                                     onClick = {
                                         moreMenuExpanded = false
                                         onNavigateToReport()
-                                    }
-                                )
-                            }
-                            if (uiState.isRecording) {
-                                HorizontalDivider()
-                                RecordingMenuItem(
-                                    icon = Icons.Default.Close,
-                                    text = "放弃本次录音",
-                                    tint = MaterialTheme.colorScheme.error,
-                                    onClick = {
-                                        moreMenuExpanded = false
-                                        abandonDialogVisible = true
                                     }
                                 )
                             }
@@ -620,12 +571,11 @@ internal fun RecordingReferenceScaffold(
                         titleDraft = uiState.meetingTitle
                         titleEditorVisible = true
                     },
-                    onOpenAudio = { audioDialogVisible = true },
-                    onSwitchToImport = onSwitchToImport,
-                    onAbandonRecording = { abandonDialogVisible = true },
+                    onManageImages = { imageDialogVisible = true },
+                    onShareAudio = onShareAudio,
+                    onSttEngineSelected = onSttEngineSelected,
                     onSelectTemplate = onSelectTemplate,
                     onStartRecording = onStartRecording,
-                    onStopRecording = onStopRecording,
                     onTogglePause = onTogglePause,
                     onAddMarker = onAddMarker,
                     onGenerateStageDraft = onGenerateStageDraft,
@@ -646,14 +596,11 @@ internal fun RecordingReferenceScaffold(
                     uiState = uiState,
                     layout = layout,
                     onSelectTemplate = onSelectTemplate,
-                    onSwitchToVoice = onSwitchToVoice,
-                    onSwitchToImport = onSwitchToImport,
                     onTextChange = onTextChange,
                     onPasteText = onPasteText,
-                    onOpenExternalTextSource = onOpenExternalTextSource,
+                    onPickExternalFile = onPickExternalFile,
                     onImportTextFile = onImportTextFile,
                     onImportAudioFile = onImportAudioFile,
-                    onGenerateFromImport = onGenerateFromImport,
                     onCancelTranscription = onCancelTranscription,
                     onCancelReport = onCancelReport,
                     onDismissError = onDismissError
@@ -1085,7 +1032,7 @@ private fun VoiceRecordingContent(
     onSwitchToVoice: () -> Unit,
     onSwitchToImport: () -> Unit,
     onStartRecording: () -> Unit,
-    onStopRecording: () -> Unit,
+    onTogglePause: () -> Unit,
     onTakePhoto: () -> Unit,
     onPickImages: () -> Unit,
     onOpenImages: () -> Unit,
@@ -1134,7 +1081,7 @@ private fun VoiceRecordingContent(
             microphoneSize = layout.microphoneSize,
             onMainAction = when (recordingMainAction(uiState)) {
                 RecordingMainAction.START -> onStartRecording
-                RecordingMainAction.STOP -> onStopRecording
+                RecordingMainAction.TOGGLE_PAUSE -> onTogglePause
             },
             onCancelProcessing = if (uiState.isTranscribing) onCancelTranscription else onCancelReport
         )
@@ -1150,6 +1097,7 @@ private fun VoiceRecordingContent(
         MeetingQuickActions(
             attachmentCount = uiState.attachments.size,
             isRecording = uiState.isRecording,
+            isPaused = uiState.isPaused,
             isTranscribing = uiState.isTranscribing,
             isGeneratingReport = uiState.isGeneratingReport,
             isImportingImages = uiState.isImportingImages,
@@ -1171,7 +1119,7 @@ private fun VoiceRecordingContent(
             onImport = onSwitchToImport,
             onMainAction = when (recordingMainAction(uiState)) {
                 RecordingMainAction.START -> onStartRecording
-                RecordingMainAction.STOP -> onStopRecording
+                RecordingMainAction.TOGGLE_PAUSE -> onTogglePause
             }
         )
     }
@@ -1182,14 +1130,11 @@ private fun ImportRecordingContent(
     uiState: RecordingUiState,
     layout: RecordingLayoutSpec,
     onSelectTemplate: (PresetReportTemplate) -> Unit,
-    onSwitchToVoice: () -> Unit,
-    onSwitchToImport: () -> Unit,
     onTextChange: (String) -> Unit,
     onPasteText: () -> Unit,
-    onOpenExternalTextSource: (ExternalTextSource) -> Unit,
+    onPickExternalFile: () -> Unit,
     onImportTextFile: () -> Unit,
     onImportAudioFile: () -> Unit,
-    onGenerateFromImport: () -> Unit,
     onCancelTranscription: () -> Unit,
     onCancelReport: () -> Unit,
     onDismissError: () -> Unit
@@ -1218,7 +1163,7 @@ private fun ImportRecordingContent(
             externalSources = uiState.externalTextSources,
             onTextChange = onTextChange,
             onPaste = onPasteText,
-            onOpenExternalSource = onOpenExternalTextSource,
+            onPickExternalFile = onPickExternalFile,
             onImportTextFile = onImportTextFile,
             onImportAudioFile = onImportAudioFile,
             modifier = Modifier.weight(1f)
@@ -1239,24 +1184,6 @@ private fun ImportRecordingContent(
                 onAction = onCancelReport
             )
         }
-        val hasImportContent = uiState.manualTextInput.isNotBlank() ||
-            (uiState.hasRecording && uiState.liveTranscript.isNotBlank())
-        val isImportBusy = uiState.isImportingAudio ||
-            uiState.isTranscribing ||
-            uiState.isGeneratingReport
-        RecordingBottomControls(
-            inputMode = InputMode.IMPORT,
-            isBusy = isImportBusy,
-            mainActionEnabled = isImportBusy || hasImportContent,
-            height = layout.controlHeight,
-            onVoice = onSwitchToVoice,
-            onImport = onSwitchToImport,
-            onMainAction = when {
-                uiState.isImportingAudio || uiState.isTranscribing -> onCancelTranscription
-                uiState.isGeneratingReport -> onCancelReport
-                else -> onGenerateFromImport
-            }
-        )
     }
 }
 
@@ -2050,7 +1977,7 @@ private fun ReferenceTextInputPanel(
     externalSources: List<ExternalTextSource>,
     onTextChange: (String) -> Unit,
     onPaste: () -> Unit,
-    onOpenExternalSource: (ExternalTextSource) -> Unit,
+    onPickExternalFile: () -> Unit,
     onImportTextFile: () -> Unit,
     onImportAudioFile: () -> Unit,
     modifier: Modifier = Modifier
@@ -2079,15 +2006,16 @@ private fun ReferenceTextInputPanel(
                     TextButton(onClick = { importExpanded = true }) {
                         Icon(Icons.Default.Apps, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(4.dp))
-                        Text("应用导入", fontSize = 11.sp)
+                        Text("其他应用打开", fontSize = 11.sp)
                     }
                     DropdownMenu(expanded = importExpanded, onDismissRequest = { importExpanded = false }) {
                         externalSources.forEach { source ->
                             DropdownMenuItem(
-                                text = { Text(source.label) },
+                                text = { Text("${source.label}文件") },
+                                leadingIcon = { Icon(Icons.Default.FolderOpen, contentDescription = null) },
                                 onClick = {
                                     importExpanded = false
-                                    onOpenExternalSource(source)
+                                    onPickExternalFile()
                                 }
                             )
                         }
@@ -2336,6 +2264,7 @@ private fun RecordingBottomControls(
 private fun MeetingQuickActions(
     attachmentCount: Int,
     isRecording: Boolean,
+    isPaused: Boolean,
     isTranscribing: Boolean,
     isGeneratingReport: Boolean,
     isImportingImages: Boolean,
@@ -2387,43 +2316,47 @@ private fun MeetingQuickActions(
                 }
             }
             Spacer(Modifier.weight(1f))
-            Button(
+            val canGenerate = hasTranscript && (!isRecording || isPaused) && !isTranscribing
+            Surface(
                 onClick = if (isGeneratingReport) onCancelReport else onGenerateReport,
-                enabled = isGeneratingReport || hasTranscript && !isRecording && !isTranscribing,
-                modifier = Modifier.height(40.dp),
-                shape = RoundedCornerShape(10.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isGeneratingReport) RecordingRed else RecordingPurple,
-                    contentColor = RecordingCanvas,
-                    disabledContainerColor = LocalRecordingColors.current.disabledSurface,
-                    disabledContentColor = RecordingMuted
+                enabled = isGeneratingReport || canGenerate,
+                modifier = Modifier.size(46.dp),
+                shape = CircleShape,
+                color = when {
+                    isGeneratingReport -> RecordingRed
+                    canGenerate -> RecordingPurple
+                    else -> LocalRecordingColors.current.disabledSurface
+                },
+                border = BorderStroke(
+                    width = 1.dp,
+                    color = when {
+                        isGeneratingReport -> RecordingRed.copy(alpha = 0.8f)
+                        canGenerate -> RecordingPurple.copy(alpha = 0.65f)
+                        else -> RecordingBorder
+                    }
                 ),
-                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp)
+                shadowElevation = if (canGenerate || isGeneratingReport) 4.dp else 0.dp
             ) {
-                if (isTranscribing) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(13.dp),
-                        strokeWidth = 1.8.dp,
-                        color = RecordingMuted
-                    )
-                } else {
-                    Icon(
-                        imageVector = if (isGeneratingReport) Icons.Default.Stop else Icons.Default.Summarize,
-                        contentDescription = null,
-                        modifier = Modifier.size(15.dp)
-                    )
+                Box(contentAlignment = Alignment.Center) {
+                    when {
+                        isGeneratingReport -> CircularProgressIndicator(
+                            modifier = Modifier.size(22.dp),
+                            strokeWidth = 2.4.dp,
+                            color = RecordingCanvas
+                        )
+                        isTranscribing -> CircularProgressIndicator(
+                            modifier = Modifier.size(19.dp),
+                            strokeWidth = 2.dp,
+                            color = RecordingMuted
+                        )
+                        else -> Icon(
+                            imageVector = Icons.Default.Summarize,
+                            contentDescription = "生成会议纪要",
+                            tint = if (canGenerate) RecordingCanvas else RecordingMuted,
+                            modifier = Modifier.size(21.dp)
+                        )
+                    }
                 }
-                Spacer(Modifier.width(4.dp))
-                Text(
-                    text = when {
-                        isGeneratingReport -> "终止生成"
-                        isTranscribing -> "整理中"
-                        else -> "生成纪要"
-                    },
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1
-                )
             }
         }
     }

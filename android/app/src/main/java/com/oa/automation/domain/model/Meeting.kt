@@ -6,7 +6,17 @@ data class Meeting(
     val createdAt: Long = System.currentTimeMillis(),
     val durationMs: Long = 0,
     val audioFilePath: String? = null,
-    val origin: MeetingOrigin = MeetingOrigin.QUICK
+    val origin: MeetingOrigin = MeetingOrigin.QUICK,
+    /**
+     * The report template chosen while this meeting was being prepared.
+     * Kept on the meeting so reopening an unfinished record restores its workflow.
+     */
+    val selectedTemplateName: String? = null,
+    /**
+     * The realtime speech engine chosen for this meeting. Persisted separately from
+     * the app default so a resumed meeting keeps its original local/cloud route.
+     */
+    val selectedSttEngineName: String? = null
 )
 
 enum class MeetingOrigin {

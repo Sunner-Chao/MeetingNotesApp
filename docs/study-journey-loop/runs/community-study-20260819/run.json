@@ -1,0 +1,97 @@
+{
+  "schema_version": "1.0",
+  "run_id": "community-study-20260819",
+  "mode": "integrate",
+  "approval_policy": "trusted-owner",
+  "status": "verified",
+  "limits": {
+    "max_prototypes": 5,
+    "max_iterations": 2
+  },
+  "inputs": [
+    "owner-brief-community-study-20260819",
+    "xhs-study-search-20260819",
+    "xhs-tech-route-69d4d633",
+    "xhs-campus-route-6a366555",
+    "zwb-ui-library-20260815",
+    "approved-community-assets-v1",
+    "wikimedia-community-batch-20260819"
+  ],
+  "prototypes": [
+    {
+      "id": "activity-shape-portfolio",
+      "title": "Activity-shape portfolio",
+      "problem": "The existing sample posts repeat one reflective structure.",
+      "new_structure": "Ten activity shapes cover process, route, mission, clue, observation, research, detail, lab, multi-day and verification content.",
+      "visual_rule": "Reuse the existing carousel, collection row and Fluent feed.",
+      "evidence_rule": "Original copy and attributed local media only; omit unsupported facts.",
+      "source_ids": ["owner-brief-community-study-20260819", "xhs-study-search-20260819", "zwb-ui-library-20260815", "wikimedia-community-batch-20260819"],
+      "existing_comparison": "Replaces only MockStudyCommunityData; live API and fallback boundary remain unchanged.",
+      "recommendation": "new-candidate"
+    },
+    {
+      "id": "route-purpose-card",
+      "title": "Route purpose card",
+      "problem": "Place-only routes are difficult to use as learning plans.",
+      "new_structure": "Each stage states an observation action and a compact takeaway.",
+      "visual_rule": "Use the existing stage timeline and avoid a new dashboard.",
+      "evidence_rule": "Do not invent venue schedules, fees or booking details.",
+      "source_ids": ["xhs-tech-route-69d4d633", "xhs-campus-route-6a366555", "zwb-ui-library-20260815"],
+      "existing_comparison": "Merged into stages, post copy and curation notes.",
+      "recommendation": "merge-existing"
+    },
+    {
+      "id": "evidence-linked-field-task",
+      "title": "Evidence-linked field task",
+      "problem": "Many field photos do not retain a retrievable question.",
+      "new_structure": "Clue, observation and task structures connect questions to media.",
+      "visual_rule": "Use existing rich text headings, bullets and media pager.",
+      "evidence_rule": "Describe unknowns and omit unverified identities or conclusions.",
+      "source_ids": ["xhs-study-search-20260819", "zwb-ui-library-20260815", "wikimedia-community-batch-20260819"],
+      "existing_comparison": "Configures approved task, exhibit and observation patterns without new screens.",
+      "recommendation": "merge-existing"
+    },
+    {
+      "id": "curated-learning-shelves",
+      "title": "Four curated learning shelves",
+      "problem": "A larger feed still needs low-effort grouping.",
+      "new_structure": "Four activity-oriented collections organize the sample portfolio.",
+      "visual_rule": "Reuse the compact horizontal collection strip.",
+      "evidence_rule": "Counts are sample counts, not live analytics.",
+      "source_ids": ["owner-brief-community-study-20260819", "approved-community-assets-v1", "zwb-ui-library-20260815"],
+      "existing_comparison": "Expands the existing collection fallback from three to four shelves.",
+      "recommendation": "merge-existing"
+    },
+    {
+      "id": "copied-social-shell",
+      "title": "Copied social-media shell",
+      "problem": "Social-media imitation can add noise and rights risk.",
+      "new_structure": "No candidate; explicitly rejected.",
+      "visual_rule": "Keep ZhiWuBen Fluent tokens and original components.",
+      "evidence_rule": "Proprietary screenshots, author copy and brand assets cannot ship.",
+      "source_ids": ["xhs-study-search-20260819", "xhs-tech-route-69d4d633", "xhs-campus-route-6a366555"],
+      "existing_comparison": "Existing ZhiWuBen UI is sufficient.",
+      "recommendation": "reject"
+    }
+  ],
+  "candidates": [
+    {
+      "id": "community-study-portfolio",
+      "prototype_id": "activity-shape-portfolio",
+      "template_path": "candidates/community-study-portfolio.study-template.md",
+      "status": "reviewed",
+      "de_sloppify_passed": true,
+      "score": 16,
+      "review_path": "reviews/community-study-portfolio.md"
+    }
+  ],
+  "quality_gate": {
+    "status": "passed",
+    "findings": [
+      "10 original activity structures integrated",
+      "4 collections resolve to sample posts",
+      "licensed local media and attribution verified",
+      "focused unit tests passed"
+    ]
+  }
+}

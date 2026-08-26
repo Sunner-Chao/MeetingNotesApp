@@ -1,6 +1,7 @@
 package com.oa.automation.data.local
 
 import android.content.Context
+import android.os.Build
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
@@ -76,6 +77,11 @@ private fun String.isLoopbackUrl(): Boolean {
         host == "0:0:0:0:0:0:0:1"
 }
 
+private fun String.isKnownPublicSttEndpoint(): Boolean {
+    val host = runCatching { URI(trim()).host.orEmpty().lowercase() }.getOrDefault("")
+    return host == "lstwin.space" || host == "lstwin.cloud" || host == "118.25.43.185"
+}
+
 /**
  * DataStore wrapper for persisting app configuration
  */
@@ -95,6 +101,14 @@ class ConfigDataStore(private val context: Context) {
     private val defaultRelayBaseUrl = BuildConfig.DEFAULT_RELAY_BASE_URL.takeIf { it.isNotBlank() }
     // 常见 STT 服务本地端口
     private val commonSttPorts = listOf(8888, 8000, 8001, 8002, 8889, 8890)
+    private val isAndroidEmulator: Boolean =
+        Build.FINGERPRINT.startsWith("generic") ||
+            Build.FINGERPRINT.startsWith("unknown") ||
+            Build.MODEL.contains("google_sdk", ignoreCase = true) ||
+            Build.MODEL.contains("emulator", ignoreCase = true) ||
+            Build.MANUFACTURER.contains("Genymotion", ignoreCase = true) ||
+            Build.PRODUCT.contains("sdk_gphone", ignoreCase = true) ||
+            Build.DEVICE.startsWith("emu", ignoreCase = true)
 
     init {
         CoroutineScope(Dispatchers.IO).launch {
@@ -117,6 +131,8 @@ class ConfigDataStore(private val context: Context) {
         private val STT_CLOUD_API_KEY = stringPreferencesKey("stt_cloud_api_key")
         private val STT_CLOUD_MODEL = stringPreferencesKey("stt_cloud_model")
         private val STT_TENCENT_ASR_TIER = stringPreferencesKey("stt_tencent_asr_tier")
+        private val STT_AUDIO_ENHANCEMENT_ENABLED = booleanPreferencesKey("stt_audio_enhancement_enabled")
+        private val STT_SPEAKER_DIARIZATION_ENABLED = booleanPreferencesKey("stt_speaker_diarization_enabled")
 
         // LLM Config Keys
         private val LLM_ENGINE_TYPE = stringPreferencesKey("llm_engine_type")
@@ -253,13 +269,19 @@ class ConfigDataStore(private val context: Context) {
             else -> preferences[REPORT_TEMPLATE_CONTENT] ?: ""
         }
         val savedSttEngineName = preferences[STT_ENGINE_TYPE]
-        val savedSttEndpoint = preferences[STT_LOCAL_ENDPOINT]
+        val rawSavedSttEndpoint = preferences[STT_LOCAL_ENDPOINT]
             ?.takeUnless {
                 it == STTConfig.PREVIOUS_PUBLIC_ENDPOINT ||
                     it == STTConfig.LEGACY_LOCAL_ENDPOINT ||
                     !BuildConfig.DEBUG && it.isDevelopmentOnlySttEndpoint()
             }
-            ?: STTConfig.DEFAULT_LOCAL_ENDPOINT
+        val savedSttEndpoint = rawSavedSttEndpoint
+            ?.takeUnless { BuildConfig.DEBUG && isAndroidEmulator && it.isKnownPublicSttEndpoint() }
+            ?: if (BuildConfig.DEBUG && isAndroidEmulator) {
+                STTConfig.AVD_HOST_ENDPOINT
+            } else {
+                STTConfig.DEFAULT_LOCAL_ENDPOINT
+            }
         val savedCloudEndpoint = preferences[STT_CLOUD_ENDPOINT] ?: STTConfig.DEFAULT_CLOUD_ENDPOINT
         val savedCloudModel = preferences[STT_CLOUD_MODEL] ?: STTConfig.DEFAULT_CLOUD_MODEL
         val savedTencentTier = preferences[STT_TENCENT_ASR_TIER]?.let {
@@ -301,7 +323,9 @@ class ConfigDataStore(private val context: Context) {
                 } else {
                     savedCloudModel
                 },
-                tencentAsrTier = savedTencentTier
+                tencentAsrTier = savedTencentTier,
+                audioEnhancementEnabled = preferences[STT_AUDIO_ENHANCEMENT_ENABLED] ?: true,
+                speakerDiarizationEnabled = preferences[STT_SPEAKER_DIARIZATION_ENABLED] ?: true
             ),
             llmConfig = LLMConfig(
                 engineType = preferences[LLM_ENGINE_TYPE]?.let {
@@ -765,6 +789,8 @@ class ConfigDataStore(private val context: Context) {
                 ?.let { preferences[STT_CLOUD_MODEL] = it }
                 ?: preferences.remove(STT_CLOUD_MODEL)
             preferences[STT_TENCENT_ASR_TIER] = config.tencentAsrTier.name
+            preferences[STT_AUDIO_ENHANCEMENT_ENABLED] = config.audioEnhancementEnabled
+            preferences[STT_SPEAKER_DIARIZATION_ENABLED] = config.speakerDiarizationEnabled
         }
     }
 

@@ -39,13 +39,13 @@ object AccountProfile
 object AccountQuota
 
 @Serializable
+object AccountPointsPlans
+
+@Serializable
 object AccountUsers
 
 @Serializable
 object AccountCommunityModeration
-
-@Serializable
-object AccountVip
 
 @Serializable
 data class CommunityPost(val postId: String)

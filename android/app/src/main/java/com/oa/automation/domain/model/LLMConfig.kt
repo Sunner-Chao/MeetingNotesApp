@@ -14,8 +14,8 @@ enum class LLMEngineType(val displayName: String) {
 }
 
 enum class AgentProvider(val displayName: String, val requestValue: String) {
-    CODEX_CLI("Codex CLI", "codex-cli"),
-    CLAUDE_CLI("Claude CLI", "claude-cli")
+    CODEX_CLI("智能体小悟", "codex-cli"),
+    CLAUDE_CLI("智能体小智", "claude-cli")
 }
 
 enum class CodexReasoningEffort(val displayName: String, val requestValue: String) {

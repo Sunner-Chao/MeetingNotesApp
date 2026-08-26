@@ -18,6 +18,7 @@ import android.util.Log
 import com.oa.automation.locale.SimplifiedChineseText
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.withTimeout
+import okhttp3.Dns
 
 internal const val LOCAL_STREAM_RECONNECT_ATTEMPTS = 3
 internal const val LOCAL_STREAM_RECONNECT_DELAY_MS = 1_000L
@@ -37,7 +38,7 @@ internal fun streamingReconnectDelayMs(
 }
 
 class StreamingSttClient internal constructor(
-    private val client: OkHttpClient = createHttpClient(),
+    private val client: OkHttpClient = createHttpClient(STT_LOCAL_DNS),
     private val reconnectDelay: (Long) -> Unit = { delayMs -> Thread.sleep(delayMs) },
     private val maxReconnectAttempts: Int = LOCAL_STREAM_RECONNECT_ATTEMPTS,
     private val baseDelayMs: Long = LOCAL_STREAM_RECONNECT_DELAY_MS,
@@ -52,8 +53,8 @@ class StreamingSttClient internal constructor(
         const val MAX_PENDING_AUDIO_BYTES =
             AudioRecorder.SAMPLE_RATE * AudioRecorder.CHANNEL_COUNT * 2 * 3
 
-        fun createHttpClient(): OkHttpClient = OkHttpClient.Builder()
-            .dns(STT_IPV4_RELAY_DNS)
+        fun createHttpClient(dns: Dns = Dns.SYSTEM): OkHttpClient = OkHttpClient.Builder()
+            .dns(dns)
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(0, TimeUnit.SECONDS)
             .writeTimeout(15, TimeUnit.SECONDS)
@@ -65,6 +66,11 @@ class StreamingSttClient internal constructor(
     }
 
     private val gson = Gson()
+
+    // Local STT may be exposed through the Windows host's IPv6 address. Keep
+    // the injected client for local traffic and use the IPv4 relay only for
+    // Tencent/cloud traffic, whose endpoint is intentionally IPv4-first.
+    private val cloudClient: OkHttpClient = createHttpClient(STT_IPV4_RELAY_DNS)
 
     @Volatile
     private var webSocket: WebSocket? = null
@@ -89,6 +95,8 @@ class StreamingSttClient internal constructor(
     private var streamProvider: StreamingSttProvider = StreamingSttProvider.LOCAL
     @Volatile
     private var language: STTLanguage = STTLanguage.CHINESE
+    private var contextHint: String = ""
+    private var speakerDiarization: Boolean = false
     @Volatile
     private var isReconnecting = false
     @Volatile
@@ -125,6 +133,8 @@ class StreamingSttClient internal constructor(
         apiToken: String? = null,
         streamProvider: StreamingSttProvider = StreamingSttProvider.LOCAL,
         language: STTLanguage = STTLanguage.CHINESE,
+        contextHint: String? = null,
+        speakerDiarization: Boolean = false,
         allowFinalization: Boolean = true,
         onPartialText: (StreamingTranscriptUpdate) -> Unit,
         onStatus: (String) -> Unit,
@@ -144,6 +154,8 @@ class StreamingSttClient internal constructor(
         this.meetingId = meetingId
         this.streamProvider = streamProvider
         this.language = language
+        this.contextHint = contextHint.orEmpty()
+        this.speakerDiarization = speakerDiarization
         this.connectionReady = connectionReady
         serverSessionId = null
         serverReady = false
@@ -156,7 +168,10 @@ class StreamingSttClient internal constructor(
         reconnectAttempt = 0
         isReconnecting = false
 
-        debugLog("Starting streaming preview: ${endpoint.toStreamingWsUrl()}")
+        debugLog(
+            "Starting streaming preview endpoint=${endpoint.toStreamingWsUrl()} " +
+                "provider=${streamProvider.wireValue} tokenPresent=${!apiToken.isNullOrBlank()}"
+        )
 
         connect(endpoint, generation, onPartialText, onStatus, onError)
     }
@@ -175,7 +190,12 @@ class StreamingSttClient internal constructor(
         }
         val request = requestBuilder.build()
 
-        val socket = client.newWebSocket(
+        val socketClient = if (streamProvider == StreamingSttProvider.LOCAL) {
+            client
+        } else {
+            cloudClient
+        }
+        val socket = socketClient.newWebSocket(
             request,
             object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: Response) {
@@ -189,7 +209,16 @@ class StreamingSttClient internal constructor(
                     }
                     reconnectAttempt = 0
                     isReconnecting = false
-                    if (!webSocket.send(buildStartControlMessage(meetingId, streamProvider, language))) {
+                    if (!webSocket.send(
+                            buildStartControlMessage(
+                                meetingId = meetingId,
+                                provider = streamProvider,
+                                language = language,
+                                contextHint = contextHint,
+                                speakerDiarization = speakerDiarization
+                            )
+                        )
+                    ) {
                         webSocket.cancel()
                         handleConnectionTermination(
                             generation = generation,
@@ -316,11 +345,18 @@ class StreamingSttClient internal constructor(
 
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                     if (!isCurrentConnection(generation, connectionId)) return
-                    warningLog("WebSocket failure: ${t.message}")
+                    warningLog(
+                        "WebSocket failure endpoint=${endpoint.toStreamingWsUrl()} " +
+                            "provider=${streamProvider.wireValue} responseCode=${response?.code ?: "none"} " +
+                            "tokenPresent=${!apiToken.isNullOrBlank()} detail=${t.message ?: "unknown"}"
+                    )
                     handleConnectionTermination(
                         generation = generation,
                         connectionId = connectionId,
-                        detail = t.message?.takeIf { it.isNotBlank() } ?: "网络连接已断开",
+                        detail = buildString {
+                            response?.code?.let { append("HTTP ").append(it).append(": ") }
+                            append(t.message?.takeIf { it.isNotBlank() } ?: "网络连接已断开")
+                        },
                         authorizationFailure = response?.code == 401 || response?.code == 403,
                         onStatus = onStatus,
                         onError = onError
@@ -625,6 +661,7 @@ class StreamingSttClient internal constructor(
         meetingId = ""
         streamProvider = StreamingSttProvider.LOCAL
         language = STTLanguage.CHINESE
+        contextHint = ""
         authorizationRejected = false
         serverSessionId = null
         streamCanFinalize = false
@@ -654,7 +691,9 @@ class StreamingSttClient internal constructor(
     internal fun buildStartControlMessage(
         meetingId: String,
         provider: StreamingSttProvider,
-        language: STTLanguage = STTLanguage.CHINESE
+        language: STTLanguage = STTLanguage.CHINESE,
+        contextHint: String? = null,
+        speakerDiarization: Boolean = false
     ): String = gson.toJson(
         StreamControlMessage(
             event = "start",
@@ -662,7 +701,9 @@ class StreamingSttClient internal constructor(
             channels = AudioRecorder.CHANNEL_COUNT,
             meetingId = meetingId,
             streamProvider = provider.wireValue,
-            language = language.requestValue
+            language = language.requestValue,
+            contextHint = contextHint?.takeIf { it.isNotBlank() },
+            speakerDiarization = speakerDiarization
         )
     )
 
@@ -722,7 +763,9 @@ class StreamingSttClient internal constructor(
         val channels: Int? = null,
         @SerializedName("meeting_id") val meetingId: String? = null,
         @SerializedName("stream_provider") val streamProvider: String? = null,
-        val language: String? = null
+        val language: String? = null,
+        @SerializedName("context_hint") val contextHint: String? = null,
+        @SerializedName("speaker_diarization") val speakerDiarization: Boolean? = null
     )
 
     private data class StreamServerMessage(

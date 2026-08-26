@@ -1,0 +1,19 @@
+{
+  "post_count": 10,
+  "domestic_destination_markers": [
+    "杭州西湖",
+    "良渚",
+    "苏州",
+    "张家界",
+    "黄山",
+    "桂林漓江",
+    "三星堆",
+    "西安兵马俑",
+    "婺源",
+    "青海湖"
+  ],
+  "content_contract": ["travel", "scenery", "learning"],
+  "rejected_drift": ["factory", "construction", "laboratory", "surveying", "production-line"],
+  "media_count_range": [4, 7],
+  "offline_asset_registry": "android/app/src/main/assets/community/mock/ATTRIBUTION.md"
+}

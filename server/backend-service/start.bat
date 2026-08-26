@@ -35,10 +35,11 @@ set "BACKEND_LOG=%~dp0logs\backend_%LOG_SUFFIX%.log"
 set "BACKEND_ERR_LOG=%~dp0logs\backend_%LOG_SUFFIX%.err.log"
 if not exist "%SERVER_ROOT%\shared\data" mkdir "%SERVER_ROOT%\shared\data"
 set "WEB_BACKEND_DB_PATH=%SERVER_ROOT%\shared\data\meeting_notes.db"
+set "ACCOUNT_DB_PATH=%SERVER_ROOT%\shared\data\accounts.db"
 echo [BACKEND] Starting backend server in background on port %WEB_BACKEND_PORT%...
 echo [BACKEND] Output log: %BACKEND_LOG%
 echo [BACKEND] Error log: %BACKEND_ERR_LOG%
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:HOME='%USERPROFILE%'; $env:USERPROFILE='%USERPROFILE%'; $env:STT_SERVICE_BASE_URL='%STT_SERVICE_URL%'; $env:WEB_BACKEND_PORT='%WEB_BACKEND_PORT%'; $env:WEB_BACKEND_DB_PATH='%WEB_BACKEND_DB_PATH%'; Start-Process -FilePath '%PYTHON_EXE%' -ArgumentList @('-u','web_backend.py') -WorkingDirectory '%~dp0' -WindowStyle Hidden -RedirectStandardOutput '%BACKEND_LOG%' -RedirectStandardError '%BACKEND_ERR_LOG%'"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:HOME='%USERPROFILE%'; $env:USERPROFILE='%USERPROFILE%'; $env:STT_SERVICE_BASE_URL='%STT_SERVICE_URL%'; $env:WEB_BACKEND_PORT='%WEB_BACKEND_PORT%'; $env:WEB_BACKEND_DB_PATH='%WEB_BACKEND_DB_PATH%'; $env:ACCOUNT_DB_PATH='%ACCOUNT_DB_PATH%'; Start-Process -FilePath '%PYTHON_EXE%' -ArgumentList @('-u','web_backend.py') -WorkingDirectory '%~dp0' -WindowStyle Hidden -RedirectStandardOutput '%BACKEND_LOG%' -RedirectStandardError '%BACKEND_ERR_LOG%'"
 
 echo [BACKEND] Waiting for server to start...
 powershell -Command "Start-Sleep -Seconds 3"

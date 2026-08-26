@@ -3,6 +3,7 @@ package com.oa.automation.ui.screen.recording
 import android.content.ClipData
 import android.content.Intent
 import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -95,7 +96,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -124,6 +124,7 @@ import com.oa.automation.infrastructure.audio.ArchivedMeetingAudio
 import com.oa.automation.infrastructure.image.OrientedImageDecoder
 import com.oa.automation.infrastructure.textimport.ExternalTextSource
 import com.oa.automation.ui.location.ImageLocationPermission
+import com.oa.automation.ui.location.MeetingGalleryPermission
 import java.io.File
 import java.text.SimpleDateFormat
 import java.time.Instant
@@ -149,6 +150,23 @@ enum class RecordingLaunchAction {
     }
 }
 
+private fun isAudioDocument(context: android.content.Context, uri: Uri): Boolean {
+    val mime = context.contentResolver.getType(uri).orEmpty().lowercase(Locale.ROOT)
+    if (mime.startsWith("audio/")) return true
+    val name = context.contentResolver.query(
+        uri,
+        arrayOf(OpenableColumns.DISPLAY_NAME),
+        null,
+        null,
+        null
+    )?.use { cursor ->
+        if (cursor.moveToFirst()) cursor.getString(0).orEmpty() else ""
+    }.orEmpty()
+    return name.substringAfterLast('.', "").lowercase(Locale.ROOT) in setOf(
+        "aac", "amr", "flac", "m4a", "mp3", "ogg", "opus", "wav", "webm"
+    )
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RecordingScreen(
@@ -170,14 +188,13 @@ fun RecordingScreen(
     var pendingImageImportMarkerId by rememberSaveable(meetingId) { mutableStateOf<String?>(null) }
     var markerMediaChooserVisible by rememberSaveable(meetingId) { mutableStateOf(false) }
     var markerMediaChooserMarkerId by rememberSaveable(meetingId) { mutableStateOf<String?>(null) }
-    var pendingAudioSave by remember { mutableStateOf<PendingMeetingAudioExport?>(null) }
     var launchActionConsumed by rememberSaveable(meetingId, launchAction) {
         mutableStateOf(false)
     }
 
     val locationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
+    ) { _ ->
         val uris = pendingImageImportUriStrings.map(Uri::parse)
         val markerId = pendingImageImportMarkerId
         pendingImageImportUriStrings = arrayListOf()
@@ -185,7 +202,7 @@ fun RecordingScreen(
         if (uris.isNotEmpty()) {
             viewModel.importImages(
                 uris = uris,
-                captureLocation = permissions.values.any { it },
+                captureLocation = ImageLocationPermission.isGranted(context),
                 recordingMarkerId = markerId
             )
         }
@@ -193,7 +210,7 @@ fun RecordingScreen(
 
     fun importImagesWithOptionalLocation(uris: List<Uri>, recordingMarkerId: String?) {
         if (uris.isEmpty()) return
-        if (ImageLocationPermission.isGranted(context)) {
+        if (ImageLocationPermission.isGranted(context) && MeetingGalleryPermission.isGranted(context)) {
             viewModel.importImages(
                 uris = uris,
                 captureLocation = true,
@@ -202,7 +219,11 @@ fun RecordingScreen(
         } else {
             pendingImageImportUriStrings = ArrayList(uris.map(Uri::toString))
             pendingImageImportMarkerId = recordingMarkerId
-            locationPermissionLauncher.launch(ImageLocationPermission.requestedPermissions)
+            locationPermissionLauncher.launch(
+                (ImageLocationPermission.requestedPermissions + MeetingGalleryPermission.requestedPermissions)
+                    .distinct()
+                    .toTypedArray()
+            )
         }
     }
 
@@ -231,18 +252,19 @@ fun RecordingScreen(
         pendingCameraUriString = null
         pendingCameraMarkerId = null
     }
-    val audioSaveLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument("audio/*")
-    ) { destination ->
-        val pending = pendingAudioSave
-        pendingAudioSave = null
-        if (destination != null && pending != null) {
-            viewModel.savePreparedAudio(pending, destination)
+    val externalDocumentPickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        uri ?: return@rememberLauncherForActivityResult
+        if (isAudioDocument(context, uri)) {
+            viewModel.importAudioDocument(uri)
+        } else {
+            viewModel.importTextDocument(uri)
         }
     }
 
     fun launchCamera(recordingMarkerId: String?) {
-        val directory = File(context.cacheDir, "exports/camera").apply { mkdirs() }
+        val directory = File(context.filesDir, "meeting-attachments/$meetingId/camera").apply { mkdirs() }
         val target = File(directory, "meeting_${System.currentTimeMillis()}.jpg")
         val uri = FileProvider.getUriForFile(
             context,
@@ -259,12 +281,11 @@ fun RecordingScreen(
         galleryLauncher.launch("image/*")
     }
 
-    fun navigateBackAndStopRecording() {
-        viewModel.handleScreenExit()
+    fun navigateBackToWorkspace() {
         onNavigateBack()
     }
 
-    BackHandler(onBack = ::navigateBackAndStopRecording)
+    BackHandler(onBack = ::navigateBackToWorkspace)
 
     LaunchedEffect(meetingId) {
         viewModel.loadMeeting(meetingId)
@@ -284,9 +305,23 @@ fun RecordingScreen(
         }
     }
 
+    LaunchedEffect(uiState.activePhotoMarker?.id) {
+        if (markerMediaChooserVisible && uiState.activePhotoMarker == null) {
+            markerMediaChooserVisible = false
+            markerMediaChooserMarkerId = null
+        }
+    }
+
     if (markerMediaChooserVisible) {
+        val activeMarker = uiState.activePhotoMarker
         MarkerMediaSourceDialog(
-            transcriptAnchor = uiState.activePhotoMarker?.transcriptAnchor.orEmpty(),
+            transcriptAnchor = activeMarker?.transcriptAnchor.orEmpty(),
+            markerTimestampMs = activeMarker?.timestampMs,
+            markerAttachments = activeMarker?.let { marker ->
+                uiState.attachments.filter { attachment ->
+                    attachment.recordingMarkerId == marker.id
+                }
+            }.orEmpty(),
             onTakePhoto = {
                 markerMediaChooserVisible = false
                 launchCamera(markerMediaChooserMarkerId)
@@ -324,11 +359,7 @@ fun RecordingScreen(
     LaunchedEffect(uiState.pendingAudioExport) {
         uiState.pendingAudioExport?.let { export ->
             when (export.action) {
-                MeetingAudioExportAction.SAVE -> {
-                    pendingAudioSave = export
-                    viewModel.consumeAudioExport()
-                    audioSaveLauncher.launch(export.prepared.displayName)
-                }
+                MeetingAudioExportAction.SAVE -> viewModel.consumeAudioExport()
 
                 MeetingAudioExportAction.SHARE -> {
                     val shareIntent = Intent(Intent.ACTION_SEND).apply {
@@ -344,12 +375,6 @@ fun RecordingScreen(
                     viewModel.consumeAudioExport()
                 }
             }
-        }
-    }
-
-    DisposableEffect(meetingId) {
-        onDispose {
-            viewModel.handleScreenExit()
         }
     }
 
@@ -387,7 +412,7 @@ fun RecordingScreen(
 
     RecordingReferenceScaffold(
         uiState = displayedUiState,
-        onNavigateBack = ::navigateBackAndStopRecording,
+        onNavigateBack = ::navigateBackToWorkspace,
         onNavigateToReport = { onNavigateToReport(meetingId) },
         onTitleChange = viewModel::onMeetingTitleChange,
         onSaveTitle = viewModel::saveMeetingTitle,
@@ -397,7 +422,6 @@ fun RecordingScreen(
         onSwitchToVoice = viewModel::switchToVoiceMode,
         onSwitchToImport = viewModel::switchToImportMode,
         onStartRecording = viewModel::startRecording,
-        onStopRecording = viewModel::stopRecording,
         onTogglePause = viewModel::togglePauseRecording,
         onAddMarker = viewModel::addRecordingMarker,
         onGenerateStageDraft = viewModel::generateLatestStageDraft,
@@ -419,21 +443,18 @@ fun RecordingScreen(
         onPublishPublishedPost = viewModel::publishPublishedPost,
         onWithdrawPublishedPost = viewModel::withdrawPublishedPost,
         onDismissPublishedPostReview = viewModel::dismissPublishedPostReview,
-        onAbandonRecording = viewModel::abandonRecording,
         onGenerateReport = viewModel::generateReport,
         onCancelTranscription = viewModel::cancelTranscription,
         onCancelReport = viewModel::cancelReportGeneration,
         onTextChange = viewModel::updateManualText,
         onPasteText = viewModel::importClipboardText,
-        onOpenExternalTextSource = viewModel::openExternalTextSource,
+        onPickExternalFile = { externalDocumentPickerLauncher.launch(arrayOf("*/*")) },
         onImportTextFile = { filePickerLauncher.launch("text/*") },
         onImportAudioFile = { audioPickerLauncher.launch("audio/*") },
         onGenerateFromImport = viewModel::generateFromImport,
         onTakePhoto = viewModel::requestPhotoCapture,
         onPickImages = viewModel::requestPhotoLibrary,
         onDeleteAttachment = viewModel::deleteAttachment,
-        onRefreshAudio = viewModel::refreshArchivedAudio,
-        onSaveAudio = viewModel::saveArchivedAudio,
         onShareAudio = viewModel::shareArchivedAudio,
         onDismissError = viewModel::clearError,
         onSelectStreamingTranscript = viewModel::selectStreamingTranscript,
@@ -445,6 +466,8 @@ fun RecordingScreen(
 @Composable
 private fun MarkerMediaSourceDialog(
     transcriptAnchor: String,
+    markerTimestampMs: Long?,
+    markerAttachments: List<MeetingAttachment>,
     onTakePhoto: () -> Unit,
     onPickImages: () -> Unit,
     onKeepTextMarker: () -> Unit,
@@ -452,14 +475,24 @@ private fun MarkerMediaSourceDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("为此处添加图片") },
+        title = { Text("添加插图") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                if (transcriptAnchor.isNotBlank()) {
+                MarkerInsertionPreview(
+                    markerTimestampMs = markerTimestampMs,
+                    transcriptAnchor = transcriptAnchor,
+                    attachments = markerAttachments
+                )
+                Text(
+                    text = "红色「」是插图的左右边界。拍照或上传图片后，图片会关联到这段文字对应的位置。",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                if (transcriptAnchor.isBlank()) {
                     Text(
-                        text = "已关联文字：$transcriptAnchor",
+                        text = "当前暂无可标红的转录文字，将按录音时间定位插图。",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.bodyMedium
+                        style = MaterialTheme.typography.bodySmall
                     )
                 }
                 FilledTonalButton(
@@ -468,7 +501,7 @@ private fun MarkerMediaSourceDialog(
                 ) {
                     Icon(Icons.Default.PhotoCamera, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
-                    Text("拍摄现场照片")
+                    Text("立即拍照")
                 }
                 OutlinedButton(
                     onClick = onPickImages,
@@ -476,18 +509,161 @@ private fun MarkerMediaSourceDialog(
                 ) {
                     Icon(Icons.Default.Collections, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
-                    Text("从相册导入")
+                    Text("上传图片")
                 }
             }
         },
         confirmButton = {
-            TextButton(onClick = onKeepTextMarker) { Text("仅保留文字标记") }
+            TextButton(onClick = onKeepTextMarker) { Text("确认") }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("稍后配图") }
+            TextButton(onClick = onDismiss) { Text("取消") }
         },
         shape = RoundedCornerShape(18.dp)
     )
+}
+
+@Composable
+private fun MarkerInsertionPreview(
+    markerTimestampMs: Long?,
+    transcriptAnchor: String,
+    attachments: List<MeetingAttachment>
+) {
+    val timestampLabel = markerTimestampMs?.let(::formatMarkerTimestampLabel)
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.24f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.42f))
+    ) {
+        Column(
+            modifier = Modifier.padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(7.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Default.PhotoCamera,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = "插图预览",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Spacer(Modifier.weight(1f))
+                if (timestampLabel != null) {
+                    Text(
+                        text = "插入位置 $timestampLabel",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+            }
+            if (transcriptAnchor.isNotBlank()) {
+                Text(
+                    text = "「$transcriptAnchor」",
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                )
+            }
+            if (attachments.isEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(72.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.72f))
+                        .border(
+                            1.dp,
+                            MaterialTheme.colorScheme.error.copy(alpha = 0.32f),
+                            RoundedCornerShape(10.dp)
+                        )
+                        .padding(horizontal = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Collections,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error.copy(alpha = 0.8f),
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = "图片确认后会插入到上方红色区域",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            } else {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(attachments, key = { it.id }) { attachment ->
+                        val bitmap = remember(attachment.localPath) {
+                            OrientedImageDecoder.decode(
+                                File(attachment.localPath),
+                                maximumDimension = 320
+                            )?.asImageBitmap()
+                        }
+                        Box(
+                            modifier = Modifier
+                                .size(width = 112.dp, height = 78.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant)
+                                .border(
+                                    1.dp,
+                                    MaterialTheme.colorScheme.error.copy(alpha = 0.55f),
+                                    RoundedCornerShape(10.dp)
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (bitmap != null) {
+                                Image(
+                                    bitmap = bitmap,
+                                    contentDescription = attachment.displayName,
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentScale = ContentScale.Crop
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Default.BrokenImage,
+                                    contentDescription = "图片无法预览",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Surface(
+                                modifier = Modifier
+                                    .align(Alignment.BottomStart)
+                                    .padding(4.dp),
+                                shape = RoundedCornerShape(5.dp),
+                                color = MaterialTheme.colorScheme.scrim.copy(alpha = 0.68f)
+                            ) {
+                                Text(
+                                    text = "插入区域",
+                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color.White
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun formatMarkerTimestampLabel(timestampMs: Long): String {
+    val totalSeconds = (timestampMs / 1_000L).coerceAtLeast(0L)
+    return "%02d:%02d".format(Locale.ROOT, totalSeconds / 60L, totalSeconds % 60L)
 }
 
 @Composable
@@ -497,8 +673,6 @@ internal fun MeetingAudioExportCard(
     busyAudioId: String?,
     statusMessage: String,
     isTranscribing: Boolean,
-    onRefresh: () -> Unit,
-    onSave: (ArchivedMeetingAudio) -> Unit,
     onShare: (ArchivedMeetingAudio) -> Unit
 ) {
     Card(
@@ -533,21 +707,7 @@ internal fun MeetingAudioExportCard(
                         fontWeight = FontWeight.SemiBold
                     )
                 }
-                IconButton(
-                    onClick = onRefresh,
-                    enabled = !isLoading && busyAudioId == null,
-                    modifier = Modifier.size(36.dp)
-                ) {
-                    if (isLoading) {
-                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                    } else {
-                        Icon(
-                            Icons.Default.Refresh,
-                            contentDescription = "刷新会议音频",
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-                }
+                if (isLoading) CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
             }
 
             if (items.isEmpty()) {
@@ -592,13 +752,6 @@ internal fun MeetingAudioExportCard(
                                     CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                                 }
                             } else {
-                                IconButton(
-                                    onClick = { onSave(audio) },
-                                    enabled = busyAudioId == null,
-                                    modifier = Modifier.size(40.dp)
-                                ) {
-                                    Icon(Icons.Default.SaveAlt, contentDescription = "保存会议音频")
-                                }
                                 IconButton(
                                     onClick = { onShare(audio) },
                                     enabled = busyAudioId == null,
@@ -1425,6 +1578,30 @@ internal fun MeetingImagesSection(
     onPickImages: () -> Unit,
     onDelete: (MeetingAttachment) -> Unit
 ) {
+    var clearAllConfirmationVisible by remember { mutableStateOf(false) }
+
+    if (clearAllConfirmationVisible) {
+        AlertDialog(
+            onDismissRequest = { clearAllConfirmationVisible = false },
+            title = { Text("清空插图") },
+            text = { Text("将删除本次记录中的 ${attachments.size} 张图片，录音标记和文字不会受到影响。") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        clearAllConfirmationVisible = false
+                        attachments.forEach(onDelete)
+                    }
+                ) {
+                    Text("清空", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { clearAllConfirmationVisible = false }) { Text("取消") }
+            },
+            shape = RoundedCornerShape(18.dp)
+        )
+    }
+
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -1435,7 +1612,7 @@ internal fun MeetingImagesSection(
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Column {
-                Text("会议图片", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text("插图管理", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                 Text(
                     when {
                         isImporting -> "正在导入 ${importCompleted.coerceAtMost(importTotal)}/$importTotal"
@@ -1453,45 +1630,112 @@ internal fun MeetingImagesSection(
                 IconButton(onClick = onPickImages, enabled = !isImporting) {
                     Icon(Icons.Default.Collections, contentDescription = "从相册添加")
                 }
+                if (attachments.isNotEmpty()) {
+                    IconButton(
+                        onClick = { clearAllConfirmationVisible = true },
+                        enabled = !isImporting
+                    ) {
+                        Icon(
+                            Icons.Default.DeleteOutline,
+                            contentDescription = "清空插图",
+                            tint = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
             }
         }
 
         if (attachments.isNotEmpty()) {
             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(attachments, key = { it.id }) { attachment ->
+                    val isIllustration = !attachment.recordingMarkerId.isNullOrBlank()
                     val bitmap = remember(attachment.localPath) {
                         OrientedImageDecoder.decode(File(attachment.localPath), maximumDimension = 512)
                             ?.asImageBitmap()
                     }
-                    Box(
-                        modifier = Modifier
-                            .size(96.dp)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(MaterialTheme.colorScheme.surfaceVariant),
-                        contentAlignment = Alignment.Center
+                    val tileWidth = if (isIllustration) 132.dp else 96.dp
+                    Column(
+                        modifier = Modifier.width(tileWidth),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        if (bitmap != null) {
-                            Image(
-                                bitmap = bitmap,
-                                contentDescription = attachment.displayName,
-                                modifier = Modifier.fillMaxSize(),
-                                contentScale = ContentScale.Crop
-                            )
-                        } else {
-                            Icon(Icons.Default.BrokenImage, contentDescription = "图片无法预览")
-                        }
-                        IconButton(
-                            onClick = { onDelete(attachment) },
+                        Box(
                             modifier = Modifier
-                                .align(Alignment.TopEnd)
-                                .size(30.dp)
-                                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.85f), CircleShape)
+                                .size(width = tileWidth, height = 96.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant)
+                                .then(
+                                    if (isIllustration) {
+                                        Modifier.border(
+                                            1.dp,
+                                            MaterialTheme.colorScheme.error.copy(alpha = 0.72f),
+                                            RoundedCornerShape(8.dp)
+                                        )
+                                    } else {
+                                        Modifier
+                                    }
+                                ),
+                            contentAlignment = Alignment.Center
                         ) {
-                            Icon(
-                                Icons.Default.DeleteOutline,
-                                contentDescription = "删除图片",
-                                modifier = Modifier.size(17.dp),
-                                tint = MaterialTheme.colorScheme.error
+                            if (bitmap != null) {
+                                Image(
+                                    bitmap = bitmap,
+                                    contentDescription = attachment.displayName,
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentScale = ContentScale.Crop
+                                )
+                            } else {
+                                Icon(Icons.Default.BrokenImage, contentDescription = "图片无法预览")
+                            }
+                            if (isIllustration) {
+                                Surface(
+                                    modifier = Modifier
+                                        .align(Alignment.BottomStart)
+                                        .padding(4.dp),
+                                    shape = RoundedCornerShape(5.dp),
+                                    color = MaterialTheme.colorScheme.scrim.copy(alpha = 0.72f)
+                                ) {
+                                    Text(
+                                        text = "插图",
+                                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Color.White
+                                    )
+                                }
+                            }
+                            IconButton(
+                                onClick = { onDelete(attachment) },
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .size(30.dp)
+                                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.85f), CircleShape)
+                            ) {
+                                Icon(
+                                    Icons.Default.DeleteOutline,
+                                    contentDescription = "删除图片",
+                                    modifier = Modifier.size(17.dp),
+                                    tint = MaterialTheme.colorScheme.error
+                                )
+                            }
+                        }
+                        if (isIllustration) {
+                            Text(
+                                text = attachment.markerTimestampMs?.let {
+                                    "插图位置 ${formatMarkerTimestampLabel(it)}"
+                                } ?: "插图位置已标记",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.error,
+                                maxLines = 1,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = attachment.markerTranscriptAnchor
+                                    ?.trim()
+                                    ?.takeIf(String::isNotBlank)
+                                    ?: "已关联标红区域",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 2,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                             )
                         }
                     }

@@ -1,0 +1,27 @@
+{
+  "collections": [
+    {
+      "id": "sample-study-collection-field",
+      "post_ids": [
+        "sample-study-four-stage-day",
+        "sample-study-construction-floor",
+        "sample-study-wetland-observation"
+      ]
+    },
+    {
+      "id": "sample-study-collection-survey",
+      "post_ids": [
+        "sample-study-survey-street",
+        "sample-study-ancient-town-walk"
+      ]
+    },
+    {
+      "id": "sample-study-collection-wetland",
+      "post_ids": [
+        "sample-study-wetland-observation",
+        "sample-study-four-stage-day"
+      ]
+    }
+  ],
+  "expected": "Every collection opens a read-only sample detail with at least one post."
+}

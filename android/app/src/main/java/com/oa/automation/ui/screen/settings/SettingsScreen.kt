@@ -52,6 +52,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.oa.automation.domain.model.CloudApiFormat
 import com.oa.automation.domain.model.AppThemeMode
 import com.oa.automation.domain.model.AgentProvider
@@ -63,9 +66,6 @@ import com.oa.automation.domain.model.STTEngineType
 import com.oa.automation.domain.model.TencentAsrBudgetPolicy
 import com.oa.automation.domain.model.TencentAsrTier
 import com.oa.automation.domain.model.TencentAsrTierPolicy
-import com.oa.automation.domain.model.TencentAsrUsage
-import com.oa.automation.domain.model.TencentAsrUsageService
-import com.oa.automation.domain.model.formatTencentAsrDuration
 import com.oa.automation.ui.theme.LocalAppIsDarkTheme
 
 private data class SettingsPalette(
@@ -378,14 +378,14 @@ fun SettingsScreen(
                             isScanning = uiState.isScanningSTT,
                             isSwitching = uiState.isSwitchingSTT,
                             isLoadingTencentAsrPolicy = uiState.isLoadingTencentAsrPolicy,
-                            tencentAsrUsage = uiState.tencentAsrUsage,
-                            tencentAsrUsageError = uiState.tencentAsrUsageError,
                             tencentAsrPolicy = uiState.tencentAsrPolicy,
                             tencentAsrPolicyError = uiState.tencentAsrPolicyError,
                             discoveredServers = uiState.discoveredServers,
                             onEngineTypeChange = viewModel::updateSTTEngineType,
                             onLocalEndpointChange = viewModel::updateSTTLocalEndpoint,
                             onLocalModelChange = viewModel::updateSTTLocalModel,
+                            onAudioEnhancementChange = viewModel::updateSTTAudioEnhancement,
+                            onSpeakerDiarizationChange = viewModel::updateSTTSpeakerDiarization,
                             onApiTokenChange = viewModel::updateSTTApiToken,
                             onTencentTierChange = viewModel::updateTencentAsrTier,
                             onTestConnection = viewModel::testSTTConnection,
@@ -446,7 +446,17 @@ private fun AppearanceAndUpdateSection(
     onDownloadUpdate: () -> Unit
 ) {
     val context = LocalContext.current
-    val overlayGranted = Settings.canDrawOverlays(context)
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var overlayGranted by remember(context) { mutableStateOf(Settings.canDrawOverlays(context)) }
+    DisposableEffect(context, lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                overlayGranted = Settings.canDrawOverlays(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
     val palette = LocalSettingsPalette.current
     GlassSurface(modifier = Modifier.fillMaxWidth(), accent = SettingsCyan) {
         Column(
@@ -502,13 +512,13 @@ private fun AppearanceAndUpdateSection(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        "背景悬浮球",
+                        "悬浮球",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
                         color = SettingsText
                     )
                     Text(
-                        text = if (overlayGranted) "在界面中显示悬浮球，便于快速操作" else "需要允许智悟本显示在其他应用上层",
+                        text = if (overlayGranted) "录音进入后台时显示悬浮球，点击返回会议" else "请允许智悟本显示在其他应用上层",
                         style = MaterialTheme.typography.bodySmall,
                         color = SettingsMutedText
                     )
@@ -517,6 +527,8 @@ private fun AppearanceAndUpdateSection(
                     checked = floatingBallEnabled && overlayGranted,
                     onCheckedChange = { enabled ->
                         if (enabled && !overlayGranted) {
+                            // Preserve the user's intent while the system permission screen is open.
+                            onFloatingBallChange(true)
                             context.startActivity(
                                 Intent(
                                     Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
@@ -921,14 +933,14 @@ private fun STTConfigSection(
     isScanning: Boolean,
     isSwitching: Boolean,
     isLoadingTencentAsrPolicy: Boolean,
-    tencentAsrUsage: TencentAsrUsage?,
-    tencentAsrUsageError: String?,
     tencentAsrPolicy: TencentAsrBudgetPolicy?,
     tencentAsrPolicyError: String?,
     discoveredServers: List<DiscoveredSTTServer>,
     onEngineTypeChange: (STTEngineType) -> Unit,
     onLocalEndpointChange: (String) -> Unit,
     onLocalModelChange: (String) -> Unit,
+    onAudioEnhancementChange: (Boolean) -> Unit,
+    onSpeakerDiarizationChange: (Boolean) -> Unit,
     onApiTokenChange: (String?) -> Unit,
     onTencentTierChange: (TencentAsrTier) -> Unit,
     onTestConnection: () -> Unit,
@@ -983,6 +995,50 @@ private fun STTConfigSection(
                 Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                     SettingsDivider()
 
+                    ListItem(
+                        headlineContent = {
+                            Text(
+                                text = "智能语音增强",
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        },
+                        supportingContent = {
+                            Text("录音时自动抑制环境噪声并优化人声")
+                        },
+                        leadingContent = {
+                            Icon(Icons.Default.GraphicEq, contentDescription = null)
+                        },
+                        trailingContent = {
+                            Switch(
+                                checked = config.audioEnhancementEnabled,
+                                onCheckedChange = onAudioEnhancementChange
+                            )
+                        },
+                        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                    )
+
+                    ListItem(
+                        headlineContent = {
+                            Text(
+                                text = "说话人分离",
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        },
+                        supportingContent = {
+                            Text("最终稿按说话人分段显示")
+                        },
+                        leadingContent = {
+                            Icon(Icons.Default.RecordVoiceOver, contentDescription = null)
+                        },
+                        trailingContent = {
+                            Switch(
+                                checked = config.speakerDiarizationEnabled,
+                                onCheckedChange = onSpeakerDiarizationChange
+                            )
+                        },
+                        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                    )
+
                     // Engine Type Selection
                     EngineTypeDropdown(
                         currentType = config.engineType,
@@ -1004,9 +1060,7 @@ private fun STTConfigSection(
                             enabled = !isSwitching,
                             onSelect = onTencentTierChange
                         )
-                        TencentAsrPolicyPanel(
-                            usage = tencentAsrUsage,
-                            usageError = tencentAsrUsageError,
+                        TencentAsrServiceStatusPanel(
                             policy = tencentAsrPolicy,
                             isLoading = isLoadingTencentAsrPolicy,
                             error = tencentAsrPolicyError,
@@ -1128,8 +1182,8 @@ private fun TencentAsrTierSelector(
                             when {
                                 tier.isPaid && serverTier?.isAvailable != true ->
                                     "服务端未授权启用，无法选择"
-                                tier.isPaid -> "臻享识别能力，请确认云端账户余额与服务状态"
-                                else -> "标准普通话识别，按云端产品规则运行"
+                                tier.isPaid -> "高精度识别服务当前可用"
+                                else -> "标准普通话识别服务当前可用"
                             }
                         )
                     },
@@ -1153,9 +1207,7 @@ private fun TencentAsrTierSelector(
 }
 
 @Composable
-private fun TencentAsrPolicyPanel(
-    usage: TencentAsrUsage?,
-    usageError: String?,
+private fun TencentAsrServiceStatusPanel(
     policy: TencentAsrBudgetPolicy?,
     isLoading: Boolean,
     error: String?,
@@ -1172,13 +1224,12 @@ private fun TencentAsrPolicyPanel(
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "智悟增强云模型用量",
+                    text = "智悟增强云模型服务状态",
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold
                 )
                 Text(
-                    text = usage?.let { "${it.month} · 云端官方账户统计（可能延迟）" }
-                        ?: "正在读取云端官方账户统计",
+                    text = if (isLoading) "正在查询服务可用性" else "查看实时转写与终稿识别是否可用",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1190,86 +1241,27 @@ private fun TencentAsrPolicyPanel(
                         strokeWidth = 2.dp
                     )
                 } else {
-                    Icon(Icons.Default.Refresh, contentDescription = "刷新云模型官方用量")
+                    Icon(Icons.Default.Refresh, contentDescription = "刷新云模型服务状态")
                 }
             }
         }
 
-        if (usage != null) {
-            usage.services.forEach { service -> TencentAsrOfficialUsageRow(service) }
-            Text(
-                text = if (usage.isEstimated) {
-                    "云端官方统计暂不可用，当前显示服务端估算；恢复后刷新即可对齐官方后台。"
-                } else {
-                    "统计范围为当前云端账户，本月数据可能延迟入账；手动刷新会跳过 5 分钟缓存。"
-                },
-                style = MaterialTheme.typography.labelSmall,
-                color = if (usage.isEstimated) MaterialTheme.colorScheme.error
-                    else MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        } else if (!isLoading && usageError != null) {
-            Text(
-                text = usageError,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error
-            )
-        }
-
         if (policy != null) {
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-            Text(
-                text = "服务档位状态",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold
-            )
             policy.tiers.forEach { tier -> TencentAsrTierPolicyRow(tier) }
-            Text(
-                text = "档位状态仅表示服务可用性与应用策略，不参与上方官方时长统计。",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
         } else if (!isLoading && error != null) {
             Text(text = error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-        }
-    }
-}
-
-@Composable
-private fun TencentAsrOfficialUsageRow(service: TencentAsrUsageService) {
-    val progress = if (service.freeSeconds > 0) service.usageRatio.coerceIn(0f, 1f) else 0f
-    val displayName = when (service.id) {
-        "realtime" -> "实时转写"
-        "flash" -> "终稿识别"
-        else -> service.displayName
-    }
-    Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
-        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(displayName, style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
+        } else if (!isLoading) {
             Text(
-                "已用 ${formatTencentAsrDuration(service.usedSeconds)}",
-                style = MaterialTheme.typography.labelMedium,
+                text = "暂未获取服务状态，请点击刷新重试",
+                style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-        LinearProgressIndicator(
-            progress = { progress },
-            modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
-            color = if (service.remainingSeconds == 0L) MaterialTheme.colorScheme.error
-                else MaterialTheme.colorScheme.primary,
-            trackColor = MaterialTheme.colorScheme.surfaceVariant
-        )
         Text(
-            text = "${service.requestCount} 次 · 剩余参考 ${formatTencentAsrDuration(service.remainingSeconds)} / ${formatTencentAsrDuration(service.freeSeconds)}",
+            text = "云模型档位仅表示服务可用性，不影响积分结算；所有转写统一按积分规则扣除。",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-        if (service.pendingLocalSeconds > 0 || service.pendingLocalRequestCount > 0) {
-            Text(
-                text = "待云端后台同步：约 ${formatTencentAsrDuration(service.pendingLocalSeconds)} · ${service.pendingLocalRequestCount} 次",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.tertiary
-            )
-        }
     }
 }
 
@@ -1297,11 +1289,8 @@ private fun TencentAsrTierPolicyRow(tier: TencentAsrTierPolicy) {
             )
         }
         Text(
-            text = when {
-                !tier.isAvailable -> "当前服务端未启用"
-                tier.budgetEnforced -> "已启用服务端额度策略"
-                else -> "已启用，不限制单次会议时长"
-            },
+            text = "实时转写${if (tier.realtimeEnabled) "可用" else "不可用"} · " +
+                "终稿识别${if (tier.flashEnabled) "可用" else "不可用"}",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -1445,14 +1434,14 @@ private fun LLMConfigSection(
 
                         when (config.agentProvider) {
                             AgentProvider.CODEX_CLI -> ReasoningEffortDropdown(
-                                label = "Codex 推理强度",
+                                label = "智能体小悟推理强度",
                                 current = config.codexReasoningEffort,
                                 options = CodexReasoningEffort.entries,
                                 displayName = CodexReasoningEffort::displayName,
                                 onSelect = onCodexReasoningEffortChange
                             )
                             AgentProvider.CLAUDE_CLI -> ReasoningEffortDropdown(
-                                label = "Claude 推理强度",
+                                label = "智能体小智推理强度",
                                 current = config.claudeReasoningEffort,
                                 options = ClaudeReasoningEffort.entries,
                                 displayName = ClaudeReasoningEffort::displayName,
@@ -1817,7 +1806,7 @@ private fun ModelDropdown(
             value = localModelDisplayName(currentModel),
             onValueChange = {},
             readOnly = true,
-            label = { Text("智悟本地识别模型") },
+            label = { Text("本地智悟通用模型") },
             leadingIcon = {
                 Icon(
                     imageVector = Icons.Default.Memory,
@@ -1858,12 +1847,12 @@ private fun ModelDropdown(
 
 private fun localModelDisplayName(model: String): String {
     return when (model) {
-        "large-v3-turbo" -> "智悟本地 Faster-Whisper · Turbo"
-        "tiny" -> "智悟本地通用 · 轻盈"
-        "base" -> "智悟本地通用 · 标准"
-        "small" -> "智悟本地通用 · 均衡"
-        "medium" -> "智悟本地通用 · 进阶"
-        "large-v3" -> "智悟本地通用 · 旗舰"
+        "large-v3-turbo" -> "本地智悟通用模型 · Turbo"
+        "tiny" -> "本地智悟通用模型 · 轻盈"
+        "base" -> "本地智悟通用模型 · 标准"
+        "small" -> "本地智悟通用模型 · 均衡"
+        "medium" -> "本地智悟通用模型 · 进阶"
+        "large-v3" -> "本地智悟通用模型 · 旗舰"
         else -> STTEngineType.FASTER_WHISPER.displayName
     }
 }

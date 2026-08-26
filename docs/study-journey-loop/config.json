@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0",
+  "project_root": "E:\\pro_sunner\\demo_vscode\\MeetingNotesApp",
+  "workspace_root": "E:\\pro_sunner\\demo_vscode\\MeetingNotesApp\\docs\\study-journey-loop",
+  "knowledge_root": null,
+  "approval_policy": "trusted-owner",
+  "defaults": {
+    "max_prototypes": 5,
+    "max_iterations": 2
+  }
+}

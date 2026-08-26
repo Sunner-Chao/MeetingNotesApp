@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -94,65 +95,62 @@ fun RegisterScreen(
                         onRegister = {},
                         layout = layout
                     )
-                    AuthModeSelector(
-                        mode = uiState.mode,
-                        onModeChange = viewModel::updateMode
+                    RegisterChannelTabs(
+                        selected = uiState.mode,
+                        onSelect = viewModel::updateMode
                     )
-                    if (uiState.mode == AuthEntryMode.PASSWORD) {
-                        AuthUsernameField(
-                            value = uiState.username,
-                            placeholder = "用户名",
-                            onValueChange = viewModel::updateUsername,
-                            onNext = { focusManager.moveFocus(FocusDirection.Down) },
-                            supportingText = "3-32 个文字、数字或下划线",
-                            layout = layout
+                    AuthUsernameField(
+                        value = uiState.username,
+                        placeholder = "用户名",
+                        onValueChange = viewModel::updateUsername,
+                        onNext = { focusManager.moveFocus(FocusDirection.Down) },
+                        supportingText = "用户名长度不限，仅支持文字、数字和下划线",
+                        layout = layout
+                    )
+                    AuthIdentifierField(
+                        value = uiState.identifier,
+                        mode = AuthEntryMode.EMAIL,
+                        onValueChange = viewModel::updateIdentifier,
+                        onNext = { focusManager.moveFocus(FocusDirection.Down) },
+                        layout = layout
+                    )
+                    AuthVerificationCodeField(
+                        value = uiState.verificationCode,
+                        isSending = uiState.isSendingCode,
+                        cooldownSeconds = uiState.codeCooldownSeconds,
+                        onValueChange = viewModel::updateVerificationCode,
+                        onSendCode = viewModel::requestCode,
+                        onDone = { focusManager.moveFocus(FocusDirection.Down) },
+                        layout = layout
+                    )
+                    if (uiState.codeSentTo.isNotBlank()) {
+                        Text(
+                            text = "验证码已发送至 ${uiState.codeSentTo}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        AuthPasswordField(
-                            value = uiState.password,
-                            placeholder = "密码",
-                            visible = uiState.passwordVisible,
-                            onValueChange = viewModel::updatePassword,
-                            onToggleVisibility = viewModel::togglePasswordVisibility,
-                            imeAction = ImeAction.Next,
-                            onImeAction = { focusManager.moveFocus(FocusDirection.Down) },
-                            supportingText = "至少 8 个字符",
-                            layout = layout
-                        )
-                        AuthPasswordField(
-                            value = uiState.confirmPassword,
-                            placeholder = "确认密码",
-                            visible = uiState.passwordVisible,
-                            onValueChange = viewModel::updateConfirmPassword,
-                            onToggleVisibility = viewModel::togglePasswordVisibility,
-                            imeAction = ImeAction.Done,
-                            onImeAction = viewModel::register,
-                            layout = layout
-                        )
-                    } else {
-                        AuthIdentifierField(
-                            value = uiState.identifier,
-                            mode = uiState.mode,
-                            onValueChange = viewModel::updateIdentifier,
-                            onNext = { focusManager.moveFocus(FocusDirection.Down) },
-                            layout = layout
-                        )
-                        AuthVerificationCodeField(
-                            value = uiState.verificationCode,
-                            isSending = uiState.isSendingCode,
-                            cooldownSeconds = uiState.codeCooldownSeconds,
-                            onValueChange = viewModel::updateVerificationCode,
-                            onSendCode = viewModel::requestCode,
-                            onDone = viewModel::register,
-                            layout = layout
-                        )
-                        if (uiState.codeSentTo.isNotBlank()) {
-                            Text(
-                                text = "验证码已发送至 ${uiState.codeSentTo}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
                     }
+                    AuthPasswordField(
+                        value = uiState.password,
+                        placeholder = "密码",
+                        visible = uiState.passwordVisible,
+                        onValueChange = viewModel::updatePassword,
+                        onToggleVisibility = viewModel::togglePasswordVisibility,
+                        imeAction = ImeAction.Next,
+                        onImeAction = { focusManager.moveFocus(FocusDirection.Down) },
+                        supportingText = "至少 8 个字符",
+                        layout = layout
+                    )
+                    AuthPasswordField(
+                        value = uiState.confirmPassword,
+                        placeholder = "确认密码",
+                        visible = uiState.passwordVisible,
+                        onValueChange = viewModel::updateConfirmPassword,
+                        onToggleVisibility = viewModel::togglePasswordVisibility,
+                        imeAction = ImeAction.Done,
+                        onImeAction = viewModel::register,
+                        layout = layout
+                    )
                     AnimatedVisibility(
                         visible = uiState.errorMessage != null,
                         enter = fadeIn(),
@@ -181,7 +179,7 @@ fun RegisterScreen(
                             )
                         } else {
                             Text(
-                                if (uiState.mode == AuthEntryMode.PASSWORD) "注册并登录" else "验证并创建账号",
+                                "注册并登录",
                                 style = MaterialTheme.typography.titleMedium
                             )
                         }
@@ -210,7 +208,7 @@ fun RegisterScreen(
                 }
             }
             TextButton(onClick = onContinueAsGuest) {
-                Text("先本地录音，稍后注册")
+                Text("游客登录")
             }
             AuthAgreement(prefix = "注册", layout = layout)
             AuthBenefits(layout)
@@ -223,6 +221,63 @@ fun RegisterScreen(
             modifier = Modifier.align(Alignment.TopCenter)
         ) {
             LinearProgressIndicator(modifier = Modifier.fillMaxWidth().height(3.dp))
+        }
+    }
+}
+
+@Composable
+private fun RegisterChannelTabs(
+    selected: AuthEntryMode,
+    onSelect: (AuthEntryMode) -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(10.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant
+    ) {
+        Row(modifier = Modifier.padding(3.dp)) {
+            RegisterChannelTab(
+                label = "邮箱注册",
+                selected = selected == AuthEntryMode.EMAIL,
+                enabled = true,
+                onClick = { onSelect(AuthEntryMode.EMAIL) },
+                modifier = Modifier.weight(1f)
+            )
+            RegisterChannelTab(
+                label = "手机号注册",
+                selected = false,
+                enabled = false,
+                onClick = {},
+                modifier = Modifier.weight(1f)
+            )
+        }
+    }
+}
+
+@Composable
+private fun RegisterChannelTab(
+    label: String,
+    selected: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier
+) {
+    Surface(
+        modifier = modifier.height(44.dp),
+        onClick = onClick,
+        enabled = enabled,
+        shape = RoundedCornerShape(8.dp),
+        color = if (selected) MaterialTheme.colorScheme.surface else Color.Transparent,
+        shadowElevation = if (selected) 1.dp else 0.dp
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Text(
+                label,
+                style = MaterialTheme.typography.labelMedium,
+                color = if (!enabled) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                else if (selected) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }

@@ -1,0 +1,17 @@
+{
+  "post_count": 10,
+  "structure_ids": [
+    "industrial-process",
+    "construction-safety-route",
+    "surveying-mission",
+    "museum-clue-trail",
+    "wetland-observation-board",
+    "village-research",
+    "architecture-detail-lens",
+    "science-lab-mission",
+    "two-day-study-camp",
+    "forum-field-verification"
+  ],
+  "media_count_range": [3, 6],
+  "offline_asset_registry": "android/app/src/main/assets/community/mock/ATTRIBUTION.md"
+}

@@ -1,4 +1,4 @@
-import type { AccountProfile, AuthSession, Meeting, RuntimeConfig } from "../types";
+import type { AccountProfile, AuthCodeDelivery, AuthSession, GrowthCampaignDetail, GrowthOverview, Meeting, PrivateChannel, RuntimeConfig } from "../types";
 import { templateFor } from "../templates";
 
 interface SessionRefreshResponse {
@@ -59,8 +59,10 @@ async function errorMessage(response: Response): Promise<string> {
     if (Array.isArray(body.detail) && body.detail.length > 0) {
       const issue = body.detail[0];
       const field = issue.loc?.at(-1);
-      if (field === "username") return "用户名需要 3 至 32 个字符";
+      if (field === "username") return "用户名不能为空";
       if (field === "password") return "密码需要 8 至 128 个字符";
+      if (field === "identifier") return "请输入有效的邮箱地址";
+      if (field === "code") return "请输入 6 位邮箱验证码";
       return issue.msg?.trim() || fallback;
     }
     return fallback;
@@ -75,18 +77,66 @@ async function jsonRequest<T>(url: string, init: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export async function authenticate(
+export async function login(
   config: RuntimeConfig,
   username: string,
-  password: string,
-  register: boolean
+  password: string
 ): Promise<AuthSession> {
-  return jsonRequest<AuthSession>(apiUrl(config, `/api/auth/${register ? "register" : "login"}`), {
+  return jsonRequest<AuthSession>(apiUrl(config, "/api/auth/login"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ username, password })
   });
 }
+
+export async function requestRegistrationCode(
+  config: RuntimeConfig,
+  email: string
+): Promise<AuthCodeDelivery> {
+  return jsonRequest<AuthCodeDelivery>(apiUrl(config, "/api/auth/code/request"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ channel: "email", identifier: email, purpose: "register" })
+  });
+}
+
+export async function verifyEmailRegistration(
+  config: RuntimeConfig,
+  username: string,
+  email: string,
+  password: string,
+  code: string,
+  referralCode?: string
+): Promise<AuthSession> {
+  return jsonRequest<AuthSession>(apiUrl(config, "/api/auth/register/verify"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ channel: "email", identifier: email, code, username, password, referral_code: referralCode?.trim() || undefined })
+  });
+}
+
+export async function fetchGrowthOverview(config: RuntimeConfig, session: AuthSession): Promise<GrowthOverview> {
+  return jsonRequest<GrowthOverview>(apiUrl(config, "/api/account/growth/overview"), { headers: { Authorization: `Bearer ${session.access_token}` } });
+}
+
+export async function redeemGrowthCode(config: RuntimeConfig, session: AuthSession, code: string): Promise<{ message: string; profile: AccountProfile; private_channel?: PrivateChannel | null }> {
+  return jsonRequest(apiUrl(config, "/api/account/redeem"), {
+    method: "POST", headers: { Authorization: `Bearer ${session.access_token}`, "Content-Type": "application/json" }, body: JSON.stringify({ code })
+  });
+}
+
+export async function fetchGrowthCampaignDetail(config: RuntimeConfig, session: AuthSession, campaignId: string): Promise<GrowthCampaignDetail> {
+  return jsonRequest<GrowthCampaignDetail>(apiUrl(config, `/api/growth/campaigns/${encodeURIComponent(campaignId)}`), { headers: { Authorization: `Bearer ${session.access_token}` } });
+}
+
+async function growthAction<T>(config: RuntimeConfig, session: AuthSession, path: string, body?: unknown): Promise<T> {
+  return jsonRequest<T>(apiUrl(config, path), { method: "POST", headers: { Authorization: `Bearer ${session.access_token}`, "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
+}
+
+export function joinGrowthCampaign(config: RuntimeConfig, session: AuthSession, campaignId: string) { return growthAction<{ status: string }>(config, session, `/api/growth/campaigns/${encodeURIComponent(campaignId)}/join`); }
+export function checkinGrowthCampaign(config: RuntimeConfig, session: AuthSession, campaignId: string) { return growthAction<{ message: string; quantity: number }>(config, session, `/api/growth/campaigns/${encodeURIComponent(campaignId)}/checkin`); }
+export function answerGrowthCampaign(config: RuntimeConfig, session: AuthSession, campaignId: string, questionKey: string, answer: string) { return growthAction<{ message: string; correct: boolean; quantity: number }>(config, session, `/api/growth/campaigns/${encodeURIComponent(campaignId)}/answer`, { question_key: questionKey, answer }); }
+export function drawGrowthCampaign(config: RuntimeConfig, session: AuthSession, campaignId: string) { return growthAction<{ message: string; won: boolean; quantity: number; probability: number }>(config, session, `/api/growth/campaigns/${encodeURIComponent(campaignId)}/draw`); }
 
 export async function refreshSession(config: RuntimeConfig, current: AuthSession): Promise<AuthSession> {
   const refreshed = await jsonRequest<SessionRefreshResponse>(apiUrl(config, "/api/account/session"), {
@@ -276,6 +326,6 @@ export async function generateReport(
   if (!response.ok) throw new Error(await errorMessage(response));
   const result = await response.json() as AgentResponse;
   const output = result.report?.rawContent || result.report?.content || result.text || "";
-  if (!output.trim()) throw new Error("小Woo没有返回有效纪要内容");
+  if (!output.trim()) throw new Error("没有返回有效纪要内容");
   return output.trim();
 }

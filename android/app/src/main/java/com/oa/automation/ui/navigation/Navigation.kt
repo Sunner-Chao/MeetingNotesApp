@@ -12,6 +12,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -23,6 +24,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import com.oa.automation.ui.screen.account.AccountProfileScreen
 import com.oa.automation.ui.screen.account.AccountQuotaDetailsScreen
+import com.oa.automation.ui.screen.account.PointsPlansScreen
 import com.oa.automation.ui.screen.account.AccountUserManagementScreen
 import com.oa.automation.ui.screen.account.CommunityModerationScreen
 import com.oa.automation.ui.screen.community.CommunityPostDetailScreen
@@ -37,7 +39,6 @@ import com.oa.automation.ui.screen.recording.RecordingScreen
 import com.oa.automation.ui.screen.report.ReportScreen
 import com.oa.automation.ui.screen.settings.SettingsScreen
 import com.oa.automation.ui.screen.splash.SplashScreen
-import com.oa.automation.ui.screen.vip.VipScreen
 import org.koin.androidx.compose.koinViewModel
 
 private const val TRANSITION_DURATION = 400
@@ -51,9 +52,18 @@ private const val TRANSITION_DURATION = 400
  */
 @Composable
 fun OAAutomationNavHost(
+    openRecordingMeetingId: String? = null,
+    onRecordingMeetingOpened: (String) -> Unit = {},
     modifier: Modifier = Modifier,
     navController: NavHostController = rememberNavController()
 ) {
+    LaunchedEffect(openRecordingMeetingId) {
+        val meetingId = openRecordingMeetingId?.takeIf { it.isNotBlank() } ?: return@LaunchedEffect
+        navController.navigate(Recording(meetingId)) {
+            launchSingleTop = true
+        }
+        onRecordingMeetingOpened(meetingId)
+    }
     NavHost(
         navController = navController,
         startDestination = Splash,
@@ -158,6 +168,9 @@ fun OAAutomationNavHost(
                     onNavigateToAccountQuota = {
                         navController.navigate(AccountQuota)
                     },
+                    onNavigateToAccountPointsPlans = {
+                        navController.navigate(AccountPointsPlans)
+                    },
                     onNavigateToAccountUsers = {
                         navController.navigate(AccountUsers)
                     },
@@ -206,8 +219,7 @@ fun OAAutomationNavHost(
 
             composable<AccountProfile> {
                 AccountProfileScreen(
-                    onNavigateBack = { navController.popBackStack() },
-                    onNavigateToVip = { navController.navigate(AccountVip) }
+                    onNavigateBack = { navController.popBackStack() }
                 )
             }
 
@@ -215,6 +227,12 @@ fun OAAutomationNavHost(
                 AccountQuotaDetailsScreen(
                     onNavigateBack = { navController.popBackStack() },
                     onNavigateToSettings = { navController.navigate(Settings) }
+                )
+            }
+
+            composable<AccountPointsPlans> {
+                PointsPlansScreen(
+                    onNavigateBack = { navController.popBackStack() }
                 )
             }
 
@@ -227,15 +245,6 @@ fun OAAutomationNavHost(
             composable<AccountCommunityModeration> {
                 CommunityModerationScreen(
                     onNavigateBack = { navController.popBackStack() }
-                )
-            }
-
-            composable<AccountVip> {
-                VipScreen(
-                    onNavigateBack = { navController.popBackStack() },
-                    onNavigateToRecording = { meetingId ->
-                        navController.navigate(Recording(meetingId))
-                    }
                 )
             }
 

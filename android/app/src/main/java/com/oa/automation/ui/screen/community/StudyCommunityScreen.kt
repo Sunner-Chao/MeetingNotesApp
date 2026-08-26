@@ -1,8 +1,9 @@
 package com.oa.automation.ui.screen.community
 
+import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.util.LruCache
+import android.widget.Toast
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
@@ -24,6 +25,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridItemSpan
@@ -35,8 +38,10 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.AutoStories
 import androidx.compose.material.icons.filled.BookmarkBorder
+import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
@@ -68,6 +73,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -76,6 +82,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.UriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -85,12 +94,10 @@ import com.oa.automation.domain.model.CommunityCollection
 import com.oa.automation.domain.model.MyCommunityPost
 import com.oa.automation.domain.model.PublicCommunityPost
 import com.oa.automation.ui.component.ZhiWuScreenBackground
+import com.oa.automation.ui.formatBeijingTime
 import com.oa.automation.ui.theme.LocalAppIsDarkTheme
-import java.net.URL
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.koin.androidx.compose.koinViewModel
 
@@ -105,6 +112,7 @@ fun StudyCommunityScreen(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val publishingState by publishingViewModel.uiState.collectAsStateWithLifecycle()
     var showFilters by rememberSaveable { androidx.compose.runtime.mutableStateOf(false) }
+    var showActivities by rememberSaveable { androidx.compose.runtime.mutableStateOf(false) }
     LaunchedEffect(Unit) { viewModel.refresh() }
     val publishingSyncKey = publishingState.posts.joinToString(separator = "|") { item ->
         "${item.post.id}:${item.sync?.status}:${item.sync?.remotePostId}"
@@ -122,7 +130,10 @@ fun StudyCommunityScreen(
             Column(
                 modifier = Modifier.fillMaxSize().padding(padding)
             ) {
-                StudyCommunityHeader(onRefresh = viewModel::refresh)
+                StudyCommunityHeader(
+                    onRefresh = viewModel::refresh,
+                    onOpenActivities = { showActivities = true }
+                )
                 CommunitySegmentedTabs(
                     selected = state.tab,
                     onSelected = viewModel::selectTab
@@ -139,6 +150,7 @@ fun StudyCommunityScreen(
                     onTopicSelect = viewModel::selectQuickTopic,
                     onSearch = viewModel::search,
                     onOpenFilters = { showFilters = true },
+                    onOpenActivities = { showActivities = true },
                     onRefresh = viewModel::refresh,
                     onLoadMore = viewModel::loadMore
                 )
@@ -163,6 +175,10 @@ fun StudyCommunityScreen(
         )
     }
 
+    if (showActivities) {
+        CommunityActivitySheet(onDismiss = { showActivities = false })
+    }
+
     publishingState.selectedPost?.let { post ->
         CommunityPublishingReviewDialog(
             post = post,
@@ -180,7 +196,10 @@ fun StudyCommunityScreen(
 }
 
 @Composable
-private fun StudyCommunityHeader(onRefresh: () -> Unit) {
+private fun StudyCommunityHeader(
+    onRefresh: () -> Unit,
+    onOpenActivities: () -> Unit
+) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 12.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -196,6 +215,32 @@ private fun StudyCommunityHeader(onRefresh: () -> Unit) {
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.primary
             )
+        }
+        Surface(
+            onClick = onOpenActivities,
+            modifier = Modifier.height(40.dp),
+            shape = RoundedCornerShape(8.dp),
+            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.22f))
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp)
+            ) {
+                Icon(
+                    Icons.Default.CalendarMonth,
+                    contentDescription = null,
+                    modifier = Modifier.size(17.dp),
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    "活动",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
         }
         IconButton(onClick = onRefresh) {
             Icon(Icons.Default.Refresh, contentDescription = "刷新")
@@ -270,6 +315,7 @@ private fun StudyCommunityFeed(
     onTopicSelect: (String) -> Unit,
     onSearch: () -> Unit,
     onOpenFilters: () -> Unit,
+    onOpenActivities: () -> Unit,
     onRefresh: () -> Unit,
     onLoadMore: () -> Unit
 ) {
@@ -301,6 +347,23 @@ private fun StudyCommunityFeed(
                     onOpenFilters = onOpenFilters
                 )
             }
+            if (state.publicPosts.isNotEmpty()) {
+                item(span = StaggeredGridItemSpan.FullLine) {
+                    CommunityFeaturedCarousel(
+                        posts = state.publicPosts,
+                        mediaBaseUrl = state.mediaBaseUrl,
+                        onOpenPost = onOpenPost
+                    )
+                }
+            }
+            if (state.isShowingSampleContent) {
+                item(span = StaggeredGridItemSpan.FullLine) {
+                    CommunityPublicReferenceStrip(onOpenPost = onOpenPost)
+                }
+            }
+            item(span = StaggeredGridItemSpan.FullLine) {
+                CommunityActivityEntry(onOpenActivities = onOpenActivities)
+            }
             if (state.facets.tags.isNotEmpty()) {
                 item(span = StaggeredGridItemSpan.FullLine) {
                     CommunityTopicStrip(
@@ -326,7 +389,8 @@ private fun StudyCommunityFeed(
                 item(span = StaggeredGridItemSpan.FullLine) {
                     CommunityFeedSectionHeader(
                         resultCount = state.publicPosts.size,
-                        hasActiveFilters = activeCommunityFilterCount(state) > 0
+                        hasActiveFilters = activeCommunityFilterCount(state) > 0,
+                        isShowingSampleContent = state.isShowingSampleContent
                     )
                 }
             }
@@ -420,6 +484,367 @@ internal fun visibleRemoteCommunityPosts(
     return remotePosts.filterNot { it.id in representedRemoteIds }
 }
 
+private fun openExternalUri(
+    context: Context,
+    uriHandler: UriHandler,
+    uri: String,
+    targetLabel: String
+) {
+    runCatching {
+        require(uri.startsWith("https://"))
+        uriHandler.openUri(uri)
+    }.onFailure {
+        Toast.makeText(
+            context.applicationContext,
+            "无法打开$targetLabel，请稍后重试",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+}
+
+@Composable
+private fun CommunityPublicReferenceStrip(onOpenPost: (String) -> Unit) {
+    val context = LocalContext.current
+    val uriHandler = LocalUriHandler.current
+    Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                Icons.Default.AutoStories,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+                tint = MaterialTheme.colorScheme.primary
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                "资料参考",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                "国内资料",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        LazyRow(
+            contentPadding = PaddingValues(end = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            items(MockStudyCommunityData.publicReferences, key = CommunityPublicReference::id) { reference ->
+                CommunityPublicReferenceCard(
+                    reference = reference,
+                    onOpenSource = {
+                        openExternalUri(context, uriHandler, reference.sourceUrl, "资料页面")
+                    },
+                    onOpenPost = { onOpenPost(reference.relatedPostId) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun CommunityPublicReferenceCard(
+    reference: CommunityPublicReference,
+    onOpenSource: () -> Unit,
+    onOpenPost: () -> Unit
+) {
+    Surface(
+        modifier = Modifier.width(286.dp).height(178.dp),
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = if (LocalAppIsDarkTheme.current) 0.78f else 0.94f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.24f))
+    ) {
+        Column(
+            modifier = Modifier.fillMaxSize().padding(13.dp),
+            verticalArrangement = Arrangement.spacedBy(7.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f)
+                ) {
+                    Text(
+                        reference.destination,
+                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                }
+                Spacer(Modifier.width(7.dp))
+            Text(
+                reference.referenceLabel,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            }
+            Text(
+                reference.title,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                reference.sourceLabel,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                reference.summary,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = onOpenSource, contentPadding = PaddingValues(horizontal = 0.dp)) {
+                    Text("查看国内资料")
+                    Spacer(Modifier.width(4.dp))
+                    Icon(
+                        Icons.AutoMirrored.Filled.OpenInNew,
+                        contentDescription = null,
+                        modifier = Modifier.size(15.dp)
+                    )
+                }
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = onOpenPost, contentPadding = PaddingValues(horizontal = 4.dp)) {
+                    Text("查看笔记")
+                    Icon(Icons.Default.ChevronRight, contentDescription = null, modifier = Modifier.size(17.dp))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CommunityActivityEntry(onOpenActivities: () -> Unit) {
+    val context = LocalContext.current
+    val uriHandler = LocalUriHandler.current
+    Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                Icons.Default.CalendarMonth,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+                tint = MaterialTheme.colorScheme.primary
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                "近期活动预告",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold
+            )
+            Spacer(Modifier.weight(1f))
+            TextButton(
+                onClick = onOpenActivities,
+                contentPadding = PaddingValues(horizontal = 4.dp)
+            ) {
+                Text("查看全部")
+                Icon(Icons.Default.ChevronRight, contentDescription = null, modifier = Modifier.size(17.dp))
+            }
+        }
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(8.dp),
+            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.52f)
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.Default.CalendarMonth,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.secondary
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "近期活动信息整理 · 核对日期 ${MockStudyCommunityData.ACTIVITY_SNAPSHOT_DATE}；报名与时间以原页面为准",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+        LazyRow(
+            contentPadding = PaddingValues(end = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            items(
+                MockStudyCommunityData.activityNotices.take(3),
+                key = CommunityActivityNotice::id
+            ) { notice ->
+                CommunityActivityNoticeCard(
+                    notice = notice,
+                    modifier = Modifier.width(286.dp),
+                    onOpenSource = {
+                        openExternalUri(context, uriHandler, notice.sourceUrl, "活动页面")
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun CommunityActivityNoticeCard(
+    notice: CommunityActivityNotice,
+    modifier: Modifier = Modifier,
+    onOpenSource: () -> Unit
+) {
+    Surface(
+        onClick = onOpenSource,
+        modifier = modifier,
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.surface.copy(
+            alpha = if (LocalAppIsDarkTheme.current) 0.78f else 0.95f
+        ),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.28f))
+    ) {
+        Column(
+            modifier = Modifier.padding(13.dp),
+            verticalArrangement = Arrangement.spacedBy(7.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.78f)
+                ) {
+                    Text(
+                        "活动",
+                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                    )
+                }
+                Spacer(Modifier.width(7.dp))
+                Text(
+                    notice.locationLabel,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Text(
+                notice.title,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Default.CalendarMonth,
+                    contentDescription = null,
+                    modifier = Modifier.size(15.dp),
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Spacer(Modifier.width(5.dp))
+                Text(
+                    notice.dateLabel,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(Modifier.weight(1f))
+                Text(
+                    notice.priceLabel,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+            Text(
+                notice.summary,
+                modifier = Modifier.weight(1f, fill = false),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    notice.sourceLabel,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                Icon(
+                    Icons.AutoMirrored.Filled.OpenInNew,
+                    contentDescription = "打开活动原页",
+                    modifier = Modifier.size(16.dp),
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CommunityActivitySheet(onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val uriHandler = LocalUriHandler.current
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.surface
+    ) {
+        LazyColumn(
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Default.CalendarMonth,
+                            contentDescription = null,
+                            modifier = Modifier.size(21.dp),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "活动预告",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Text(
+                        "以下为近期活动信息整理，核对日期：${MockStudyCommunityData.ACTIVITY_SNAPSHOT_DATE}（北京时间）。智悟本不主办、不代报名，详情和状态请以原页面为准。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            items(MockStudyCommunityData.activityNotices, key = CommunityActivityNotice::id) { notice ->
+                CommunityActivityNoticeCard(
+                    notice = notice,
+                    modifier = Modifier.fillMaxWidth(),
+                    onOpenSource = {
+                        openExternalUri(context, uriHandler, notice.sourceUrl, "活动页面")
+                    }
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun CommunityTopicStrip(
     topics: List<String>,
@@ -455,6 +880,132 @@ private fun CommunityTopicStrip(
     }
 }
 
+private data class FeaturedCommunityPage(
+    val post: PublicCommunityPost,
+    val imageUrl: String
+)
+
+@Composable
+@OptIn(ExperimentalFoundationApi::class)
+private fun CommunityFeaturedCarousel(
+    posts: List<PublicCommunityPost>,
+    mediaBaseUrl: String,
+    onOpenPost: (String) -> Unit
+) {
+    val pages = remember(posts, mediaBaseUrl) {
+        posts.take(4).flatMap { post ->
+            post.media.take(2).map { media ->
+                FeaturedCommunityPage(
+                    post = post,
+                    imageUrl = resolveCommunityMediaUrl(mediaBaseUrl, media.thumbnailUrl)
+                )
+            }
+        }.take(7)
+    }
+    if (pages.isEmpty()) return
+
+    val pagerState = rememberPagerState(pageCount = { pages.size })
+    LaunchedEffect(pages.size) {
+        while (pages.size > 1) {
+            delay(4_200)
+            if (!pagerState.isScrollInProgress) {
+                pagerState.animateScrollToPage((pagerState.currentPage + 1) % pages.size)
+            }
+        }
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                if (posts.all { MockStudyCommunityData.isSampleId(it.id) }) "精选内容" else "本周精选",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                "自动浏览",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier.fillMaxWidth().height(214.dp)
+        ) { pageIndex ->
+            val page = pages[pageIndex]
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable { onOpenPost(page.post.id) }
+            ) {
+                StudyCommunityImage(
+                    url = page.imageUrl,
+                    contentDescription = page.post.title,
+                    modifier = Modifier.fillMaxSize()
+                )
+                Surface(
+                    modifier = Modifier.align(Alignment.BottomStart).fillMaxWidth(),
+                    color = Color.Black.copy(alpha = 0.62f)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            page.post.title,
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color.White,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            listOfNotNull(
+                                page.post.destination.takeIf(String::isNotBlank),
+                                page.post.stages.firstOrNull()
+                            ).joinToString(" · "),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.White.copy(alpha = 0.82f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+                Surface(
+                    modifier = Modifier.align(Alignment.TopEnd).padding(10.dp),
+                    shape = RoundedCornerShape(6.dp),
+                    color = Color.Black.copy(alpha = 0.56f)
+                ) {
+                    Text(
+                        "${pageIndex + 1}/${pages.size}",
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White
+                    )
+                }
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            repeat(pages.size) { index ->
+                Surface(
+                    modifier = Modifier.padding(horizontal = 3.dp).size(
+                        width = if (index == pagerState.currentPage) 18.dp else 6.dp,
+                        height = 6.dp
+                    ),
+                    shape = RoundedCornerShape(4.dp),
+                    color = if (index == pagerState.currentPage) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.outlineVariant
+                ) {}
+            }
+        }
+    }
+}
+
 internal fun communityQuickTopics(state: CommunityUiState): List<String> = buildList {
     add("")
     if (state.tagFilter.isNotBlank()) add(state.tagFilter)
@@ -464,14 +1015,19 @@ internal fun communityQuickTopics(state: CommunityUiState): List<String> = build
 @Composable
 private fun CommunityFeedSectionHeader(
     resultCount: Int,
-    hasActiveFilters: Boolean
+    hasActiveFilters: Boolean,
+    isShowingSampleContent: Boolean
 ) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
-            text = if (hasActiveFilters) "筛选结果" else "同行见闻",
+            text = when {
+                hasActiveFilters -> "筛选结果"
+                isShowingSampleContent -> "同行见闻"
+                else -> "同行见闻"
+            },
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold
         )
@@ -751,7 +1307,7 @@ private fun CommunityRouteStrip(
                         ) {
                             if (collection.coverThumbnailUrl.isNotBlank()) {
                                 StudyCommunityImage(
-                                    url = "$mediaBaseUrl${collection.coverThumbnailUrl}",
+                                    url = resolveCommunityMediaUrl(mediaBaseUrl, collection.coverThumbnailUrl),
                                     contentDescription = "${collection.title}封面",
                                     modifier = Modifier.fillMaxSize()
                                 )
@@ -810,7 +1366,7 @@ private fun StudyPostCard(
         Column {
             post.media.firstOrNull()?.let { media ->
                 StudyCommunityImage(
-                    url = "$mediaBaseUrl${media.thumbnailUrl}",
+                    url = resolveCommunityMediaUrl(mediaBaseUrl, media.thumbnailUrl),
                     contentDescription = "${post.title}现场影像",
                     modifier = Modifier
                         .fillMaxWidth()
@@ -822,37 +1378,37 @@ private fun StudyPostCard(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)) {
-                        Box(Modifier.size(30.dp), contentAlignment = Alignment.Center) {
-                            Text(
-                                post.authorLabel.trim().take(1).ifBlank { "悟" },
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary
-                            )
+                        Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)) {
+                            Box(Modifier.size(30.dp), contentAlignment = Alignment.Center) {
+                                Text(
+                                    post.authorLabel.trim().take(1).ifBlank { "悟" },
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
                         }
-                    }
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        post.authorLabel,
-                        modifier = Modifier.weight(1f),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Icon(
-                        Icons.Default.Verified,
-                        contentDescription = "已审核",
-                        modifier = Modifier.size(15.dp),
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        formatStudyCommunityDate(post.publishedAt),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            post.authorLabel,
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Icon(
+                            Icons.Default.Verified,
+                            contentDescription = "已审核",
+                            modifier = Modifier.size(15.dp),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            formatStudyCommunityDate(post.publishedAt),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                 }
                 Text(
                     post.title,
@@ -862,6 +1418,27 @@ private fun StudyPostCard(
                     overflow = TextOverflow.Ellipsis
                 )
                 StudyPostMetadata(post)
+                post.curationNote.takeIf(String::isNotBlank)?.let { note ->
+                    Row(verticalAlignment = Alignment.Top) {
+                        Box(
+                            Modifier
+                                .padding(top = 4.dp)
+                                .size(width = 3.dp, height = 28.dp)
+                                .background(
+                                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.72f),
+                                    shape = RoundedCornerShape(2.dp)
+                                )
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "编辑推荐 · $note",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
                 Text(
                     post.content,
                     style = MaterialTheme.typography.bodyMedium,
@@ -1083,10 +1660,11 @@ private fun StudyCommunityImage(
     contentDescription: String,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     val bitmap by produceState<Bitmap?>(initialValue = CommunityImageCache.get(url), url) {
         if (value == null) {
             value = withContext(Dispatchers.IO) {
-                runCatching { URL(url).openStream().use(BitmapFactory::decodeStream) }
+                runCatching { decodeCommunityBitmap(context, url) }
                     .getOrNull()
                     ?.also { CommunityImageCache.put(url, it) }
             }
@@ -1132,4 +1710,4 @@ private object CommunityImageCache {
 }
 
 private fun formatStudyCommunityDate(timestamp: Long): String =
-    SimpleDateFormat("MM-dd", Locale.SIMPLIFIED_CHINESE).format(Date(timestamp))
+    formatBeijingTime(timestamp, "MM-dd")

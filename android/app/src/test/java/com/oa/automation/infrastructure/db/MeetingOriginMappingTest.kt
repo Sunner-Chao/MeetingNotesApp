@@ -11,7 +11,8 @@ class MeetingOriginMappingTest {
         val meeting = Meeting(
             id = "meeting-import",
             title = "已改名的考察资料",
-            origin = MeetingOrigin.FILE_IMPORT
+            origin = MeetingOrigin.FILE_IMPORT,
+            selectedTemplateName = "研学考察"
         )
 
         assertEquals(meeting, meeting.toEntity().toDomain())

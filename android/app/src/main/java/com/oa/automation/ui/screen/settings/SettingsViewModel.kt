@@ -18,7 +18,6 @@ import com.oa.automation.domain.model.STTConfig
 import com.oa.automation.domain.model.STTEngineType
 import com.oa.automation.domain.model.TencentAsrBudgetPolicy
 import com.oa.automation.domain.model.TencentAsrTier
-import com.oa.automation.domain.model.TencentAsrUsage
 import com.oa.automation.domain.model.serviceEndpointFor
 import com.oa.automation.debug.DevelopmentDemoDataSeeder
 import com.oa.automation.infrastructure.account.AccountSessionSynchronizer
@@ -58,8 +57,6 @@ data class SettingsUiState(
     val isScanningSTT: Boolean = false,
     val isSwitchingSTT: Boolean = false,
     val isLoadingTencentAsrPolicy: Boolean = false,
-    val tencentAsrUsage: TencentAsrUsage? = null,
-    val tencentAsrUsageError: String? = null,
     val tencentAsrPolicy: TencentAsrBudgetPolicy? = null,
     val tencentAsrPolicyError: String? = null,
     val discoveredServers: List<DiscoveredSTTServer> = emptyList(),
@@ -176,14 +173,12 @@ class SettingsViewModel(
     }
 
     private fun scheduleTencentAsrStatusRefresh(config: STTConfig) {
-        val configKey = config.tencentUsageConfigKey()
+        val configKey = config.tencentStatusConfigKey()
         if (configKey == null) {
             tencentPolicyRefreshJob?.cancel()
             lastTencentPolicyConfigKey = null
             _uiState.value = _uiState.value.copy(
                 isLoadingTencentAsrPolicy = false,
-                tencentAsrUsage = null,
-                tencentAsrUsageError = null,
                 tencentAsrPolicy = null,
                 tencentAsrPolicyError = null
             )
@@ -194,38 +189,32 @@ class SettingsViewModel(
         tencentPolicyRefreshJob?.cancel()
         tencentPolicyRefreshJob = viewModelScope.launch {
             delay(600)
-            loadTencentAsrStatus(config, forceUsageRefresh = false)
+            loadTencentAsrStatus(config)
         }
     }
 
     fun refreshTencentAsrStatus() {
         val config = _uiState.value.appConfig.sttConfig
-        val configKey = config.tencentUsageConfigKey() ?: return
+        val configKey = config.tencentStatusConfigKey() ?: return
         lastTencentPolicyConfigKey = configKey
         tencentPolicyRefreshJob?.cancel()
         tencentPolicyRefreshJob = viewModelScope.launch {
-            loadTencentAsrStatus(config, forceUsageRefresh = true)
+            loadTencentAsrStatus(config)
         }
     }
 
-    private suspend fun loadTencentAsrStatus(
-        config: STTConfig,
-        forceUsageRefresh: Boolean
-    ) {
+    private suspend fun loadTencentAsrStatus(config: STTConfig) {
         _uiState.value = _uiState.value.copy(
             isLoadingTencentAsrPolicy = true,
             tencentAsrPolicyError = null
         )
         val status = withContext(Dispatchers.IO) {
-            loadTencentAsrStatusWithSessionRetry(config, forceUsageRefresh)
+            loadTencentAsrStatusWithSessionRetry(config)
         }
-        if (_uiState.value.appConfig.sttConfig.tencentUsageConfigKey() != status.configKey) return
+        if (_uiState.value.appConfig.sttConfig.tencentStatusConfigKey() != status.configKey) return
         lastTencentPolicyConfigKey = status.configKey
         _uiState.value = _uiState.value.copy(
             isLoadingTencentAsrPolicy = false,
-            tencentAsrUsage = status.usage.getOrNull(),
-            tencentAsrUsageError = status.usage.exceptionOrNull()?.message
-                ?: if (status.usage.isFailure) "智悟增强云模型官方用量查询失败" else null,
             tencentAsrPolicy = status.policy.getOrNull(),
             tencentAsrPolicyError = status.policy.exceptionOrNull()?.message
                 ?: if (status.policy.isFailure) "智悟增强云模型状态查询失败" else null
@@ -233,13 +222,11 @@ class SettingsViewModel(
     }
 
     private suspend fun loadTencentAsrStatusWithSessionRetry(
-        initialConfig: STTConfig,
-        forceUsageRefresh: Boolean
+        initialConfig: STTConfig
     ): TencentAsrStatusResult {
         var config = initialConfig
-        var result = queryTencentAsrStatus(config, forceUsageRefresh)
-        val authorizationFailed = result.usage.hasSttAuthorizationFailure() ||
-            result.policy.hasSttAuthorizationFailure()
+        var result = queryTencentAsrStatus(config)
+        val authorizationFailed = result.policy.hasSttAuthorizationFailure()
         if (!authorizationFailed || !configDataStore.sttUsesAccountTokenFlow.first()) {
             return result
         }
@@ -254,20 +241,12 @@ class SettingsViewModel(
         }
 
         config = configDataStore.appConfigFlow.first().sttConfig
-        result = queryTencentAsrStatus(config, forceUsageRefresh)
+        result = queryTencentAsrStatus(config)
         return result
     }
 
-    private fun queryTencentAsrStatus(
-        config: STTConfig,
-        forceUsageRefresh: Boolean
-    ) = TencentAsrStatusResult(
-        configKey = config.tencentUsageConfigKey(),
-        usage = STTServiceClient.fetchTencentAsrUsage(
-            config.serviceEndpointFor(STTEngineType.TENCENT_HYBRID),
-            config.apiToken,
-            forceRefresh = forceUsageRefresh
-        ),
+    private fun queryTencentAsrStatus(config: STTConfig) = TencentAsrStatusResult(
+        configKey = config.tencentStatusConfigKey(),
         policy = STTServiceClient.fetchTencentAsrPolicy(
             config.serviceEndpointFor(STTEngineType.TENCENT_HYBRID),
             config.apiToken
@@ -338,6 +317,18 @@ class SettingsViewModel(
      */
     fun updateSTTLocalModel(model: String) {
         updateSTTConfig(_uiState.value.appConfig.sttConfig.copy(localModel = model))
+    }
+
+    fun updateSTTAudioEnhancement(enabled: Boolean) {
+        updateSTTConfig(
+            _uiState.value.appConfig.sttConfig.copy(audioEnhancementEnabled = enabled)
+        )
+    }
+
+    fun updateSTTSpeakerDiarization(enabled: Boolean) {
+        updateSTTConfig(
+            _uiState.value.appConfig.sttConfig.copy(speakerDiarizationEnabled = enabled)
+        )
     }
 
     fun updateSTTApiToken(apiToken: String?) {
@@ -829,7 +820,7 @@ class SettingsViewModel(
     }
 }
 
-private fun STTConfig.tencentUsageConfigKey(): String? {
+private fun STTConfig.tencentStatusConfigKey(): String? {
     if (engineType != STTEngineType.TENCENT_HYBRID) return null
     val endpoint = serviceEndpointFor(STTEngineType.TENCENT_HYBRID).trimEnd('/')
     val token = apiToken?.trim().orEmpty()
@@ -839,11 +830,9 @@ private fun STTConfig.tencentUsageConfigKey(): String? {
 
 private data class TencentAsrStatusResult(
     val configKey: String?,
-    val usage: Result<TencentAsrUsage>,
     val policy: Result<TencentAsrBudgetPolicy>
 ) {
     fun replaceAuthorizationFailures(failure: Throwable) = copy(
-        usage = if (usage.hasSttAuthorizationFailure()) Result.failure(failure) else usage,
         policy = if (policy.hasSttAuthorizationFailure()) Result.failure(failure) else policy
     )
 }

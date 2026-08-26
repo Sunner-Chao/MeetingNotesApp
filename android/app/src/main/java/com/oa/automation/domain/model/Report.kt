@@ -8,6 +8,7 @@ data class Report(
     val tasks: List<Task> = emptyList(),
     val decisions: List<String> = emptyList(),
     val actionItems: List<String> = emptyList(),
+    val participants: List<ForumParticipant> = emptyList(),
     val rawContent: String = "",
     val templateName: String = "",
     val generatedAt: Long = System.currentTimeMillis()

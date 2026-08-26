@@ -1,0 +1,9 @@
+{
+  "collection_count": 4,
+  "collections": [
+    {"id": "sample-study-collection-landscape", "post_count": 4},
+    {"id": "sample-study-collection-museum", "post_count": 3},
+    {"id": "sample-study-collection-village", "post_count": 3},
+    {"id": "sample-study-collection-multi-day", "post_count": 3}
+  ]
+}

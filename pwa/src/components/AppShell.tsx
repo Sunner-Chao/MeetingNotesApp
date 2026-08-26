@@ -20,7 +20,7 @@ export function AppShell({ tab, onTabChange, children }: AppShellProps) {
           <button className={tab === "history" ? "active" : ""} onClick={() => onTabChange("history")}><Clock3 /><span>会议</span></button>
           <button className={tab === "profile" ? "active" : ""} onClick={() => onTabChange("profile")}><UserRound /><span>我的</span></button>
         </nav>
-        <small>智能体 · 小Woo</small>
+        <small>会议整理</small>
       </aside>
       <div className="app-content">{children}</div>
       <nav className="bottom-nav" aria-label="主导航">

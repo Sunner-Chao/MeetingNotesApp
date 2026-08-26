@@ -5,13 +5,19 @@ from __future__ import annotations
 
 import base64
 import binascii
+import contextlib
+import hashlib
 import hmac
 import json
 import os
 import re
+import shutil
 import sqlite3
+import smtplib
 import uuid
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, closing, contextmanager
+from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
 from html import escape as html_escape
 from pathlib import Path
 from typing import Annotated, Iterator
@@ -31,12 +37,14 @@ from agent_gateway import (
     gateway_from_env,
 )
 from account_service import (
+    AccountDeliveryUnavailableError,
     AccountError,
     AccountPrincipal,
     AccountService,
 )
 from social_auth import load_social_auth_providers
 from community_api import build_community_router, build_public_community_router
+from community_service import CommunityService
 
 
 def _env(name: str, default: str) -> str:
@@ -52,6 +60,10 @@ def _env_bool(name: str, default: bool) -> bool:
 HOST = _env("WEB_BACKEND_HOST", "0.0.0.0")
 PORT = int(_env("WEB_BACKEND_PORT", "8090"))
 DB_PATH = Path(_env("WEB_BACKEND_DB_PATH", "./data/meeting_notes.db")).resolve()
+ACCOUNT_DB_PATH = Path(_env("ACCOUNT_DB_PATH", "./data/accounts.db")).resolve()
+COMMUNITY_DB_PATH = Path(
+    _env("COMMUNITY_DB_PATH", str(ACCOUNT_DB_PATH))
+).resolve()
 STT_SERVICE_BASE_URL = _env("STT_SERVICE_BASE_URL", "http://127.0.0.1:8888").rstrip("/")
 PUBLIC_STT_URL = os.getenv("PUBLIC_STT_URL", "").strip().rstrip("/")
 STT_LOG_PATH = Path(_env("STT_LOG_PATH", "../stt-service/logs/stt.log")).resolve()
@@ -64,6 +76,8 @@ WEB_API_USERNAME = _env("WEB_API_USERNAME", "admin")
 COMMUNITY_WRITE_ENABLED = _env_bool("COMMUNITY_WRITE_ENABLED", True)
 SERVER_ROOT = Path(__file__).resolve().parent.parent
 DASHBOARD_TEMPLATE_PATH = Path(__file__).with_name("dashboard.html")
+APK_DIRECTORY_TEMPLATE_PATH = Path(__file__).with_name("apk_directory.html")
+BEIJING_TIMEZONE = timezone(timedelta(hours=8), name="Asia/Shanghai")
 
 
 def _default_pwa_dist_dir() -> Path:
@@ -90,12 +104,22 @@ ACCOUNT_ADMIN_REQUEST_LIMIT = int(_env("ACCOUNT_ADMIN_REQUEST_LIMIT", "10000000"
 ACCOUNT_SESSION_TTL_SEC = int(_env("ACCOUNT_SESSION_TTL_SEC", "2592000"))
 ACCOUNT_FREE_REQUEST_LIMIT = int(_env("ACCOUNT_FREE_REQUEST_LIMIT", "10"))
 ACCOUNT_FREE_PLAN_CODE = _env("ACCOUNT_FREE_PLAN_CODE", "free")
-ACCOUNT_FREE_PLAN_NAME = _env("ACCOUNT_FREE_PLAN_NAME", "Free")
-ACCOUNT_FREE_STT_MINUTES = int(_env("ACCOUNT_FREE_STT_MINUTES", "120"))
-ACCOUNT_FREE_AI_CREDITS = int(_env("ACCOUNT_FREE_AI_CREDITS", "5"))
+ACCOUNT_FREE_PLAN_NAME = _env("ACCOUNT_FREE_PLAN_NAME", "免费账户")
+ACCOUNT_FREE_STT_MINUTES = int(_env("ACCOUNT_FREE_STT_MINUTES", "0"))
+ACCOUNT_FREE_AI_CREDITS = int(_env("ACCOUNT_FREE_AI_CREDITS", "0"))
+ACCOUNT_FREE_POINTS = int(_env("ACCOUNT_FREE_POINTS", "1000"))
+ACCOUNT_STT_POINTS_PER_MINUTE = int(_env("ACCOUNT_STT_POINTS_PER_MINUTE", "10"))
+ACCOUNT_AI_SUMMARY_POINTS = int(_env("ACCOUNT_AI_SUMMARY_POINTS", "30"))
+ACCOUNT_AI_CHAT_POINTS = int(_env("ACCOUNT_AI_CHAT_POINTS", "10"))
 ACCOUNT_AUTH_CODE_DEBUG = _env_bool("ACCOUNT_AUTH_CODE_DEBUG", False)
 ACCOUNT_AUTH_CODE_WEBHOOK_URL = os.getenv("ACCOUNT_AUTH_CODE_WEBHOOK_URL", "").strip()
 ACCOUNT_AUTH_CODE_WEBHOOK_TOKEN = os.getenv("ACCOUNT_AUTH_CODE_WEBHOOK_TOKEN", "").strip()
+ACCOUNT_SMTP_HOST = os.getenv("ACCOUNT_SMTP_HOST", "").strip()
+ACCOUNT_SMTP_PORT = int(_env("ACCOUNT_SMTP_PORT", "465"))
+ACCOUNT_SMTP_USERNAME = os.getenv("ACCOUNT_SMTP_USERNAME", "").strip()
+ACCOUNT_SMTP_PASSWORD = os.getenv("ACCOUNT_SMTP_PASSWORD", "")
+ACCOUNT_SMTP_FROM = os.getenv("ACCOUNT_SMTP_FROM", ACCOUNT_SMTP_USERNAME).strip()
+ACCOUNT_SMTP_USE_SSL = _env_bool("ACCOUNT_SMTP_USE_SSL", True)
 ACCOUNT_STT_TOKEN_TTL_SEC = int(_env("ACCOUNT_STT_TOKEN_TTL_SEC", "43200"))
 ACCOUNT_PROFILE_NAME_MAX_LENGTH = max(
     1, int(_env("ACCOUNT_PROFILE_NAME_MAX_LENGTH", "40"))
@@ -123,6 +147,46 @@ APP_UPDATE_ANDROID_APK_PATH = Path(
     _env("APP_UPDATE_ANDROID_APK_PATH", str(SERVER_ROOT / "downloads" / "ZhiWuBen-Android.apk"))
 ).resolve()
 
+ACCOUNT_MIGRATION_ID = "legacy-main-db-accounts-v1"
+ACCOUNT_MIGRATION_TABLES = (
+    "users",
+    "account_plans",
+    "user_entitlements",
+    "account_identities",
+    "user_sessions",
+    "auth_verification_codes",
+    "recharge_orders",
+    "account_usage_balances",
+    "account_usage_events",
+    "account_teams",
+    "account_team_members",
+    "account_meetings",
+    "account_meeting_tombstones",
+    "agent_tokens",
+    "agent_tasks",
+)
+COMMUNITY_MIGRATION_ID = "legacy-main-db-community-v1"
+COMMUNITY_MIGRATION_TABLES = (
+    "community_posts",
+    "community_moderation",
+    "community_post_media",
+    "community_reports",
+    "community_post_likes",
+    "community_post_bookmarks",
+    "community_comments",
+    "community_comment_reports",
+    "community_action_rate_windows",
+    "community_activity_metrics",
+    "community_post_index",
+    "community_post_stages",
+    "community_post_tags",
+    "community_post_pois",
+    "community_collections",
+    "community_collection_posts",
+    "community_collection_bookmarks",
+    "community_collection_audit",
+)
+
 
 def _release_value(filename: str, default: str) -> str:
     try:
@@ -134,12 +198,447 @@ def _release_value(filename: str, default: str) -> str:
 SERVER_VERSION = os.getenv("MEETINGNOTES_SERVER_VERSION", _release_value("VERSION", "dev")).strip()
 SERVER_RELEASE = os.getenv("MEETINGNOTES_RELEASE_ID", _release_value("RELEASE", SERVER_VERSION)).strip()
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-AGENT_GATEWAY = gateway_from_env(DB_PATH)
+AGENT_GATEWAY = gateway_from_env(ACCOUNT_DB_PATH)
+
+
+def _sqlite_table_columns(conn: sqlite3.Connection, table: str) -> list[str]:
+    return [str(row["name"]) for row in conn.execute(f"PRAGMA table_info([{table}])").fetchall()]
+
+
+def migrate_legacy_account_database(source_path: Path, target_path: Path) -> dict[str, object]:
+    """Copy legacy account/Agent rows out of the business database once."""
+    source = Path(source_path).resolve()
+    target = Path(target_path).resolve()
+    if source == target or not source.is_file():
+        return {"migrated": False, "reason": "source_missing_or_same"}
+
+    with closing(sqlite3.connect(source)) as source_conn:
+        source_conn.row_factory = sqlite3.Row
+        source_tables = {
+            str(row["name"])
+            for row in source_conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        if "users" not in source_tables:
+            return {"migrated": False, "reason": "no_legacy_accounts"}
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with closing(sqlite3.connect(target, timeout=30)) as target_conn:
+            target_conn.row_factory = sqlite3.Row
+            target_conn.execute("PRAGMA foreign_keys = ON")
+            target_conn.execute("PRAGMA busy_timeout = 30000")
+            target_conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS account_migration_log (
+                    migration_id TEXT PRIMARY KEY,
+                    source_path TEXT NOT NULL,
+                    source_mtime_ns INTEGER NOT NULL,
+                    copied_at INTEGER NOT NULL,
+                    copied_tables TEXT NOT NULL
+                )
+                """
+            )
+            already = target_conn.execute(
+                "SELECT 1 FROM account_migration_log WHERE migration_id = ?",
+                (ACCOUNT_MIGRATION_ID,),
+            ).fetchone()
+            if already is not None:
+                return {"migrated": False, "reason": "already_migrated"}
+            existing_users = int(
+                target_conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+            )
+            if existing_users:
+                raise RuntimeError(
+                    "ACCOUNT_DB_PATH already contains users but legacy account migration is incomplete"
+                )
+
+            target_tables = {
+                str(row["name"])
+                for row in target_conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall()
+            }
+            missing_target_tables = sorted(
+                table
+                for table in ACCOUNT_MIGRATION_TABLES
+                if table in source_tables and table not in target_tables
+            )
+            if missing_target_tables:
+                raise RuntimeError(
+                    "ACCOUNT_DB_PATH schema is incomplete for legacy migration: "
+                    + ", ".join(missing_target_tables)
+                )
+            occupied_tables: list[str] = []
+            for table in ACCOUNT_MIGRATION_TABLES:
+                if table not in target_tables:
+                    continue
+                if table == "agent_tokens":
+                    row_count = int(
+                        target_conn.execute(
+                            "SELECT COUNT(*) FROM agent_tokens WHERE id <> 'bootstrap'"
+                        ).fetchone()[0]
+                    )
+                else:
+                    row_count = int(
+                        target_conn.execute(f"SELECT COUNT(*) FROM [{table}]").fetchone()[0]
+                    )
+                if row_count:
+                    occupied_tables.append(table)
+            if occupied_tables:
+                raise RuntimeError(
+                    "ACCOUNT_DB_PATH contains partial account data before legacy migration: "
+                    + ", ".join(occupied_tables)
+                )
+
+            copied: list[str] = []
+            target_conn.execute("ATTACH DATABASE ? AS legacy_source", (str(source),))
+            target_conn.execute("BEGIN IMMEDIATE")
+            try:
+                for table in ACCOUNT_MIGRATION_TABLES:
+                    if table not in source_tables:
+                        continue
+                    source_columns = set(_sqlite_table_columns(source_conn, table))
+                    target_columns = _sqlite_table_columns(target_conn, table)
+                    columns = [column for column in target_columns if column in source_columns]
+                    if not columns:
+                        continue
+                    quoted = ", ".join(f"[{column}]" for column in columns)
+                    conflict_clause = " OR IGNORE" if table == "agent_tokens" else ""
+                    target_conn.execute(
+                        f"INSERT{conflict_clause} INTO [{table}] ({quoted}) "
+                        f"SELECT {quoted} FROM legacy_source.[{table}]"
+                    )
+                    source_count = int(
+                        target_conn.execute(
+                            f"SELECT COUNT(*) FROM legacy_source.[{table}]"
+                        ).fetchone()[0]
+                    )
+                    if table == "agent_tokens":
+                        missing_count = int(
+                            target_conn.execute(
+                                """
+                                SELECT COUNT(*)
+                                FROM legacy_source.agent_tokens AS source
+                                LEFT JOIN main.agent_tokens AS target ON target.id = source.id
+                                WHERE target.id IS NULL
+                                """
+                            ).fetchone()[0]
+                        )
+                        if missing_count:
+                            raise RuntimeError(
+                                f"Legacy account migration did not copy all rows from {table}"
+                            )
+                    else:
+                        target_count = int(
+                            target_conn.execute(f"SELECT COUNT(*) FROM [{table}]").fetchone()[0]
+                        )
+                        if target_count != source_count:
+                            raise RuntimeError(
+                                f"Legacy account migration row count mismatch for {table}: "
+                                f"source={source_count}, target={target_count}"
+                            )
+                    copied.append(table)
+                source_mtime_ns = source.stat().st_mtime_ns
+                target_conn.execute(
+                    """
+                    INSERT INTO account_migration_log (
+                        migration_id, source_path, source_mtime_ns, copied_at, copied_tables
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        ACCOUNT_MIGRATION_ID,
+                        str(source),
+                        source_mtime_ns,
+                        int(datetime.now(timezone.utc).timestamp()),
+                        json.dumps(copied, ensure_ascii=False),
+                    ),
+                )
+                target_conn.commit()
+            except Exception:
+                target_conn.rollback()
+                raise
+            finally:
+                target_conn.execute("DETACH DATABASE legacy_source")
+            return {"migrated": True, "copied_tables": copied}
+
+
+def _sha256_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _copy_community_media_tree(source_root: Path, target_root: Path) -> dict[str, int]:
+    source = Path(source_root).resolve()
+    target = Path(target_root).resolve()
+    if source == target or not source.is_dir():
+        return {"copied_files": 0, "existing_files": 0}
+    planned: list[tuple[Path, Path, str, str]] = []
+    existing = 0
+
+    # Preflight every path before writing any file.  This keeps a late conflict
+    # from leaving an otherwise successful-looking partial media migration.
+    for source_path in sorted(source.rglob("*")):
+        if source_path.is_symlink():
+            raise RuntimeError(f"Community media migration refuses symlink: {source_path}")
+        if not source_path.is_file():
+            continue
+        resolved_source = source_path.resolve()
+        try:
+            relative = resolved_source.relative_to(source)
+        except ValueError as exc:
+            raise RuntimeError("Community media source escapes its root") from exc
+        target_path = (target / relative).resolve()
+        try:
+            target_path.relative_to(target)
+        except ValueError as exc:
+            raise RuntimeError("Community media target escapes its root") from exc
+        source_digest = _sha256_path(resolved_source)
+        if target_path.exists():
+            if not target_path.is_file() or _sha256_path(target_path) != source_digest:
+                raise RuntimeError(
+                    f"Community media conflict at {relative.as_posix()}"
+                )
+            existing += 1
+            continue
+        planned.append((resolved_source, target_path, source_digest, relative.as_posix()))
+
+    target.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    copied_paths: list[Path] = []
+    try:
+        for resolved_source, target_path, source_digest, relative_name in planned:
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            # The temporary file lives beside the destination so the final
+            # rename remains atomic on the same filesystem.
+            temporary = target_path.with_name(
+                f".{target_path.name}.{uuid.uuid4().hex}.migration"
+            )
+            try:
+                shutil.copy2(resolved_source, temporary)
+                if _sha256_path(temporary) != source_digest:
+                    raise RuntimeError(
+                        f"Community media verification failed for {relative_name}"
+                    )
+                os.replace(temporary, target_path)
+            finally:
+                with contextlib.suppress(FileNotFoundError):
+                    temporary.unlink()
+            copied_paths.append(target_path)
+            copied += 1
+    except Exception:
+        # The database transaction will roll back separately.  Remove files
+        # created by this invocation so a retry sees the original state.
+        for copied_path in reversed(copied_paths):
+            with contextlib.suppress(FileNotFoundError):
+                copied_path.unlink()
+        raise
+    return {"copied_files": copied, "existing_files": existing}
+
+
+def _remove_community_media_files(paths: list[Path]) -> None:
+    for path in reversed(paths):
+        with contextlib.suppress(FileNotFoundError):
+            path.unlink()
+
+
+def _sqlite_primary_key_columns(conn: sqlite3.Connection, table: str) -> list[str]:
+    rows = conn.execute(f"PRAGMA table_info([{table}])").fetchall()
+    return [
+        str(row["name"])
+        for row in sorted(rows, key=lambda item: int(item["pk"]))
+        if int(row["pk"]) > 0
+    ]
+
+
+def migrate_legacy_community_database(
+    source_path: Path,
+    target_path: Path,
+    *,
+    source_media_root: Path | None = None,
+    target_media_root: Path | None = None,
+) -> dict[str, object]:
+    """Merge legacy community rows and media into the account database once."""
+    source = Path(source_path).resolve()
+    target = Path(target_path).resolve()
+    if source == target or not source.is_file():
+        return {"migrated": False, "reason": "source_missing_or_same"}
+
+    with closing(sqlite3.connect(source)) as source_conn:
+        source_conn.row_factory = sqlite3.Row
+        source_tables = {
+            str(row["name"])
+            for row in source_conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        tables = [table for table in COMMUNITY_MIGRATION_TABLES if table in source_tables]
+        if not tables:
+            return {"migrated": False, "reason": "no_legacy_community"}
+
+        with closing(sqlite3.connect(target, timeout=30)) as target_conn:
+            target_conn.row_factory = sqlite3.Row
+            target_conn.execute("PRAGMA foreign_keys = ON")
+            target_conn.execute("PRAGMA busy_timeout = 30000")
+            target_conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS community_migration_log (
+                    migration_id TEXT PRIMARY KEY,
+                    source_path TEXT NOT NULL,
+                    source_mtime_ns INTEGER NOT NULL,
+                    copied_at INTEGER NOT NULL,
+                    copied_tables TEXT NOT NULL,
+                    media_result TEXT NOT NULL
+                )
+                """
+            )
+            already = target_conn.execute(
+                "SELECT 1 FROM community_migration_log WHERE migration_id = ?",
+                (COMMUNITY_MIGRATION_ID,),
+            ).fetchone()
+            if already is not None:
+                return {
+                    "migrated": False,
+                    "reason": "already_migrated",
+                }
+
+            source_media = source_media_root or source.parent / "community-media"
+            target_media = target_media_root or target.parent / "community-media"
+            CommunityService(target, media_root=target_media).initialize()
+
+            target_tables = {
+                str(row["name"])
+                for row in target_conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall()
+            }
+            missing = [table for table in tables if table not in target_tables]
+            if missing:
+                raise RuntimeError(
+                    "Community target schema is incomplete: " + ", ".join(missing)
+                )
+
+            copied_counts: dict[str, int] = {}
+            target_media_path = Path(target_media).resolve()
+            media_before: set[Path] = set()
+            media_snapshot_taken = False
+            target_conn.execute("BEGIN IMMEDIATE")
+            try:
+                for table in tables:
+                    source_columns = set(_sqlite_table_columns(source_conn, table))
+                    target_columns = _sqlite_table_columns(target_conn, table)
+                    columns = [column for column in target_columns if column in source_columns]
+                    primary_key = _sqlite_primary_key_columns(source_conn, table)
+                    if not columns or not primary_key or any(
+                        column not in columns for column in primary_key
+                    ):
+                        raise RuntimeError(
+                            f"Community table {table} has no compatible primary key"
+                        )
+                    quoted_columns = ", ".join(f"[{column}]" for column in columns)
+                    placeholders = ", ".join("?" for _ in columns)
+                    source_rows = source_conn.execute(
+                        f"SELECT {quoted_columns} FROM [{table}]"
+                    ).fetchall()
+                    inserted = 0
+                    for source_row in source_rows:
+                        where = " AND ".join(f"[{column}] = ?" for column in primary_key)
+                        key_values = tuple(source_row[column] for column in primary_key)
+                        existing = target_conn.execute(
+                            f"SELECT {quoted_columns} FROM [{table}] WHERE {where}",
+                            key_values,
+                        ).fetchone()
+                        values = tuple(source_row[column] for column in columns)
+                        if existing is not None:
+                            if any(existing[column] != source_row[column] for column in columns):
+                                raise RuntimeError(
+                                    f"Community row conflict in {table}: {key_values!r}"
+                                )
+                            continue
+                        target_conn.execute(
+                            f"INSERT INTO [{table}] ({quoted_columns}) VALUES ({placeholders})",
+                            values,
+                        )
+                        inserted += 1
+                    copied_counts[table] = inserted
+
+                media_before = (
+                    {
+                        path.resolve()
+                        for path in target_media_path.rglob("*")
+                        if path.is_file()
+                    }
+                    if target_media_path.is_dir()
+                    else set()
+                )
+                media_snapshot_taken = True
+                media_result = _copy_community_media_tree(source_media, target_media_path)
+                target_conn.execute(
+                    """
+                    INSERT INTO community_migration_log(
+                        migration_id, source_path, source_mtime_ns, copied_at,
+                        copied_tables, media_result
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        COMMUNITY_MIGRATION_ID,
+                        str(source),
+                        source.stat().st_mtime_ns,
+                        int(datetime.now(timezone.utc).timestamp()),
+                        json.dumps(copied_counts, ensure_ascii=False, sort_keys=True),
+                        json.dumps(media_result, ensure_ascii=False, sort_keys=True),
+                    ),
+                )
+                target_conn.commit()
+            except Exception:
+                target_conn.rollback()
+                if media_snapshot_taken and target_media_path.is_dir():
+                    created_media = [
+                        path.resolve()
+                        for path in target_media_path.rglob("*")
+                        if path.is_file() and path.resolve() not in media_before
+                    ]
+                    _remove_community_media_files(created_media)
+                raise
+            return {
+                "migrated": True,
+                "copied_tables": copied_counts,
+                "media": media_result,
+            }
 
 
 def send_account_auth_code(channel: str, identifier: str, code: str) -> None:
+    if channel == "phone":
+        raise AccountDeliveryUnavailableError("手机号验证码服务暂未开放")
+    if channel != "email":
+        raise RuntimeError("不支持的验证码渠道")
+    if ACCOUNT_SMTP_HOST and ACCOUNT_SMTP_FROM:
+        message = EmailMessage()
+        message["Subject"] = "智悟本验证码"
+        message["From"] = ACCOUNT_SMTP_FROM
+        message["To"] = identifier
+        message.set_content(f"你的智悟本验证码是：{code}\n验证码 5 分钟内有效，请勿转发给他人。")
+        if ACCOUNT_SMTP_USE_SSL:
+            with smtplib.SMTP_SSL(ACCOUNT_SMTP_HOST, ACCOUNT_SMTP_PORT, timeout=30) as smtp:
+                if ACCOUNT_SMTP_USERNAME:
+                    smtp.login(ACCOUNT_SMTP_USERNAME, ACCOUNT_SMTP_PASSWORD)
+                smtp.send_message(message)
+        else:
+            with smtplib.SMTP(ACCOUNT_SMTP_HOST, ACCOUNT_SMTP_PORT, timeout=30) as smtp:
+                smtp.starttls()
+                if ACCOUNT_SMTP_USERNAME:
+                    smtp.login(ACCOUNT_SMTP_USERNAME, ACCOUNT_SMTP_PASSWORD)
+                smtp.send_message(message)
+        return
     if not ACCOUNT_AUTH_CODE_WEBHOOK_URL:
-        raise RuntimeError("ACCOUNT_AUTH_CODE_WEBHOOK_URL is not configured")
+        raise RuntimeError("邮箱发送服务尚未配置")
+    send_account_auth_code_webhook(channel, identifier, code)
+
+
+def send_account_auth_code_webhook(channel: str, identifier: str, code: str) -> None:
     headers = {"Content-Type": "application/json"}
     if ACCOUNT_AUTH_CODE_WEBHOOK_TOKEN:
         headers["Authorization"] = f"Bearer {ACCOUNT_AUTH_CODE_WEBHOOK_TOKEN}"
@@ -153,7 +652,7 @@ def send_account_auth_code(channel: str, identifier: str, code: str) -> None:
 
 
 ACCOUNT_SERVICE = AccountService(
-    DB_PATH,
+    ACCOUNT_DB_PATH,
     token_secret=ACCOUNT_TOKEN_SECRET,
     plans_path=ACCOUNT_PLANS_PATH,
     session_ttl_sec=ACCOUNT_SESSION_TTL_SEC,
@@ -166,10 +665,18 @@ ACCOUNT_SERVICE = AccountService(
     stt_token_ttl_sec=ACCOUNT_STT_TOKEN_TTL_SEC,
     profile_name_max_length=ACCOUNT_PROFILE_NAME_MAX_LENGTH,
     profile_avatar_max_bytes=ACCOUNT_PROFILE_AVATAR_MAX_BYTES,
-    auth_code_sender=send_account_auth_code if ACCOUNT_AUTH_CODE_WEBHOOK_URL else None,
+    auth_code_sender=(
+        send_account_auth_code
+        if (ACCOUNT_AUTH_CODE_WEBHOOK_URL or (ACCOUNT_SMTP_HOST and ACCOUNT_SMTP_FROM))
+        else None
+    ),
     expose_auth_code=ACCOUNT_AUTH_CODE_DEBUG,
     free_stt_minutes=ACCOUNT_FREE_STT_MINUTES,
     free_ai_credits=ACCOUNT_FREE_AI_CREDITS,
+    free_points=ACCOUNT_FREE_POINTS,
+    stt_points_per_minute=ACCOUNT_STT_POINTS_PER_MINUTE,
+    ai_summary_points=ACCOUNT_AI_SUMMARY_POINTS,
+    ai_chat_points=ACCOUNT_AI_CHAT_POINTS,
 ) if ACCOUNT_TOKEN_SECRET else None
 
 
@@ -277,14 +784,23 @@ class AgentTokenStatePayload(BaseModel):
 
 
 class AccountCredentialsPayload(BaseModel):
-    username: str = Field(min_length=3, max_length=32)
+    username: str = Field(min_length=1)
     password: str = Field(min_length=8, max_length=128)
+
+
+class AccountRegistrationVerifyPayload(BaseModel):
+    channel: str = Field(pattern="^email$")
+    identifier: str = Field(min_length=3, max_length=254)
+    code: str = Field(pattern=r"^\d{6}$")
+    username: str = Field(min_length=1)
+    password: str = Field(min_length=8, max_length=128)
+    referral_code: str | None = Field(default=None, max_length=64)
 
 
 class AccountAuthCodeRequestPayload(BaseModel):
     channel: str = Field(pattern="^(email|phone)$")
     identifier: str = Field(min_length=3, max_length=254)
-    purpose: str = Field(default="login", pattern="^(login|bind|reset_password)$")
+    purpose: str = Field(default="login", pattern="^(login|register|bind|reset_password)$")
 
 
 class AccountAuthCodeVerifyPayload(AccountAuthCodeRequestPayload):
@@ -326,6 +842,46 @@ class AccountMeetingPayload(BaseModel):
     report: str = ""
 
 
+class GrowthRedeemPayload(BaseModel):
+    code: str = Field(min_length=4, max_length=64)
+
+
+class GrowthChannelEventPayload(BaseModel):
+    event_type: str = Field(min_length=2, max_length=32)
+    channel_id: str = Field(min_length=1, max_length=128)
+    source: str = Field(default="pwa", max_length=64)
+    campaign_id: str | None = Field(default=None, max_length=128)
+    metadata: dict = Field(default_factory=dict)
+
+
+class GrowthBatchPayload(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    quantity: int = Field(default=100, ge=1, le=5000)
+    reward_type: str = Field(default="points", pattern="^(points|coupon|entitlement)$")
+    reward_quantity: int = Field(default=100, ge=1, le=1000000)
+    expires_at: int | None = Field(default=None, ge=0)
+    max_uses: int = Field(default=1, ge=1, le=100000)
+    prefix: str = Field(default="ZW", max_length=12)
+
+
+class GrowthChannelConfigPayload(BaseModel):
+    id: str = Field(default="default-welfare-group", max_length=128)
+    name: str = Field(default="智悟本福利群", max_length=80)
+    qr_image_url: str = Field(default="", max_length=500)
+    join_url: str = Field(default="", max_length=500)
+    short_url: str = Field(default="", max_length=500)
+    slogan: str = Field(default="扫码加入福利群，每日专属兑换码、活动优先通知、客服一对一", max_length=300)
+    reward_type: str = Field(default="points", max_length=30)
+    reward: dict = Field(default_factory=lambda: {"quantity": 50})
+    valid_until: int | None = Field(default=None, ge=0)
+    enabled: bool = True
+
+
+class GrowthAnswerPayload(BaseModel):
+    question_key: str = Field(min_length=1, max_length=80)
+    answer: str = Field(min_length=1, max_length=200)
+
+
 def normalized_account_meeting_id(value: str) -> str:
     if not re.fullmatch(r"[A-Za-z0-9._-]{1,128}", value):
         raise HTTPException(status_code=400, detail="会议 ID 格式无效")
@@ -335,9 +891,31 @@ def normalized_account_meeting_id(value: str) -> str:
 @asynccontextmanager
 async def app_lifespan(_app: FastAPI):
     init_db()
+    account_db_path = ACCOUNT_SERVICE.db_path if ACCOUNT_SERVICE is not None else AGENT_GATEWAY.db_path
     AGENT_GATEWAY.initialize()
     if ACCOUNT_SERVICE is not None:
+        # Build the isolated schema first, migrate legacy accounts, then seed defaults.
+        ACCOUNT_SERVICE.initialize(bootstrap_admin=False, seed_plans=False)
+    if ACCOUNT_SERVICE is not None and Path(DB_PATH).resolve() != Path(account_db_path).resolve():
+        migrate_legacy_account_database(DB_PATH, account_db_path)
         ACCOUNT_SERVICE.initialize()
+        # Reconcile tasks copied from a previous database after the gateway schema exists.
+        AGENT_GATEWAY.initialize()
+    elif ACCOUNT_SERVICE is not None:
+        ACCOUNT_SERVICE.initialize()
+    community_db_path = (
+        Path(ACCOUNT_SERVICE.db_path).resolve()
+        if ACCOUNT_SERVICE is not None
+        else COMMUNITY_DB_PATH
+    )
+    CommunityService(community_db_path).initialize()
+    if Path(DB_PATH).resolve() != community_db_path:
+        migrate_legacy_community_database(
+            DB_PATH,
+            community_db_path,
+            source_media_root=Path(DB_PATH).resolve().parent / "community-media",
+            target_media_root=community_db_path.parent / "community-media",
+        )
     yield
 
 
@@ -366,6 +944,7 @@ async def authenticate_web_api(request: Request, call_next):
     is_agent_path = request.url.path == "/api/agent" or request.url.path.startswith("/api/agent/")
     is_public_account_path = request.url.path in {
         "/api/auth/register",
+        "/api/auth/register/verify",
         "/api/auth/login",
         "/api/auth/password/login",
         "/api/auth/password/reset",
@@ -382,6 +961,8 @@ async def authenticate_web_api(request: Request, call_next):
     is_public_community_path = request.url.path == "/api/community" or request.url.path.startswith(
         "/api/community/"
     )
+    is_public_growth_path = request.url.path in {"/api/growth/campaigns", "/api/growth/private-channel"} or request.url.path.startswith("/api/growth/private-channel/")
+    is_growth_campaign_path = request.url.path.startswith("/api/growth/campaigns/")
     is_pwa_path = request.url.path == "/app" or request.url.path.startswith("/app/")
     if (
         request.url.path == "/health"
@@ -393,6 +974,8 @@ async def authenticate_web_api(request: Request, call_next):
         or is_user_stt_path
         or is_public_update_path
         or is_public_community_path
+        or is_public_growth_path
+        or is_growth_campaign_path
         or is_web_request_authorized(request.headers.get("authorization"))
     ):
         return await call_next(request)
@@ -440,12 +1023,45 @@ def require_account_principal(
         ) from exc
 
 
+def require_growth_admin_principal(
+    authorization: Annotated[str | None, Header()] = None,
+) -> AccountPrincipal:
+    service = configured_account_service()
+    if authorization:
+        try:
+            principal = service.authenticate(authorization)
+            if principal.is_admin:
+                return principal
+        except AccountError:
+            pass
+    if is_web_request_authorized(authorization):
+        try:
+            return service.dashboard_admin_principal()
+        except AccountError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    raise HTTPException(status_code=403, detail="需要管理员权限")
+
+
 def account_http_error(exc: AccountError) -> HTTPException:
     return HTTPException(status_code=exc.status_code, detail=str(exc))
 
 
-app.include_router(build_community_router(lambda: DB_PATH, require_account_principal))
-app.include_router(build_public_community_router(lambda: DB_PATH))
+def configured_community_db_path() -> Path:
+    """Keep community identities in the same SQLite database as accounts.
+
+    SQLite foreign keys cannot reference a table in another database.  The
+    account split therefore must also move the community tables onto the
+    account database (or an explicitly configured community database that is
+    provisioned with the same users table).  Looking up the service at request
+    time keeps the test/deployment override behaviour intact.
+    """
+    if ACCOUNT_SERVICE is not None:
+        return Path(ACCOUNT_SERVICE.db_path).resolve()
+    return COMMUNITY_DB_PATH
+
+
+app.include_router(build_community_router(configured_community_db_path, require_account_principal))
+app.include_router(build_public_community_router(configured_community_db_path))
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -527,6 +1143,112 @@ def configured_android_app_update() -> dict | None:
     return configured[0] if configured is not None else None
 
 
+def retained_android_app_update_artifacts() -> tuple[dict | None, list[dict]]:
+    """Return the current and immediately previous downloadable APKs."""
+    configured = configured_android_app_update_with_artifact()
+    if configured is None:
+        return None, []
+
+    update, current_apk = configured
+    current_version_code = int(update["version_code"])
+    candidates = [
+        (current_version_code, current_apk, True),
+    ]
+    previous = sorted(
+        (
+            (int(match.group(1)), artifact)
+            for artifact in APP_UPDATE_ANDROID_APK_PATH.parent.glob("ZhiWuBen-Android-*.apk")
+            if artifact.is_file()
+            and (match := re.fullmatch(r"ZhiWuBen-Android-([0-9]+)\.apk", artifact.name))
+            and int(match.group(1)) < current_version_code
+        ),
+        key=lambda item: item[0],
+        reverse=True,
+    )
+    if previous:
+        candidates.append((previous[0][0], previous[0][1], False))
+
+    artifacts = []
+    seen_paths: set[Path] = set()
+    for version_code, apk_path, is_current in candidates:
+        resolved_path = apk_path.resolve()
+        if resolved_path in seen_paths:
+            continue
+        try:
+            stat = resolved_path.stat()
+        except OSError:
+            continue
+        seen_paths.add(resolved_path)
+        artifacts.append(
+            {
+                "version_code": version_code,
+                "filename": resolved_path.name,
+                "path": resolved_path,
+                "size_bytes": stat.st_size,
+                "modified_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc),
+                "is_current": is_current,
+            }
+        )
+    return update, artifacts
+
+
+def _format_file_size(size_bytes: int) -> str:
+    size = float(max(0, size_bytes))
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            precision = 0 if unit == "B" else 1
+            return f"{size:.{precision}f} {unit}"
+        size /= 1024
+    return f"{size_bytes} B"
+
+
+def _android_apk_directory_row(request: Request, update: dict, artifact: dict) -> str:
+    version_code = int(artifact["version_code"])
+    is_current = bool(artifact["is_current"])
+    download_url = str(
+        request.url_for("android_app_update_download", version_code=str(version_code))
+    )
+    version_label = update["version_name"] if is_current else f"versionCode {version_code}"
+    status_label = "当前版本" if is_current else "上一版本"
+    status_class = "current" if is_current else "retained"
+    release_notes = update.get("release_notes", "") if is_current else "可用于覆盖安装或回退验证"
+    sha256 = update.get("sha256") if is_current else None
+    sha_markup = (
+        f'<div class="checksum"><span>SHA-256</span><code>{html_escape(str(sha256))}</code></div>'
+        if sha256
+        else ""
+    )
+    return f"""
+        <article class="release-row" data-testid="release-row-{version_code}">
+          <div class="file-icon" aria-hidden="true">APK</div>
+          <div class="release-main">
+            <div class="release-title-line">
+              <h2>{html_escape(str(artifact["filename"]))}</h2>
+              <span class="version-badge {status_class}">{status_label}</span>
+            </div>
+            <p class="release-version">{html_escape(str(version_label))}</p>
+            <p class="release-notes">{html_escape(str(release_notes))}</p>
+            <div class="release-meta">
+              <span>{_format_file_size(int(artifact["size_bytes"]))}</span>
+              <span>versionCode {version_code}</span>
+              <span>{artifact["modified_at"].astimezone(BEIJING_TIMEZONE).strftime("%Y-%m-%d %H:%M 北京时间")}</span>
+            </div>
+            {sha_markup}
+          </div>
+          <div class="release-actions">
+            <button class="button secondary copy-link" type="button" data-copy-url="{html_escape(download_url, quote=True)}" aria-label="复制 {html_escape(str(version_label), quote=True)} 下载链接">
+              <span aria-hidden="true">⧉</span>
+              <span class="button-label">复制链接</span>
+            </button>
+            <a class="button primary" href="{html_escape(download_url, quote=True)}" download>
+              <span aria-hidden="true">↓</span>
+              下载 APK
+            </a>
+          </div>
+        </article>
+    """
+
+
 @app.get("/api/app-update/android", name="android_app_update_metadata")
 def android_app_update_metadata(request: Request) -> Response:
     configured = configured_android_app_update_with_artifact()
@@ -563,29 +1285,49 @@ def android_app_update_download_legacy() -> FileResponse:
     return android_app_update_file_response(configured[1])
 
 
+@app.get(
+    "/api/app-update/android/apk/",
+    name="android_app_update_directory",
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
+def android_app_update_directory(request: Request) -> HTMLResponse:
+    update, artifacts = retained_android_app_update_artifacts()
+    current_version = str(update["version_name"]) if update else "暂无发布"
+    current_version_code = str(update["version_code"]) if update else "-"
+    release_rows = "".join(
+        _android_apk_directory_row(request, update or {}, artifact) for artifact in artifacts
+    )
+    empty_state_class = "hidden" if artifacts else ""
+    template = APK_DIRECTORY_TEMPLATE_PATH.read_text(encoding="utf-8")
+    replacements = {
+        "__CURRENT_VERSION__": current_version,
+        "__CURRENT_VERSION_CODE__": current_version_code,
+        "__RELEASE_COUNT__": str(len(artifacts)),
+        "__RELEASE_ROWS__": release_rows,
+        "__EMPTY_STATE_CLASS__": empty_state_class,
+        "__GENERATED_AT__": datetime.now(BEIJING_TIMEZONE).strftime("%Y-%m-%d %H:%M 北京时间"),
+    }
+    for placeholder, value in replacements.items():
+        if placeholder == "__RELEASE_ROWS__":
+            template = template.replace(placeholder, value)
+        else:
+            template = template.replace(placeholder, html_escape(value, quote=True))
+    return HTMLResponse(template, headers={"Cache-Control": "no-store"})
+
+
 @app.get("/api/app-update/android/apk/{version_code}", name="android_app_update_download")
 def android_app_update_download(version_code: int) -> FileResponse:
-    configured = configured_android_app_update_with_artifact()
-    if configured is None or version_code <= 0:
+    update, artifacts = retained_android_app_update_artifacts()
+    if update is None or version_code <= 0:
         raise HTTPException(status_code=404, detail="Android update package is not published")
-    update, current_apk = configured
-    if version_code == update["version_code"]:
-        return android_app_update_file_response(current_apk)
-
-    retained_versions = sorted(
-        (
-            int(match.group(1))
-            for artifact in APP_UPDATE_ANDROID_APK_PATH.parent.glob("ZhiWuBen-Android-*.apk")
-            if (match := re.fullmatch(r"ZhiWuBen-Android-([0-9]+)\.apk", artifact.name))
-            and int(match.group(1)) < update["version_code"]
-        ),
-        reverse=True,
+    artifact = next(
+        (item for item in artifacts if int(item["version_code"]) == version_code),
+        None,
     )
-    previous_version = retained_versions[0] if retained_versions else None
-    retained_apk = APP_UPDATE_ANDROID_APK_PATH.parent / f"ZhiWuBen-Android-{version_code}.apk"
-    if version_code != previous_version or not retained_apk.is_file():
+    if artifact is None:
         raise HTTPException(status_code=404, detail="Android update package is unavailable")
-    return android_app_update_file_response(retained_apk)
+    return android_app_update_file_response(Path(artifact["path"]))
 
 
 def pwa_file_response(asset_path: str = "") -> FileResponse:
@@ -620,8 +1362,23 @@ def pwa_asset(asset_path: str) -> FileResponse:
 
 @app.post("/api/auth/register")
 def register_account(payload: AccountCredentialsPayload) -> dict:
+    raise HTTPException(
+        status_code=400,
+        detail="注册账号必须先完成邮箱验证，请使用邮箱注册",
+    )
+
+
+@app.post("/api/auth/register/verify")
+def register_account_with_email(payload: AccountRegistrationVerifyPayload) -> dict:
     try:
-        return configured_account_service().register(payload.username, payload.password)
+        return configured_account_service().register_with_identity(
+            payload.username,
+            payload.password,
+            payload.channel,
+            payload.identifier,
+            payload.code,
+            payload.referral_code,
+        )
     except AccountError as exc:
         raise account_http_error(exc) from exc
 
@@ -643,6 +1400,185 @@ def request_account_auth_code(payload: AccountAuthCodeRequestPayload) -> dict:
             payload.identifier,
             payload.purpose,
         )
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+
+
+@app.get("/api/growth/campaigns")
+def growth_campaigns() -> list[dict]:
+    return configured_account_service().list_growth_campaigns()
+
+
+@app.get("/api/growth/campaigns/{campaign_id}")
+def growth_campaign_detail(campaign_id: str, principal: Annotated[AccountPrincipal, Depends(require_account_principal)]) -> dict:
+    try:
+        return configured_account_service().campaign_detail(principal, campaign_id)
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+
+
+@app.post("/api/growth/campaigns/{campaign_id}/join")
+def growth_campaign_join(campaign_id: str, principal: Annotated[AccountPrincipal, Depends(require_account_principal)]) -> dict:
+    try:
+        return configured_account_service().join_campaign(principal, campaign_id)
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+
+
+@app.post("/api/growth/campaigns/{campaign_id}/checkin")
+def growth_campaign_checkin(campaign_id: str, principal: Annotated[AccountPrincipal, Depends(require_account_principal)]) -> dict:
+    try:
+        return configured_account_service().campaign_checkin(principal, campaign_id)
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+
+
+@app.post("/api/growth/campaigns/{campaign_id}/answer")
+def growth_campaign_answer(campaign_id: str, payload: GrowthAnswerPayload, principal: Annotated[AccountPrincipal, Depends(require_account_principal)]) -> dict:
+    try:
+        return configured_account_service().campaign_answer(principal, campaign_id, payload.question_key, payload.answer)
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+
+
+@app.post("/api/growth/campaigns/{campaign_id}/draw")
+def growth_campaign_draw(campaign_id: str, principal: Annotated[AccountPrincipal, Depends(require_account_principal)]) -> dict:
+    try:
+        return configured_account_service().campaign_draw(principal, campaign_id)
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+
+
+@app.get("/api/growth/campaigns/{campaign_id}/leaderboard")
+def growth_campaign_leaderboard(campaign_id: str, limit: int = 20) -> list[dict]:
+    try:
+        return configured_account_service().campaign_leaderboard(campaign_id, limit)
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+
+
+@app.get("/api/growth/private-channel")
+def growth_private_channel() -> dict:
+    channel = configured_account_service().private_channel()
+    if channel is None:
+        raise HTTPException(status_code=404, detail="暂无开放的福利群")
+    return channel
+
+
+@app.get("/api/growth/private-channel/default-qr", include_in_schema=False)
+def growth_private_channel_default_qr() -> FileResponse:
+    candidates = (
+        SERVER_ROOT.parent / "pwa" / "public" / "assets" / "welfare-group-qr.jpg",
+        SERVER_ROOT / "pwa-dist" / "assets" / "welfare-group-qr.jpg",
+    )
+    image_path = next((candidate for candidate in candidates if candidate.is_file()), None)
+    if image_path is None:
+        raise HTTPException(status_code=404, detail="福利群二维码素材不存在")
+    return FileResponse(image_path, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=300"})
+
+
+@app.get("/api/account/growth/overview")
+def account_growth_overview(
+    principal: Annotated[AccountPrincipal, Depends(require_account_principal)],
+) -> dict:
+    try:
+        return configured_account_service().growth_overview(principal)
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+
+
+@app.post("/api/account/redeem")
+def account_redeem_code(
+    payload: GrowthRedeemPayload,
+    principal: Annotated[AccountPrincipal, Depends(require_account_principal)],
+) -> dict:
+    try:
+        return configured_account_service().redeem_code(principal, payload.code)
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+
+
+@app.get("/api/account/redeem/history")
+def account_redeem_history(
+    principal: Annotated[AccountPrincipal, Depends(require_account_principal)],
+) -> list[dict]:
+    return configured_account_service().redemption_history(principal)
+
+
+@app.post("/api/growth/private-channel/events")
+def growth_private_channel_event(
+    payload: GrowthChannelEventPayload,
+    principal: Annotated[AccountPrincipal | None, Depends(require_account_principal)] = None,
+) -> dict:
+    try:
+        return configured_account_service().record_channel_event(
+            payload.event_type,
+            channel_id=payload.channel_id,
+            user_id=principal.user_id if principal else None,
+            source=payload.source,
+            campaign_id=payload.campaign_id,
+            metadata=payload.metadata,
+        )
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+
+
+@app.get("/api/admin/growth/overview")
+def admin_growth_overview(
+    principal: Annotated[AccountPrincipal, Depends(require_growth_admin_principal)],
+) -> dict:
+    try:
+        return configured_account_service().admin_growth_overview(principal)
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+
+
+@app.post("/api/admin/growth/redemptions/batches")
+def admin_create_growth_batch(
+    payload: GrowthBatchPayload,
+    principal: Annotated[AccountPrincipal, Depends(require_growth_admin_principal)],
+) -> dict:
+    try:
+        return configured_account_service().admin_create_redemption_batch(
+            principal, **payload.model_dump()
+        )
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+
+
+@app.get("/api/admin/growth/redemptions")
+def admin_growth_batches(
+    principal: Annotated[AccountPrincipal, Depends(require_growth_admin_principal)],
+) -> list[dict]:
+    try:
+        return configured_account_service().admin_list_redemption_batches(principal)
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+
+
+@app.post("/api/admin/growth/campaigns/{campaign_id}/settle")
+def admin_settle_growth_campaign(campaign_id: str, principal: Annotated[AccountPrincipal, Depends(require_growth_admin_principal)]) -> dict:
+    try:
+        return configured_account_service().admin_settle_campaign(principal, campaign_id)
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+
+
+@app.get("/api/admin/growth/private-channel")
+def admin_growth_private_channel(
+    principal: Annotated[AccountPrincipal, Depends(require_growth_admin_principal)],
+) -> dict | None:
+    configured_account_service()._require_admin(principal)
+    return configured_account_service().private_channel()
+
+
+@app.patch("/api/admin/growth/private-channel")
+def admin_update_growth_private_channel(
+    payload: GrowthChannelConfigPayload,
+    principal: Annotated[AccountPrincipal, Depends(require_growth_admin_principal)],
+) -> dict:
+    try:
+        return configured_account_service().admin_upsert_private_channel(principal, payload.model_dump())
     except AccountError as exc:
         raise account_http_error(exc) from exc
 
@@ -832,9 +1768,44 @@ def transcribe_audio_for_account(
     x_meeting_id: Annotated[str | None, Header(alias="X-Meeting-Id")] = None,
     x_usage_key: Annotated[str | None, Header(alias="X-Usage-Key")] = None,
 ) -> Response:
+    usage_key = (x_usage_key or "").strip()
+    if not usage_key:
+        usage_key = (
+            f"stt:{x_meeting_id}:full"
+            if x_meeting_id
+            else f"stt:upload:{uuid.uuid4()}"
+        )
+    canonical_usage_key = AccountService.canonical_stt_usage_key(
+        principal.user_id,
+        usage_key,
+        meeting_id=x_meeting_id,
+    )
+    legacy_keys = []
+    if x_usage_key and x_usage_key.strip():
+        legacy_keys.append(x_usage_key.strip())
+    elif x_meeting_id:
+        legacy_keys.append(f"stt:{principal.user_id}:{x_meeting_id}:full")
     try:
-        configured_account_service().ensure_stt_available(principal)
-        credentials = configured_account_service().session_credentials(principal)
+        account_service = configured_account_service()
+        legacy_usage = None
+        for legacy_key in legacy_keys:
+            if legacy_key == canonical_usage_key:
+                continue
+            legacy_usage = account_service.usage_event_for_user(
+                principal.user_id,
+                legacy_key,
+            )
+            if legacy_usage is not None:
+                break
+        account_service.ensure_stt_available(
+            principal,
+            idempotency_key=(
+                str(legacy_usage["idempotency_key"])
+                if legacy_usage is not None
+                else canonical_usage_key
+            ),
+        )
+        credentials = account_service.session_credentials(principal)
     except AccountError as exc:
         raise account_http_error(exc) from exc
     stt_token = str(credentials.get("stt_access_token") or "").strip()
@@ -843,6 +1814,7 @@ def transcribe_audio_for_account(
     headers = {"Authorization": f"Bearer {stt_token}"}
     if x_meeting_id:
         headers["X-Meeting-Id"] = x_meeting_id
+    headers["X-Usage-Key"] = usage_key
     try:
         upstream = requests.post(
             f"{STT_SERVICE_BASE_URL}/transcribe",
@@ -868,25 +1840,35 @@ def transcribe_audio_for_account(
             status_code=upstream.status_code,
             detail=str(detail or f"STT service returned HTTP {upstream.status_code}"),
         )
-    if isinstance(payload, dict):
-        duration_ms = int(payload.get("duration_ms") or 0)
-        if duration_ms > 0:
-            usage_key = (x_usage_key or "").strip()
-            if not usage_key:
-                usage_key = (
-                    f"stt:{principal.user_id}:{x_meeting_id}:full"
-                    if x_meeting_id
-                    else f"stt:{principal.user_id}:{uuid.uuid4()}"
-                )
-            try:
-                payload["usage"] = configured_account_service().record_stt_usage(
-                    principal,
-                    duration_ms=duration_ms,
-                    meeting_id=x_meeting_id,
-                    idempotency_key=usage_key,
-                )
-            except AccountError as exc:
-                raise account_http_error(exc) from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=502, detail="STT service returned an invalid payload")
+    if not payload.get("usage"):
+        duration_ms = 0
+        with contextlib.suppress(TypeError, ValueError):
+            duration_ms = max(0, int(payload.get("duration_ms") or 0))
+        if duration_ms <= 0:
+            raise HTTPException(status_code=502, detail="STT service did not settle account usage")
+        try:
+            payload = dict(payload)
+            account_service = configured_account_service()
+            if legacy_usage is None:
+                for legacy_key in legacy_keys:
+                    if legacy_key == canonical_usage_key:
+                        continue
+                    legacy_usage = account_service.usage_event_for_user(
+                        principal.user_id,
+                        legacy_key,
+                    )
+                    if legacy_usage is not None:
+                        break
+            payload["usage"] = legacy_usage or account_service.record_stt_usage(
+                principal,
+                duration_ms=duration_ms,
+                meeting_id=x_meeting_id,
+                idempotency_key=canonical_usage_key,
+            )
+        except AccountError as exc:
+            raise account_http_error(exc) from exc
     return JSONResponse(content=payload, status_code=upstream.status_code)
 
 

@@ -9,6 +9,7 @@ import com.oa.automation.infrastructure.account.AccountSessionSynchronizer
 import com.oa.automation.infrastructure.stt.StreamingTranscriptUpdate
 import com.oa.automation.infrastructure.stt.StreamingTranscriptAccumulator
 import com.oa.automation.infrastructure.stt.CloudSTTEngine
+import com.oa.automation.infrastructure.stt.buildSttContextHint
 import com.oa.automation.infrastructure.stt.CLOUD_STREAM_READY_STATUS
 import com.oa.automation.infrastructure.stt.LOCAL_STREAM_READY_STATUS
 import com.oa.automation.domain.model.STTEngineType
@@ -27,8 +28,10 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
+import android.util.Log
 import kotlin.math.log10
 import kotlin.math.sqrt
 
@@ -112,7 +115,7 @@ class RecordingSessionController(
         _state.update {
             if (it.meetingId.isBlank()) it else it.copy(
                 isStopping = true,
-                status = "正在结束录音",
+                status = "正在整理录音",
                 error = null
             )
         }
@@ -143,17 +146,43 @@ class RecordingSessionController(
             var sttConfig = configDataStore.appConfigFlow.first().sttConfig
             val usesTencentHybrid = sttConfig.engineType == STTEngineType.TENCENT_HYBRID
             automaticCloudFallbackAttempted = false
-            val accountSessionAvailable = configDataStore.authSessionFlow.first()?.expiresAt?.let {
+            val storedSession = configDataStore.authSessionFlow.first()
+            // Do not make microphone capture wait on the account server. A stale
+            // session can be refreshed opportunistically, but the local socket
+            // should be allowed to connect immediately with the current token.
+            val nowSeconds = System.currentTimeMillis() / 1_000L
+            val shouldRefreshSession = storedSession != null && (
+                storedSession.expiresAt <= nowSeconds + 120L ||
+                    sttConfig.apiToken.isNullOrBlank()
+                )
+            if (shouldRefreshSession) {
+                val refreshResult = withTimeoutOrNull(3_000L) {
+                    accountSessionSynchronizer.refresh()
+                }
+                if (refreshResult == null) {
+                    Log.w("RecordingSessionController", "account refresh timed out before STT start")
+                } else if (refreshResult.isFailure) {
+                    Log.w(
+                        "RecordingSessionController",
+                        "account refresh failed before STT start: ${refreshResult.exceptionOrNull()?.message}"
+                    )
+                } else {
+                    sttConfig = configDataStore.appConfigFlow.first().sttConfig
+                }
+            }
+            val currentSession = configDataStore.authSessionFlow.first()
+            val accountSessionAvailable = currentSession?.expiresAt?.let {
                 it > System.currentTimeMillis() / 1_000
             } == true
-            // Refresh a valid account opportunistically. A failed refresh must not block
-            // local recording; it only disables cloud fallback for this session.
-            if (accountSessionAvailable) {
-                accountSessionSynchronizer.refresh()
-                sttConfig = configDataStore.appConfigFlow.first().sttConfig
-            }
-            accountAccessEnabled = accountSessionAvailable && !sttConfig.apiToken.isNullOrBlank()
+            val sttTokenAvailable = !sttConfig.apiToken.isNullOrBlank()
+            accountAccessEnabled = accountSessionAvailable && sttTokenAvailable
             cloudFallbackAvailable = accountAccessEnabled && !sttConfig.cloudEndpoint.isNullOrBlank()
+            Log.d(
+                "RecordingSessionController",
+                "STT start endpoint=${sttConfig.localEndpoint.trim().ifBlank { "<blank>" }} " +
+                    "sessionPresent=${currentSession != null} sessionValid=$accountSessionAvailable " +
+                    "tokenPresent=$sttTokenAvailable cloudFallback=$cloudFallbackAvailable"
+            )
             val localEndpoint = sttConfig.localEndpoint.trim()
             val useCloudInitially = usesTencentHybrid ||
                 (localEndpoint.isBlank() && cloudFallbackAvailable)
@@ -218,6 +247,8 @@ class RecordingSessionController(
                     apiToken = sttConfig.apiToken,
                     streamProvider = initialProvider,
                     language = sttConfig.language,
+                    contextHint = buildSttContextHint(meetingTitle),
+                    speakerDiarization = sttConfig.speakerDiarizationEnabled,
                     onPartialText = { update ->
                         val accumulatedText = transcriptAccumulator.update(update)
                         _state.update {
@@ -261,7 +292,14 @@ class RecordingSessionController(
                     },
                     onProviderFailure = { provider, detail ->
                         if (provider == StreamingSttProvider.LOCAL) {
-                            if (cloudFallbackAvailable) {
+                            if (isSttAuthorizationFailure(detail)) {
+                                _state.update {
+                                    it.copy(
+                                        realtimeSttRoute = RealtimeSttRouteState.UNAVAILABLE,
+                                        error = "本地 STT 登录已失效，请重新登录后重试；录音仍会保存在本机"
+                                    )
+                                }
+                            } else if (cloudFallbackAvailable) {
                                 requestAutomaticCloudFallback(detail)
                             } else {
                                 _state.update {
@@ -282,7 +320,9 @@ class RecordingSessionController(
                 pendingStopMeetingId = null
                 throw CancellationException("录音启动已取消")
             }
-            val audioFile = audioRecorder.start()
+            val audioFile = audioRecorder.start(
+                enableAudioEnhancement = sttConfig.audioEnhancementEnabled
+            )
             if (audioFile == null) {
                 if (streamingPreviewActive) streamingSttClient.stop()
                 streamingPreviewActive = false
@@ -299,7 +339,7 @@ class RecordingSessionController(
                     startedAtElapsedRealtimeMs = SystemClock.elapsedRealtime(),
                     recordedDurationSeconds = 0,
                     status = when {
-                        stopWasRequested -> "正在结束录音"
+                        stopWasRequested -> "正在整理录音"
                         useCloudInitially -> "智悟增强云模型识别中"
                         initialEndpoint.isBlank() -> "本地录音中"
                         else -> "本地实时预览处理中"
@@ -333,7 +373,7 @@ class RecordingSessionController(
                 throw CancellationException("录音会话已切换")
             }
             require(meetingId.isNotBlank() && audioRecorder.isRecording()) { "没有在录音" }
-            _state.update { it.copy(isStopping = true, status = "正在结束录音") }
+            _state.update { it.copy(isStopping = true, status = "正在整理录音") }
             val audioFile = audioRecorder.stop()
                 ?: error("录音文件不可用")
             audioRecorder.setOnPcmDataListener(null)
@@ -375,7 +415,7 @@ class RecordingSessionController(
                     isStarting = false,
                     isRecording = audioRecorder.isRecording(),
                     isStopping = false,
-                    error = "停止录音失败: ${error.message}"
+                    error = "保存录音失败: ${error.message}"
                 )
             }
         }
@@ -406,6 +446,69 @@ class RecordingSessionController(
             _state.update { it.copy(error = "暂停录音失败: ${error.message}") }
         }
     }
+
+    /**
+     * Finalize a paused session just enough to release the microphone for a
+     * different meeting. The service persists this snapshot as an unfinished
+     * record; it is not treated as an explicit report-generation action.
+     */
+    suspend fun suspendPausedSession(expectedMeetingId: String? = null): Result<RecordingStopResult> =
+        operationMutex.withLock {
+            runCatching {
+                val current = _state.value
+                val meetingId = current.meetingId
+                require(meetingId.isNotBlank()) { "没有可暂存的录音" }
+                require(expectedMeetingId.isNullOrBlank() || meetingId == expectedMeetingId) {
+                    "录音会话已切换"
+                }
+                require(current.isRecording && current.isPaused && !current.isStopping) {
+                    "只有已暂停的录音可以切换"
+                }
+                val audioFile = audioRecorder.stop() ?: error("录音文件不可用")
+                audioRecorder.setOnPcmDataListener(null)
+                val streamSessionId = if (streamingPreviewActive) streamingSttClient.stop() else null
+                streamingPreviewActive = false
+                automaticCloudFallbackAttempted = false
+                val transcriptText = transcriptAccumulator.snapshot()
+                val durationMs = current.durationSecondsAt(SystemClock.elapsedRealtime()) * 1_000L
+                smoothedAudioLevel = 0f
+                pendingStopMeetingId = null
+                _state.update {
+                    it.copy(
+                        isStarting = false,
+                        isRecording = false,
+                        isPaused = false,
+                        isStopping = false,
+                        startedAtElapsedRealtimeMs = null,
+                        recordedDurationSeconds = durationMs / 1_000L,
+                        audioLevel = 0f,
+                        accumulatedTranscript = transcriptText,
+                        status = "录音已暂存，可继续或生成纪要",
+                        realtimeSttRoute = RealtimeSttRouteState.IDLE,
+                        error = null
+                    )
+                }
+                require(audioFile.isFile && audioFile.length() > 0L) { "录音文件为空" }
+                RecordingStopResult(
+                    meetingId = meetingId,
+                    audioFile = audioFile,
+                    streamSessionId = streamSessionId,
+                    transcriptText = transcriptText,
+                    durationMs = durationMs,
+                    requiresLogin = !accountAccessEnabled
+                )
+            }.onFailure { error ->
+                _state.update {
+                    it.copy(
+                        isStarting = false,
+                        isRecording = true,
+                        isPaused = true,
+                        isStopping = false,
+                        error = "暂存录音失败: ${error.message}"
+                    )
+                }
+            }
+        }
 
     suspend fun resume(expectedMeetingId: String? = null): Result<Unit> = operationMutex.withLock {
         runCatching {
@@ -597,9 +700,21 @@ private fun normalizedPcmLevel(bytes: ByteArray, length: Int): Float {
         sumSquares += sample * sample
         offset += 2
     }
+
     val rms = sqrt(sumSquares / sampleCount).coerceAtLeast(0.00001)
     val decibels = 20.0 * log10(rms)
     return ((decibels + 52.0) / 52.0).coerceIn(0.04, 1.0).toFloat()
+}
+
+private fun isSttAuthorizationFailure(detail: String): Boolean {
+    val normalized = detail.lowercase()
+    return normalized.contains("unauthorized") ||
+        normalized.contains("invalid bearer") ||
+        normalized.contains("invalid token") ||
+        normalized.contains("http 401") ||
+        normalized.contains("http 403") ||
+        normalized.contains("访问令牌") ||
+        normalized.contains("令牌无效")
 }
 
 internal fun RecordingSessionState.durationSecondsAt(elapsedRealtimeMs: Long): Long {

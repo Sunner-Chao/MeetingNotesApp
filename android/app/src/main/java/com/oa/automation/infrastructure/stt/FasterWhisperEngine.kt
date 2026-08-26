@@ -60,7 +60,8 @@ class FasterWhisperEngine(
         audioFile: File,
         onProgress: (ProcessingProgress) -> Unit,
         meetingId: String?,
-        archiveKey: String?
+        archiveKey: String?,
+        contextHint: String?
     ): Result<String> = withContext(Dispatchers.IO) {
         if (!audioFile.isFile || audioFile.length() <= 44L) {
             return@withContext Result.failure(IOException("录音文件为空或不可用"))
@@ -87,6 +88,12 @@ class FasterWhisperEngine(
         val requestBody = MultipartBody.Builder()
             .setType(MultipartBody.FORM)
             .addFormDataPart("language", config.language.requestValue)
+            .addFormDataPart("speaker_diarization", config.speakerDiarizationEnabled.toString())
+            .apply {
+                contextHint?.takeIf { it.isNotBlank() }?.let {
+                    addFormDataPart("context_hint", it)
+                }
+            }
             .addFormDataPart(
                 "file",
                 audioFile.name,
@@ -185,13 +192,22 @@ class FasterWhisperEngine(
     private data class STTResponse(
         val text: String?,
         val language: String?,
-        val segments: List<Segment>? = null
+        val segments: List<Segment>? = null,
+        val diarization: Diarization? = null
     )
 
     private data class Segment(
         val start: Float,
         val end: Float,
-        val text: String
+        val text: String,
+        val speaker: Int? = null,
+        val speaker_id: Int? = null
+    )
+
+    private data class Diarization(
+        val enabled: Boolean = false,
+        val active: Boolean = false,
+        val provider: String? = null
     )
 }
 

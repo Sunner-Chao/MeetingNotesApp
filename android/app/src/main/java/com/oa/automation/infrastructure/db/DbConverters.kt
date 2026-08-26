@@ -3,6 +3,7 @@ package com.oa.automation.infrastructure.db
 import androidx.room.TypeConverter
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
+import com.oa.automation.domain.model.ForumParticipant
 import com.oa.automation.domain.model.Task
 
 class DbConverters {
@@ -23,6 +24,15 @@ class DbConverters {
     @TypeConverter
     fun toTaskList(value: String): List<Task> {
         val listType = object : TypeToken<List<Task>>() {}.type
+        return gson.fromJson(value, listType) ?: emptyList()
+    }
+
+    @TypeConverter
+    fun fromForumParticipantList(value: List<ForumParticipant>): String = gson.toJson(value)
+
+    @TypeConverter
+    fun toForumParticipantList(value: String): List<ForumParticipant> {
+        val listType = object : TypeToken<List<ForumParticipant>>() {}.type
         return gson.fromJson(value, listType) ?: emptyList()
     }
 }

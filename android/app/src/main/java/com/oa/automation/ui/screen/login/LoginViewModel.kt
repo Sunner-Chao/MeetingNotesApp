@@ -22,7 +22,7 @@ enum class AuthEntryMode(val channel: String?) {
 }
 
 data class LoginUiState(
-    val mode: AuthEntryMode = AuthEntryMode.PHONE,
+    val mode: AuthEntryMode = AuthEntryMode.PASSWORD,
     val identifier: String = "",
     val verificationCode: String = "",
     val username: String = "",
@@ -194,7 +194,7 @@ class LoginViewModel(
     private fun performPasswordLogin(state: LoginUiState) {
         val username = state.username.trim()
         if (username.isBlank() || state.password.isBlank()) {
-            _uiState.update { it.copy(errorMessage = "请输入用户名和密码") }
+            _uiState.update { it.copy(errorMessage = "请输入邮箱/用户名和密码") }
             return
         }
         viewModelScope.launch {

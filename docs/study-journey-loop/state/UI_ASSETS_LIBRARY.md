@@ -1,0 +1,8 @@
+# UI Assets Library
+
+Only explicitly user-approved, reusable, project-original assets appear here. Research screenshots and proprietary visual assets never enter this library.
+
+| ID | Name | Category | Purpose | Reusable Rule | Implementation | Validation | Approval |
+|---|---|---|---|---|---|---|---|
+| community-featured-carousel-v1 | Community featured story carousel | community-discovery | Give a media-rich community first screen a compact, readable story window without adding a second page. | Use a stable 214dp image window, at most seven pages, a 4.2 second interval, manual swipe, and a caption bound only to existing content metadata. | android/app/src/main/java/com/oa/automation/ui/screen/community/StudyCommunityScreen.kt:CommunityFeaturedCarousel | community-sample-live-bridge review score 15/16; focused unit tests; assembleDebug passed 2026-08-18 | owner-brief-community-mock-20260818 / trusted-owner |
+| community-sample-live-bridge-v1 | Community replaceable sample bridge | community-data-boundary | Keep a new community discover screen useful before server content exists while preserving a clear real-data replacement boundary. | Initialize read-only sample state, keep it on empty or failed discover responses, and clear sample posts and collections as soon as a non-empty real response arrives. | android/app/src/main/java/com/oa/automation/ui/screen/community/CommunityViewModel.kt and MockStudyCommunityData.kt | MockStudyCommunityDataTest, community fixtures, De-Sloppify review score 15/16, assembleDebug passed 2026-08-18 | owner-brief-community-mock-20260818 / trusted-owner |

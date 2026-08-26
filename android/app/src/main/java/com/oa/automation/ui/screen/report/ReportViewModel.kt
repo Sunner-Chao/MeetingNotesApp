@@ -5,12 +5,15 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.oa.automation.data.local.ConfigDataStore
 import com.oa.automation.domain.model.PresetReportTemplate
+import com.oa.automation.domain.model.ForumParticipant
 import com.oa.automation.domain.model.MeetingAttachment
 import com.oa.automation.domain.model.JourneyStage
 import com.oa.automation.domain.model.Report
 import com.oa.automation.domain.model.ReportTitleResolver
 import com.oa.automation.domain.model.ReportTemplateConfig
 import com.oa.automation.domain.model.Transcript
+import com.oa.automation.domain.model.extractForumParticipants
+import com.oa.automation.domain.model.isForumMeetingTemplate
 import com.oa.automation.domain.repository.MeetingRepository
 import com.oa.automation.domain.repository.JourneyRepository
 import com.oa.automation.domain.repository.ReportRepository
@@ -32,6 +35,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.io.File
+import java.time.Instant
 
 data class ChatMessageUi(
     val id: String,
@@ -49,6 +54,7 @@ data class ReportUiState(
     val journeyEndedAt: Long? = null,
     val initiatorName: String = "",
     val initiatorAvatarDataUrl: String? = null,
+    val forumParticipants: List<ForumParticipant> = emptyList(),
     val isLoading: Boolean = false,
     val error: String? = null,
     val isGenerating: Boolean = false,
@@ -108,6 +114,7 @@ class ReportViewModel(
     private var attachmentCollectionJob: Job? = null
     private var reportCollectionJob: Job? = null
     private var reportTaskCollectionJob: Job? = null
+    private var forumSpeakerNames: List<String> = emptyList()
 
     fun loadReport(meetingId: String) {
         observeReportTask(meetingId)
@@ -127,6 +134,7 @@ class ReportViewModel(
                         it.copy(
                             report = report,
                             meetingTitle = title,
+                            forumParticipants = resolveForumParticipants(report),
                             isLoading = false,
                             isGenerating = false,
                             error = null
@@ -172,10 +180,15 @@ class ReportViewModel(
 
             // 加载转写文本
             val transcripts = meetingRepository.findTranscriptsByMeetingId(meetingId).getOrNull().orEmpty()
+            forumSpeakerNames = transcripts.mapNotNull { it.speakerName }
             val transcriptText = SimplifiedChineseText.normalize(
                 transcripts.joinToString("\n") { it.content }
             )
-            _uiState.value = _uiState.value.copy(transcriptText = transcriptText, journeyStageTranscripts = journeyStageTranscriptMap(transcripts))
+            _uiState.value = _uiState.value.copy(
+                transcriptText = transcriptText,
+                journeyStageTranscripts = journeyStageTranscriptMap(transcripts),
+                forumParticipants = resolveForumParticipants(null)
+            )
 
             // 先尝试从数据库加载已保存的报告
             val existingReport = reportRepository.findByMeetingId(meetingId).getOrNull()
@@ -186,6 +199,7 @@ class ReportViewModel(
                 _uiState.value = _uiState.value.copy(
                     report = existingReport,
                     meetingTitle = title,
+                    forumParticipants = resolveForumParticipants(existingReport),
                     isLoading = false
                 )
             } else {
@@ -292,6 +306,8 @@ class ReportViewModel(
                             it.copy(
                                 report = report ?: it.report,
                                 meetingTitle = title ?: it.meetingTitle,
+                                forumParticipants = report?.let(::resolveForumParticipants)
+                                    ?: it.forumParticipants,
                                 isLoading = false,
                                 isGenerating = false,
                                 generationProgressPercent = null,
@@ -333,6 +349,42 @@ class ReportViewModel(
                 }
             }
         }
+    }
+
+    private fun resolveForumParticipants(report: Report?): List<ForumParticipant> {
+        val state = _uiState.value
+        val templateName = report?.templateName
+            .orEmpty()
+            .ifBlank { state.reportTemplate.selectedName }
+        if (!templateName.isForumMeetingTemplate()) return emptyList()
+
+        val extracted = report?.participants.orEmpty().ifEmpty {
+            extractForumParticipants(
+                rawContent = report?.rawContent.orEmpty(),
+                speakerNames = forumSpeakerNames
+            )
+        }
+        val enriched = extracted.map { participant ->
+            if (participant.name.equals(state.initiatorName, ignoreCase = true)) {
+                participant.copy(
+                    avatarDataUrl = state.initiatorAvatarDataUrl,
+                    photoAuthorized = !state.initiatorAvatarDataUrl.isNullOrBlank()
+                )
+            } else {
+                participant
+            }
+        }.toMutableList()
+        if (state.initiatorName.isNotBlank() && enriched.none {
+                it.name.equals(state.initiatorName, ignoreCase = true)
+            }) {
+            enriched += ForumParticipant(
+                name = state.initiatorName,
+                role = "记录者",
+                avatarDataUrl = state.initiatorAvatarDataUrl,
+                photoAuthorized = !state.initiatorAvatarDataUrl.isNullOrBlank()
+            )
+        }
+        return enriched
     }
 
     // Chat functions
@@ -434,16 +486,23 @@ class ReportViewModel(
     fun refreshArchivedAudio(meetingId: String) {
         if (meetingId.isBlank()) return
         viewModelScope.launch {
-            _uiState.update { it.copy(isLoadingAudio = true) }
+            val localAudio = localMeetingAudio(meetingId)
+            _uiState.update {
+                it.copy(
+                    archivedAudio = localAudio.ifEmpty { it.archivedAudio },
+                    isLoadingAudio = true
+                )
+            }
             audioArchiveService.list(meetingId)
                 .onSuccess { items ->
-                    val archivedDurationMs = items.firstOrNull()?.durationSec
+                    val visibleItems = items.ifEmpty { localAudio }
+                    val archivedDurationMs = visibleItems.firstOrNull()?.durationSec
                         ?.takeIf { it.isFinite() && it > 0.0 }
                         ?.times(1_000.0)
                         ?.toLong()
                     _uiState.update {
                         it.copy(
-                            archivedAudio = items,
+                            archivedAudio = visibleItems,
                             meetingDurationMs = archivedDurationMs ?: it.meetingDurationMs,
                             isLoadingAudio = false
                         )
@@ -458,10 +517,38 @@ class ReportViewModel(
                 }
                 .onFailure { error ->
                     _uiState.update {
-                        it.copy(isLoadingAudio = false, message = "会议音频加载失败: ${error.message}")
+                        it.copy(
+                            archivedAudio = localAudio,
+                            isLoadingAudio = false,
+                            message = if (localAudio.isNotEmpty()) {
+                                "服务器归档暂不可用，已切换为本机录音"
+                            } else {
+                                "会议音频加载失败: ${error.message}"
+                            }
+                        )
                     }
                 }
         }
+    }
+
+    private suspend fun localMeetingAudio(meetingId: String): List<ArchivedMeetingAudio> {
+        val meeting = meetingRepository.findById(meetingId).getOrNull() ?: return emptyList()
+        val file = meeting.audioFilePath?.let(::File)
+            ?.takeIf { it.isFile && it.length() > 44L }
+            ?: return emptyList()
+        return listOf(
+            ArchivedMeetingAudio(
+                id = "local-$meetingId-${file.lastModified()}",
+                meetingId = meetingId,
+                createdAt = Instant.ofEpochMilli(file.lastModified()).toString(),
+                bytes = file.length(),
+                durationSec = meeting.durationMs.takeIf { it > 0L }?.div(1_000.0),
+                filename = file.name,
+                source = "本机录音",
+                downloadPath = "",
+                localFilePath = file.absolutePath
+            )
+        )
     }
 
     suspend fun prepareArchivedAudioPlayback(

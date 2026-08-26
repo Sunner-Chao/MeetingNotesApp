@@ -12,9 +12,11 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.oa.automation.domain.model.MeetingAudioSegment
 import com.oa.automation.domain.model.Transcript
 import com.oa.automation.domain.repository.MeetingRepository
 import com.oa.automation.infrastructure.background.BackgroundTaskScheduler
+import com.oa.automation.infrastructure.audio.MeetingAudioAssembler
 import com.oa.automation.ui.MainActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -31,9 +33,11 @@ class RecordingService : Service() {
     private val recordingController: RecordingSessionController by inject()
     private val taskScheduler: BackgroundTaskScheduler by inject()
     private val meetingRepository: MeetingRepository by inject()
+    private val meetingAudioAssembler: MeetingAudioAssembler by inject()
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var startJob: Job? = null
     private var stopJob: Job? = null
+    private var handoffJob: Job? = null
     private var cancelJob: Job? = null
     private var controlJob: Job? = null
     @Volatile private var activeMeetingId: String? = null
@@ -75,7 +79,44 @@ class RecordingService : Service() {
                             autoGenerateReport = autoGenerateReport
                         )
                     } else if (currentMeetingId != meetingId) {
-                        Log.w(TAG, "Ignoring start for $meetingId while $currentMeetingId is active")
+                        val currentState = recordingController.state.value
+                        if (currentState.isRecording && currentState.isPaused && handoffJob?.isActive != true) {
+                            pendingStart = PendingStart(
+                                meetingId = meetingId,
+                                title = meetingTitle,
+                                journeyStageId = journeyStageId,
+                                autoGenerateReport = autoGenerateReport
+                            )
+                            updateNotification(
+                                "正在切换记录",
+                                "当前暂停记录正在保存，随后开始新记录",
+                                currentMeetingId
+                            )
+                            val previousMeetingId = currentMeetingId
+                            handoffJob = serviceScope.launch {
+                                startJob?.join()
+                                val result = recordingController.suspendPausedSession(previousMeetingId)
+                                result.onSuccess { suspended ->
+                                    // Switching is not an explicit report request;
+                                    // preserve the previous meeting as unfinished.
+                                    persistLiveRecording(
+                                        stopped = suspended,
+                                        journeyStageId = activeJourneyStageId,
+                                        autoGenerateReport = false
+                                    )
+                                    finishSessionIfCurrent(previousMeetingId, startId)
+                                }.onFailure { error ->
+                                    pendingStart = null
+                                    updateNotification(
+                                        "录音已暂停",
+                                        "暂存失败：${error.message ?: "请返回应用重试"}",
+                                        previousMeetingId
+                                    )
+                                }
+                            }
+                        } else {
+                            Log.w(TAG, "Ignoring start for $meetingId while $currentMeetingId is active")
+                        }
                     }
                     return START_NOT_STICKY
                 }
@@ -92,11 +133,20 @@ class RecordingService : Service() {
                 val meetingId = intent.getStringExtra(EXTRA_MEETING_ID)
                     ?: activeMeetingId
                     ?: recordingController.state.value.meetingId
+                val generateReportAfterSave = intent.getBooleanExtra(EXTRA_GENERATE_REPORT_ON_STOP, false)
                 if (meetingId.isBlank() || activeMeetingId != meetingId || stopJob?.isActive == true) {
                     return START_NOT_STICKY
                 }
                 recordingController.markStopRequested(meetingId)
-                updateNotification("正在结束录音", "实时转写完成后将直接生成纪要", meetingId)
+                updateNotification(
+                    "正在整理录音",
+                    if (generateReportAfterSave || activeAutoGenerateReport) {
+                        "转写保存后将生成纪要"
+                    } else {
+                        "转写将保存到当前记录"
+                    },
+                    meetingId
+                )
                 stopJob = serviceScope.launch {
                     startJob?.join()
                     recordingController.stop(meetingId)
@@ -104,7 +154,7 @@ class RecordingService : Service() {
                             persistLiveRecording(
                                 stopped = stopped,
                                 journeyStageId = activeJourneyStageId,
-                                autoGenerateReport = activeAutoGenerateReport
+                                autoGenerateReport = activeAutoGenerateReport || generateReportAfterSave
                             )
                         }
                         .onFailure { error -> Log.i(TAG, "Recording session did not produce audio", error) }
@@ -162,6 +212,7 @@ class RecordingService : Service() {
         pendingControlAction = null
         startJob = null
         stopJob = null
+        handoffJob = null
         cancelJob = null
         controlJob = null
         val next = pendingStart
@@ -204,32 +255,88 @@ class RecordingService : Service() {
         runCatching {
             val meeting = meetingRepository.findById(stopped.meetingId).getOrNull()
                 ?: error("会议不存在")
+            val existingSegments = meetingRepository
+                .findAudioSegmentsByMeetingId(stopped.meetingId)
+                .getOrNull()
+                .orEmpty()
+                .sortedBy { it.sequenceNumber }
+            val knownPaths = existingSegments.map { it.localPath }.toMutableSet()
+            val legacyPath = meeting.audioFilePath
+                ?.takeIf { it.isNotBlank() && it != stopped.audioFile.absolutePath }
+                ?.let { path -> java.io.File(path) }
+                ?.takeIf { it.isFile && it.length() > 44L }
+            if (existingSegments.isEmpty() && legacyPath != null) {
+                val legacyDuration = (meeting.durationMs - stopped.durationMs).coerceAtLeast(0L)
+                meetingRepository.saveAudioSegment(
+                    MeetingAudioSegment(
+                        id = UUID.randomUUID().toString(),
+                        meetingId = stopped.meetingId,
+                        sequenceNumber = 1,
+                        localPath = legacyPath.absolutePath,
+                        durationMs = legacyDuration,
+                        bytes = legacyPath.length()
+                    )
+                ).getOrThrow()
+                knownPaths += legacyPath.absolutePath
+            }
+            if (stopped.audioFile.absolutePath !in knownPaths) {
+                val nextSequence = (existingSegments.maxOfOrNull { it.sequenceNumber } ?:
+                    if (legacyPath != null) 1 else 0) + 1
+                meetingRepository.saveAudioSegment(
+                    MeetingAudioSegment(
+                        id = UUID.randomUUID().toString(),
+                        meetingId = stopped.meetingId,
+                        sequenceNumber = nextSequence,
+                        localPath = stopped.audioFile.absolutePath,
+                        durationMs = stopped.durationMs,
+                        bytes = stopped.audioFile.length()
+                    )
+                ).getOrThrow()
+                knownPaths += stopped.audioFile.absolutePath
+            }
+            val orderedSegments = meetingRepository
+                .findAudioSegmentsByMeetingId(stopped.meetingId)
+                .getOrNull()
+                .orEmpty()
+                .sortedBy { it.sequenceNumber }
+            val mergedAudio = meetingAudioAssembler
+                .assemble(stopped.meetingId, orderedSegments.map { it.localPath })
+                .getOrNull()
+                ?: stopped.audioFile
             meetingRepository.save(
                 meeting.copy(
-                    audioFilePath = stopped.audioFile.absolutePath,
+                    audioFilePath = mergedAudio.absolutePath,
                     durationMs = meeting.durationMs + stopped.durationMs
                 )
             ).getOrThrow()
 
-            if (stopped.requiresLogin) {
-                recordingController.updatePostProcessingStatus(
-                    stopped.meetingId,
-                    status = "录音已保存在本地",
-                    error = AUTH_REQUIRED_MESSAGE
-                )
+            val transcriptText = stopped.transcriptText.trim()
+            if (transcriptText.isBlank()) {
+                Log.w(TAG, "Live transcript was empty for ${stopped.meetingId}; queuing final transcription")
+                if (stopped.requiresLogin) {
+                    recordingController.updatePostProcessingStatus(
+                        stopped.meetingId,
+                        status = "录音已保存在本地",
+                        error = "登录后将自动恢复最终转写和会议纪要"
+                    )
+                } else {
+                    taskScheduler.enqueueTranscription(
+                        meetingId = stopped.meetingId,
+                        audioFile = stopped.audioFile,
+                        streamSessionId = stopped.streamSessionId,
+                        journeyStageId = journeyStageId
+                    )
+                    recordingController.updatePostProcessingStatus(
+                        stopped.meetingId,
+                        status = "正在恢复最终转写"
+                    )
+                }
                 return@runCatching
             }
 
-            val transcriptText = stopped.transcriptText.trim()
-            if (transcriptText.isBlank()) {
-                Log.w(TAG, "Live transcript was empty for ${stopped.meetingId}; report was not queued")
-                recordingController.updatePostProcessingStatus(
-                    stopped.meetingId,
-                    status = "实时转写未产生文本",
-                    error = "实时转写没有产生可用文本，本次未生成纪要"
-                )
-                return@runCatching
-            }
+            // Persist the final streaming text before checking cloud access.
+            // Guests must be able to reopen the record, export its local audio,
+            // and continue report generation after signing in.
             meetingRepository.saveTranscript(
                 Transcript(
                     id = UUID.randomUUID().toString(),
@@ -239,6 +346,15 @@ class RecordingService : Service() {
                     endTimeMs = stopped.durationMs
                 )
             ).getOrThrow()
+
+            if (stopped.requiresLogin) {
+                recordingController.updatePostProcessingStatus(
+                    stopped.meetingId,
+                    status = "录音和转写已保存在本地",
+                    error = AUTH_REQUIRED_MESSAGE
+                )
+                return@runCatching
+            }
 
             // A journey stage is saved independently; the full journey report is
             // generated only when the user requests it after collecting stages.
@@ -355,27 +471,9 @@ class RecordingService : Service() {
         val contentIntent = PendingIntent.getActivity(
             this,
             0,
-            Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        val controlIntent = Intent(this, RecordingService::class.java).apply {
-            action = if (recordingController.state.value.isPaused) ACTION_RESUME else ACTION_PAUSE
-            putExtra(EXTRA_MEETING_ID, meetingId)
-        }
-        val controlPendingIntent = PendingIntent.getService(
-            this,
-            1,
-            controlIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        val stopIntent = Intent(this, RecordingService::class.java).apply {
-            action = ACTION_STOP
-            putExtra(EXTRA_MEETING_ID, meetingId)
-        }
-        val stopPendingIntent = PendingIntent.getService(
-            this,
-            2,
-            stopIntent,
+            Intent(this, MainActivity::class.java).apply {
+                putExtra(MainActivity.EXTRA_OPEN_RECORDING_MEETING_ID, meetingId)
+            },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
@@ -387,16 +485,6 @@ class RecordingService : Service() {
             .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
-            .addAction(
-                if (recordingController.state.value.isPaused) {
-                    android.R.drawable.ic_media_play
-                } else {
-                    android.R.drawable.ic_media_pause
-                },
-                if (recordingController.state.value.isPaused) "继续录音" else "暂停录音",
-                controlPendingIntent
-            )
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "结束录音", stopPendingIntent)
             .build()
     }
 
@@ -414,6 +502,7 @@ class RecordingService : Service() {
         const val EXTRA_MEETING_TITLE = "meeting_title"
         const val EXTRA_JOURNEY_STAGE_ID = "journey_stage_id"
         const val EXTRA_AUTO_GENERATE_REPORT = "auto_generate_report"
+        const val EXTRA_GENERATE_REPORT_ON_STOP = "generate_report_on_stop"
         const val AUTH_REQUIRED_MESSAGE = "登录后即可上传转写，本地录音不会丢失"
     }
 }

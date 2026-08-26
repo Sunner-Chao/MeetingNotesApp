@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
+    <cache-path name="recording_cache" path="" />
     <cache-path name="exports_cache" path="exports/" />
     <cache-path name="app_updates" path="updates/" />
+    <files-path name="recordings" path="recordings/" />
+    <files-path name="meeting_attachments" path="meeting-attachments/" />
     <external-files-path name="exports_external" path="exports/" />
 </paths>

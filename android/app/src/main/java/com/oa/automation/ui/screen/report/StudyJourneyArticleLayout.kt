@@ -122,7 +122,7 @@ internal fun StudyJourneyArticleExperience(
             initialIndex = index,
             onDelete = onDeleteAttachment,
             isStudyReport = true,
-            title = "旅程影像",
+            title = "影像集锦",
             onDismiss = { galleryIndex = null }
         )
     }
@@ -1668,9 +1668,9 @@ private fun StudyJourneyArticleBody(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.AutoStories, null, tint = colors.primary, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text("研学游记", color = colors.primary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Text("参观纪要", color = colors.primary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.weight(1f))
-                    Text("${attachments.size} 张现场照片", color = colors.muted, fontSize = 10.sp)
+                    Text("影像集锦 · ${attachments.size} 张", color = colors.muted, fontSize = 10.sp)
                     IconButton(onClick = onCaptureImage, modifier = Modifier.size(34.dp)) {
                         Icon(Icons.Default.CameraAlt, "拍摄旅程照片", tint = colors.primary, modifier = Modifier.size(18.dp))
                     }

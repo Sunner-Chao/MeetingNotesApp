@@ -277,7 +277,7 @@ class AccountViewModel(
                     it.copy(
                         quota = null,
                         isQuotaLoading = false,
-                        quotaError = error.message ?: "额度查询失败"
+                        quotaError = error.message ?: "积分查询失败"
                     )
                 }
             }

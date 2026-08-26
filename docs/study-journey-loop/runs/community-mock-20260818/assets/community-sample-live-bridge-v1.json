@@ -1,0 +1,13 @@
+{
+  "id": "community-sample-live-bridge-v1",
+  "name": "Community replaceable sample bridge",
+  "category": "community-data-boundary",
+  "status": "approved",
+  "purpose": "Keep a new community discover screen useful before server content exists while preserving a clear real-data replacement boundary.",
+  "reusable_rule": "Initialize read-only sample state, keep it on empty or failed discover responses, and clear sample posts and collections as soon as a non-empty real response arrives.",
+  "implementation_source": "android/app/src/main/java/com/oa/automation/ui/screen/community/CommunityViewModel.kt and MockStudyCommunityData.kt",
+  "provenance": "Original ZhiWuBen state and fixture pattern; local photos are separately licensed and attributed.",
+  "rights": "project-original behavior; sample photos remain governed by per-file Wikimedia Commons records",
+  "validation": "MockStudyCommunityDataTest, community fixtures, De-Sloppify review score 15/16, assembleDebug passed 2026-08-18",
+  "user_approval_ref": "owner-brief-community-mock-20260818 / trusted-owner"
+}

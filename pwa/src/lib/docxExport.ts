@@ -142,7 +142,7 @@ export async function exportDocxDocument(meeting: Meeting): Promise<void> {
       children: [
         new Paragraph({ text: meeting.title, heading: HeadingLevel.TITLE, alignment: AlignmentType.CENTER }),
         new Paragraph({
-          text: `${templateFor(meeting.templateKey).name} · 智能体 · 小Woo`,
+          text: `${templateFor(meeting.templateKey).name} · 会议整理`,
           alignment: AlignmentType.CENTER,
           spacing: { after: 300 }
         }),

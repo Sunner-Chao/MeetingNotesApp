@@ -278,8 +278,32 @@ fi
 if ! grep -Eq '^ACCOUNT_FREE_PLAN_CODE=.+$' "$CONFIG_FILE"; then
   set_env_value ACCOUNT_FREE_PLAN_CODE "free"
 fi
-if ! grep -Eq '^ACCOUNT_FREE_PLAN_NAME=.+$' "$CONFIG_FILE"; then
-  set_env_value ACCOUNT_FREE_PLAN_NAME "Free"
+if ! grep -Eq '^ACCOUNT_DB_PATH=.+$' "$CONFIG_FILE"; then
+  set_env_value ACCOUNT_DB_PATH "$STATE_ROOT/backend/accounts.db"
+fi
+CURRENT_ACCOUNT_FREE_PLAN_NAME="$(sed -n 's/^ACCOUNT_FREE_PLAN_NAME=//p' "$CONFIG_FILE" | tail -n1)"
+if [[ -z "$CURRENT_ACCOUNT_FREE_PLAN_NAME" || "$CURRENT_ACCOUNT_FREE_PLAN_NAME" == "Free" ]]; then
+  set_env_value ACCOUNT_FREE_PLAN_NAME "免费账户"
+fi
+CURRENT_ACCOUNT_FREE_STT_MINUTES="$(sed -n 's/^ACCOUNT_FREE_STT_MINUTES=//p' "$CONFIG_FILE" | tail -n1)"
+if [[ -z "$CURRENT_ACCOUNT_FREE_STT_MINUTES" || "$CURRENT_ACCOUNT_FREE_STT_MINUTES" == "120" ]]; then
+  set_env_value ACCOUNT_FREE_STT_MINUTES "0"
+fi
+CURRENT_ACCOUNT_FREE_AI_CREDITS="$(sed -n 's/^ACCOUNT_FREE_AI_CREDITS=//p' "$CONFIG_FILE" | tail -n1)"
+if [[ -z "$CURRENT_ACCOUNT_FREE_AI_CREDITS" || "$CURRENT_ACCOUNT_FREE_AI_CREDITS" == "5" ]]; then
+  set_env_value ACCOUNT_FREE_AI_CREDITS "0"
+fi
+if ! grep -Eq '^ACCOUNT_FREE_POINTS=.+$' "$CONFIG_FILE"; then
+  set_env_value ACCOUNT_FREE_POINTS "1000"
+fi
+if ! grep -Eq '^ACCOUNT_STT_POINTS_PER_MINUTE=.+$' "$CONFIG_FILE"; then
+  set_env_value ACCOUNT_STT_POINTS_PER_MINUTE "10"
+fi
+if ! grep -Eq '^ACCOUNT_AI_SUMMARY_POINTS=.+$' "$CONFIG_FILE"; then
+  set_env_value ACCOUNT_AI_SUMMARY_POINTS "30"
+fi
+if ! grep -Eq '^ACCOUNT_AI_CHAT_POINTS=.+$' "$CONFIG_FILE"; then
+  set_env_value ACCOUNT_AI_CHAT_POINTS "10"
 fi
 if ! grep -Eq '^ACCOUNT_STT_TOKEN_TTL_SEC=.+$' "$CONFIG_FILE"; then
   set_env_value ACCOUNT_STT_TOKEN_TTL_SEC "43200"

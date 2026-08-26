@@ -22,7 +22,8 @@ import java.util.UUID
 class MeetingAttachmentStore(
     private val context: Context,
     private val meetingRepository: MeetingRepository,
-    private val locationProvider: DeviceLocationProvider
+    private val locationProvider: DeviceLocationProvider,
+    private val galleryBackupStore: MeetingGalleryBackupStore
 ) {
     fun observe(meetingId: String): Flow<List<MeetingAttachment>> = meetingRepository.observeAttachments(meetingId)
 
@@ -67,20 +68,31 @@ class MeetingAttachmentStore(
         deviceLocation: LocationSnapshot?,
         journeyStageId: String?,
         recordingMarker: RecordingMarker?
-    ): Result<MeetingAttachment> = try {
+    ): Result<MeetingAttachment> {
+        var targetFile: File? = null
+        var partialFile: File? = null
+        return try {
             val createdAt = System.currentTimeMillis()
             val mimeType = context.contentResolver.getType(source)?.takeIf { it.startsWith("image/") }
                 ?: "image/jpeg"
             val originalName = queryDisplayName(source) ?: "photo.jpg"
-            val extension = originalName.substringAfterLast('.', "").takeIf { it.isNotBlank() }
+            val extension = originalName.substringAfterLast('.', "")
+                .replace(Regex("[^A-Za-z0-9]+"), "")
+                .lowercase()
+                .takeIf { it.isNotBlank() }
                 ?: mimeType.substringAfter('/', "jpg")
             val attachmentId = UUID.randomUUID().toString()
             val directory = File(context.filesDir, "meeting-attachments/$meetingId").apply { mkdirs() }
             val target = File(directory, "$attachmentId.$extension")
+            val partial = File(directory, ".$attachmentId.$extension.part")
+            targetFile = target
+            partialFile = partial
 
             context.contentResolver.openInputStream(source)?.use { input ->
-                target.outputStream().use { output -> input.copyTo(output) }
+                partial.outputStream().use { output -> input.copyTo(output) }
             } ?: error("无法读取所选图片")
+            check(partial.isFile && partial.length() > 0L) { "图片文件为空" }
+            check(partial.renameTo(target)) { "无法保存图片文件" }
 
             // Prefer coordinates embedded in the image: the device may be elsewhere
             // when a previously captured gallery photo is imported.
@@ -107,12 +119,28 @@ class MeetingAttachmentStore(
                 target.delete()
                 throw error
             }
-            Result.success(attachment)
+            val galleryUri = galleryBackupStore.backup(attachment).getOrNull()?.toString()
+            val persistedAttachment = if (galleryUri.isNullOrBlank()) {
+                attachment
+            } else {
+                attachment.copy(galleryUri = galleryUri).also { updated ->
+                    // A gallery failure must not make the import fail. If the
+                    // second database write fails, the stable gallery filename
+                    // lets startup recovery find the already-created copy.
+                    meetingRepository.saveAttachment(updated)
+                }
+            }
+            Result.success(persistedAttachment)
         } catch (error: CancellationException) {
+            partialFile?.delete()
+            targetFile?.delete()
             throw error
         } catch (error: Throwable) {
+            partialFile?.delete()
+            targetFile?.delete()
             Result.failure(error)
         }
+    }
 
     suspend fun delete(attachment: MeetingAttachment): Result<Unit> = withContext(Dispatchers.IO) {
         meetingRepository.deleteAttachment(attachment.id).onSuccess {

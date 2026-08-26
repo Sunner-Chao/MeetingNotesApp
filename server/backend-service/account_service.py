@@ -16,6 +16,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Iterator
 
@@ -75,7 +76,7 @@ class AccountService:
         admin_request_limit: int = 10_000_000,
         free_request_limit: int = 10,
         free_plan_code: str = "free",
-        free_plan_name: str = "Free",
+        free_plan_name: str = "免费账户",
         stt_token_ttl_sec: int = 12 * 60 * 60,
         profile_name_max_length: int = 40,
         profile_avatar_max_bytes: int = 262_144,
@@ -84,8 +85,12 @@ class AccountService:
         auth_code_ttl_sec: int = 5 * 60,
         auth_code_cooldown_sec: int = 60,
         auth_code_max_attempts: int = 5,
-        free_stt_minutes: int = 120,
-        free_ai_credits: int = 5,
+        free_stt_minutes: int = 0,
+        free_ai_credits: int = 0,
+        free_points: int = 1000,
+        stt_points_per_minute: int = 10,
+        ai_summary_points: int = 30,
+        ai_chat_points: int = 10,
     ) -> None:
         self.db_path = Path(db_path)
         self.token_secret = token_secret.strip()
@@ -96,7 +101,7 @@ class AccountService:
         self.admin_request_limit = max(1, admin_request_limit)
         self.free_request_limit = max(0, free_request_limit)
         self.free_plan_code = free_plan_code.strip() or "free"
-        self.free_plan_name = free_plan_name.strip() or "Free"
+        self.free_plan_name = free_plan_name.strip() or "免费账户"
         self.stt_token_ttl_sec = max(300, stt_token_ttl_sec)
         self.profile_name_max_length = max(1, profile_name_max_length)
         self.profile_avatar_max_bytes = max(1, profile_avatar_max_bytes)
@@ -107,6 +112,10 @@ class AccountService:
         self.auth_code_max_attempts = max(1, auth_code_max_attempts)
         self.free_stt_minutes = max(0, free_stt_minutes)
         self.free_ai_credits = max(0, free_ai_credits)
+        self.free_points = max(0, free_points)
+        self.stt_points_per_minute = max(1, stt_points_per_minute)
+        self.ai_summary_points = max(1, ai_summary_points)
+        self.ai_chat_points = max(1, ai_chat_points)
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -123,7 +132,19 @@ class AccountService:
         finally:
             conn.close()
 
-    def initialize(self) -> None:
+    @staticmethod
+    def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
+        return conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (name,),
+        ).fetchone() is not None
+
+    def initialize(
+        self,
+        *,
+        bootstrap_admin: bool = True,
+        seed_plans: bool = True,
+    ) -> None:
         if not self.token_secret:
             raise RuntimeError("ACCOUNT_TOKEN_SECRET must be configured")
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -168,6 +189,7 @@ class AccountService:
                     description TEXT NOT NULL DEFAULT '',
                     price_cents INTEGER NOT NULL,
                     quota_amount INTEGER NOT NULL,
+                    points INTEGER NOT NULL DEFAULT 0,
                     construction_logs_unlocked INTEGER NOT NULL DEFAULT 0,
                     duration_days INTEGER NOT NULL DEFAULT 30,
                     subscription_started_at INTEGER,
@@ -184,6 +206,7 @@ class AccountService:
                     plan_id TEXT NOT NULL,
                     amount_cents INTEGER NOT NULL,
                     quota_amount INTEGER NOT NULL,
+                    points INTEGER NOT NULL DEFAULT 0,
                     construction_logs_unlocked INTEGER NOT NULL DEFAULT 0,
                     status TEXT NOT NULL CHECK(status IN ('pending', 'approved', 'rejected')),
                     created_at INTEGER NOT NULL,
@@ -231,7 +254,7 @@ class AccountService:
                     id TEXT PRIMARY KEY,
                     channel TEXT NOT NULL CHECK(channel IN ('email', 'phone')),
                     subject TEXT NOT NULL,
-                    purpose TEXT NOT NULL CHECK(purpose IN ('login', 'bind', 'reset_password')),
+                    purpose TEXT NOT NULL CHECK(purpose IN ('login', 'register', 'bind', 'reset_password')),
                     code_hash TEXT NOT NULL,
                     expires_at INTEGER NOT NULL,
                     attempts INTEGER NOT NULL DEFAULT 0,
@@ -246,6 +269,8 @@ class AccountService:
                     stt_seconds_used INTEGER NOT NULL DEFAULT 0,
                     ai_credits_granted INTEGER NOT NULL DEFAULT 0,
                     ai_credits_used INTEGER NOT NULL DEFAULT 0,
+                    points_granted INTEGER NOT NULL DEFAULT 0,
+                    points_used INTEGER NOT NULL DEFAULT 0,
                     team_seats INTEGER NOT NULL DEFAULT 1,
                     period_start INTEGER NOT NULL,
                     period_end INTEGER NOT NULL,
@@ -289,6 +314,149 @@ class AccountService:
                     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
                 );
 
+                CREATE TABLE IF NOT EXISTS growth_referral_codes (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL UNIQUE,
+                    code TEXT NOT NULL UNIQUE,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    max_uses INTEGER NOT NULL DEFAULT 0,
+                    used_count INTEGER NOT NULL DEFAULT 0,
+                    expires_at INTEGER,
+                    created_at INTEGER NOT NULL,
+                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+                );
+                CREATE TABLE IF NOT EXISTS growth_referral_bindings (
+                    id TEXT PRIMARY KEY,
+                    referrer_user_id TEXT NOT NULL,
+                    referred_user_id TEXT NOT NULL UNIQUE,
+                    code TEXT NOT NULL,
+                    source TEXT NOT NULL DEFAULT 'register',
+                    created_at INTEGER NOT NULL,
+                    qualified_at INTEGER,
+                    rewarded_at INTEGER,
+                    FOREIGN KEY(referrer_user_id) REFERENCES users(id) ON DELETE CASCADE,
+                    FOREIGN KEY(referred_user_id) REFERENCES users(id) ON DELETE CASCADE
+                );
+                CREATE TABLE IF NOT EXISTS growth_redemption_batches (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    code_type TEXT NOT NULL DEFAULT 'gift',
+                    reward_type TEXT NOT NULL,
+                    reward_payload_json TEXT NOT NULL DEFAULT '{}',
+                    total_count INTEGER NOT NULL,
+                    created_by TEXT,
+                    created_at INTEGER NOT NULL,
+                    expires_at INTEGER,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    FOREIGN KEY(created_by) REFERENCES users(id) ON DELETE SET NULL
+                );
+                CREATE TABLE IF NOT EXISTS growth_redemption_codes (
+                    id TEXT PRIMARY KEY,
+                    batch_id TEXT NOT NULL,
+                    code TEXT NOT NULL UNIQUE,
+                    status TEXT NOT NULL DEFAULT 'unused',
+                    max_uses INTEGER NOT NULL DEFAULT 1,
+                    used_count INTEGER NOT NULL DEFAULT 0,
+                    expires_at INTEGER,
+                    created_at INTEGER NOT NULL,
+                    disabled_at INTEGER,
+                    FOREIGN KEY(batch_id) REFERENCES growth_redemption_batches(id) ON DELETE CASCADE
+                );
+                CREATE TABLE IF NOT EXISTS growth_redemption_claims (
+                    id TEXT PRIMARY KEY,
+                    code_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    reward_type TEXT NOT NULL,
+                    reward_payload_json TEXT NOT NULL DEFAULT '{}',
+                    status TEXT NOT NULL DEFAULT 'fulfilled',
+                    created_at INTEGER NOT NULL,
+                    fulfilled_at INTEGER,
+                    UNIQUE(code_id, user_id),
+                    FOREIGN KEY(code_id) REFERENCES growth_redemption_codes(id) ON DELETE CASCADE,
+                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+                );
+                CREATE TABLE IF NOT EXISTS growth_campaigns (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    campaign_type TEXT NOT NULL,
+                    summary TEXT NOT NULL DEFAULT '',
+                    rules_json TEXT NOT NULL DEFAULT '{}',
+                    reward_pool_json TEXT NOT NULL DEFAULT '{}',
+                    starts_at INTEGER NOT NULL,
+                    ends_at INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'draft',
+                    created_by TEXT,
+                    created_at INTEGER NOT NULL,
+                    settled_at INTEGER,
+                    FOREIGN KEY(created_by) REFERENCES users(id) ON DELETE SET NULL
+                );
+                CREATE TABLE IF NOT EXISTS growth_campaign_entries (
+                    id TEXT PRIMARY KEY,
+                    campaign_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    score INTEGER NOT NULL DEFAULT 0,
+                    rank INTEGER,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at INTEGER NOT NULL,
+                    UNIQUE(campaign_id, user_id),
+                    FOREIGN KEY(campaign_id) REFERENCES growth_campaigns(id) ON DELETE CASCADE,
+                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+                );
+                CREATE TABLE IF NOT EXISTS growth_campaign_actions (
+                    id TEXT PRIMARY KEY,
+                    campaign_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    action_type TEXT NOT NULL,
+                    action_key TEXT NOT NULL,
+                    action_date TEXT NOT NULL DEFAULT '',
+                    score INTEGER NOT NULL DEFAULT 0,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    status TEXT NOT NULL DEFAULT 'accepted',
+                    created_at INTEGER NOT NULL,
+                    UNIQUE(campaign_id, user_id, action_type, action_key),
+                    FOREIGN KEY(campaign_id) REFERENCES growth_campaigns(id) ON DELETE CASCADE,
+                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+                );
+                CREATE TABLE IF NOT EXISTS growth_reward_ledger (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    source_id TEXT NOT NULL,
+                    reward_type TEXT NOT NULL,
+                    quantity INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'fulfilled',
+                    idempotency_key TEXT NOT NULL UNIQUE,
+                    created_at INTEGER NOT NULL,
+                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+                );
+                CREATE TABLE IF NOT EXISTS growth_private_channels (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    qr_image_url TEXT NOT NULL DEFAULT '',
+                    join_url TEXT NOT NULL DEFAULT '',
+                    short_url TEXT NOT NULL DEFAULT '',
+                    slogan TEXT NOT NULL DEFAULT '',
+                    reward_type TEXT NOT NULL DEFAULT 'points',
+                    reward_payload_json TEXT NOT NULL DEFAULT '{}',
+                    valid_until INTEGER,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    updated_by TEXT,
+                    updated_at INTEGER NOT NULL,
+                    FOREIGN KEY(updated_by) REFERENCES users(id) ON DELETE SET NULL
+                );
+                CREATE TABLE IF NOT EXISTS growth_channel_events (
+                    id TEXT PRIMARY KEY,
+                    channel_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    user_id TEXT,
+                    campaign_id TEXT,
+                    source TEXT NOT NULL DEFAULT 'pwa',
+                    created_at INTEGER NOT NULL,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    FOREIGN KEY(channel_id) REFERENCES growth_private_channels(id) ON DELETE CASCADE,
+                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL
+                );
+
                 CREATE INDEX IF NOT EXISTS index_sessions_user
                 ON user_sessions(user_id, expires_at DESC);
                 CREATE INDEX IF NOT EXISTS index_orders_user_created
@@ -305,19 +473,27 @@ class AccountService:
                 ON account_usage_events(user_id, created_at DESC);
                 CREATE INDEX IF NOT EXISTS index_usage_events_meeting_kind
                 ON account_usage_events(user_id, meeting_id, kind, created_at DESC);
+                CREATE INDEX IF NOT EXISTS index_growth_events_channel_created
+                ON growth_channel_events(channel_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS index_growth_claims_user_created
+                ON growth_redemption_claims(user_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS index_growth_actions_campaign_score
+                ON growth_campaign_actions(campaign_id, score DESC, created_at ASC);
                 """
             )
             self._ensure_profile_columns(conn)
             self._ensure_billing_columns(conn)
             self._ensure_auth_code_purpose_constraint(conn)
             self._ensure_account_meeting_template_constraint(conn)
-            self._seed_plans(conn)
-            if self.admin_password:
+            if seed_plans:
+                self._seed_plans(conn)
+            if bootstrap_admin and self.admin_password:
                 self._bootstrap_admin(conn)
             self._ensure_free_entitlements(conn)
             self._ensure_usage_balances(conn)
+            self._ensure_growth_defaults(conn)
 
-    def register(self, username: str, password: str) -> dict:
+    def register(self, username: str, password: str, referral_code: str | None = None) -> dict:
         clean_username = self._validate_username(username)
         self._validate_password(password)
         user_id = str(uuid.uuid4())
@@ -362,6 +538,64 @@ class AccountService:
                 (str(uuid.uuid4()), user_id, clean_username.casefold(), now),
             )
             self._ensure_usage_balance(conn, user_id, now)
+            self._initialize_growth_user(conn, user_id, now, referral_code)
+            return self._create_session(conn, user_id)
+
+    def register_with_identity(
+        self,
+        username: str,
+        password: str,
+        channel: str,
+        identifier: str,
+        code: str,
+        referral_code: str | None = None,
+    ) -> dict:
+        clean_username = self._validate_username(username)
+        self._validate_password(password)
+        clean_channel, subject = self._normalize_identity(channel, identifier)
+        if clean_channel != "email":
+            raise AccountError("目前仅支持邮箱注册")
+        now = int(time.time())
+        salt = secrets.token_bytes(16)
+        user_id = str(uuid.uuid4())
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._consume_auth_code(conn, clean_channel, subject, code, "register", now)
+            existing = conn.execute(
+                "SELECT user_id FROM account_identities WHERE provider = ? AND subject = ?",
+                (clean_channel, subject),
+            ).fetchone()
+            if existing is not None:
+                raise AccountConflictError("该邮箱已注册，请直接登录")
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO users (
+                        id, username, username_normalized, password_hash,
+                        password_salt, role, enabled, created_at
+                    ) VALUES (?, ?, ?, ?, ?, 'user', 1, ?)
+                    """,
+                    (
+                        user_id,
+                        clean_username,
+                        clean_username.casefold(),
+                        self._password_hash(password, salt),
+                        salt.hex(),
+                        now,
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise AccountConflictError("用户名已存在") from exc
+            conn.execute(
+                "INSERT INTO user_entitlements (user_id, vip_enabled, construction_logs_unlocked, quota_granted, updated_at) VALUES (?, 0, 0, ?, ?)",
+                (user_id, self.free_request_limit, now),
+            )
+            conn.execute(
+                "INSERT INTO account_identities (id, user_id, provider, subject, verified, created_at) VALUES (?, ?, ?, ?, 1, ?)",
+                (str(uuid.uuid4()), user_id, clean_channel, subject, now),
+            )
+            self._ensure_usage_balance(conn, user_id, now)
+            self._initialize_growth_user(conn, user_id, now, referral_code)
             return self._create_session(conn, user_id)
 
     def login(self, username: str, password: str) -> dict:
@@ -391,8 +625,10 @@ class AccountService:
         purpose: str = "login",
     ) -> dict:
         clean_channel, subject = self._normalize_identity(channel, identifier)
-        if purpose not in {"login", "bind", "reset_password"}:
+        if purpose not in {"login", "register", "bind", "reset_password"}:
             raise AccountError("验证码用途无效")
+        if clean_channel == "phone":
+            raise AccountDeliveryUnavailableError("手机号验证码服务暂未开放")
         if self.auth_code_sender is None and not self.expose_auth_code:
             raise AccountDeliveryUnavailableError("验证码发送服务尚未配置")
 
@@ -441,6 +677,13 @@ class AccountService:
         if self.auth_code_sender is not None:
             try:
                 self.auth_code_sender(clean_channel, subject, code)
+            except AccountDeliveryUnavailableError:
+                with self._connect() as conn:
+                    conn.execute(
+                        "UPDATE auth_verification_codes SET consumed_at = ? WHERE id = ?",
+                        (int(time.time()), code_id),
+                    )
+                raise
             except Exception as exc:
                 with self._connect() as conn:
                     conn.execute(
@@ -718,6 +961,16 @@ class AccountService:
                 role=row["role"],
             )
 
+    def dashboard_admin_principal(self) -> AccountPrincipal:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id, username, role FROM users WHERE username_normalized = ? AND role = 'admin' AND enabled = 1",
+                (self.admin_username.casefold(),),
+            ).fetchone()
+            if row is None:
+                raise AccountPermissionError("管理员账户不可用")
+            return AccountPrincipal(row["id"], "dashboard", row["username"], row["role"])
+
     def profile(self, principal: AccountPrincipal) -> dict:
         with self._connect() as conn:
             return self._profile(conn, principal.user_id)
@@ -922,13 +1175,80 @@ class AccountService:
             )
         return {"status": "cleared", "deleted": len(rows), "deleted_at": effective_deleted_at}
 
-    def ensure_stt_available(self, principal: AccountPrincipal) -> dict:
+    @staticmethod
+    def canonical_stt_usage_key(
+        user_id: str,
+        usage_key: str | None,
+        *,
+        meeting_id: str | None = None,
+        fallback_suffix: str | None = None,
+    ) -> str:
+        clean_user_id = user_id.strip()
+        if not clean_user_id:
+            raise AccountAuthError("用户身份无效")
+        supplied = (usage_key or "").strip()
+        if not supplied:
+            supplied = f"{meeting_id or 'unscoped'}:{fallback_suffix or uuid.uuid4().hex}"
+        material = f"stt:{clean_user_id}:{supplied}"
+        if len(material) <= 200:
+            return material
+        digest = hashlib.sha256(material.encode("utf-8")).hexdigest()
+        return f"stt:{clean_user_id}:{digest}"[:200]
+
+    def ensure_stt_available(
+        self,
+        principal: AccountPrincipal,
+        *,
+        idempotency_key: str | None = None,
+    ) -> dict:
         with self._connect() as conn:
             self._ensure_usage_balance(conn, principal.user_id, int(time.time()))
             balance = self._usage_balance(conn, principal.user_id)
-            if balance["stt_seconds_remaining"] <= 0 and not principal.is_admin:
-                raise AccountPermissionError("本周期转写分钟已用完，请升级套餐后继续")
+            clean_key = (idempotency_key or "").strip()
+            if clean_key:
+                existing = conn.execute(
+                    "SELECT user_id, kind, status FROM account_usage_events WHERE idempotency_key = ?",
+                    (clean_key,),
+                ).fetchone()
+                if existing is not None:
+                    if str(existing["user_id"]) != principal.user_id:
+                        raise AccountConflictError("用量幂等键已被其他账户使用")
+                    if str(existing["kind"]) != "stt_seconds" or str(existing["status"]) != "succeeded":
+                        raise AccountConflictError("用量幂等键已用于其他计费类型")
+                    return balance
+            if balance["points_remaining"] < self.stt_points_per_minute and not principal.is_admin:
+                raise AccountPermissionError("积分不足，请先补充积分")
             return balance
+
+    def _stt_principal_for_user(self, user_id: str) -> AccountPrincipal:
+        """Resolve a stateless STT-token subject to its current account role."""
+        clean_user_id = user_id.strip()
+        if not clean_user_id:
+            raise AccountAuthError("用户身份无效")
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id, username, role, enabled FROM users WHERE id = ?",
+                (clean_user_id,),
+            ).fetchone()
+        if row is None or not row["enabled"]:
+            raise AccountAuthError("用户账户无效或已停用")
+        return AccountPrincipal(
+            user_id=row["id"],
+            session_id="stt-token",
+            username=row["username"],
+            role=row["role"],
+        )
+
+    def ensure_stt_available_for_user(
+        self,
+        user_id: str,
+        *,
+        idempotency_key: str | None = None,
+    ) -> dict:
+        return self.ensure_stt_available(
+            self._stt_principal_for_user(user_id),
+            idempotency_key=idempotency_key,
+        )
 
     def record_stt_usage(
         self,
@@ -939,6 +1259,7 @@ class AccountService:
         idempotency_key: str,
     ) -> dict:
         seconds = max(1, (max(0, int(duration_ms)) + 999) // 1000)
+        points = max(1, (seconds + 59) // 60) * self.stt_points_per_minute
         clean_key = idempotency_key.strip()
         if not clean_key or len(clean_key) > 200:
             raise AccountError("用量幂等键无效")
@@ -950,18 +1271,25 @@ class AccountService:
                 (clean_key,),
             ).fetchone()
             if existing is not None:
+                # The historical schema has a global UNIQUE constraint on the key.
+                # Keep that constraint for backwards compatibility, but never let a
+                # key created by another account replay its usage result.
+                if str(existing["user_id"]) != principal.user_id:
+                    raise AccountConflictError("用量幂等键已被其他账户使用")
+                if str(existing["kind"]) != "stt_seconds":
+                    raise AccountConflictError("用量幂等键已用于其他计费类型")
                 return self._usage_event_payload(existing)
             self._ensure_usage_balance(conn, principal.user_id, now)
             balance = self._usage_balance(conn, principal.user_id)
-            if seconds > balance["stt_seconds_remaining"] and not principal.is_admin:
-                raise AccountPermissionError("本周期剩余转写分钟不足")
+            if points > balance["points_remaining"] and not principal.is_admin:
+                raise AccountPermissionError("积分不足，请先补充积分")
             conn.execute(
                 """
                 UPDATE account_usage_balances
-                SET stt_seconds_used = stt_seconds_used + ?, updated_at = ?
+                SET stt_seconds_used = stt_seconds_used + ?, points_used = points_used + ?, updated_at = ?
                 WHERE user_id = ?
                 """,
-                (seconds, now, principal.user_id),
+                (seconds, points, now, principal.user_id),
             )
             event_id = str(uuid.uuid4())
             conn.execute(
@@ -969,18 +1297,375 @@ class AccountService:
                 INSERT INTO account_usage_events (
                     id, idempotency_key, user_id, meeting_id, kind, quantity,
                     unit, status, charged, metadata_json, created_at, completed_at
-                ) VALUES (?, ?, ?, ?, 'stt_seconds', ?, 'seconds', 'succeeded', 1, '{}', ?, ?)
+                ) VALUES (?, ?, ?, ?, 'stt_seconds', ?, 'points', 'succeeded', 1, ?, ?, ?)
                 """,
-                (event_id, clean_key, principal.user_id, meeting_id, seconds, now, now),
+                (event_id, clean_key, principal.user_id, meeting_id, points,
+                 json.dumps({"duration_seconds": seconds, "points": points}), now, now),
             )
             return self._usage_event_payload(
                 conn.execute("SELECT * FROM account_usage_events WHERE id = ?", (event_id,)).fetchone()
             )
 
+    def record_stt_usage_for_user(
+        self,
+        user_id: str,
+        *,
+        duration_ms: int,
+        meeting_id: str | None,
+        idempotency_key: str,
+    ) -> dict:
+        return self.record_stt_usage(
+            self._stt_principal_for_user(user_id),
+            duration_ms=duration_ms,
+            meeting_id=meeting_id,
+            idempotency_key=idempotency_key,
+        )
+
+    def usage_event_for_user(self, user_id: str, idempotency_key: str) -> dict | None:
+        """Read a settled usage event for rolling-upgrade idempotency checks."""
+        principal = self._stt_principal_for_user(user_id)
+        clean_key = idempotency_key.strip()
+        if not clean_key:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM account_usage_events WHERE idempotency_key = ? AND user_id = ?",
+                (clean_key, principal.user_id),
+            ).fetchone()
+        if row is None or str(row["kind"]) != "stt_seconds" or str(row["status"]) != "succeeded":
+            return None
+        return self._usage_event_payload(row)
+
     def usage_summary(self, principal: AccountPrincipal) -> dict:
         with self._connect() as conn:
             self._ensure_usage_balance(conn, principal.user_id, int(time.time()))
             return self._usage_balance(conn, principal.user_id)
+
+    def growth_overview(self, principal: AccountPrincipal) -> dict:
+        now = int(time.time())
+        with self._connect() as conn:
+            self._initialize_growth_user(conn, principal.user_id, now, None)
+            referral = conn.execute(
+                "SELECT code, used_count, max_uses, expires_at FROM growth_referral_codes WHERE user_id = ?",
+                (principal.user_id,),
+            ).fetchone()
+            rewards = conn.execute(
+                "SELECT reward_type, COALESCE(SUM(quantity), 0) AS quantity FROM growth_reward_ledger WHERE user_id = ? AND status = 'fulfilled' GROUP BY reward_type",
+                (principal.user_id,),
+            ).fetchall()
+            pending = conn.execute(
+                "SELECT COUNT(*) AS total FROM growth_referral_bindings WHERE referrer_user_id = ? AND rewarded_at IS NULL",
+                (principal.user_id,),
+            ).fetchone()
+            campaigns = self._campaign_rows(conn, now)
+            channel = self._private_channel(conn)
+            return {
+                "referral": {
+                    "code": referral["code"],
+                    "successful_invites": int(referral["used_count"]),
+                    "pending_rewards": int(pending["total"]),
+                    "share_path": f"/app/?ref={referral['code']}",
+                },
+                "rewards": {row["reward_type"]: int(row["quantity"]) for row in rewards},
+                "campaigns": campaigns,
+                "private_channel": channel,
+            }
+
+    def redeem_code(self, principal: AccountPrincipal, raw_code: str) -> dict:
+        code = raw_code.strip().upper().replace(" ", "")
+        if not re.fullmatch(r"[A-Z0-9-]{4,64}", code):
+            raise AccountError("兑换码格式无效")
+        now = int(time.time())
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """
+                SELECT c.*, b.name AS batch_name, b.reward_type, b.reward_payload_json,
+                       b.enabled AS batch_enabled
+                FROM growth_redemption_codes c
+                JOIN growth_redemption_batches b ON b.id = c.batch_id
+                WHERE c.code = ?
+                """,
+                (code,),
+            ).fetchone()
+            if row is None:
+                raise AccountNotFoundError("兑换码不存在")
+            if not row["batch_enabled"] or row["disabled_at"] is not None:
+                raise AccountError("兑换码已停用")
+            expires_at = row["expires_at"]
+            if expires_at is not None and int(expires_at) <= now:
+                conn.execute("UPDATE growth_redemption_codes SET status = 'expired' WHERE id = ?", (row["id"],))
+                raise AccountError("兑换码已过期")
+            if int(row["used_count"]) >= int(row["max_uses"]):
+                raise AccountConflictError("兑换码已用尽")
+            existing = conn.execute(
+                "SELECT id FROM growth_redemption_claims WHERE code_id = ? AND user_id = ?",
+                (row["id"], principal.user_id),
+            ).fetchone()
+            if existing is not None:
+                raise AccountConflictError("你已经兑换过该兑换码")
+            payload = json.loads(row["reward_payload_json"] or "{}")
+            quantity = int(payload.get("quantity", 0))
+            if quantity <= 0:
+                raise AccountError("兑换码奖励配置无效")
+            claim_id = str(uuid.uuid4())
+            conn.execute(
+                "INSERT INTO growth_redemption_claims (id, code_id, user_id, reward_type, reward_payload_json, status, created_at, fulfilled_at) VALUES (?, ?, ?, ?, ?, 'fulfilled', ?, ?)",
+                (claim_id, row["id"], principal.user_id, row["reward_type"], row["reward_payload_json"], now, now),
+            )
+            self._grant_growth_reward(
+                conn, principal.user_id, "redemption", claim_id,
+                row["reward_type"], quantity, f"redeem:{row['id']}:{principal.user_id}", now,
+            )
+            used_count = int(row["used_count"]) + 1
+            conn.execute(
+                "UPDATE growth_redemption_codes SET used_count = ?, status = ? WHERE id = ?",
+                (used_count, "used" if used_count >= int(row["max_uses"]) else "partial", row["id"]),
+            )
+            return {
+                "status": "fulfilled",
+                "claim_id": claim_id,
+                "reward_type": row["reward_type"],
+                "quantity": quantity,
+                "message": self._reward_message(row["reward_type"], quantity),
+                "profile": self._profile(conn, principal.user_id),
+                "private_channel": self._private_channel(conn),
+            }
+
+    def redemption_history(self, principal: AccountPrincipal) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT cl.id, c.code, b.name AS batch_name, cl.reward_type,
+                       cl.reward_payload_json, cl.status, cl.created_at
+                FROM growth_redemption_claims cl
+                JOIN growth_redemption_codes c ON c.id = cl.code_id
+                JOIN growth_redemption_batches b ON b.id = c.batch_id
+                WHERE cl.user_id = ? ORDER BY cl.created_at DESC LIMIT 50
+                """,
+                (principal.user_id,),
+            ).fetchall()
+            return [self._json_row(row, "reward_payload_json", "reward") for row in rows]
+
+    def list_growth_campaigns(self) -> list[dict]:
+        with self._connect() as conn:
+            self._settle_due_campaigns(conn, int(time.time()))
+            return self._campaign_rows(conn, int(time.time()))
+
+    def campaign_detail(self, principal: AccountPrincipal, campaign_id: str) -> dict:
+        now = int(time.time())
+        with self._connect() as conn:
+            self._settle_due_campaigns(conn, now)
+            campaign = self._campaign_payload(conn, campaign_id)
+            entry = conn.execute(
+                "SELECT score, rank FROM growth_campaign_entries WHERE campaign_id = ? AND user_id = ?",
+                (campaign_id, principal.user_id),
+            ).fetchone()
+            actions = conn.execute(
+                "SELECT action_type, action_key, score, status, created_at FROM growth_campaign_actions WHERE campaign_id = ? AND user_id = ? ORDER BY created_at DESC LIMIT 100",
+                (campaign_id, principal.user_id),
+            ).fetchall()
+            campaign["joined"] = entry is not None
+            campaign["my_score"] = int(entry["score"]) if entry else 0
+            campaign["my_rank"] = int(entry["rank"]) if entry and entry["rank"] is not None else None
+            campaign["actions"] = [dict(row) for row in actions]
+            campaign["leaderboard"] = self._campaign_leaderboard(conn, campaign_id, 20)
+            return campaign
+
+    def join_campaign(self, principal: AccountPrincipal, campaign_id: str) -> dict:
+        now = int(time.time())
+        with self._connect() as conn:
+            campaign = self._campaign_payload(conn, campaign_id)
+            self._assert_campaign_open(campaign, now)
+            self._ensure_campaign_entry(conn, campaign_id, principal.user_id, now)
+            return {"status": "joined", "campaign_id": campaign_id}
+
+    def campaign_checkin(self, principal: AccountPrincipal, campaign_id: str) -> dict:
+        now = int(time.time())
+        action_date = datetime.fromtimestamp(now, timezone.utc).astimezone(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
+        with self._connect() as conn:
+            campaign = self._campaign_payload(conn, campaign_id)
+            self._assert_campaign_open(campaign, now)
+            self._ensure_campaign_entry(conn, campaign_id, principal.user_id, now)
+            reward = int(campaign["rules"].get("checkin_reward", 10))
+            action_id = str(uuid.uuid4())
+            try:
+                conn.execute(
+                    "INSERT INTO growth_campaign_actions (id, campaign_id, user_id, action_type, action_key, action_date, score, payload_json, created_at) VALUES (?, ?, ?, 'checkin', ?, ?, ?, ?, ?)",
+                    (action_id, campaign_id, principal.user_id, action_date, action_date, 1, json.dumps({"reward": reward}, ensure_ascii=False), now),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise AccountConflictError("今天已经签到过了") from exc
+            self._increment_campaign_score(conn, campaign_id, principal.user_id, 1, now)
+            self._grant_growth_reward(conn, principal.user_id, "campaign_checkin", action_id, "points", reward, f"campaign-checkin:{campaign_id}:{principal.user_id}:{action_date}", now)
+            return {"status": "accepted", "quantity": reward, "message": f"签到成功，获得 {reward} 积分"}
+
+    def campaign_answer(self, principal: AccountPrincipal, campaign_id: str, question_key: str, answer: str) -> dict:
+        now = int(time.time())
+        clean_key = question_key.strip()[:80]
+        clean_answer = answer.strip()[:200]
+        with self._connect() as conn:
+            campaign = self._campaign_payload(conn, campaign_id)
+            self._assert_campaign_open(campaign, now)
+            self._ensure_campaign_entry(conn, campaign_id, principal.user_id, now)
+            questions = campaign["rules"].get("questions", [])
+            question = next((item for item in questions if str(item.get("key", "")) == clean_key), None)
+            if not question:
+                raise AccountNotFoundError("题目不存在")
+            correct = clean_answer.casefold() == str(question.get("answer", "")).strip().casefold()
+            action_id = str(uuid.uuid4())
+            try:
+                conn.execute(
+                    "INSERT INTO growth_campaign_actions (id, campaign_id, user_id, action_type, action_key, score, payload_json, status, created_at) VALUES (?, ?, ?, 'answer', ?, ?, ?, ?, ?)",
+                    (action_id, campaign_id, principal.user_id, clean_key, 1 if correct else 0, json.dumps({"answer": clean_answer, "correct": correct}, ensure_ascii=False), "correct" if correct else "wrong", now),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise AccountConflictError("这道题已经提交过了") from exc
+            reward = int(campaign["rules"].get("answer_reward", 20)) if correct else 0
+            if correct:
+                self._increment_campaign_score(conn, campaign_id, principal.user_id, 1, now)
+                self._grant_growth_reward(conn, principal.user_id, "campaign_answer", action_id, "points", reward, f"campaign-answer:{campaign_id}:{principal.user_id}:{clean_key}", now)
+            return {"status": "accepted", "correct": correct, "quantity": reward, "message": f"回答{'正确' if correct else '错误'}" + (f"，获得 {reward} 积分" if reward else "")}
+
+    def campaign_draw(self, principal: AccountPrincipal, campaign_id: str) -> dict:
+        now = int(time.time())
+        action_date = datetime.fromtimestamp(now, timezone.utc).astimezone(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
+        with self._connect() as conn:
+            campaign = self._campaign_payload(conn, campaign_id)
+            self._assert_campaign_open(campaign, now)
+            self._ensure_campaign_entry(conn, campaign_id, principal.user_id, now)
+            action_id = str(uuid.uuid4())
+            probability = max(0, min(10000, int(campaign["rules"].get("win_probability", 1500))))
+            won = secrets.randbelow(10000) < probability
+            try:
+                conn.execute(
+                    "INSERT INTO growth_campaign_actions (id, campaign_id, user_id, action_type, action_key, action_date, score, payload_json, status, created_at) VALUES (?, ?, ?, 'draw', ?, ?, ?, ?, ?, ?)",
+                    (action_id, campaign_id, principal.user_id, action_date, action_date, 1 if won else 0, json.dumps({"won": won, "probability": probability}, ensure_ascii=False), "won" if won else "miss", now),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise AccountConflictError("今天已经抽过奖了") from exc
+            reward = int(campaign["rules"].get("draw_reward", 50)) if won else 0
+            if won:
+                self._increment_campaign_score(conn, campaign_id, principal.user_id, 1, now)
+                self._grant_growth_reward(conn, principal.user_id, "campaign_draw", action_id, "points", reward, f"campaign-draw:{campaign_id}:{principal.user_id}:{action_date}", now)
+            return {"status": "accepted", "won": won, "quantity": reward, "probability": probability, "message": f"{'恭喜中奖，获得 ' + str(reward) + ' 积分' if won else '本次未中奖，明天再来'}"}
+
+    def campaign_leaderboard(self, campaign_id: str, limit: int = 20) -> list[dict]:
+        with self._connect() as conn:
+            self._campaign_payload(conn, campaign_id)
+            return self._campaign_leaderboard(conn, campaign_id, limit)
+
+    def admin_settle_campaign(self, principal: AccountPrincipal, campaign_id: str) -> dict:
+        self._require_admin(principal)
+        with self._connect() as conn:
+            return self._settle_campaign(conn, campaign_id, int(time.time()))
+
+    def private_channel(self) -> dict | None:
+        with self._connect() as conn:
+            return self._private_channel(conn)
+
+    def record_channel_event(
+        self, event_type: str, *, channel_id: str, user_id: str | None,
+        source: str = "pwa", campaign_id: str | None = None,
+        metadata: dict | None = None,
+    ) -> dict:
+        allowed = {"view", "click", "copy_link", "open_qr", "redeem", "register", "qualified_referral"}
+        if event_type not in allowed:
+            raise AccountError("渠道事件类型无效")
+        now = int(time.time())
+        with self._connect() as conn:
+            channel = conn.execute("SELECT id FROM growth_private_channels WHERE id = ? AND enabled = 1", (channel_id,)).fetchone()
+            if channel is None:
+                raise AccountNotFoundError("私域渠道不存在")
+            event_id = str(uuid.uuid4())
+            conn.execute(
+                "INSERT INTO growth_channel_events (id, channel_id, event_type, user_id, campaign_id, source, created_at, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (event_id, channel_id, event_type, user_id, campaign_id, source[:64], now, json.dumps(metadata or {}, ensure_ascii=False)),
+            )
+            return {"status": "recorded", "event_id": event_id}
+
+    def admin_growth_overview(self, principal: AccountPrincipal) -> dict:
+        self._require_admin(principal)
+        now = int(time.time())
+        day_start = now - now % 86400
+        with self._connect() as conn:
+            def scalar(sql: str, args: tuple = ()) -> int:
+                return int(conn.execute(sql, args).fetchone()[0] or 0)
+            total_users = scalar("SELECT COUNT(*) FROM users WHERE role = 'user'")
+            invitations = scalar("SELECT COUNT(*) FROM growth_referral_bindings")
+            claims = scalar("SELECT COUNT(*) FROM growth_redemption_claims WHERE status = 'fulfilled'")
+            codes = scalar("SELECT COUNT(*) FROM growth_redemption_codes")
+            return {
+                "users": total_users,
+                "new_users_today": scalar("SELECT COUNT(*) FROM users WHERE role = 'user' AND created_at >= ?", (day_start,)),
+                "successful_invites": invitations,
+                "invitation_conversion_rate": round(invitations / total_users * 100, 1) if total_users else 0,
+                "redemption_rate": round(claims / codes * 100, 1) if codes else 0,
+                "active_campaigns": scalar("SELECT COUNT(*) FROM growth_campaigns WHERE status = 'active' AND starts_at <= ? AND ends_at > ?", (now, now)),
+                "rewards_points": scalar("SELECT COALESCE(SUM(quantity), 0) FROM growth_reward_ledger WHERE reward_type = 'points' AND status = 'fulfilled'"),
+                "channel_clicks": scalar("SELECT COUNT(*) FROM growth_channel_events WHERE event_type IN ('click', 'open_qr', 'copy_link')"),
+            }
+
+    def admin_create_redemption_batch(
+        self, principal: AccountPrincipal, *, name: str, quantity: int,
+        reward_type: str, reward_quantity: int, expires_at: int | None,
+        max_uses: int = 1, prefix: str = "ZW",
+    ) -> dict:
+        self._require_admin(principal)
+        if not name.strip() or not 1 <= quantity <= 5000 or reward_quantity < 1 or max_uses < 1:
+            raise AccountError("兑换码批次参数无效")
+        if reward_type not in {"points", "coupon", "entitlement"}:
+            raise AccountError("奖励类型无效")
+        clean_prefix = re.sub(r"[^A-Z0-9]", "", prefix.upper())[:12] or "ZW"
+        now = int(time.time())
+        batch_id = str(uuid.uuid4())
+        codes: list[str] = []
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "INSERT INTO growth_redemption_batches (id, name, code_type, reward_type, reward_payload_json, total_count, created_by, created_at, expires_at) VALUES (?, ?, 'gift', ?, ?, ?, ?, ?, ?)",
+                (batch_id, name.strip(), reward_type, json.dumps({"quantity": reward_quantity}, ensure_ascii=False), quantity, principal.user_id, now, expires_at),
+            )
+            for _ in range(quantity):
+                code = f"{clean_prefix}-{secrets.token_hex(4).upper()}"
+                codes.append(code)
+                conn.execute(
+                    "INSERT INTO growth_redemption_codes (id, batch_id, code, max_uses, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (str(uuid.uuid4()), batch_id, code, max_uses, expires_at, now),
+                )
+        return {"id": batch_id, "name": name.strip(), "codes": codes, "total_count": quantity}
+
+    def admin_list_redemption_batches(self, principal: AccountPrincipal) -> list[dict]:
+        self._require_admin(principal)
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT b.*, COALESCE(SUM(c.used_count), 0) AS redeemed_count
+                FROM growth_redemption_batches b
+                LEFT JOIN growth_redemption_codes c ON c.batch_id = b.id
+                GROUP BY b.id ORDER BY b.created_at DESC
+                """
+            ).fetchall()
+            return [self._json_row(row, "reward_payload_json", "reward") for row in rows]
+
+    def admin_upsert_private_channel(self, principal: AccountPrincipal, payload: dict) -> dict:
+        self._require_admin(principal)
+        now = int(time.time())
+        channel_id = str(payload.get("id") or "default-welfare-group")
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO growth_private_channels (id, name, qr_image_url, join_url, short_url, slogan, reward_type, reward_payload_json, valid_until, enabled, updated_by, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET name=excluded.name, qr_image_url=excluded.qr_image_url,
+                  join_url=excluded.join_url, short_url=excluded.short_url, slogan=excluded.slogan,
+                  reward_type=excluded.reward_type, reward_payload_json=excluded.reward_payload_json,
+                  valid_until=excluded.valid_until, enabled=excluded.enabled, updated_by=excluded.updated_by,
+                  updated_at=excluded.updated_at
+                """,
+                (channel_id, str(payload.get("name", "智悟本福利群"))[:80], str(payload.get("qr_image_url", ""))[:500], str(payload.get("join_url", ""))[:500], str(payload.get("short_url", ""))[:500], str(payload.get("slogan", ""))[:300], str(payload.get("reward_type", "points"))[:30], json.dumps(payload.get("reward", {"quantity": 50}), ensure_ascii=False), payload.get("valid_until"), int(bool(payload.get("enabled", True))), principal.user_id, now),
+            )
+            return self._private_channel(conn, channel_id)
 
     def list_plans(self) -> list[dict]:
         with self._connect() as conn:
@@ -988,7 +1673,7 @@ class AccountService:
                 """
                 SELECT code, name, description, price_cents, quota_amount,
                        construction_logs_unlocked, included_minutes,
-                       ai_credits, team_seats, duration_days
+                       ai_credits, points, team_seats, duration_days
                 FROM account_plans WHERE active = 1
                 ORDER BY sort_order ASC, price_cents ASC
                 """
@@ -997,7 +1682,7 @@ class AccountService:
 
     def create_order(self, principal: AccountPrincipal, plan_code: str) -> dict:
         if principal.is_admin:
-            raise AccountConflictError("管理员已拥有全部 VIP 权益")
+            raise AccountConflictError("管理员已拥有不限积分和全部功能权限")
         now = int(time.time())
         with self._connect() as conn:
             plan = conn.execute(
@@ -1016,10 +1701,10 @@ class AccountService:
             conn.execute(
                 """
                 INSERT INTO recharge_orders (
-                    id, user_id, plan_id, amount_cents, quota_amount,
+                    id, user_id, plan_id, amount_cents, quota_amount, points,
                     construction_logs_unlocked, included_minutes,
                     ai_credits, team_seats, duration_days, status, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
                 """,
                 (
                     order_id,
@@ -1027,6 +1712,7 @@ class AccountService:
                     plan["id"],
                     plan["price_cents"],
                     plan["quota_amount"],
+                    plan["points"],
                     plan["construction_logs_unlocked"],
                     plan["included_minutes"],
                     plan["ai_credits"],
@@ -1178,6 +1864,7 @@ class AccountService:
                 UPDATE account_usage_balances
                 SET included_stt_seconds = MAX(included_stt_seconds, ?),
                     ai_credits_granted = MAX(ai_credits_granted, ?),
+                    points_granted = MAX(points_granted, ?),
                     team_seats = MAX(team_seats, ?),
                     updated_at = ?
                 WHERE user_id = ?
@@ -1185,6 +1872,7 @@ class AccountService:
                 (
                     int(order["included_minutes"]) * 60,
                     int(order["ai_credits"]),
+                    int(order["points"] or order["quota_amount"]),
                     int(order["team_seats"]),
                     now,
                     order["user_id"],
@@ -1389,19 +2077,20 @@ class AccountService:
             """,
             (self.free_request_limit, now),
         )
-        conn.execute(
-            """
-            UPDATE agent_tokens
-            SET request_limit = MAX(request_limit, ?)
-            WHERE id IN (
-                SELECT 'user:' || e.user_id
-                FROM user_entitlements e
-                JOIN users u ON u.id = e.user_id
-                WHERE u.role = 'user' AND e.vip_enabled = 0
+        if self._table_exists(conn, "agent_tokens"):
+            conn.execute(
+                """
+                UPDATE agent_tokens
+                SET request_limit = MAX(request_limit, ?)
+                WHERE id IN (
+                    SELECT 'user:' || e.user_id
+                    FROM user_entitlements e
+                    JOIN users u ON u.id = e.user_id
+                    WHERE u.role = 'user' AND e.vip_enabled = 0
+                )
+                """,
+                (self.free_request_limit,),
             )
-            """,
-            (self.free_request_limit,),
-        )
 
     def _ensure_usage_balances(self, conn: sqlite3.Connection) -> None:
         now = int(time.time())
@@ -1422,26 +2111,28 @@ class AccountService:
         is_admin = role_row["role"] == "admin"
         stt_seconds = self.admin_request_limit if is_admin else self.free_stt_minutes * 60
         ai_credits = self.admin_request_limit if is_admin else self.free_ai_credits
+        points = self.admin_request_limit if is_admin else self.free_points
         conn.execute(
             """
             INSERT INTO account_usage_balances (
                 user_id, included_stt_seconds, stt_seconds_used,
-                ai_credits_granted, ai_credits_used, team_seats,
+                ai_credits_granted, ai_credits_used, points_granted, points_used, team_seats,
                 period_start, period_end, updated_at
-            ) VALUES (?, ?, 0, ?, 0, 1, ?, ?, ?)
+            ) VALUES (?, ?, 0, ?, 0, ?, 0, 1, ?, ?, ?)
             ON CONFLICT(user_id) DO NOTHING
             """,
-            (user_id, stt_seconds, ai_credits, now, now + 30 * 24 * 60 * 60, now),
+            (user_id, stt_seconds, ai_credits, points, now, now + 30 * 24 * 60 * 60, now),
         )
         entitlement = conn.execute(
             "SELECT vip_enabled FROM user_entitlements WHERE user_id = ?", (user_id,)
         ).fetchone()
         reset_stt = self.admin_request_limit if is_admin else self.free_stt_minutes * 60
         reset_ai = self.admin_request_limit if is_admin else self.free_ai_credits
+        reset_points = self.admin_request_limit if is_admin else self.free_points
         if entitlement is not None and entitlement["vip_enabled"] and not is_admin:
             active = conn.execute(
                 """
-                SELECT included_minutes, ai_credits
+                SELECT included_minutes, ai_credits, points, quota_amount
                 FROM recharge_orders
                 WHERE user_id = ? AND status = 'approved' AND subscription_expires_at > ?
                 ORDER BY subscription_expires_at DESC LIMIT 1
@@ -1451,15 +2142,17 @@ class AccountService:
             if active is not None:
                 reset_stt = int(active["included_minutes"]) * 60
                 reset_ai = int(active["ai_credits"])
+                reset_points = max(int(active["points"] or 0), int(active["quota_amount"]))
         conn.execute(
             """
             UPDATE account_usage_balances
             SET included_stt_seconds = ?, stt_seconds_used = 0,
                 ai_credits_granted = ?, ai_credits_used = 0,
+                points_granted = ?, points_used = 0,
                 period_start = ?, period_end = ?, updated_at = ?
             WHERE user_id = ? AND period_end <= ?
             """,
-            (reset_stt, reset_ai, now, now + 30 * 24 * 60 * 60, now, user_id, now),
+            (reset_stt, reset_ai, reset_points, now, now + 30 * 24 * 60 * 60, now, user_id, now),
         )
 
     @staticmethod
@@ -1467,7 +2160,8 @@ class AccountService:
         row = conn.execute(
             """
             SELECT included_stt_seconds, stt_seconds_used,
-                   ai_credits_granted, ai_credits_used, team_seats,
+                   ai_credits_granted, ai_credits_used,
+                   points_granted, points_used, team_seats,
                    period_start, period_end
             FROM account_usage_balances WHERE user_id = ?
             """,
@@ -1488,6 +2182,9 @@ class AccountService:
             "ai_credits_granted": granted_credits,
             "ai_credits_used": used_credits,
             "ai_credits_remaining": max(0, granted_credits - used_credits),
+            "points_granted": int(row["points_granted"]),
+            "points_used": int(row["points_used"]),
+            "points_remaining": max(0, int(row["points_granted"]) - int(row["points_used"])),
             "team_seats": int(row["team_seats"]),
             "period_start": int(row["period_start"]),
             "period_end": int(row["period_end"]),
@@ -1561,14 +2258,34 @@ class AccountService:
         if "avatar_data_url" not in columns:
             conn.execute("ALTER TABLE users ADD COLUMN avatar_data_url TEXT")
 
-    @staticmethod
-    def _ensure_billing_columns(conn: sqlite3.Connection) -> None:
+    def _ensure_billing_columns(self, conn: sqlite3.Connection) -> None:
         entitlement_columns = {
             str(row["name"])
             for row in conn.execute("PRAGMA table_info(user_entitlements)").fetchall()
         }
         if "vip_expires_at" not in entitlement_columns:
             conn.execute("ALTER TABLE user_entitlements ADD COLUMN vip_expires_at INTEGER")
+        usage_columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(account_usage_balances)").fetchall()
+        }
+        for name, definition in (
+            ("points_granted", "INTEGER NOT NULL DEFAULT 0"),
+            ("points_used", "INTEGER NOT NULL DEFAULT 0"),
+        ):
+            if name not in usage_columns:
+                conn.execute(f"ALTER TABLE account_usage_balances ADD COLUMN {name} {definition}")
+        conn.execute(
+            """
+            UPDATE account_usage_balances
+            SET points_granted = CASE
+                WHEN points_granted > 0 THEN points_granted
+                ELSE MAX(?, included_stt_seconds / 60 * ?)
+            END
+            WHERE points_granted <= 0
+            """,
+            (self.free_points, self.stt_points_per_minute),
+        )
         plan_columns = {
             str(row["name"])
             for row in conn.execute("PRAGMA table_info(account_plans)").fetchall()
@@ -1576,6 +2293,7 @@ class AccountService:
         for name, definition in (
             ("included_minutes", "INTEGER NOT NULL DEFAULT 0"),
             ("ai_credits", "INTEGER NOT NULL DEFAULT 0"),
+            ("points", "INTEGER NOT NULL DEFAULT 0"),
             ("team_seats", "INTEGER NOT NULL DEFAULT 1"),
             ("duration_days", "INTEGER NOT NULL DEFAULT 30"),
         ):
@@ -1589,6 +2307,7 @@ class AccountService:
         for name, definition in (
             ("included_minutes", "INTEGER NOT NULL DEFAULT 0"),
             ("ai_credits", "INTEGER NOT NULL DEFAULT 0"),
+            ("points", "INTEGER NOT NULL DEFAULT 0"),
             ("team_seats", "INTEGER NOT NULL DEFAULT 1"),
             ("duration_days", "INTEGER NOT NULL DEFAULT 30"),
             ("subscription_started_at", "INTEGER"),
@@ -1596,6 +2315,28 @@ class AccountService:
         ):
             if name not in order_columns:
                 conn.execute(f"ALTER TABLE recharge_orders ADD COLUMN {name} {definition}")
+        conn.execute(
+            """
+            UPDATE account_plans
+            SET points = CASE
+                WHEN points > 0 THEN points
+                ELSE MAX(quota_amount, included_minutes * ? + ai_credits * ?)
+            END
+            WHERE points <= 0
+            """,
+            (self.stt_points_per_minute, self.ai_summary_points),
+        )
+        conn.execute(
+            """
+            UPDATE recharge_orders
+            SET points = CASE
+                WHEN points > 0 THEN points
+                ELSE MAX(quota_amount, included_minutes * ? + ai_credits * ?)
+            END
+            WHERE points <= 0
+            """,
+            (self.stt_points_per_minute, self.ai_summary_points),
+        )
 
     @staticmethod
     def _ensure_auth_code_purpose_constraint(conn: sqlite3.Connection) -> None:
@@ -1603,7 +2344,7 @@ class AccountService:
             "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'auth_verification_codes'"
         ).fetchone()
         definition = str(row["sql"] or "") if row is not None else ""
-        if "reset_password" in definition:
+        if "register" in definition and "reset_password" in definition:
             return
         conn.executescript(
             """
@@ -1612,7 +2353,7 @@ class AccountService:
                 id TEXT PRIMARY KEY,
                 channel TEXT NOT NULL CHECK(channel IN ('email', 'phone')),
                 subject TEXT NOT NULL,
-                purpose TEXT NOT NULL CHECK(purpose IN ('login', 'bind', 'reset_password')),
+                purpose TEXT NOT NULL CHECK(purpose IN ('login', 'register', 'bind', 'reset_password')),
                 code_hash TEXT NOT NULL,
                 expires_at INTEGER NOT NULL,
                 attempts INTEGER NOT NULL DEFAULT 0,
@@ -1708,7 +2449,7 @@ class AccountService:
             (user_id,),
         ).fetchone()
         if row is None:
-            return {"code": "vip", "name": "VIP"}
+            return {"code": "points", "name": "积分账户"}
         return {"code": row["code"], "name": row["name"]}
 
     def _refresh_subscription(self, conn: sqlite3.Connection, user_id: str, now: int) -> None:
@@ -1735,12 +2476,14 @@ class AccountService:
             UPDATE account_usage_balances
             SET included_stt_seconds = ?, stt_seconds_used = 0,
                 ai_credits_granted = ?, ai_credits_used = 0,
+                points_granted = ?, points_used = 0,
                 team_seats = 1, period_start = ?, period_end = ?, updated_at = ?
             WHERE user_id = ?
             """,
             (
                 self.free_stt_minutes * 60,
                 self.free_ai_credits,
+                self.free_points,
                 now,
                 now + 30 * 24 * 60 * 60,
                 now,
@@ -1753,6 +2496,192 @@ class AccountService:
         if team is not None:
             conn.execute("UPDATE account_teams SET seat_limit = 1, updated_at = ? WHERE id = ?", (now, team["id"]))
             conn.execute("DELETE FROM account_team_members WHERE team_id = ? AND role = 'member'", (team["id"],))
+
+    def _initialize_growth_user(
+        self, conn: sqlite3.Connection, user_id: str, now: int, referral_code: str | None,
+    ) -> None:
+        existing = conn.execute("SELECT code FROM growth_referral_codes WHERE user_id = ?", (user_id,)).fetchone()
+        if existing is None:
+            for _ in range(5):
+                code = f"ZW{secrets.token_hex(4).upper()}"
+                try:
+                    conn.execute(
+                        "INSERT INTO growth_referral_codes (id, user_id, code, created_at) VALUES (?, ?, ?, ?)",
+                        (str(uuid.uuid4()), user_id, code, now),
+                    )
+                    break
+                except sqlite3.IntegrityError:
+                    continue
+        clean_referral = (referral_code or "").strip().upper().replace(" ", "")
+        if not clean_referral:
+            return
+        inviter = conn.execute(
+            "SELECT user_id, enabled, max_uses, used_count, expires_at FROM growth_referral_codes WHERE code = ?",
+            (clean_referral,),
+        ).fetchone()
+        if inviter is None or not inviter["enabled"] or inviter["user_id"] == user_id:
+            raise AccountError("邀请码无效")
+        if inviter["expires_at"] is not None and int(inviter["expires_at"]) <= now:
+            raise AccountError("邀请码已过期")
+        if int(inviter["max_uses"]) > 0 and int(inviter["used_count"]) >= int(inviter["max_uses"]):
+            raise AccountError("邀请码已达到使用上限")
+        binding_id = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO growth_referral_bindings (id, referrer_user_id, referred_user_id, code, created_at) VALUES (?, ?, ?, ?, ?)",
+            (binding_id, inviter["user_id"], user_id, clean_referral, now),
+        )
+        conn.execute("UPDATE growth_referral_codes SET used_count = used_count + 1 WHERE user_id = ?", (inviter["user_id"],))
+        # 注册绑定即记账，后续可由首次有效使用把 rewarded_at 标记为完成。
+        self._grant_growth_reward(conn, inviter["user_id"], "referral", binding_id, "points", 100, f"referral:{binding_id}:inviter", now)
+        self._grant_growth_reward(conn, user_id, "referral", binding_id, "points", 100, f"referral:{binding_id}:invitee", now)
+        conn.execute("UPDATE growth_referral_bindings SET rewarded_at = ?, qualified_at = ? WHERE id = ?", (now, now, binding_id))
+
+    def _grant_growth_reward(
+        self, conn: sqlite3.Connection, user_id: str, source_type: str, source_id: str,
+        reward_type: str, quantity: int, idempotency_key: str, now: int,
+    ) -> None:
+        try:
+            conn.execute(
+                "INSERT INTO growth_reward_ledger (id, user_id, source_type, source_id, reward_type, quantity, idempotency_key, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), user_id, source_type, source_id, reward_type, quantity, idempotency_key, now),
+            )
+        except sqlite3.IntegrityError:
+            return
+        if reward_type == "points":
+            conn.execute(
+                "UPDATE account_usage_balances SET points_granted = points_granted + ?, updated_at = ? WHERE user_id = ?",
+                (quantity, now, user_id),
+            )
+
+    @staticmethod
+    def _reward_message(reward_type: str, quantity: int) -> str:
+        labels = {"points": "积分", "coupon": "优惠券", "entitlement": "虚拟权益"}
+        return f"已到账 {quantity} {labels.get(reward_type, reward_type)}"
+
+    @staticmethod
+    def _json_row(row: sqlite3.Row, field: str, target: str) -> dict:
+        payload = dict(row)
+        try:
+            payload[target] = json.loads(payload.pop(field) or "{}")
+        except (TypeError, json.JSONDecodeError):
+            payload[target] = {}
+        return payload
+
+    def _campaign_payload(self, conn: sqlite3.Connection, campaign_id: str) -> dict:
+        row = conn.execute(
+            "SELECT id, title, campaign_type, summary, rules_json, reward_pool_json, starts_at, ends_at, status, settled_at FROM growth_campaigns WHERE id = ?",
+            (campaign_id,),
+        ).fetchone()
+        if row is None:
+            raise AccountNotFoundError("活动不存在")
+        payload = dict(row)
+        payload["rules"] = json.loads(payload.pop("rules_json") or "{}")
+        payload["reward_pool"] = json.loads(payload.pop("reward_pool_json") or "{}")
+        return payload
+
+    @staticmethod
+    def _assert_campaign_open(campaign: dict, now: int) -> None:
+        if campaign["status"] not in {"active", "running"}:
+            raise AccountConflictError("活动当前不可参与")
+        if int(campaign["starts_at"]) > now:
+            raise AccountConflictError("活动尚未开始")
+        if int(campaign["ends_at"]) <= now:
+            raise AccountConflictError("活动已经结束")
+
+    @staticmethod
+    def _ensure_campaign_entry(conn: sqlite3.Connection, campaign_id: str, user_id: str, now: int) -> None:
+        conn.execute(
+            "INSERT INTO growth_campaign_entries (id, campaign_id, user_id, score, metadata_json, created_at) VALUES (?, ?, ?, 0, '{}', ?) ON CONFLICT(campaign_id, user_id) DO NOTHING",
+            (str(uuid.uuid4()), campaign_id, user_id, now),
+        )
+
+    @staticmethod
+    def _increment_campaign_score(conn: sqlite3.Connection, campaign_id: str, user_id: str, score: int, now: int) -> None:
+        conn.execute(
+            "UPDATE growth_campaign_entries SET score = score + ?, metadata_json = json_set(metadata_json, '$.last_action_at', ?) WHERE campaign_id = ? AND user_id = ?",
+            (score, now, campaign_id, user_id),
+        )
+
+    @staticmethod
+    def _campaign_leaderboard(conn: sqlite3.Connection, campaign_id: str, limit: int) -> list[dict]:
+        rows = conn.execute(
+            "SELECT e.user_id, COALESCE(NULLIF(u.display_name, ''), u.username) AS display_name, e.score, e.rank FROM growth_campaign_entries e JOIN users u ON u.id = e.user_id WHERE e.campaign_id = ? ORDER BY e.score DESC, e.created_at ASC LIMIT ?",
+            (campaign_id, max(1, min(100, limit))),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def _settle_due_campaigns(self, conn: sqlite3.Connection, now: int) -> None:
+        rows = conn.execute(
+            "SELECT id FROM growth_campaigns WHERE status IN ('active', 'running') AND ends_at <= ? AND settled_at IS NULL",
+            (now,),
+        ).fetchall()
+        for row in rows:
+            self._settle_campaign(conn, row["id"], now)
+
+    def _settle_campaign(self, conn: sqlite3.Connection, campaign_id: str, now: int) -> dict:
+        campaign = self._campaign_payload(conn, campaign_id)
+        if campaign["settled_at"] is not None or campaign["status"] == "settled":
+            return {"status": "settled", "campaign_id": campaign_id, "already_settled": True}
+        rows = conn.execute(
+            "SELECT user_id, score FROM growth_campaign_entries WHERE campaign_id = ? ORDER BY score DESC, created_at ASC",
+            (campaign_id,),
+        ).fetchall()
+        ranks = campaign["reward_pool"].get("ranks", {})
+        winners = []
+        for index, row in enumerate(rows, start=1):
+            conn.execute("UPDATE growth_campaign_entries SET rank = ? WHERE campaign_id = ? AND user_id = ?", (index, campaign_id, row["user_id"]))
+            reward = int(ranks.get(str(index), 0))
+            if reward > 0:
+                reward_id = f"{campaign_id}:{row['user_id']}:rank:{index}"
+                self._grant_growth_reward(conn, row["user_id"], "campaign_rank", reward_id, "points", reward, f"campaign-settle:{reward_id}", now)
+                winners.append({"user_id": row["user_id"], "rank": index, "score": int(row["score"]), "quantity": reward})
+        conn.execute("UPDATE growth_campaigns SET status = 'settled', settled_at = ? WHERE id = ?", (now, campaign_id))
+        return {"status": "settled", "campaign_id": campaign_id, "winners": winners}
+
+    def _campaign_rows(self, conn: sqlite3.Connection, now: int) -> list[dict]:
+        rows = conn.execute(
+            "SELECT id, title, campaign_type, summary, rules_json, reward_pool_json, starts_at, ends_at, status FROM growth_campaigns WHERE ends_at >= ? ORDER BY starts_at ASC LIMIT 20",
+            (now,),
+        ).fetchall()
+        result = []
+        for row in rows:
+            payload = dict(row)
+            payload["rules"] = json.loads(payload.pop("rules_json") or "{}")
+            payload["reward_pool"] = json.loads(payload.pop("reward_pool_json") or "{}")
+            result.append(payload)
+        return result
+
+    def _private_channel(self, conn: sqlite3.Connection, channel_id: str | None = None) -> dict | None:
+        row = conn.execute(
+            "SELECT * FROM growth_private_channels WHERE id = ? AND enabled = 1" if channel_id else "SELECT * FROM growth_private_channels WHERE enabled = 1 ORDER BY updated_at DESC LIMIT 1",
+            (channel_id,) if channel_id else (),
+        ).fetchone()
+        if row is None:
+            return None
+        payload = dict(row)
+        payload["enabled"] = bool(payload["enabled"])
+        if payload.get("qr_image_url") == "/app/assets/welfare-group-qr.jpg":
+            payload["qr_image_url"] = "/api/growth/private-channel/default-qr"
+        payload["reward"] = json.loads(payload.pop("reward_payload_json") or "{}")
+        return payload
+
+    @staticmethod
+    def _ensure_growth_defaults(conn: sqlite3.Connection) -> None:
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO growth_private_channels (id, name, qr_image_url, slogan, reward_type, reward_payload_json, updated_at) VALUES ('default-welfare-group', '智悟本福利群', '/api/growth/private-channel/default-qr', '扫码加入福利群，每日专属兑换码、活动优先通知、客服一对一', 'points', '{\"quantity\":50}', ?) ON CONFLICT(id) DO NOTHING",
+            (now,),
+        )
+        samples = (
+            ("invitation-ranking", "邀请好友得积分排行赛", "ranking", "邀请好友注册，双方各得 100 积分，前 20 名额外获得兑换码。", {"checkin_reward": 10}, {"ranks": {"1": 1000, "2": 600, "3": 300}}),
+            ("daily-quiz", "每日答题兑好礼", "quiz", "每天完成 3 道题，答对即可获得积分并参与周榜。", {"checkin_reward": 10, "answer_reward": 20, "questions": [{"key": "q1", "question": "浙江省省会是哪里？", "options": ["杭州", "宁波", "温州"], "answer": "杭州"}, {"key": "q2", "question": "每天完成记录后最重要的动作是什么？", "options": ["复盘", "删除", "跳过"], "answer": "复盘"}]}, {"ranks": {"1": 500, "2": 300, "3": 100}}),
+            ("zhejiang-study", "浙江研学创作挑战", "contest", "记录一次浙江本地研学见闻，优秀作品可获得积分奖励。", {"checkin_reward": 20, "draw_reward": 80, "win_probability": 2000}, {"ranks": {"1": 800, "2": 500, "3": 300}}),
+        )
+        for campaign_id, title, campaign_type, summary, rules, reward_pool in samples:
+            conn.execute(
+                "INSERT INTO growth_campaigns (id, title, campaign_type, summary, rules_json, reward_pool_json, starts_at, ends_at, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?) ON CONFLICT(id) DO NOTHING",
+                (campaign_id, title, campaign_type, summary, json.dumps(rules, ensure_ascii=False), json.dumps(reward_pool, ensure_ascii=False), now, now + 30 * 86400, now),
+            )
 
     def _ensure_team(self, conn: sqlite3.Connection, owner_user_id: str, now: int) -> sqlite3.Row:
         usage = self._usage_balance(conn, owner_user_id)
@@ -1845,7 +2774,7 @@ class AccountService:
         row = conn.execute(
             """
             SELECT o.id, o.user_id, u.username, p.code AS plan_code,
-                   p.name AS plan_name, o.amount_cents, o.quota_amount,
+                   p.name AS plan_name, o.amount_cents, o.quota_amount, o.points,
                    o.construction_logs_unlocked, o.included_minutes,
                    o.ai_credits, o.team_seats, o.duration_days,
                    o.subscription_started_at, o.subscription_expires_at,
@@ -1870,32 +2799,51 @@ class AccountService:
         if not isinstance(payload, list):
             raise RuntimeError("ACCOUNT_PLANS_PATH must contain a JSON array")
         now = int(time.time())
+        configured_codes: list[str] = []
         for index, plan in enumerate(payload):
             code = str(plan.get("code", "")).strip()
             name = str(plan.get("name", "")).strip()
             price_cents = int(plan.get("price_cents", -1))
-            quota_amount = int(plan.get("quota_amount", 0))
+            raw_quota_amount = plan.get("quota_amount")
+            legacy_quota_amount = int(raw_quota_amount or 0)
             included_minutes = int(plan.get("included_minutes", 0))
-            ai_credits = int(plan.get("ai_credits", quota_amount))
+            ai_credits = int(plan.get("ai_credits", legacy_quota_amount))
+            points = int(
+                plan.get(
+                    "points",
+                    max(
+                        legacy_quota_amount,
+                        included_minutes * self.stt_points_per_minute
+                        + ai_credits * self.ai_summary_points,
+                    ),
+                )
+            )
+            quota_amount = int(
+                raw_quota_amount
+                if raw_quota_amount is not None and int(raw_quota_amount) > 0
+                else points
+            )
             team_seats = int(plan.get("team_seats", 1))
             duration_days = int(plan.get("duration_days", 30))
-            if not code or not name or price_cents < 0 or quota_amount < 1:
+            if not code or not name or price_cents < 0 or quota_amount < 1 or points < 1:
                 raise RuntimeError(f"Invalid account plan at index {index}")
             if included_minutes < 0 or ai_credits < 0 or team_seats < 1 or duration_days < 1:
                 raise RuntimeError(f"Invalid account billing values at index {index}")
+            configured_codes.append(code)
             conn.execute(
                 """
                 INSERT INTO account_plans (
-                    id, code, name, description, price_cents, quota_amount,
+                    id, code, name, description, price_cents, quota_amount, points,
                     construction_logs_unlocked, included_minutes, ai_credits,
                     team_seats, duration_days, active, sort_order,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(code) DO UPDATE SET
                     name = excluded.name,
                     description = excluded.description,
                     price_cents = excluded.price_cents,
                     quota_amount = excluded.quota_amount,
+                    points = excluded.points,
                     construction_logs_unlocked = excluded.construction_logs_unlocked,
                     included_minutes = excluded.included_minutes,
                     ai_credits = excluded.ai_credits,
@@ -1912,6 +2860,7 @@ class AccountService:
                     str(plan.get("description", "")).strip(),
                     price_cents,
                     quota_amount,
+                    points,
                     int(bool(plan.get("construction_logs_unlocked", False))),
                     included_minutes,
                     ai_credits,
@@ -1923,6 +2872,15 @@ class AccountService:
                     now,
                 ),
             )
+        if configured_codes:
+            placeholders = ", ".join("?" for _ in configured_codes)
+            conn.execute(
+                f"UPDATE account_plans SET active = 0, updated_at = ? "
+                f"WHERE code NOT IN ({placeholders}) AND active = 1",
+                (now, *configured_codes),
+            )
+        else:
+            conn.execute("UPDATE account_plans SET active = 0, updated_at = ?", (now,))
 
     @staticmethod
     def _plan_payload(row: sqlite3.Row) -> dict:
@@ -1933,8 +2891,8 @@ class AccountService:
     @staticmethod
     def _validate_username(username: str) -> str:
         clean = username.strip()
-        if not 3 <= len(clean) <= 32:
-            raise AccountError("用户名长度必须为 3-32 个字符")
+        if not clean:
+            raise AccountError("用户名不能为空")
         if not all(char.isalnum() or char == "_" for char in clean):
             raise AccountError("用户名只能包含文字、数字和下划线")
         return clean

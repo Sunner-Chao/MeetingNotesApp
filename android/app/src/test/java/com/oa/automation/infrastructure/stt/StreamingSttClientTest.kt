@@ -68,6 +68,19 @@ class StreamingSttClientTest {
     }
 
     @Test
+    fun `meeting context is included in start control message`() {
+        val payload = JsonParser.parseString(
+            StreamingSttClient().buildStartControlMessage(
+                meetingId = "meeting-context",
+                provider = StreamingSttProvider.LOCAL,
+                contextHint = "大佛寺研学考察"
+            )
+        ).asJsonObject
+
+        assertEquals("大佛寺研学考察", payload.get("context_hint").asString)
+    }
+
+    @Test
     fun `explicit standard Tencent provider is included in start control message`() {
         val payload = JsonParser.parseString(
             StreamingSttClient().buildStartControlMessage(

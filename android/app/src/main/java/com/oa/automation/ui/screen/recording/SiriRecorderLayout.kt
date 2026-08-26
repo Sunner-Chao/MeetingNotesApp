@@ -12,6 +12,7 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -24,9 +25,12 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -56,8 +60,12 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Summarize
+import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -86,15 +94,18 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.oa.automation.BuildConfig
+import com.oa.automation.domain.model.MeetingAttachment
 import com.oa.automation.domain.model.PresetReportTemplate
 import com.oa.automation.domain.model.Journey
 import com.oa.automation.domain.model.JourneyStage
@@ -106,6 +117,10 @@ import com.oa.automation.domain.model.JourneyEditionStatus
 import com.oa.automation.domain.model.PublishedPost
 import com.oa.automation.domain.model.PublishedPostStatus
 import com.oa.automation.domain.model.STTLanguage
+import com.oa.automation.domain.model.STTEngineType
+import com.oa.automation.infrastructure.audio.ArchivedMeetingAudio
+import com.oa.automation.infrastructure.image.OrientedImageDecoder
+import java.io.File
 import kotlin.math.PI
 import kotlin.math.sin
 
@@ -161,12 +176,11 @@ internal fun SiriRecorderContent(
     onOpenReport: () -> Unit,
     hasExistingReport: Boolean,
     onEditTitle: () -> Unit,
-    onOpenAudio: () -> Unit,
-    onSwitchToImport: () -> Unit,
-    onAbandonRecording: () -> Unit,
+    onManageImages: () -> Unit,
+    onShareAudio: (ArchivedMeetingAudio) -> Unit,
+    onSttEngineSelected: (STTEngineType) -> Unit,
     onSelectTemplate: (PresetReportTemplate) -> Unit,
     onStartRecording: () -> Unit,
-    onStopRecording: () -> Unit,
     onTogglePause: () -> Unit,
     onAddMarker: () -> Unit,
     onGenerateStageDraft: () -> Unit,
@@ -188,12 +202,49 @@ internal fun SiriRecorderContent(
         SiriLightPalette
     }
     var menuExpanded by remember { mutableStateOf(false) }
-    val canGenerate = !uiState.isRecording &&
-        !uiState.isFinalizingRecording &&
-        !uiState.isTranscribing &&
-        !uiState.isGeneratingReport &&
-        uiState.hasRecording &&
-        uiState.liveTranscript.isNotBlank()
+    var savedAudioDialogVisible by remember { mutableStateOf(false) }
+    var journeyDialogVisible by remember { mutableStateOf(false) }
+    val canGenerate = canGenerateReportFromRecording(uiState)
+    val savedAudio = uiState.archivedAudio.firstOrNull()
+    val displayedSttEngine = effectiveSttEngineType(
+        preferred = uiState.sttEngineType,
+        route = uiState.realtimeSttRoute,
+        isRecording = uiState.isRecording
+    )
+
+    if (savedAudioDialogVisible && savedAudio != null) {
+        SiriSavedAudioDialog(
+            audio = savedAudio,
+            palette = palette,
+            onShare = { onShareAudio(savedAudio) },
+            onDismiss = { savedAudioDialogVisible = false }
+        )
+    }
+    if (journeyDialogVisible && uiState.journey != null) {
+        AlertDialog(
+            onDismissRequest = { journeyDialogVisible = false },
+            title = { Text("旅程暂存", fontWeight = FontWeight.SemiBold) },
+            text = {
+                SiriJourneyStrip(
+                    journey = uiState.journey,
+                    currentStage = uiState.currentJourneyStage,
+                    latestSavedStage = uiState.latestSavedJourneyStage,
+                    latestStageDraft = uiState.latestStageDraft,
+                    latestJourneyEdition = uiState.latestJourneyEdition,
+                    latestPublishedPost = uiState.latestPublishedPost,
+                    journeyStageCount = uiState.journeyStageCount,
+                    attachmentCount = uiState.attachments.size,
+                    publishedMediaCount = uiState.publishedPostMedia.size,
+                    statusMessage = uiState.journeyStatusMessage,
+                    palette = palette
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { journeyDialogVisible = false }) { Text("完成") }
+            },
+            shape = RoundedCornerShape(18.dp)
+        )
+    }
 
     Box(
         modifier = Modifier
@@ -216,11 +267,11 @@ internal fun SiriRecorderContent(
                 onMenuExpandedChange = { menuExpanded = it },
                 onNavigateBack = onNavigateBack,
                 onEditTitle = onEditTitle,
-                onOpenAudio = onOpenAudio,
-                onSwitchToImport = onSwitchToImport,
-                onAbandonRecording = onAbandonRecording,
-                onGenerateReport = onGenerateReport,
-                canGenerate = canGenerate,
+                onManageImages = onManageImages,
+                savedAudio = savedAudio,
+                onOpenSavedAudio = { savedAudioDialogVisible = true },
+                hasJourney = uiState.journey != null,
+                onOpenJourney = { journeyDialogVisible = true },
                 journey = uiState.journey,
                 latestSavedJourneyStage = uiState.latestSavedJourneyStage,
                 latestStageDraft = uiState.latestStageDraft,
@@ -244,25 +295,7 @@ internal fun SiriRecorderContent(
                 onPublishPublishedPost = onPublishPublishedPost,
                 onWithdrawPublishedPost = onWithdrawPublishedPost
             )
-            if (uiState.journey != null) {
-                Spacer(Modifier.height(6.dp))
-                SiriJourneyStrip(
-                    journey = uiState.journey,
-                    currentStage = uiState.currentJourneyStage,
-                    latestSavedStage = uiState.latestSavedJourneyStage,
-                    latestStageDraft = uiState.latestStageDraft,
-                    latestJourneyEdition = uiState.latestJourneyEdition,
-                    latestPublishedPost = uiState.latestPublishedPost,
-                    journeyStageCount = uiState.journeyStageCount,
-                    attachmentCount = uiState.attachments.size,
-                    publishedMediaCount = uiState.publishedPostMedia.size,
-                    statusMessage = uiState.journeyStatusMessage,
-                    palette = palette
-                )
-                Spacer(Modifier.height(8.dp))
-            } else {
-                Spacer(Modifier.height(8.dp))
-            }
+            Spacer(Modifier.height(8.dp))
             Text(
                 text = "选择模板",
                 color = palette.text,
@@ -281,6 +314,7 @@ internal fun SiriRecorderContent(
             SiriTranscriptCard(
                 transcript = uiState.liveTranscript,
                 markerAnchors = uiState.recordingMarkerAnchors,
+                attachments = uiState.attachments,
                 hasActivePhotoMarker = uiState.activePhotoMarker != null,
                 durationSeconds = uiState.recordingDuration,
                 isRecording = uiState.isRecording,
@@ -295,6 +329,9 @@ internal fun SiriRecorderContent(
                 },
                 status = uiState.transcriptPreviewMode,
                 realtimeSttRoute = uiState.realtimeSttRoute,
+                sttEngineType = displayedSttEngine,
+                isSwitchingSttEngine = uiState.isSwitchingSttEngine,
+                onSttEngineSelected = onSttEngineSelected,
                 palette = palette,
                 onCancelTranscription = onCancelTranscription,
                 onCancelReport = onCancelReport,
@@ -313,11 +350,12 @@ internal fun SiriRecorderContent(
                 markerCount = uiState.recordingMarkers.size,
                 hasActivePhotoMarker = uiState.activePhotoMarker != null,
                 onAddMarker = onAddMarker,
-                onTogglePause = onTogglePause,
-                onMainAction = when (recordingMainAction(uiState)) {
-                    RecordingMainAction.START -> onStartRecording
-                    RecordingMainAction.STOP -> onStopRecording
-                }
+                onMainAction = if (uiState.isRecording) onTogglePause else onStartRecording,
+                canGenerate = canGenerate,
+                isTranscribing = uiState.isTranscribing,
+                isGeneratingReport = uiState.isGeneratingReport,
+                onGenerateReport = onGenerateReport,
+                onCancelReport = onCancelReport
             )
             Spacer(Modifier.height(2.dp))
         }
@@ -335,11 +373,11 @@ private fun SiriTopBar(
     onMenuExpandedChange: (Boolean) -> Unit,
     onNavigateBack: () -> Unit,
     onEditTitle: () -> Unit,
-    onOpenAudio: () -> Unit,
-    onSwitchToImport: () -> Unit,
-    onAbandonRecording: () -> Unit,
-    onGenerateReport: () -> Unit,
-    canGenerate: Boolean,
+    onManageImages: () -> Unit,
+    savedAudio: ArchivedMeetingAudio?,
+    onOpenSavedAudio: () -> Unit,
+    hasJourney: Boolean,
+    onOpenJourney: () -> Unit,
     journey: Journey?,
     latestSavedJourneyStage: JourneyStage?,
     latestStageDraft: StageDraftVersion?,
@@ -403,8 +441,23 @@ private fun SiriTopBar(
                 onDismissRequest = { onMenuExpandedChange(false) }
             ) {
                 SiriMenuItem(Icons.Default.Edit, "修改会议名称", onEditTitle, onMenuExpandedChange)
-                SiriMenuItem(Icons.Default.Headphones, "保存或分享音频", onOpenAudio, onMenuExpandedChange)
-                SiriMenuItem(Icons.Default.Apps, "导入文本或音频", onSwitchToImport, onMenuExpandedChange)
+                SiriMenuItem(Icons.Default.PhotoLibrary, "管理插图", onManageImages, onMenuExpandedChange)
+                if (savedAudio != null) {
+                    SiriMenuItem(
+                        Icons.Default.Headphones,
+                        "暂存录音",
+                        onOpenSavedAudio,
+                        onMenuExpandedChange
+                    )
+                }
+                if (hasJourney) {
+                    SiriMenuItem(
+                        Icons.Default.BookmarkBorder,
+                        "旅程暂存",
+                        onOpenJourney,
+                        onMenuExpandedChange
+                    )
+                }
                 if (journey != null) {
                     HorizontalDivider(color = palette.border)
                     latestSavedJourneyStage?.let { savedStage ->
@@ -555,18 +608,92 @@ private fun SiriTopBar(
                         }
                     }
                 }
-                if (canGenerate) {
-                    SiriMenuItem(Icons.Default.Summarize, "生成会议纪要", onGenerateReport, onMenuExpandedChange)
-                }
                 if (hasExistingReport && !isRecording) {
                     SiriMenuItem(Icons.Default.Description, "查看会议纪要", onOpenReport, onMenuExpandedChange)
-                }
-                if (isRecording) {
-                    SiriMenuItem(Icons.Default.Stop, "放弃本次录音", onAbandonRecording, onMenuExpandedChange)
                 }
             }
         }
     }
+}
+
+@Composable
+private fun SiriSavedAudioDialog(
+    audio: ArchivedMeetingAudio,
+    palette: SiriRecorderPalette,
+    onShare: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val audioMeta = buildList {
+        audio.durationSec?.takeIf { it > 0.0 }?.let { add("时长 ${formatSiriAudioDuration(it)}") }
+        add("大小 ${formatSiriAudioBytes(audio.bytes)}")
+    }.joinToString("  ·  ")
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = {
+            Surface(
+                modifier = Modifier.size(46.dp),
+                shape = CircleShape,
+                color = palette.cyan.copy(alpha = 0.13f),
+                border = BorderStroke(1.dp, palette.cyan.copy(alpha = 0.28f))
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        Icons.Default.Headphones,
+                        contentDescription = null,
+                        tint = palette.cyan,
+                        modifier = Modifier.size(23.dp)
+                    )
+                }
+            }
+        },
+        title = { Text("暂存录音", fontWeight = FontWeight.SemiBold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    text = "录音已自动保存，可继续用于转写和纪要生成。",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        text = audio.filename,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        text = audioMeta,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            FilledTonalButton(onClick = onShare) {
+                Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(17.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("分享")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("完成") }
+        },
+        shape = RoundedCornerShape(18.dp)
+    )
+}
+
+private fun formatSiriAudioDuration(durationSec: Double): String {
+    val totalSeconds = durationSec.toLong().coerceAtLeast(0L)
+    return formatSiriDuration(totalSeconds)
+}
+
+private fun formatSiriAudioBytes(bytes: Long): String = when {
+    bytes >= 1024L * 1024L -> "%.1f MB".format(bytes.toDouble() / (1024L * 1024L))
+    bytes >= 1024L -> "%.0f KB".format(bytes.toDouble() / 1024L)
+    else -> "$bytes B"
 }
 
 @Composable
@@ -575,14 +702,15 @@ private fun SiriMenuItem(
     text: String,
     onClick: () -> Unit,
     onExpandedChange: (Boolean) -> Unit,
-    enabled: Boolean = true
+    enabled: Boolean = true,
+    closeOnClick: Boolean = true
 ) {
     DropdownMenuItem(
         text = { Text(text) },
         leadingIcon = { Icon(icon, contentDescription = null) },
         enabled = enabled,
         onClick = {
-            onExpandedChange(false)
+            if (closeOnClick) onExpandedChange(false)
             onClick()
         }
     )
@@ -1033,6 +1161,7 @@ private fun buildMarkerAwareTranscriptText(
 private fun SiriTranscriptCard(
     transcript: String,
     markerAnchors: List<String>,
+    attachments: List<MeetingAttachment>,
     hasActivePhotoMarker: Boolean,
     durationSeconds: Long,
     isRecording: Boolean,
@@ -1043,6 +1172,9 @@ private fun SiriTranscriptCard(
     progressPercent: Int?,
     status: String,
     realtimeSttRoute: com.oa.automation.infrastructure.service.RealtimeSttRouteState,
+    sttEngineType: STTEngineType,
+    isSwitchingSttEngine: Boolean,
+    onSttEngineSelected: (STTEngineType) -> Unit,
     palette: SiriRecorderPalette,
     onCancelTranscription: () -> Unit,
     onCancelReport: () -> Unit,
@@ -1083,6 +1215,12 @@ private fun SiriTranscriptCard(
                     fontWeight = FontWeight.Medium
                 )
                 Spacer(Modifier.weight(1f))
+                LocalCloudSttSegmentedControl(
+                    sttEngineType = sttEngineType,
+                    enabled = !isSwitchingSttEngine && !isTranscribing && !isGeneratingReport,
+                    palette = palette,
+                    onSttEngineSelected = onSttEngineSelected
+                )
             }
             Spacer(Modifier.height(10.dp))
             if (isRecording) {
@@ -1097,7 +1235,7 @@ private fun SiriTranscriptCard(
             }
             if (isFinalizingRecording) {
                 Text(
-                    text = status.ifBlank { "正在结束并保存录音" },
+                    text = status.ifBlank { "正在整理录音" },
                     color = palette.muted,
                     style = MaterialTheme.typography.bodySmall
                 )
@@ -1111,7 +1249,7 @@ private fun SiriTranscriptCard(
                         modifier = Modifier.weight(1f)
                     )
                     TextButton(onClick = if (isTranscribing) onCancelTranscription else onCancelReport) {
-                        Text("终止", color = palette.red)
+                        Text("取消", color = palette.red)
                     }
                 }
                 Spacer(Modifier.height(8.dp))
@@ -1167,8 +1305,225 @@ private fun SiriTranscriptCard(
                     )
                 }
             }
+            SiriIllustrationPreviewStrip(
+                attachments = attachments,
+                palette = palette
+            )
         }
     }
+}
+
+@Composable
+private fun LocalCloudSttSegmentedControl(
+    sttEngineType: STTEngineType,
+    enabled: Boolean,
+    palette: SiriRecorderPalette,
+    onSttEngineSelected: (STTEngineType) -> Unit
+) {
+    val selectedCloud = sttEngineType == STTEngineType.TENCENT_HYBRID
+    Row(
+        modifier = Modifier
+            .width(126.dp)
+            .height(34.dp)
+            .clip(RoundedCornerShape(17.dp))
+            .background(palette.control)
+            .border(1.dp, palette.controlBorder, RoundedCornerShape(17.dp))
+            .padding(2.dp)
+            .graphicsLayer { alpha = if (enabled) 1f else 0.58f },
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        SiriSttSegment(
+            label = "云端",
+            icon = Icons.Default.Cloud,
+            selected = selectedCloud,
+            enabled = enabled,
+            palette = palette,
+            modifier = Modifier.weight(1f),
+            onClick = { onSttEngineSelected(STTEngineType.TENCENT_HYBRID) }
+        )
+        SiriSttSegment(
+            label = "本地",
+            icon = Icons.Default.Computer,
+            selected = !selectedCloud,
+            enabled = enabled,
+            palette = palette,
+            modifier = Modifier.weight(1f),
+            onClick = { onSttEngineSelected(STTEngineType.FASTER_WHISPER) }
+        )
+    }
+}
+
+@Composable
+private fun SiriSttSegment(
+    label: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    selected: Boolean,
+    enabled: Boolean,
+    palette: SiriRecorderPalette,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    val background by animateColorAsState(
+        targetValue = if (selected) palette.cyan else Color.Transparent,
+        animationSpec = tween(durationMillis = 180),
+        label = "sttSegmentBackground"
+    )
+    val contentColor by animateColorAsState(
+        targetValue = if (selected) Color.White else palette.muted,
+        animationSpec = tween(durationMillis = 180),
+        label = "sttSegmentContent"
+    )
+    Row(
+        modifier = modifier
+            .fillMaxHeight()
+            .clip(RoundedCornerShape(15.dp))
+            .background(background)
+            .clickable(enabled = enabled && !selected, onClick = onClick),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = contentColor,
+            modifier = Modifier.size(13.dp)
+        )
+        Spacer(Modifier.width(4.dp))
+        Text(
+            text = label,
+            color = contentColor,
+            style = MaterialTheme.typography.labelMedium.copy(fontSize = 11.sp, lineHeight = 14.sp),
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1
+        )
+    }
+}
+
+@Composable
+private fun SiriIllustrationPreviewStrip(
+    attachments: List<MeetingAttachment>,
+    palette: SiriRecorderPalette
+) {
+    val previewAttachments = remember(attachments) {
+        attachments
+            .filter { attachment -> File(attachment.localPath).isFile }
+            .sortedWith(
+                compareBy<MeetingAttachment> { it.markerTimestampMs ?: Long.MAX_VALUE }
+                    .thenBy { it.createdAt }
+            )
+    }
+    if (previewAttachments.isEmpty()) return
+
+    Spacer(Modifier.height(8.dp))
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = Icons.Default.PhotoLibrary,
+            contentDescription = null,
+            tint = palette.red,
+            modifier = Modifier.size(16.dp)
+        )
+        Spacer(Modifier.width(5.dp))
+        Text(
+            text = "插图预览",
+            color = palette.text,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium
+        )
+        Spacer(Modifier.weight(1f))
+        Text(
+            text = "${previewAttachments.size} 张",
+            color = palette.muted,
+            fontSize = 10.sp
+        )
+    }
+    Spacer(Modifier.height(6.dp))
+    LazyRow(
+        modifier = Modifier.fillMaxWidth().height(82.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        items(previewAttachments, key = { it.id }) { attachment ->
+            val bitmap = remember(attachment.localPath) {
+                OrientedImageDecoder.decode(
+                    File(attachment.localPath),
+                    maximumDimension = 320
+                )?.asImageBitmap()
+            }
+            Box(
+                modifier = Modifier
+                    .size(width = 116.dp, height = 82.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(palette.cardRaised)
+                    .border(
+                        width = 1.dp,
+                        color = if (attachment.recordingMarkerId != null) {
+                            palette.red.copy(alpha = 0.72f)
+                        } else {
+                            palette.border
+                        },
+                        shape = RoundedCornerShape(10.dp)
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                if (bitmap != null) {
+                    Image(
+                        bitmap = bitmap,
+                        contentDescription = attachment.displayName,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Default.PhotoLibrary,
+                        contentDescription = "图片无法预览",
+                        tint = palette.muted,
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+                attachment.markerTimestampMs?.let { markerTimestampMs ->
+                    Surface(
+                        modifier = Modifier.align(Alignment.TopStart).padding(4.dp),
+                        shape = RoundedCornerShape(5.dp),
+                        color = palette.red.copy(alpha = 0.9f)
+                    ) {
+                        Text(
+                            text = formatSiriIllustrationTimestamp(markerTimestampMs),
+                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
+                            color = Color.White,
+                            fontSize = 9.sp,
+                            lineHeight = 11.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+                Surface(
+                    modifier = Modifier.align(Alignment.BottomStart).fillMaxWidth(),
+                    color = Color.Black.copy(alpha = 0.62f)
+                ) {
+                    Text(
+                        text = attachment.markerTranscriptAnchor
+                            ?.takeIf(String::isNotBlank)
+                            ?: attachment.displayName,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
+                        color = Color.White,
+                        fontSize = 9.sp,
+                        lineHeight = 11.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun formatSiriIllustrationTimestamp(timestampMs: Long): String {
+    val totalSeconds = (timestampMs / 1_000L).coerceAtLeast(0L)
+    val minutes = totalSeconds / 60L
+    val seconds = totalSeconds % 60L
+    return "%02d:%02d".format(minutes, seconds)
 }
 
 @Composable
@@ -1182,14 +1537,17 @@ private fun SiriBottomControls(
     markerCount: Int,
     hasActivePhotoMarker: Boolean,
     onAddMarker: () -> Unit,
-    onTogglePause: () -> Unit,
-    onMainAction: () -> Unit
+    onMainAction: () -> Unit,
+    canGenerate: Boolean,
+    isTranscribing: Boolean,
+    isGeneratingReport: Boolean,
+    onGenerateReport: () -> Unit,
+    onCancelReport: () -> Unit
 ) {
     val mainActionEnabled = actionEnabled && (isRecording || hasSelectedTemplate)
-    Row(
+    Box(
         modifier = Modifier.fillMaxWidth().height(166.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceEvenly
+        contentAlignment = Alignment.Center
     ) {
         SiriRoundAction(
             palette = palette,
@@ -1200,7 +1558,8 @@ private fun SiriBottomControls(
                 else -> "插图"
             },
             enabled = isRecording && !isPaused && actionEnabled,
-            onClick = onAddMarker
+            onClick = onAddMarker,
+            modifier = Modifier.align(Alignment.CenterStart)
         )
         Column(
             modifier = Modifier.width(190.dp),
@@ -1215,23 +1574,105 @@ private fun SiriBottomControls(
                 enabled = mainActionEnabled,
                 onClick = onMainAction
             )
+            Text(
+                text = when {
+                    isRecording && isPaused -> "继续"
+                    isRecording -> "暂停"
+                    else -> "开始"
+                },
+                color = palette.muted,
+                style = MaterialTheme.typography.labelMedium.copy(fontSize = 12.sp)
+            )
             if (!isRecording && !hasSelectedTemplate) {
                 Text(
                     text = RECORDING_TEMPLATE_REQUIRED_MESSAGE,
                     color = palette.red,
                     fontSize = 11.sp,
-                    lineHeight = 15.sp,
+                    lineHeight = 14.sp,
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                    maxLines = 2
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
         }
-        SiriRoundAction(
+        SiriReportAction(
             palette = palette,
-            icon = if (isPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
-            label = if (isPaused) "继续" else "暂停",
-            enabled = isRecording && actionEnabled,
-            onClick = onTogglePause
+            canGenerate = canGenerate,
+            isTranscribing = isTranscribing,
+            isGeneratingReport = isGeneratingReport,
+            onGenerateReport = onGenerateReport,
+            onCancelReport = onCancelReport,
+            modifier = Modifier.align(Alignment.CenterEnd)
+        )
+    }
+}
+
+@Composable
+private fun SiriReportAction(
+    palette: SiriRecorderPalette,
+    canGenerate: Boolean,
+    isTranscribing: Boolean,
+    isGeneratingReport: Boolean,
+    onGenerateReport: () -> Unit,
+    onCancelReport: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val enabled = isGeneratingReport || (canGenerate && !isTranscribing)
+    val label = when {
+        isGeneratingReport -> "停止生成"
+        isTranscribing -> "整理录音"
+        else -> "生成纪要"
+    }
+    val actionColor = when {
+        isGeneratingReport -> palette.red.copy(alpha = 0.92f)
+        else -> palette.control.copy(alpha = palette.control.alpha * if (enabled) 1f else 0.50f)
+    }
+    Column(
+        modifier = modifier.width(82.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Box(
+            modifier = Modifier.size(66.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            if (isGeneratingReport) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(66.dp),
+                    color = palette.red,
+                    strokeWidth = 3.dp
+                )
+            }
+            Surface(
+                onClick = if (isGeneratingReport) onCancelReport else onGenerateReport,
+                enabled = enabled,
+                modifier = Modifier.size(52.dp),
+                shape = CircleShape,
+                color = actionColor,
+                border = BorderStroke(
+                    width = 1.dp,
+                    color = when {
+                        isGeneratingReport -> palette.red.copy(alpha = 0.80f)
+                        else -> palette.controlBorder.copy(alpha = palette.controlBorder.alpha * if (enabled) 1f else 0.55f)
+                    }
+                ),
+                shadowElevation = if (isGeneratingReport) 4.dp else 0.dp
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = if (isGeneratingReport) Icons.Default.Stop else Icons.Default.Summarize,
+                        contentDescription = label,
+                        tint = if (isGeneratingReport) Color.White else palette.text.copy(alpha = if (enabled) 1f else 0.44f),
+                        modifier = Modifier.size(23.dp)
+                    )
+                }
+            }
+        }
+        Text(
+            text = label,
+            color = palette.muted.copy(alpha = if (enabled) 1f else 0.52f),
+            style = MaterialTheme.typography.labelMedium.copy(fontSize = 12.sp)
         )
     }
 }
@@ -1242,9 +1683,14 @@ private fun SiriRoundAction(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     label: String,
     enabled: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
         Surface(
             onClick = onClick,
             enabled = enabled,
@@ -1360,8 +1806,8 @@ private fun SiriMicOrb(
         }
         if (isRecording) {
             Icon(
-                Icons.Default.Stop,
-                contentDescription = "结束并保存录音",
+                if (isPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
+                contentDescription = if (isPaused) "继续录音" else "暂停录音",
                 tint = Color.White,
                 modifier = Modifier.size(38.dp)
             )

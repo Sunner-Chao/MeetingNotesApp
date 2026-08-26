@@ -32,8 +32,10 @@ else:
 import argparse
 import asyncio
 import base64
+from array import array
 import contextlib
 import difflib
+import functools
 import hashlib
 import hmac
 import json
@@ -60,10 +62,20 @@ SERVER_ROOT = Path(__file__).resolve().parents[1]
 if str(SERVER_ROOT) not in sys.path:
     sys.path.insert(0, str(SERVER_ROOT))
 
+# The STT process is intentionally independent from the web backend, but it
+# shares the account database for direct Android requests. Importing the
+# account service here keeps point accounting identical across both entry
+# points without exposing a long-lived account session token to STT.
+BACKEND_SERVICE_ROOT = SERVER_ROOT / "backend-service"
+if str(BACKEND_SERVICE_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_SERVICE_ROOT))
+from account_service import AccountError, AccountService  # noqa: E402
+
 from common.account_stt_token import verify_account_stt_token
 
 import ctranslate2
 import faster_whisper
+import numpy as np
 from opencc import OpenCC
 
 import uvicorn
@@ -126,6 +138,14 @@ def boolean_env(name: str, default: bool = False) -> bool:
     return os.getenv(name, "1" if default else "0").strip().lower() in {"1", "true", "yes"}
 
 
+def float_env(name: str, default: float) -> float:
+    try:
+        value = float(os.getenv(name, str(default)))
+        return value if math.isfinite(value) else default
+    except ValueError:
+        return default
+
+
 STT_MAX_CONCURRENT = positive_int_env("STT_MAX_CONCURRENT", 2)
 STT_MAX_QUEUE = positive_int_env("STT_MAX_QUEUE", 16)
 STT_MAX_STREAMS = positive_int_env("STT_MAX_STREAMS", 16)
@@ -148,6 +168,16 @@ STT_CPU_THREADS = positive_int_env("STT_CPU_THREADS", max(1, (os.cpu_count() or 
 STT_API_TOKEN = os.getenv("STT_API_TOKEN", "").strip()
 STT_REQUIRE_API_TOKEN = os.getenv("STT_REQUIRE_API_TOKEN", "0").strip().lower() in {"1", "true", "yes"}
 ACCOUNT_TOKEN_SECRET = os.getenv("ACCOUNT_TOKEN_SECRET", "").strip()
+ACCOUNT_DB_PATH = Path(
+    os.getenv("ACCOUNT_DB_PATH", str(SERVER_ROOT / "data" / "accounts.db"))
+).resolve()
+ACCOUNT_PLANS_PATH = Path(
+    os.getenv("ACCOUNT_PLANS_PATH", str(SERVER_ROOT / "config" / "account-plans.json"))
+).resolve()
+ACCOUNT_FREE_POINTS = nonnegative_int_env("ACCOUNT_FREE_POINTS", 1000)
+ACCOUNT_STT_POINTS_PER_MINUTE = positive_int_env("ACCOUNT_STT_POINTS_PER_MINUTE", 10)
+ACCOUNT_AI_SUMMARY_POINTS = positive_int_env("ACCOUNT_AI_SUMMARY_POINTS", 30)
+ACCOUNT_AI_CHAT_POINTS = positive_int_env("ACCOUNT_AI_CHAT_POINTS", 10)
 WEB_API_USERNAME = os.getenv("WEB_API_USERNAME", "admin").strip() or "admin"
 WEB_API_TOKEN = os.getenv("WEB_API_TOKEN", "").strip()
 STT_LOG_PATH = Path(os.getenv("STT_LOG_PATH", "").strip()).resolve() if os.getenv("STT_LOG_PATH", "").strip() else None
@@ -173,6 +203,25 @@ STT_FINAL_CONDITION_ON_PREVIOUS_TEXT = os.getenv(
 STT_FINAL_INITIAL_PROMPT = os.getenv(
     "STT_FINAL_INITIAL_PROMPT", ""
 ).strip()
+STT_FINAL_AUDIO_ENHANCEMENT = boolean_env("STT_FINAL_AUDIO_ENHANCEMENT", True)
+STT_FINAL_DENOISE_NOISE_FLOOR_DBFS = float_env(
+    "STT_FINAL_DENOISE_NOISE_FLOOR_DBFS", -48.0
+)
+STT_FINAL_DENOISE_MAX_SNR_DB = max(
+    0.0, float_env("STT_FINAL_DENOISE_MAX_SNR_DB", 26.0)
+)
+STT_FINAL_GAIN_SPEECH_LEVEL_DBFS = min(
+    -6.0, float_env("STT_FINAL_GAIN_SPEECH_LEVEL_DBFS", -28.0)
+)
+STT_FINAL_DENOISE_REDUCTION_DB = min(
+    16.0, max(3.0, float_env("STT_FINAL_DENOISE_REDUCTION_DB", 8.0))
+)
+STT_FINAL_AUDIO_ANALYSIS_MAX_WINDOWS = min(
+    10000, positive_int_env("STT_FINAL_AUDIO_ANALYSIS_MAX_WINDOWS", 3000)
+)
+STT_FINAL_CONTEXT_HINT_MAX_CHARS = min(
+    500, positive_int_env("STT_FINAL_CONTEXT_HINT_MAX_CHARS", 240)
+)
 STT_FINAL_RESTORE_PUNCTUATION = os.getenv(
     "STT_FINAL_RESTORE_PUNCTUATION", "1"
 ).strip().lower() in {"1", "true", "yes"}
@@ -183,10 +232,43 @@ STT_STREAM_FINALIZE_WAIT_SEC = max(
     1.0,
     float(os.getenv("STT_STREAM_FINALIZE_WAIT_SEC", "15")),
 )
+STT_SPEAKER_DIARIZATION_ENABLED = boolean_env("STT_SPEAKER_DIARIZATION_ENABLED", True)
+STT_SPEAKER_DIARIZATION_MAX_SPEAKERS = min(
+    8, max(2, positive_int_env("STT_SPEAKER_DIARIZATION_MAX_SPEAKERS", 4))
+)
+STT_SPEAKER_DIARIZATION_MIN_TURN_SEC = max(
+    0.35, float_env("STT_SPEAKER_DIARIZATION_MIN_TURN_SEC", 0.7)
+)
+STT_SPEAKER_DIARIZATION_CLUSTER_THRESHOLD = min(
+    1.5, max(0.1, float_env("STT_SPEAKER_DIARIZATION_CLUSTER_THRESHOLD", 0.9))
+)
+STT_SPEAKER_SEGMENTATION_MODEL = Path(
+    os.getenv(
+        "STT_SPEAKER_SEGMENTATION_MODEL",
+        str(
+            model_root
+            / "speaker-diarization"
+            / "sherpa-onnx-pyannote-segmentation-3-0"
+            / "model.int8.onnx"
+        ),
+    )
+).resolve()
+STT_SPEAKER_EMBEDDING_MODEL = Path(
+    os.getenv(
+        "STT_SPEAKER_EMBEDDING_MODEL",
+        str(model_root / "speaker-diarization" / "3dspeaker-eres2net-base-zh-16k.onnx"),
+    )
+).resolve()
+speaker_diarizer = None
+speaker_diarizer_error = ""
+speaker_diarizer_lock = threading.Lock()
 STT_TEMP_DIR = Path(os.getenv("STT_TEMP_DIR", tempfile.gettempdir())).resolve()
 STT_TEMP_MAX_AGE_SEC = positive_int_env("STT_TEMP_MAX_AGE_SEC", 21600)
 STT_TEMP_CLEANUP_INTERVAL_SEC = positive_int_env("STT_TEMP_CLEANUP_INTERVAL_SEC", 3600)
 STT_TEMP_PREFIX = "meetingnotes-stt-"
+STT_RECOVERY_DIR = Path(
+    os.getenv("STT_RECOVERY_DIR", str(STT_TEMP_DIR.parent / "recovery-audio"))
+).resolve()
 STT_AUDIO_ARCHIVE_ENABLED = os.getenv("STT_AUDIO_ARCHIVE_ENABLED", "0").strip().lower() in {
     "1", "true", "yes"
 }
@@ -427,6 +509,14 @@ def normalize_stt_language(language: str | None) -> str:
     return normalized
 
 
+def sanitize_context_hint(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    cleaned = re.sub(r"[\x00-\x1f\x7f]+", " ", value)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned[:STT_FINAL_CONTEXT_HINT_MAX_CHARS]
+
+
 def tencent_engine_type_for_language(
     *,
     tier: str | None,
@@ -546,6 +636,7 @@ def build_tencent_flash_request(
     tier: str | None = None,
     language: str = "zh",
     timestamp: int | None = None,
+    speaker_diarization: bool = False,
 ) -> tuple[str, str]:
     request_timestamp = int(time.time()) if timestamp is None else int(timestamp)
     engine_type = tencent_engine_type_for_language(
@@ -561,7 +652,7 @@ def build_tencent_flash_request(
         "filter_punc": "0",
         "first_channel_only": "1",
         "secretid": TENCENT_ASR_SECRET_ID,
-        "speaker_diarization": "0",
+        "speaker_diarization": "1" if speaker_diarization else "0",
         "timestamp": str(request_timestamp),
         "voice_format": voice_format,
         "word_info": "0",
@@ -578,7 +669,165 @@ def build_tencent_flash_request(
     return request_url, base64.b64encode(digest).decode("ascii")
 
 
-def parse_tencent_flash_response(payload: dict[str, Any]) -> str:
+def _speaker_label(value: object) -> str:
+    try:
+        number = int(float(str(value))) + 1
+    except (TypeError, ValueError):
+        number = 1
+    return f"说话人 {max(1, number)}"
+
+
+def format_speaker_rows(rows: list[dict[str, Any]]) -> str:
+    """Render diarized rows in the stable transcript format used by Android."""
+    grouped: list[dict[str, Any]] = []
+    for row in rows:
+        text = normalize_preview_text(str(row.get("text") or "").strip())
+        if not text:
+            continue
+        speaker = row.get("speaker")
+        if speaker is None:
+            speaker = row.get("speaker_id")
+        if grouped and grouped[-1]["speaker"] == speaker:
+            grouped[-1]["text"] = merge_chunk_transcript_text(grouped[-1]["text"], text)
+        else:
+            grouped.append({"speaker": speaker, "text": text})
+    labels: dict[str, int] = {}
+    lines: list[str] = []
+    for row in grouped:
+        speaker = row["speaker"]
+        if speaker is None:
+            lines.append(row["text"])
+            continue
+        key = str(speaker)
+        if key not in labels:
+            labels[key] = len(labels) + 1
+        lines.append(f"说话人 {labels[key]}：{row['text']}")
+    return "\n".join(lines)
+
+
+def _load_local_speaker_diarizer():
+    global speaker_diarizer, speaker_diarizer_error
+    if speaker_diarizer is not None:
+        return speaker_diarizer
+    with speaker_diarizer_lock:
+        if speaker_diarizer is not None:
+            return speaker_diarizer
+        if not STT_SPEAKER_SEGMENTATION_MODEL.is_file() or not STT_SPEAKER_EMBEDDING_MODEL.is_file():
+            speaker_diarizer_error = (
+                "speaker diarization models are missing: "
+                f"{STT_SPEAKER_SEGMENTATION_MODEL} / {STT_SPEAKER_EMBEDDING_MODEL}"
+            )
+            return None
+        try:
+            import sherpa_onnx
+
+            segmentation = sherpa_onnx.OfflineSpeakerSegmentationModelConfig(
+                pyannote=sherpa_onnx.OfflineSpeakerSegmentationPyannoteModelConfig(
+                    model=str(STT_SPEAKER_SEGMENTATION_MODEL)
+                ),
+                num_threads=max(1, min(4, STT_CPU_THREADS)),
+                provider="cpu",
+            )
+            embedding = sherpa_onnx.SpeakerEmbeddingExtractorConfig(
+                model=str(STT_SPEAKER_EMBEDDING_MODEL),
+                num_threads=max(1, min(4, STT_CPU_THREADS)),
+                provider="cpu",
+            )
+            clustering = sherpa_onnx.FastClusteringConfig(
+                num_clusters=-1,
+                threshold=STT_SPEAKER_DIARIZATION_CLUSTER_THRESHOLD,
+            )
+            config = sherpa_onnx.OfflineSpeakerDiarizationConfig(
+                segmentation=segmentation,
+                embedding=embedding,
+                clustering=clustering,
+                min_duration_on=STT_SPEAKER_DIARIZATION_MIN_TURN_SEC,
+                min_duration_off=0.5,
+            )
+            if not config.validate():
+                raise RuntimeError("local speaker diarization configuration is invalid")
+            speaker_diarizer = sherpa_onnx.OfflineSpeakerDiarization(config)
+            speaker_diarizer_error = ""
+            return speaker_diarizer
+        except Exception as exc:
+            speaker_diarizer_error = str(exc)
+            print(f"Local speaker diarization unavailable: {exc}", flush=True)
+            return None
+
+
+def diarize_wav_segments(path: Path) -> list[dict[str, Any]]:
+    """Return local speaker turns; model loading stays lazy until the feature is used."""
+    diarizer = _load_local_speaker_diarizer()
+    if diarizer is None:
+        return []
+    # Callers of the final transcription path already pass a normalized WAV.
+    # Avoid running adaptive enhancement twice; direct callers still get a
+    # temporary 16 kHz mono conversion for M4A/MP3 and other formats.
+    preparation = (
+        FinalAudioPreparation(path=path)
+        if is_standard_stt_wav(path)
+        else prepare_final_audio(path)
+    )
+    try:
+        with wave.open(str(preparation.path), "rb") as wav_file:
+            sample_rate = wav_file.getframerate()
+            channels = wav_file.getnchannels()
+            frames = wav_file.readframes(wav_file.getnframes())
+        if sample_rate != int(diarizer.sample_rate):
+            raise ValueError(f"speaker diarization expects {diarizer.sample_rate} Hz audio")
+        samples = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+        if channels > 1:
+            samples = samples.reshape(-1, channels).mean(axis=1)
+        with speaker_diarizer_lock:
+            result = diarizer.process(samples)
+    finally:
+        preparation.cleanup()
+    turns = [
+        {"start": float(segment.start), "end": float(segment.end), "speaker": int(segment.speaker)}
+        for segment in result.sort_by_start_time()
+        if float(segment.end) - float(segment.start) >= STT_SPEAKER_DIARIZATION_MIN_TURN_SEC
+    ]
+    # sherpa's automatic clustering is threshold-based. Bound an unusually
+    # noisy recording to the configured display limit without forcing a fixed
+    # cluster count (which would invent speakers on a one-person recording).
+    labels = list(dict.fromkeys(turn["speaker"] for turn in turns))
+    if len(labels) > STT_SPEAKER_DIARIZATION_MAX_SPEAKERS:
+        allowed = set(labels[:STT_SPEAKER_DIARIZATION_MAX_SPEAKERS])
+        for turn in turns:
+            if turn["speaker"] not in allowed:
+                turn["speaker"] = labels[STT_SPEAKER_DIARIZATION_MAX_SPEAKERS - 1]
+    return turns
+
+
+def attach_local_speakers(path: Path, rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    turns = diarize_wav_segments(path)
+    if not turns:
+        return rows, {"enabled": True, "provider": "local", "active": False, "error": speaker_diarizer_error}
+    enriched: list[dict[str, Any]] = []
+    for row in rows:
+        start = float(row.get("start") or 0.0)
+        end = max(start, float(row.get("end") or start))
+        best = max(
+            turns,
+            key=lambda turn: max(0.0, min(end, turn["end"]) - max(start, turn["start"])),
+        )
+        overlap = max(0.0, min(end, best["end"]) - max(start, best["start"]))
+        if overlap <= 0:
+            midpoint = (start + end) / 2.0
+            best = min(turns, key=lambda turn: abs(((turn["start"] + turn["end"]) / 2.0) - midpoint))
+        enriched.append({**row, "speaker": best["speaker"]})
+    return enriched, {
+        "enabled": True,
+        "provider": "local-sherpa-onnx",
+        "active": True,
+        "speaker_count": len({row["speaker"] for row in enriched}),
+        "turn_count": len(turns),
+    }
+
+
+def parse_tencent_flash_response(
+    payload: dict[str, Any], *, include_speakers: bool = False
+) -> str | tuple[str, list[dict[str, Any]]]:
     code = int(payload.get("code", -1))
     if code != 0:
         detail = str(payload.get("message") or "Tencent Cloud ASR request failed").strip()
@@ -586,16 +835,48 @@ def parse_tencent_flash_response(payload: dict[str, Any]) -> str:
     results = payload.get("flash_result")
     if not isinstance(results, list):
         raise ValueError("Tencent Cloud ASR returned an invalid result")
-    text = normalize_preview_text(
-        "\n".join(
-            str(item.get("text") or "").strip()
-            for item in results
-            if isinstance(item, dict) and str(item.get("text") or "").strip()
-        )
+    rows: list[dict[str, Any]] = []
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        sentence_list = item.get("sentence_list")
+        candidates = sentence_list if isinstance(sentence_list, list) else [item]
+        for sentence in candidates:
+            if not isinstance(sentence, dict) or not str(sentence.get("text") or "").strip():
+                continue
+            row = {"text": str(sentence.get("text") or "").strip()}
+            for key in ("start_time", "end_time", "speaker_id"):
+                if key in sentence:
+                    row[key] = sentence[key]
+            rows.append(row)
+    text = format_speaker_rows(rows) if include_speakers else normalize_preview_text(
+        "\n".join(str(row["text"]) for row in rows)
     )
     if not text:
         raise ValueError("Tencent Cloud ASR did not recognize valid speech")
-    return text
+    return (text, rows) if include_speakers else text
+
+
+def tencent_audio_duration_ms(
+    payload: dict[str, Any] | None,
+    *,
+    fallback_seconds: float | None = None,
+) -> int:
+    """Read Tencent's millisecond duration field without trusting its shape."""
+    fallback_ms = 0
+    with contextlib.suppress(TypeError, ValueError, OverflowError):
+        clean_fallback = float(fallback_seconds or 0.0)
+        if math.isfinite(clean_fallback) and clean_fallback > 0:
+            fallback_ms = round(clean_fallback * 1000)
+    if not isinstance(payload, dict):
+        return fallback_ms
+    try:
+        duration_ms = float(payload.get("audio_duration") or 0)
+    except (TypeError, ValueError, OverflowError):
+        return fallback_ms
+    if not math.isfinite(duration_ms) or duration_ms <= 0:
+        return fallback_ms
+    return max(0, round(duration_ms))
 
 
 def transcribe_with_tencent_flash(
@@ -605,11 +886,13 @@ def transcribe_with_tencent_flash(
     tier: str | None = None,
     language: str = "zh",
     record_usage: bool = True,
+    speaker_diarization: bool = False,
 ) -> tuple[str, dict[str, Any]]:
     request_url, authorization = build_tencent_flash_request(
         voice_format=voice_format,
         tier=tier,
         language=language,
+        speaker_diarization=speaker_diarization,
     )
     size = path.stat().st_size
 
@@ -630,12 +913,19 @@ def transcribe_with_tencent_flash(
     payload = response.json()
     if not isinstance(payload, dict):
         raise ValueError("Tencent Cloud ASR returned invalid JSON")
-    text = parse_tencent_flash_response(payload)
-    duration_seconds = 0.0
-    with contextlib.suppress(TypeError, ValueError):
-        duration_seconds = max(0.0, float(payload.get("audio_duration") or 0) / 1000)
-    if duration_seconds <= 0:
-        duration_seconds = wav_duration_sec(path) or 0.0
+    parsed = parse_tencent_flash_response(
+        payload,
+        include_speakers=speaker_diarization,
+    )
+    if isinstance(parsed, tuple):
+        text, rows = parsed
+        payload["segments"] = rows
+    else:
+        text = parsed
+    duration_seconds = tencent_audio_duration_ms(
+        payload,
+        fallback_seconds=wav_duration_sec(path),
+    ) / 1000
     if record_usage:
         with contextlib.suppress(Exception):
             record_local_tencent_asr_usage("asr_rec", duration_seconds)
@@ -647,6 +937,214 @@ class AudioChunk:
     path: Path
     start_seconds: float
     duration_seconds: float
+
+
+@dataclass(frozen=True)
+class FinalAudioQuality:
+    noise_floor_dbfs: float
+    speech_level_dbfs: float
+    snr_db: float
+    clipping_ratio: float
+    duration_seconds: float
+
+
+@dataclass
+class FinalAudioPreparation:
+    path: Path
+    quality: FinalAudioQuality | None = None
+    denoise_applied: bool = False
+    gain_applied: bool = False
+    temporary_paths: list[Path] = field(default_factory=list)
+
+    def cleanup(self) -> None:
+        for temporary_path in reversed(self.temporary_paths):
+            with contextlib.suppress(OSError):
+                temporary_path.unlink()
+
+
+def percentile(values: list[float], fraction: float) -> float:
+    if not values:
+        return -96.0
+    ordered = sorted(values)
+    index = max(0, min(len(ordered) - 1, round((len(ordered) - 1) * fraction)))
+    return ordered[index]
+
+
+def analyze_wav_quality(path: Path) -> FinalAudioQuality | None:
+    try:
+        with wave.open(str(path), "rb") as wav_file:
+            if wav_file.getsampwidth() != 2 or wav_file.getcomptype() != "NONE":
+                return None
+            sample_rate = wav_file.getframerate()
+            channels = wav_file.getnchannels()
+            if sample_rate <= 0 or channels <= 0:
+                return None
+            frame_samples = max(1, round(sample_rate * 0.02))
+            levels: list[float] = []
+            clipped_samples = 0
+            total_samples = 0
+            total_frames = wav_file.getnframes()
+            total_windows = max(1, math.ceil(total_frames / frame_samples))
+            if total_windows <= STT_FINAL_AUDIO_ANALYSIS_MAX_WINDOWS:
+                positions = range(0, total_frames, frame_samples)
+            else:
+                max_start = max(0, total_frames - frame_samples)
+                denominator = max(1, STT_FINAL_AUDIO_ANALYSIS_MAX_WINDOWS - 1)
+                positions = (
+                    round(index * max_start / denominator)
+                    for index in range(STT_FINAL_AUDIO_ANALYSIS_MAX_WINDOWS)
+                )
+            for position in positions:
+                wav_file.setpos(position)
+                raw = wav_file.readframes(frame_samples)
+                usable = raw[: len(raw) - (len(raw) % 2)]
+                if not usable:
+                    continue
+                samples = array("h")
+                samples.frombytes(usable)
+                if sys.byteorder != "little":
+                    samples.byteswap()
+                mono_samples = samples[::channels]
+                if not mono_samples:
+                    continue
+                square_sum = sum(sample * sample for sample in mono_samples)
+                rms = math.sqrt(square_sum / len(mono_samples)) / 32768.0
+                levels.append(20.0 * math.log10(max(rms, 1e-6)))
+                clipped_samples += sum(1 for sample in mono_samples if abs(sample) >= 32700)
+                total_samples += len(mono_samples)
+    except (OSError, EOFError, wave.Error):
+        return None
+
+    if not levels or total_samples <= 0:
+        return None
+    noise_floor = percentile(levels, 0.20)
+    speech_level = percentile(levels, 0.90)
+    duration_seconds = total_frames / sample_rate
+    return FinalAudioQuality(
+        noise_floor_dbfs=round(noise_floor, 2),
+        speech_level_dbfs=round(speech_level, 2),
+        snr_db=round(max(0.0, speech_level - noise_floor), 2),
+        clipping_ratio=round(clipped_samples / total_samples, 6),
+        duration_seconds=round(duration_seconds, 3),
+    )
+
+
+def final_audio_enhancement_decision(
+    quality: FinalAudioQuality | None,
+) -> tuple[bool, bool]:
+    if quality is None or quality.speech_level_dbfs <= -60.0:
+        return False, False
+    denoise = (
+        quality.noise_floor_dbfs >= STT_FINAL_DENOISE_NOISE_FLOOR_DBFS
+        or quality.snr_db <= STT_FINAL_DENOISE_MAX_SNR_DB
+    )
+    gain = (
+        quality.speech_level_dbfs < STT_FINAL_GAIN_SPEECH_LEVEL_DBFS
+        and quality.clipping_ratio < 0.001
+    )
+    return denoise, gain
+
+
+def is_standard_stt_wav(path: Path) -> bool:
+    try:
+        with wave.open(str(path), "rb") as wav_file:
+            return (
+                wav_file.getnchannels() == 1
+                and wav_file.getsampwidth() == 2
+                and wav_file.getframerate() == 16000
+                and wav_file.getcomptype() == "NONE"
+            )
+    except (OSError, EOFError, wave.Error):
+        return False
+
+
+def new_temp_path(suffix: str) -> Path:
+    with new_temp_file(suffix) as temp_file:
+        return Path(temp_file.name)
+
+
+def run_ffmpeg_audio_filter(source: Path, target: Path, filters: list[str]) -> None:
+    ffmpeg_path = _ffmpeg or shutil.which("ffmpeg")
+    if not ffmpeg_path:
+        raise RuntimeError("ffmpeg is unavailable")
+    command = [
+        ffmpeg_path,
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        str(source),
+        "-map",
+        "0:a:0",
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+    ]
+    if filters:
+        command.extend(["-af", ",".join(filters)])
+    command.extend(["-c:a", "pcm_s16le", str(target)])
+    subprocess.run(command, check=True, capture_output=True, timeout=1800)
+    if not target.is_file() or target.stat().st_size <= 44:
+        raise RuntimeError("enhanced audio is empty")
+
+
+def prepare_final_audio(source: Path) -> FinalAudioPreparation:
+    preparation = FinalAudioPreparation(path=source)
+    try:
+        analysis_path = source
+        if not is_standard_stt_wav(source):
+            normalized_path = new_temp_path("-normalized.wav")
+            preparation.temporary_paths.append(normalized_path)
+            run_ffmpeg_audio_filter(source, normalized_path, [])
+            analysis_path = normalized_path
+            preparation.path = normalized_path
+
+        # Even when adaptive enhancement is disabled, downstream Whisper and
+        # diarization require a deterministic 16 kHz mono PCM input.
+        if not STT_FINAL_AUDIO_ENHANCEMENT:
+            return preparation
+
+        quality = analyze_wav_quality(analysis_path)
+        preparation.quality = quality
+        denoise, gain = final_audio_enhancement_decision(quality)
+        preparation.denoise_applied = denoise
+        preparation.gain_applied = gain
+        if denoise or gain:
+            filters = ["highpass=f=80", "lowpass=f=7600"]
+            if denoise and quality is not None:
+                noise_floor = min(-20.0, max(-80.0, quality.noise_floor_dbfs))
+                filters.append(
+                    f"afftdn=nr={STT_FINAL_DENOISE_REDUCTION_DB:.1f}:"
+                    f"nf={noise_floor:.1f}:tn=1"
+                )
+            if gain:
+                filters.append("dynaudnorm=f=250:g=7:p=0.90:m=6")
+            filters.append("alimiter=limit=0.95")
+            enhanced_path = new_temp_path("-enhanced.wav")
+            preparation.temporary_paths.append(enhanced_path)
+            run_ffmpeg_audio_filter(analysis_path, enhanced_path, filters)
+            preparation.path = enhanced_path
+
+        push_debug_event(
+            "final_audio_analyzed",
+            noise_floor_dbfs=quality.noise_floor_dbfs if quality else None,
+            speech_level_dbfs=quality.speech_level_dbfs if quality else None,
+            snr_db=quality.snr_db if quality else None,
+            clipping_ratio=quality.clipping_ratio if quality else None,
+            denoise_applied=denoise,
+            gain_applied=gain,
+        )
+        return preparation
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        preparation.cleanup()
+        push_debug_event(
+            "final_audio_enhancement_failed",
+            error=sanitize_upstream_error(exc),
+        )
+        return FinalAudioPreparation(path=source)
 
 
 TencentAudioChunk = AudioChunk
@@ -768,6 +1266,7 @@ def transcribe_with_tencent_flash_chunked(
     tier: str | None = None,
     language: str = "zh",
     record_usage: bool = True,
+    speaker_diarization: bool = False,
 ) -> tuple[str, dict[str, Any]]:
     max_bytes = TENCENT_ASR_MAX_UPLOAD_MB * 1024 * 1024
     source_bytes = path.stat().st_size
@@ -782,6 +1281,7 @@ def transcribe_with_tencent_flash_chunked(
             tier=tier,
             language=language,
             record_usage=record_usage,
+            speaker_diarization=speaker_diarization,
         )
 
     STT_TEMP_DIR.mkdir(parents=True, exist_ok=True)
@@ -792,6 +1292,7 @@ def transcribe_with_tencent_flash_chunked(
         ) as directory:
             chunks = create_tencent_audio_chunks(path, Path(directory))
             merged_text = ""
+            merged_segments: list[dict[str, Any]] = []
             total_duration_ms = 0.0
             for index, chunk in enumerate(chunks, start=1):
                 try:
@@ -801,21 +1302,43 @@ def transcribe_with_tencent_flash_chunked(
                         tier=tier,
                         language=language,
                         record_usage=record_usage,
+                        speaker_diarization=speaker_diarization,
                     )
                 except Exception as exc:
                     raise TencentChunkedTranscriptionError(
                         f"第 {index}/{len(chunks)} 段云端转写失败: {sanitize_upstream_error(exc)}"
                     ) from exc
                 merged_text = merge_chunk_transcript_text(merged_text, chunk_text)
-                chunk_duration_ms = chunk.duration_seconds * 1000
-                with contextlib.suppress(TypeError, ValueError):
-                    chunk_duration_ms = max(
-                        0.0,
-                        float(payload.get("audio_duration") or 0),
-                    ) or chunk_duration_ms
+                if speaker_diarization:
+                    for row in payload.get("segments", []):
+                        if not isinstance(row, dict):
+                            continue
+                        adjusted = dict(row)
+                        # Tencent returns turn boundaries in milliseconds;
+                        # preserve that wire shape while restoring the source
+                        # recording offset for ordered cloud chunks.
+                        if "start_time" in adjusted:
+                            adjusted["start_time"] = float(adjusted["start_time"] or 0) + (
+                                chunk.start_seconds * 1000
+                            )
+                        if "end_time" in adjusted:
+                            adjusted["end_time"] = float(adjusted["end_time"] or 0) + (
+                                chunk.start_seconds * 1000
+                            )
+                        if "start" in adjusted:
+                            adjusted["start"] = float(adjusted["start"] or 0) + chunk.start_seconds
+                        if "end" in adjusted:
+                            adjusted["end"] = float(adjusted["end"] or 0) + chunk.start_seconds
+                        merged_segments.append(adjusted)
+                chunk_duration_ms = tencent_audio_duration_ms(
+                    payload,
+                    fallback_seconds=chunk.duration_seconds,
+                )
                 total_duration_ms += chunk_duration_ms
             if not merged_text:
                 raise TencentChunkedTranscriptionError("分段云端转写未返回有效文字")
+            if merged_segments:
+                merged_text = format_speaker_rows(merged_segments)
             push_debug_event(
                 "cloud_asr_chunked",
                 chunk_count=len(chunks),
@@ -827,6 +1350,7 @@ def transcribe_with_tencent_flash_chunked(
                 "audio_duration": round(total_duration_ms),
                 "chunked": True,
                 "chunk_count": len(chunks),
+                "segments": merged_segments,
             }
     except TencentChunkedTranscriptionError:
         raise
@@ -1859,6 +2383,10 @@ def stream_required_new_bytes(last_processed_size: int, min_bytes: int, step_byt
 class TranscribeResponse(BaseModel):
     text: str
     language: str = "zh"
+    duration_ms: int = 0
+    usage: dict[str, Any] | None = None
+    segments: list[dict[str, Any]] = []
+    diarization: dict[str, Any] | None = None
 
 
 class SwitchSTTRequest(BaseModel):
@@ -1870,6 +2398,158 @@ class SwitchSTTRequest(BaseModel):
 class ApiPrincipal:
     owner_id: str
     is_management: bool = False
+
+
+_account_billing_lock = threading.Lock()
+_account_billing_service: AccountService | None = None
+
+
+def configured_account_billing_service() -> AccountService:
+    """Lazily open the shared account database for STT usage settlement."""
+    global _account_billing_service
+    if not ACCOUNT_TOKEN_SECRET:
+        raise RuntimeError("Account point billing is not configured")
+    with _account_billing_lock:
+        if _account_billing_service is None:
+            _account_billing_service = AccountService(
+                ACCOUNT_DB_PATH,
+                token_secret=ACCOUNT_TOKEN_SECRET,
+                plans_path=ACCOUNT_PLANS_PATH,
+                free_points=ACCOUNT_FREE_POINTS,
+                stt_points_per_minute=ACCOUNT_STT_POINTS_PER_MINUTE,
+                ai_summary_points=ACCOUNT_AI_SUMMARY_POINTS,
+                ai_chat_points=ACCOUNT_AI_CHAT_POINTS,
+            )
+        return _account_billing_service
+
+
+def canonical_stt_usage_key(
+    principal: ApiPrincipal,
+    usage_key: str | None,
+    *,
+    meeting_id: str | None = None,
+    fallback_suffix: str | None = None,
+) -> str:
+    """Namespace client keys by account so retries cannot collide across users."""
+    return AccountService.canonical_stt_usage_key(
+        principal.owner_id,
+        usage_key,
+        meeting_id=meeting_id,
+        fallback_suffix=fallback_suffix,
+    )
+
+
+def ensure_account_stt_available(
+    principal: ApiPrincipal,
+    *,
+    usage_key: str | None = None,
+    meeting_id: str | None = None,
+    fallback_suffix: str | None = None,
+) -> dict[str, Any] | None:
+    if not account_stt_billing_required(principal):
+        return None
+    try:
+        canonical_key = canonical_stt_usage_key(
+            principal,
+            usage_key,
+            meeting_id=meeting_id,
+            fallback_suffix=fallback_suffix,
+        )
+        return configured_account_billing_service().ensure_stt_available_for_user(
+            principal.owner_id,
+            idempotency_key=canonical_key,
+        )
+    except AccountError:
+        raise
+    except (OSError, sqlite3.Error) as exc:
+        raise RuntimeError("Account point billing is unavailable") from exc
+
+
+def settle_account_stt_usage(
+    principal: ApiPrincipal,
+    *,
+    duration_ms: int,
+    meeting_id: str | None,
+    usage_key: str | None,
+    fallback_suffix: str | None = None,
+) -> dict[str, Any] | None:
+    if not account_stt_billing_required(principal):
+        return None
+    clean_duration = max(1, int(duration_ms))
+    key = canonical_stt_usage_key(
+        principal,
+        usage_key,
+        meeting_id=meeting_id,
+        fallback_suffix=fallback_suffix,
+    )
+    try:
+        return configured_account_billing_service().record_stt_usage_for_user(
+            principal.owner_id,
+            duration_ms=clean_duration,
+            meeting_id=meeting_id,
+            idempotency_key=key,
+        )
+    except AccountError:
+        raise
+    except (OSError, sqlite3.Error) as exc:
+        raise RuntimeError("Account point billing is unavailable") from exc
+
+
+def account_stt_billing_required(principal: ApiPrincipal) -> bool:
+    # A deployment without the account-token secret cannot authenticate an
+    # account principal from the public API. Keep direct helper tests and
+    # anonymous local development usable, while production (which always
+    # provisions this secret) remains fail-closed for account tokens.
+    return bool(ACCOUNT_TOKEN_SECRET) and not principal.is_management and principal.owner_id != "anonymous"
+
+
+async def require_account_stt_available(
+    principal: ApiPrincipal,
+    *,
+    usage_key: str | None = None,
+    meeting_id: str | None = None,
+    fallback_suffix: str | None = None,
+) -> None:
+    try:
+        await asyncio.to_thread(
+            ensure_account_stt_available,
+            principal,
+            usage_key=usage_key,
+            meeting_id=meeting_id,
+            fallback_suffix=fallback_suffix,
+        )
+    except AccountError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+async def settle_transcription_usage(
+    principal: ApiPrincipal,
+    *,
+    duration_ms: int,
+    meeting_id: str | None,
+    usage_key: str | None,
+    fallback_suffix: str | None,
+) -> dict[str, Any] | None:
+    clean_duration = max(0, int(duration_ms))
+    if clean_duration <= 0:
+        if account_stt_billing_required(principal):
+            raise HTTPException(status_code=422, detail="无法确定音频时长，暂不能结算积分")
+        return None
+    try:
+        return await asyncio.to_thread(
+            settle_account_stt_usage,
+            principal,
+            duration_ms=clean_duration,
+            meeting_id=meeting_id,
+            usage_key=usage_key,
+            fallback_suffix=fallback_suffix,
+        )
+    except AccountError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 class ArchivedAudioResponse(BaseModel):
@@ -1896,6 +2576,8 @@ class StreamRecording:
     owner_id: str
     meeting_id: str = ""
     language: str = "zh"
+    context_hint: str = ""
+    speaker_diarization: bool = False
     audio_bytes: int = 0
     claimed: bool = False
     archive_id: str | None = None
@@ -1956,6 +2638,14 @@ def normalize_archive_key(archive_key: str | None) -> str:
     if not re.fullmatch(r"[A-Za-z0-9._-]{1,128}", value):
         raise ValueError("Invalid audio archive key")
     return value
+
+
+def normalize_optional_header(value: object) -> str | None:
+    """Keep direct Python endpoint calls equivalent to FastAPI header binding."""
+    if not isinstance(value, str):
+        return None
+    clean = value.strip()
+    return clean or None
 
 
 def archive_owner_dir(owner_id: str) -> Path:
@@ -2559,6 +3249,7 @@ def load_model(size: str = DEFAULT_STT_MODEL, engine: str = "faster-whisper"):
     prefer_gpu = STT_DEVICE == "cuda" or (STT_DEVICE == "auto" and cuda_devices > 0)
     if prefer_gpu:
         try:
+            print("Creating CUDA Faster-Whisper runtime...", flush=True)
             next_model = faster_whisper.WhisperModel(
                 next_model_source,
                 device="cuda",
@@ -2566,6 +3257,7 @@ def load_model(size: str = DEFAULT_STT_MODEL, engine: str = "faster-whisper"):
                 download_root=str(fw_root),
                 num_workers=STT_MAX_CONCURRENT,
             )
+            print("CUDA model loaded; running readiness warmup...", flush=True)
             warmup_faster_whisper(next_model)
             model = next_model
             final_model = (
@@ -2675,6 +3367,7 @@ def decode_faster_whisper_file(
     batch_size: int | None = None,
     condition_on_previous_text: bool = False,
     initial_prompt: str | None = None,
+    hotwords: str | None = None,
     language: str = "zh",
 ) -> tuple[str, Any, list[dict[str, Any]]]:
     def run_transcribe(**kwargs):
@@ -2703,6 +3396,8 @@ def decode_faster_whisper_file(
     )
     if initial_prompt:
         options["initial_prompt"] = initial_prompt
+    if hotwords:
+        options["hotwords"] = hotwords
     if batch_size is not None and batch_size > 1:
         options["batch_size"] = batch_size
     return run_transcribe(**options)
@@ -2712,6 +3407,7 @@ def transcribe_faster_whisper_file(
     active_model,
     file_path: str,
     language: str = "zh",
+    context_hint: str = "",
 ) -> dict[str, Any]:
     language = normalize_stt_language(language)
     primary_model = active_model
@@ -2727,6 +3423,7 @@ def transcribe_faster_whisper_file(
         batch_size=primary_batch_size,
         condition_on_previous_text=STT_FINAL_CONDITION_ON_PREVIOUS_TEXT,
         initial_prompt=(STT_FINAL_INITIAL_PROMPT or None) if language == "zh" else None,
+        hotwords=context_hint or None,
         language=language,
     )
     text = sanitize_final_transcript(text)
@@ -2759,12 +3456,14 @@ def transcribe_faster_whisper_preview_file(
     active_model,
     file_path: str,
     language: str = "zh",
+    context_hint: str = "",
 ) -> dict[str, Any]:
     """Decode a revisable preview without the final transcript retry."""
     text, info, segment_rows = decode_faster_whisper_file(
         active_model,
         file_path,
         beam_size=STREAM_BEAM_SIZE,
+        hotwords=context_hint or None,
         language=language,
     )
     text = normalize_preview_text(text)
@@ -2778,13 +3477,38 @@ def transcribe_faster_whisper_preview_file(
     }
 
 
-def transcribe_local_single_file(file_path: str, language: str = "zh") -> TranscribeResponse:
+def transcribe_local_single_file(
+    file_path: str,
+    language: str = "zh",
+    context_hint: str = "",
+    speaker_diarization: bool = False,
+) -> TranscribeResponse:
     language = normalize_stt_language(language)
     if model is None:
         raise RuntimeError("Model not loaded")
     started_at = time.monotonic()
-
-    result = transcribe_faster_whisper_file(model, file_path, language)
+    source_path = Path(file_path)
+    preparation = prepare_final_audio(source_path)
+    try:
+        result = transcribe_faster_whisper_file(
+            model,
+            str(preparation.path),
+            language,
+            context_hint=context_hint,
+        )
+        diarization: dict[str, Any] | None = None
+        if speaker_diarization and STT_SPEAKER_DIARIZATION_ENABLED and result["segments"]:
+            result["segments"], diarization = attach_local_speakers(
+                Path(preparation.path), result["segments"]
+            )
+            if diarization.get("active"):
+                result["text"] = format_speaker_rows(result["segments"])
+            else:
+                raise RuntimeError(
+                    "本地说话人分离未就绪，已交由调用方切换腾讯云说话人分离"
+                )
+    finally:
+        preparation.cleanup()
     print(
         "Transcription completed: "
         f"chars={len(result['text'])}, language={result['language']}, "
@@ -2792,14 +3516,26 @@ def transcribe_local_single_file(file_path: str, language: str = "zh") -> Transc
         "strategy=single-file",
         flush=True,
     )
-    return TranscribeResponse(text=result["text"], language=result["language"])
+    duration_seconds = audio_duration_for_tencent_budget(Path(file_path)) or 0.0
+    return TranscribeResponse(
+        text=result["text"],
+        language=result["language"],
+        duration_ms=max(0, round(duration_seconds * 1000)),
+        segments=result.get("segments", []),
+        diarization=diarization,
+    )
 
 
-def transcribe_local_long_audio(file_path: str, language: str = "zh") -> TranscribeResponse:
+def transcribe_local_long_audio(
+    file_path: str,
+    language: str = "zh",
+    context_hint: str = "",
+    speaker_diarization: bool = False,
+) -> TranscribeResponse:
     source = Path(file_path)
     duration_seconds = audio_duration_for_tencent_budget(source)
     if duration_seconds is None or duration_seconds <= STT_LONG_AUDIO_CHUNK_THRESHOLD_SEC:
-        return transcribe_local_single_file(file_path, language)
+        return transcribe_local_single_file(file_path, language, context_hint, speaker_diarization)
 
     started_at = time.monotonic()
     STT_TEMP_DIR.mkdir(parents=True, exist_ok=True)
@@ -2815,11 +3551,23 @@ def transcribe_local_long_audio(file_path: str, language: str = "zh") -> Transcr
                 overlap_seconds=STT_LONG_AUDIO_CHUNK_OVERLAP_SEC,
             )
             merged_text = ""
+            merged_segments: list[dict[str, Any]] = []
             detected_language = normalize_stt_language(language)
             for index, chunk in enumerate(chunks, start=1):
-                result = transcribe_local_single_file(str(chunk.path), language)
+                # Attribute speakers once against the full source timeline
+                # below; chunk-level clustering would reset identities at
+                # every boundary and waste the expensive embedding pass.
+                result = transcribe_local_single_file(str(chunk.path), language, context_hint)
                 detected_language = result.language or detected_language
                 merged_text = merge_chunk_transcript_text(merged_text, result.text)
+                for segment in result.segments:
+                    merged_segments.append(
+                        {
+                            **segment,
+                            "start": float(segment.get("start") or 0.0) + chunk.start_seconds,
+                            "end": float(segment.get("end") or 0.0) + chunk.start_seconds,
+                        }
+                    )
                 print(
                     f"Long audio local chunk {index}/{len(chunks)} completed: "
                     f"chars={len(result.text)}",
@@ -2841,21 +3589,39 @@ def transcribe_local_long_audio(file_path: str, language: str = "zh") -> Transcr
                 f"duration_sec={duration_seconds:.1f}, elapsed_sec={elapsed:.2f}",
                 flush=True,
             )
-            return TranscribeResponse(text=merged_text, language=detected_language)
+            diarization: dict[str, Any] | None = None
+            if speaker_diarization and STT_SPEAKER_DIARIZATION_ENABLED and merged_segments:
+                merged_segments, diarization = attach_local_speakers(source, merged_segments)
+                if diarization.get("active"):
+                    merged_text = format_speaker_rows(merged_segments)
+            return TranscribeResponse(
+                text=merged_text,
+                language=detected_language,
+                duration_ms=max(0, round(duration_seconds * 1000)),
+                segments=merged_segments,
+                diarization=diarization,
+            )
     except AudioChunkingError:
         raise
     except Exception as exc:
         raise AudioChunkingError(f"长录音分段处理失败: {sanitize_upstream_error(exc)}") from exc
 
 
-def transcribe_file(file_path: str, language: str = "zh") -> TranscribeResponse:
-    return transcribe_local_long_audio(file_path, language)
+def transcribe_file(
+    file_path: str,
+    language: str = "zh",
+    context_hint: str = "",
+    speaker_diarization: bool = False,
+) -> TranscribeResponse:
+    return transcribe_local_long_audio(file_path, language, context_hint, speaker_diarization)
 
 
 def transcribe_audio(
     audio_data: bytes,
     suffix: str = ".m4a",
     language: str = "zh",
+    context_hint: str = "",
+    speaker_diarization: bool = False,
 ) -> TranscribeResponse:
     if model is None:
         raise RuntimeError("Model not loaded")
@@ -2872,7 +3638,7 @@ def transcribe_audio(
 
     print(f"Temp file: {tmp_path}, size: {os.path.getsize(tmp_path)} bytes", flush=True)
     try:
-        return transcribe_file(tmp_path, language)
+        return transcribe_file(tmp_path, language, context_hint, speaker_diarization)
     finally:
         os.unlink(tmp_path)
 
@@ -2882,6 +3648,7 @@ def transcribe_stream_snapshot(
     sample_rate: int = 16000,
     channels: int = 1,
     language: str = "zh",
+    context_hint: str = "",
 ) -> dict[str, Any]:
     language = normalize_stt_language(language)
     if len(pcm_bytes) == 0:
@@ -2901,7 +3668,12 @@ def transcribe_stream_snapshot(
             wav_file.setframerate(sample_rate)
             wav_file.writeframes(pcm_bytes)
 
-        return transcribe_faster_whisper_preview_file(stream_model or model, tmp_path, language)
+        return transcribe_faster_whisper_preview_file(
+            stream_model or model,
+            tmp_path,
+            language,
+            context_hint=context_hint,
+        )
     finally:
         os.unlink(tmp_path)
 
@@ -2997,7 +3769,7 @@ def select_stream_preview(
 
 
 def resolve_api_principal(authorization: str | None) -> ApiPrincipal | None:
-    if not STT_REQUIRE_API_TOKEN and not STT_API_TOKEN:
+    if not STT_REQUIRE_API_TOKEN and not STT_API_TOKEN and not ACCOUNT_TOKEN_SECRET:
         return ApiPrincipal(owner_id="anonymous")
     if not authorization or not authorization.startswith("Bearer "):
         return None
@@ -3078,6 +3850,58 @@ def safe_audio_suffix(filename: str | None) -> str:
     return ".bin"
 
 
+def preserve_failed_audio(
+    source_path: str | Path,
+    *,
+    owner_id: str,
+    meeting_id: str | None,
+    archive_key: str | None,
+    original_filename: str | None,
+    reason: str,
+) -> dict[str, Any] | None:
+    """Move an unarchived upload out of the expiring temp directory."""
+    source = Path(source_path)
+    partial: Path | None = None
+    target: Path | None = None
+    try:
+        if not source.is_file() or source.stat().st_size <= 44:
+            return None
+        recovery_id = uuid4().hex
+        suffix = safe_audio_suffix(original_filename or source.name)
+        target_dir = STT_RECOVERY_DIR / recovery_id
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / f"{recovery_id}{suffix}"
+        partial = target_dir / f".{target.name}.part"
+        shutil.copyfile(source, partial)
+        if partial.stat().st_size != source.stat().st_size:
+            raise IOError("recovery audio copy size mismatch")
+        os.replace(partial, target)
+        manifest = {
+            "schema": 1,
+            "id": recovery_id,
+            "owner_id": owner_id,
+            "meeting_id": normalize_archive_meeting_id(meeting_id),
+            "archive_key": normalize_archive_key(archive_key),
+            "filename": original_filename or source.name,
+            "bytes": target.stat().st_size,
+            "sha256": sha256_file(target),
+            "reason": reason[:500],
+            "created_at": utc_now(),
+            "audio_file": target.name,
+        }
+        manifest_path = target_dir / f"{recovery_id}.json"
+        manifest_part = target_dir / f".{recovery_id}.json.part"
+        manifest_part.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+        os.replace(manifest_part, manifest_path)
+        return manifest
+    except (OSError, ValueError):
+        for path in (partial, target):
+            if path is not None:
+                with contextlib.suppress(OSError):
+                    path.unlink()
+        return None
+
+
 async def spool_upload(file: UploadFile) -> tuple[str, int]:
     max_bytes = STT_MAX_UPLOAD_MB * 1024 * 1024
     total_bytes = 0
@@ -3124,9 +3948,31 @@ async def run_inference(callback, *args, label: str):
         ) from exc
 
 
-def transcribe_spooled_file(temp_path: str, language: str = "zh") -> TranscribeResponse:
+async def run_spooled_transcription(
+    temp_path: str,
+    language: str,
+    context_hint: str = "",
+    speaker_diarization: bool = False,
+    *,
+    label: str,
+) -> TranscribeResponse:
+    # Keep the legacy three-argument callback shape when diarization is off.
+    # This matters for existing integrations that wrap or instrument the
+    # callback. Only the opt-in path binds the new flag.
+    callback = (
+        functools.partial(transcribe_spooled_file, speaker_diarization=True)
+        if speaker_diarization
+        else transcribe_spooled_file
+    )
+    return await run_inference(callback, temp_path, language, context_hint, label=label)
+def transcribe_spooled_file(
+    temp_path: str,
+    language: str = "zh",
+    context_hint: str = "",
+    speaker_diarization: bool = False,
+) -> TranscribeResponse:
     try:
-        return transcribe_file(temp_path, language)
+        return transcribe_file(temp_path, language, context_hint, speaker_diarization)
     finally:
         with contextlib.suppress(FileNotFoundError):
             os.unlink(temp_path)
@@ -3222,6 +4068,24 @@ async def health():
             "batch_size": STT_FINAL_BATCH_SIZE,
             "stream_finalize_wait_sec": STT_STREAM_FINALIZE_WAIT_SEC,
             "initial_prompt_enabled": bool(STT_FINAL_INITIAL_PROMPT),
+            "context_hint_max_chars": STT_FINAL_CONTEXT_HINT_MAX_CHARS,
+            "audio_enhancement": {
+                "enabled": STT_FINAL_AUDIO_ENHANCEMENT,
+                "noise_floor_threshold_dbfs": STT_FINAL_DENOISE_NOISE_FLOOR_DBFS,
+                "max_snr_db": STT_FINAL_DENOISE_MAX_SNR_DB,
+                "gain_below_dbfs": STT_FINAL_GAIN_SPEECH_LEVEL_DBFS,
+                "denoise_reduction_db": STT_FINAL_DENOISE_REDUCTION_DB,
+                "analysis_max_windows": STT_FINAL_AUDIO_ANALYSIS_MAX_WINDOWS,
+            },
+            "speaker_diarization": {
+                "enabled": STT_SPEAKER_DIARIZATION_ENABLED,
+                "provider": "local-sherpa-onnx",
+                "models_present": STT_SPEAKER_SEGMENTATION_MODEL.is_file()
+                and STT_SPEAKER_EMBEDDING_MODEL.is_file(),
+                "active": speaker_diarizer is not None,
+                "error": speaker_diarizer_error,
+                "max_speakers": STT_SPEAKER_DIARIZATION_MAX_SPEAKERS,
+            },
         },
         "temp_files": {
             "directory": str(STT_TEMP_DIR),
@@ -3416,21 +4280,50 @@ async def clear_stream_events():
 async def transcribe(
     file: UploadFile,
     language: str = Form(default="zh"),
+    context_hint: str = Form(default=""),
+    speaker_diarization: bool = Form(default=False),
     principal: ApiPrincipal = Depends(require_api_token),
     x_meeting_id: str | None = Header(default=None, alias="X-Meeting-Id"),
     x_archive_key: str | None = Header(default=None, alias="X-Archive-Key"),
+    x_usage_key: str | None = Header(default=None, alias="X-Usage-Key"),
 ):
     if model is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
+    speaker_diarization = speaker_diarization is True
+    x_meeting_id = normalize_optional_header(x_meeting_id)
+    x_usage_key = normalize_optional_header(x_usage_key)
+    x_archive_key = normalize_optional_header(x_archive_key)
     try:
         language = normalize_stt_language(language)
+        context_hint = sanitize_context_hint(context_hint)
         x_archive_key = normalize_archive_key(x_archive_key)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    request_usage_key = x_usage_key or ""
+    if not request_usage_key:
+        request_usage_key = f"{x_meeting_id or 'unscoped'}:{x_archive_key or uuid4().hex}"
+    await require_account_stt_available(
+        principal,
+        usage_key=request_usage_key,
+        meeting_id=x_meeting_id,
+    )
     temp_path, upload_bytes = await spool_upload(file)
     print(f"Received audio upload: {upload_bytes} bytes -> {temp_path}", flush=True)
+    archive_recorded = False
     try:
-        await asyncio.to_thread(
+        source_duration_ms = max(
+            0,
+            round(
+                (
+                    await asyncio.to_thread(audio_duration_for_tencent_budget, Path(temp_path))
+                    or 0.0
+                )
+                * 1000
+            ),
+        )
+        if source_duration_ms <= 0 and account_stt_billing_required(principal):
+            raise HTTPException(status_code=422, detail="无法确定音频时长，暂不能结算积分")
+        archived = await asyncio.to_thread(
             archive_audio_file,
             temp_path,
             owner_id=principal.owner_id,
@@ -3439,23 +4332,50 @@ async def transcribe(
             original_filename=file.filename,
             archive_key=x_archive_key,
         )
-        return await run_inference(
-            transcribe_spooled_file,
+        archive_recorded = archived is not None
+        result = await run_spooled_transcription(
             temp_path,
             language,
+            context_hint,
+            speaker_diarization,
             label="file-upload",
         )
+        duration_ms = max(0, int(result.duration_ms or source_duration_ms))
+        usage = await settle_transcription_usage(
+            principal,
+            duration_ms=duration_ms,
+            meeting_id=x_meeting_id,
+            usage_key=request_usage_key,
+            fallback_suffix=x_archive_key,
+        )
+        return TranscribeResponse(
+            text=result.text,
+            language=result.language,
+            duration_ms=duration_ms,
+            usage=usage,
+            segments=result.segments,
+            diarization=result.diarization,
+        )
     except ValueError as exc:
-        with contextlib.suppress(FileNotFoundError):
-            os.unlink(temp_path)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except HTTPException:
-        with contextlib.suppress(FileNotFoundError):
-            os.unlink(temp_path)
         raise
     except Exception as exc:
         print(f"File transcription failed: {exc}", flush=True)
         raise HTTPException(status_code=500, detail="Audio transcription failed") from exc
+    finally:
+        if not archive_recorded:
+            await asyncio.to_thread(
+                preserve_failed_audio,
+                temp_path,
+                owner_id=principal.owner_id,
+                meeting_id=x_meeting_id,
+                archive_key=x_archive_key,
+                original_filename=file.filename,
+                reason="file transcription did not produce a durable archive",
+            )
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(temp_path)
 
 
 @app.get("/cloud-asr/v1/models")
@@ -3522,6 +4442,8 @@ async def local_cloud_asr_fallback(
     language: str,
     tier: str,
     upstream_error: Exception,
+    context_hint: str = "",
+    speaker_diarization: bool = False,
 ) -> dict[str, Any]:
     fallback_reason = sanitize_upstream_error(upstream_error)
     requested_provider = tencent_tier_config(tier).model_id
@@ -3536,10 +4458,11 @@ async def local_cloud_asr_fallback(
         error=fallback_reason,
     )
     try:
-        fallback = await run_inference(
-            transcribe_spooled_file,
+        fallback = await run_spooled_transcription(
             temp_path,
             language,
+            context_hint,
+            speaker_diarization,
             label="cloud-asr-fallback",
         )
     except HTTPException:
@@ -3560,6 +4483,8 @@ async def local_cloud_asr_fallback(
         "fallback": True,
         "fallback_reason": fallback_reason,
         "language": fallback.language,
+        "segments": fallback.segments,
+        "diarization": fallback.diarization,
     }
 
 
@@ -3568,10 +4493,16 @@ async def managed_cloud_asr_transcription(
     file: UploadFile,
     model: str = Form(default=TENCENT_STANDARD_MODEL),
     language: str = Form(default="zh"),
+    speaker_diarization: bool = Form(default=False),
     principal: ApiPrincipal = Depends(require_api_token),
     x_meeting_id: str | None = Header(default=None, alias="X-Meeting-Id"),
     x_archive_key: str | None = Header(default=None, alias="X-Archive-Key"),
+    x_usage_key: str | None = Header(default=None, alias="X-Usage-Key"),
 ):
+    speaker_diarization = speaker_diarization is True
+    x_meeting_id = normalize_optional_header(x_meeting_id)
+    x_usage_key = normalize_optional_header(x_usage_key)
+    x_archive_key = normalize_optional_header(x_archive_key)
     try:
         language = normalize_stt_language(language)
         x_archive_key = normalize_archive_key(x_archive_key)
@@ -3582,14 +4513,30 @@ async def managed_cloud_asr_transcription(
         raise HTTPException(status_code=400, detail="Unsupported managed Cloud ASR model")
     if not tencent_asr_configured(tier):
         raise HTTPException(status_code=503, detail="Selected Tencent Cloud ASR tier is unavailable")
+    request_usage_key = x_usage_key or ""
+    if not request_usage_key:
+        request_usage_key = f"{x_meeting_id or 'unscoped'}:{x_archive_key or uuid4().hex}"
+    await require_account_stt_available(
+        principal,
+        usage_key=request_usage_key,
+        meeting_id=x_meeting_id,
+    )
     voice_format = tencent_voice_format(file.filename)
     temp_path, upload_bytes = await spool_upload(file)
     reservation: TencentAsrBudgetReservation | None = None
     submitted_to_tencent = False
     reserved_duration_seconds = 0.0
+    source_duration_seconds = 0.0
     enforce_budget = tencent_asr_budget_enforced(tier)
+    archive_recorded = False
     try:
-        await asyncio.to_thread(
+        source_duration_seconds = await asyncio.to_thread(
+            audio_duration_for_tencent_budget,
+            Path(temp_path),
+        ) or 0.0
+        if source_duration_seconds <= 0 and account_stt_billing_required(principal):
+            raise HTTPException(status_code=422, detail="无法确定音频时长，暂不能结算积分")
+        archived = await asyncio.to_thread(
             archive_audio_file,
             temp_path,
             owner_id=principal.owner_id,
@@ -3598,11 +4545,9 @@ async def managed_cloud_asr_transcription(
             original_filename=file.filename,
             archive_key=x_archive_key,
         )
+        archive_recorded = archived is not None
         if enforce_budget:
-            reserved_duration_seconds = await asyncio.to_thread(
-                audio_duration_for_tencent_budget,
-                Path(temp_path),
-            ) or 0.0
+            reserved_duration_seconds = source_duration_seconds
             if reserved_duration_seconds <= 0:
                 raise HTTPException(
                     status_code=422,
@@ -3626,16 +4571,24 @@ async def managed_cloud_asr_transcription(
                 tier=tier,
                 language=language,
                 record_usage=False,
+                speaker_diarization=speaker_diarization,
             )
+        cloud_duration_ms = tencent_audio_duration_ms(
+            payload,
+            fallback_seconds=source_duration_seconds,
+        )
         if enforce_budget:
-            actual_duration_seconds = reserved_duration_seconds
-            with contextlib.suppress(TypeError, ValueError):
-                actual_duration_seconds = max(
-                    0.0,
-                    float(payload.get("audio_duration") or 0) / 1000,
-                ) or reserved_duration_seconds
+            actual_duration_seconds = cloud_duration_ms / 1000
             settle_tencent_asr_budget(reservation, actual_duration_seconds)
         reservation = None
+        duration_ms = cloud_duration_ms
+        usage = await settle_transcription_usage(
+            principal,
+            duration_ms=duration_ms,
+            meeting_id=x_meeting_id,
+            usage_key=request_usage_key,
+            fallback_suffix=x_archive_key,
+        )
         return {
             "text": text,
             "provider": tencent_tier_config(tier).model_id,
@@ -3646,35 +4599,105 @@ async def managed_cloud_asr_transcription(
                 realtime=False,
             ),
             "language": language,
-            "duration_ms": payload.get("audio_duration"),
+            "duration_ms": duration_ms,
             "chunked": bool(payload.get("chunked", False)),
             "chunk_count": int(payload.get("chunk_count") or 1),
+            "segments": payload.get("segments", []),
+            "diarization": (
+                {
+                    "enabled": True,
+                    "provider": "tencent-cloud",
+                    "active": bool(payload.get("segments")),
+                    "speaker_count": len(
+                        {
+                            str(row.get("speaker_id"))
+                            for row in payload.get("segments", [])
+                            if row.get("speaker_id") is not None
+                        }
+                    ),
+                }
+                if speaker_diarization
+                else None
+            ),
+            "usage": usage,
         }
     except HTTPException:
         release_tencent_asr_budget(reservation)
         raise
     except TencentChunkedTranscriptionError as exc:
+        # A single failed long-audio chunk must not discard the entire local
+        # recording. Fall back to the local model while keeping the usage
+        # settlement tied to the same idempotent request key.
         if submitted_to_tencent:
             settle_tencent_asr_budget(reservation, reserved_duration_seconds)
         else:
             release_tencent_asr_budget(reservation)
-        raise HTTPException(
-            status_code=502,
-            detail=f"智悟增强云模型分段云转写失败: {sanitize_upstream_error(exc)}",
-        ) from exc
+        fallback = await local_cloud_asr_fallback(
+            temp_path, language, tier, exc, speaker_diarization=speaker_diarization
+        )
+        duration_ms = max(0, round(source_duration_seconds * 1000))
+        fallback["usage"] = await settle_transcription_usage(
+            principal,
+            duration_ms=duration_ms,
+            meeting_id=x_meeting_id,
+            usage_key=request_usage_key,
+            fallback_suffix=x_archive_key,
+        )
+        fallback["duration_ms"] = duration_ms
+        return fallback
     except ValueError as exc:
         if submitted_to_tencent and "4004" not in str(exc):
             settle_tencent_asr_budget(reservation, reserved_duration_seconds)
         else:
             release_tencent_asr_budget(reservation)
-        return await local_cloud_asr_fallback(temp_path, language, tier, exc)
+        fallback = await local_cloud_asr_fallback(
+            temp_path, language, tier, exc, speaker_diarization=speaker_diarization
+        )
+        duration_ms = max(
+            0,
+            round(source_duration_seconds * 1000),
+        )
+        fallback["usage"] = await settle_transcription_usage(
+            principal,
+            duration_ms=duration_ms,
+            meeting_id=x_meeting_id,
+            usage_key=request_usage_key,
+            fallback_suffix=x_archive_key,
+        )
+        fallback["duration_ms"] = duration_ms
+        return fallback
     except Exception as exc:
         if submitted_to_tencent:
             settle_tencent_asr_budget(reservation, reserved_duration_seconds)
         else:
             release_tencent_asr_budget(reservation)
-        return await local_cloud_asr_fallback(temp_path, language, tier, exc)
+        fallback = await local_cloud_asr_fallback(
+            temp_path, language, tier, exc, speaker_diarization=speaker_diarization
+        )
+        duration_ms = max(
+            0,
+            round(source_duration_seconds * 1000),
+        )
+        fallback["usage"] = await settle_transcription_usage(
+            principal,
+            duration_ms=duration_ms,
+            meeting_id=x_meeting_id,
+            usage_key=request_usage_key,
+            fallback_suffix=x_archive_key,
+        )
+        fallback["duration_ms"] = duration_ms
+        return fallback
     finally:
+        if not archive_recorded:
+            await asyncio.to_thread(
+                preserve_failed_audio,
+                temp_path,
+                owner_id=principal.owner_id,
+                meeting_id=x_meeting_id,
+                archive_key=x_archive_key,
+                original_filename=file.filename,
+                reason="managed cloud transcription did not produce a durable archive",
+            )
         with contextlib.suppress(FileNotFoundError):
             os.unlink(temp_path)
 
@@ -3686,6 +4709,7 @@ async def managed_cloud_asr_transcription(
 async def transcribe_stream_recording(
     session_id: str,
     principal: ApiPrincipal = Depends(require_api_token),
+    x_usage_key: str | None = Header(default=None, alias="X-Usage-Key"),
 ):
     if not re.fullmatch(r"[0-9a-f]{32}", session_id):
         raise HTTPException(status_code=400, detail="Invalid stream session id")
@@ -3694,6 +4718,14 @@ async def transcribe_stream_recording(
         raise HTTPException(status_code=404, detail="Stream recording is unavailable")
     if recording.owner_id != principal.owner_id and not principal.is_management:
         raise HTTPException(status_code=404, detail="Stream recording is unavailable")
+    x_usage_key = normalize_optional_header(x_usage_key)
+    stream_usage_key = x_usage_key or f"stt:{recording.meeting_id}:{session_id}"
+    await require_account_stt_available(
+        principal,
+        usage_key=stream_usage_key,
+        meeting_id=recording.meeting_id,
+        fallback_suffix=session_id,
+    )
     if recording.claimed:
         raise HTTPException(status_code=409, detail="Stream recording is already being finalized")
 
@@ -3715,6 +4747,20 @@ async def transcribe_stream_recording(
         f"Finalizing streamed audio: session={session_id}, bytes={recording.audio_bytes}",
         flush=True,
     )
+    duration_ms = max(
+        0,
+        round(
+            (
+                await asyncio.to_thread(audio_duration_for_tencent_budget, recording.path)
+                or 0.0
+            )
+            * 1000
+        ),
+    )
+    if duration_ms <= 0 and account_stt_billing_required(principal):
+        with contextlib.suppress(FileNotFoundError):
+            recording.path.unlink()
+        raise HTTPException(status_code=422, detail="无法确定音频时长，暂不能结算积分")
     try:
         archived = await asyncio.to_thread(
             archive_audio_file,
@@ -3743,17 +4789,29 @@ async def transcribe_stream_recording(
                         reserved_duration_seconds,
                     )
                 async with tencent_asr_semaphore:
-                    text, _ = await asyncio.to_thread(
+                    text, cloud_payload = await asyncio.to_thread(
                         transcribe_with_tencent_flash_chunked,
                         recording.path,
                         "wav",
                         tier=final_tier,
                         language=recording.language,
                         record_usage=False,
+                        speaker_diarization=recording.speaker_diarization,
                     )
                 if enforce_budget:
                     settle_tencent_asr_budget(reservation, reserved_duration_seconds)
                 reservation = None
+                final_duration_ms = max(
+                    duration_ms,
+                    tencent_audio_duration_ms(cloud_payload),
+                )
+                usage = await settle_transcription_usage(
+                    principal,
+                    duration_ms=final_duration_ms,
+                    meeting_id=recording.meeting_id,
+                    usage_key=stream_usage_key,
+                    fallback_suffix=session_id,
+                )
                 with contextlib.suppress(FileNotFoundError):
                     recording.path.unlink()
                 push_debug_event(
@@ -3762,7 +4820,31 @@ async def transcribe_stream_recording(
                     stream_provider=recording.stream_provider,
                     final_provider=tencent_tier_config(final_tier).model_id,
                 )
-                return TranscribeResponse(text=text, language=recording.language)
+                return TranscribeResponse(
+                    text=text,
+                    language=recording.language,
+                    duration_ms=final_duration_ms,
+                    usage=usage,
+                    segments=cloud_payload.get("segments", []),
+                    diarization=(
+                        {
+                            "enabled": True,
+                            "provider": "tencent-cloud",
+                            "active": bool(cloud_payload.get("segments")),
+                            "speaker_count": len(
+                                {
+                                    str(row.get("speaker_id"))
+                                    for row in cloud_payload.get("segments", [])
+                                    if row.get("speaker_id") is not None
+                                }
+                            ),
+                        }
+                        if recording.speaker_diarization
+                        else None
+                    ),
+                )
+            except HTTPException:
+                raise
             except TencentChunkedTranscriptionError as exc:
                 if enforce_budget:
                     settle_tencent_asr_budget(reservation, reserved_duration_seconds)
@@ -3771,12 +4853,36 @@ async def transcribe_stream_recording(
                     session_id=session_id,
                     stream_provider=recording.stream_provider,
                     requested_provider=recording.final_provider,
+                    fallback_provider="faster-whisper",
                     error=sanitize_upstream_error(exc),
                 )
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"智悟增强云模型分段云转写失败: {sanitize_upstream_error(exc)}",
-                ) from exc
+                fallback = await local_cloud_asr_fallback(
+                    temp_path,
+                    recording.language,
+                    final_tier,
+                    exc,
+                    recording.context_hint,
+                    recording.speaker_diarization,
+                )
+                # local_cloud_asr_fallback consumes the spool file. Its duration
+                # was captured before cloud finalization began, so do not try to
+                # reopen a now-deleted temporary WAV here.
+                final_duration_ms = duration_ms
+                usage = await settle_transcription_usage(
+                    principal,
+                    duration_ms=final_duration_ms,
+                    meeting_id=recording.meeting_id,
+                    usage_key=stream_usage_key,
+                    fallback_suffix=session_id,
+                )
+                return TranscribeResponse(
+                    text=fallback["text"],
+                    language=fallback.get("language") or recording.language,
+                    duration_ms=final_duration_ms,
+                    usage=usage,
+                    segments=fallback.get("segments", []),
+                    diarization=fallback.get("diarization"),
+                )
             except Exception as exc:
                 if enforce_budget:
                     if "4004" in str(exc):
@@ -3791,11 +4897,28 @@ async def transcribe_stream_recording(
                     fallback_provider="faster-whisper",
                     error=str(exc),
                 )
-        return await run_inference(
-            transcribe_spooled_file,
+        result = await run_spooled_transcription(
             temp_path,
             recording.language,
+            recording.context_hint,
+            recording.speaker_diarization,
             label="stream-finalize",
+        )
+        final_duration_ms = max(duration_ms, int(result.duration_ms or 0))
+        usage = await settle_transcription_usage(
+            principal,
+            duration_ms=final_duration_ms,
+            meeting_id=recording.meeting_id,
+            usage_key=stream_usage_key,
+            fallback_suffix=session_id,
+        )
+        return TranscribeResponse(
+            text=result.text,
+            language=result.language,
+            duration_ms=final_duration_ms,
+            usage=usage,
+            segments=result.segments,
+            diarization=result.diarization,
         )
     except HTTPException:
         with contextlib.suppress(FileNotFoundError):
@@ -3870,6 +4993,15 @@ async def transcribe_stream(websocket: WebSocket):
         await websocket.send_text(json.dumps({"type": "error", "message": "Unauthorized"}))
         await websocket.close(code=1008)
         return
+    try:
+        await require_account_stt_available(principal)
+    except HTTPException as exc:
+        await websocket.send_text(
+            json.dumps({"type": "error", "message": str(exc.detail)}, ensure_ascii=False)
+        )
+        await websocket.close(code=1008)
+        return
+
     print(f"[WS] WebSocket accepted from {websocket.client} session will follow", flush=True)
     if model is None:
         await websocket.send_text(json.dumps({"type": "error", "message": "Model not loaded"}))
@@ -4047,6 +5179,7 @@ async def transcribe_stream(websocket: WebSocket):
                     sample_rate,
                     channels,
                     inference_language,
+                    stream_recording.context_hint,
                     label=f"stream:{session_id}",
                 )
                 inference_failure_streak = 0
@@ -4319,6 +5452,12 @@ async def transcribe_stream(websocket: WebSocket):
                         stream_stopped = True
                         break
                     stream_recording.language = language
+                    stream_recording.context_hint = sanitize_context_hint(
+                        payload.get("context_hint")
+                    )
+                    stream_recording.speaker_diarization = bool(
+                        payload.get("speaker_diarization", False)
+                    )
                     requested_provider = str(
                         payload.get("stream_provider") or LOCAL_STREAM_PROVIDER
                     ).strip().lower()
@@ -4406,6 +5545,7 @@ async def transcribe_stream(websocket: WebSocket):
                         sample_rate=sample_rate,
                         channels=channels,
                         language=language,
+                        context_hint_chars=len(stream_recording.context_hint),
                         stream_provider=stream_recording.stream_provider,
                         final_provider=stream_recording.final_provider,
                         stream_params={

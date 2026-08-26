@@ -1,0 +1,22 @@
+{
+  "scenario": "first_discover_open",
+  "tab": "DISCOVER",
+  "api_response": "empty_or_failure",
+  "expected": {
+    "sample_notice": true,
+    "post_count": 6,
+    "collection_count": 3,
+    "featured_page_cap": 7,
+    "sample_mutations_enabled": false,
+    "media_base_url": ""
+  },
+  "replacement_scenario": {
+    "api_response": "non_empty_real_posts",
+    "expected": {
+      "sample_notice": false,
+      "sample_posts_removed": true,
+      "sample_collections_removed_if_not_replaced": true,
+      "real_posts_rendered": true
+    }
+  }
+}

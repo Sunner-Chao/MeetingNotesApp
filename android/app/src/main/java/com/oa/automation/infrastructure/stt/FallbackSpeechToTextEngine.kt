@@ -14,7 +14,8 @@ internal class FallbackSpeechToTextEngine(
         audioFile: File,
         onProgress: (ProcessingProgress) -> Unit,
         meetingId: String?,
-        archiveKey: String?
+        archiveKey: String?,
+        contextHint: String?
     ): Result<String> {
         var lastProgress = 0
         val primaryProgress: (ProcessingProgress) -> Unit = { progress ->
@@ -22,7 +23,7 @@ internal class FallbackSpeechToTextEngine(
             onProgress(progress)
         }
         val primaryResult = execute {
-            primary.transcribe(audioFile, primaryProgress, meetingId, archiveKey)
+            primary.transcribe(audioFile, primaryProgress, meetingId, archiveKey, contextHint)
         }
         if (primaryResult.isSuccess) return primaryResult
 
@@ -40,7 +41,7 @@ internal class FallbackSpeechToTextEngine(
             onProgress(progress.copy(percent = mappedPercent))
         }
         val fallbackResult = execute {
-            fallback.transcribe(audioFile, fallbackProgress, meetingId, archiveKey)
+            fallback.transcribe(audioFile, fallbackProgress, meetingId, archiveKey, contextHint)
         }
         if (fallbackResult.isSuccess) return fallbackResult
 

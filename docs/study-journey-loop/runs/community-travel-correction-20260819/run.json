@@ -1,0 +1,96 @@
+{
+  "schema_version": "1.0",
+  "run_id": "community-travel-correction-20260819",
+  "mode": "integrate",
+  "approval_policy": "trusted-owner",
+  "status": "verified",
+  "limits": {
+    "max_prototypes": 5,
+    "max_iterations": 2
+  },
+  "inputs": [
+    "owner-brief-travel-learning-correction-20260819",
+    "xhs-domestic-study-search-20260819",
+    "xhs-scenery-learning-patterns-20260819",
+    "wikimedia-domestic-scenery-batch-20260819",
+    "zwb-ui-library-20260815"
+  ],
+  "prototypes": [
+    {
+      "id": "scenic-route-learning-stops",
+      "title": "Scenic route with learning stops",
+      "problem": "Industry-first samples hide the travel destination and scenery.",
+      "new_structure": "Destination cover, walkable stages, one learning question per stop and a compact takeaway card.",
+      "visual_rule": "Use a scenic overview first, then detail and route-context media in the existing carousel.",
+      "evidence_rule": "Original copy and attributed domestic media only; no invented logistics.",
+      "source_ids": ["owner-brief-travel-learning-correction-20260819", "xhs-domestic-study-search-20260819", "xhs-scenery-learning-patterns-20260819", "wikimedia-domestic-scenery-batch-20260819"],
+      "existing_comparison": "Replaces MockStudyCommunityData and local mock media without changing live APIs or screens.",
+      "recommendation": "new-candidate"
+    },
+    {
+      "id": "museum-outdoor-context",
+      "title": "Museum and outdoor context",
+      "problem": "Museum notes can read like a formal catalog instead of a journey.",
+      "new_structure": "Arrival landscape, exhibit clue, guide explanation and outdoor return view.",
+      "visual_rule": "Alternate architecture, exhibit and surrounding-place images.",
+      "evidence_rule": "Omit unsupported dates, identities and historical conclusions.",
+      "source_ids": ["xhs-domestic-study-search-20260819", "xhs-scenery-learning-patterns-20260819", "wikimedia-domestic-scenery-batch-20260819"],
+      "existing_comparison": "Merged into existing rich text, stages and carousel.",
+      "recommendation": "merge-existing"
+    },
+    {
+      "id": "landscape-observation-card",
+      "title": "Landscape observation card",
+      "problem": "Scenic posts can stop at generic praise.",
+      "new_structure": "Panorama, one visible feature, guide question and one-sentence takeaway.",
+      "visual_rule": "Give the overview the largest weight and use detail/path images for context.",
+      "evidence_rule": "Unknown geology, ecology or weather effects remain questions.",
+      "source_ids": ["xhs-scenery-learning-patterns-20260819", "zwb-ui-library-20260815", "wikimedia-domestic-scenery-batch-20260819"],
+      "existing_comparison": "Merged into stages, curation notes and post bodies.",
+      "recommendation": "merge-existing"
+    },
+    {
+      "id": "multi-day-scenic-journey",
+      "title": "Multi-day scenic journey",
+      "problem": "Long travel notes become a flat stream of photos.",
+      "new_structure": "One destination line, scenic anchor and learning card per day.",
+      "visual_rule": "Use up to seven images, each tied to a day or transition.",
+      "evidence_rule": "Keep the route explicitly sample content and omit logistics promises.",
+      "source_ids": ["xhs-domestic-study-search-20260819", "xhs-scenery-learning-patterns-20260819", "zwb-ui-library-20260815"],
+      "existing_comparison": "Uses existing multi-stage rendering and media pager.",
+      "recommendation": "merge-existing"
+    },
+    {
+      "id": "industry-report-disguise",
+      "title": "Industry report disguise",
+      "problem": "Study-tour content can drift back to factory, construction, laboratory or surveying reports.",
+      "new_structure": "Rejected.",
+      "visual_rule": "Keep specialist visit assets outside the community study-tour feed.",
+      "evidence_rule": "Industry test fixtures belong to their own meeting categories only.",
+      "source_ids": ["owner-brief-travel-learning-correction-20260819", "zwb-ui-library-20260815"],
+      "existing_comparison": "No community component is needed.",
+      "recommendation": "reject"
+    }
+  ],
+  "candidates": [
+    {
+      "id": "community-travel-portfolio",
+      "prototype_id": "scenic-route-learning-stops",
+      "template_path": "candidates/community-travel-portfolio.study-template.md",
+      "status": "reviewed",
+      "de_sloppify_passed": true,
+      "score": 16,
+      "review_path": "reviews/community-travel-portfolio.md"
+    }
+  ],
+  "quality_gate": {
+    "status": "passed",
+    "findings": [
+      "10 domestic destination-led samples integrated",
+      "13 licensed domestic scenic assets registered",
+      "industry-report drift rejected by focused tests",
+      "West Lake and Wuyuan cover assets replaced after visual review",
+      "manual visual review is still required before OTA publication"
+    ]
+  }
+}

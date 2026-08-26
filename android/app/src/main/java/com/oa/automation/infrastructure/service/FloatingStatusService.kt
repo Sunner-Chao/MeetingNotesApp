@@ -31,7 +31,7 @@ import org.koin.android.ext.android.inject
 
 /**
  * Desktop status ball shown while the app is in the background when enabled by the user.
- * Tapping opens the meeting, and holding it toggles pause/resume when a recording exists.
+ * Tapping returns to the active recording. It never changes recording state.
  */
 class FloatingStatusService : Service() {
     private val recordingController: RecordingSessionController by inject()
@@ -45,7 +45,7 @@ class FloatingStatusService : Service() {
         when (intent?.action) {
             ACTION_SHOW, ACTION_UPDATE -> {
                 activeMeetingId = intent.getStringExtra(EXTRA_MEETING_ID).orEmpty()
-                if (!Settings.canDrawOverlays(this) || isRecordingActive()) {
+                if (!Settings.canDrawOverlays(this) || !isRecordingActive()) {
                     stopSelfResult(startId)
                     return START_NOT_STICKY
                 }
@@ -66,7 +66,15 @@ class FloatingStatusService : Service() {
         createChannel()
         scope.launch {
             recordingController.state.collectLatest { state ->
-                activeMeetingId = state.meetingId
+                activeMeetingId = state.meetingId.takeIf {
+                    state.isRecording || state.isStarting || state.isStopping
+                }.orEmpty()
+                if (!isRecordingActive()) {
+                    removeBall()
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                    return@collectLatest
+                }
                 ball?.contentDescription = if (state.isPaused) "录音已暂停" else "正在录音"
                 ball?.alpha = if (state.isPaused) 0.72f else 1f
             }
@@ -82,7 +90,7 @@ class FloatingStatusService : Service() {
     }
 
     private fun showBallIfNeeded() {
-        if (isRecordingActive()) {
+        if (!isRecordingActive()) {
             removeBall()
             return
         }
@@ -97,15 +105,16 @@ class FloatingStatusService : Service() {
                 startActivity(
                     Intent(this@FloatingStatusService, MainActivity::class.java).apply {
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                        putExtra(MainActivity.EXTRA_OPEN_RECORDING_MEETING_ID, activeMeetingId)
                     }
                 )
             }
-            setOnTouchListener(DragAndHoldListener())
+            setOnTouchListener(DragListener())
         }
         val icon = ImageView(this).apply {
-            setImageResource(R.drawable.floating_ball_art)
+            setImageResource(R.drawable.floating_drop_art)
             scaleType = ImageView.ScaleType.FIT_CENTER
-            contentDescription = "智悟本后台悬浮球"
+            contentDescription = "智悟本后台悬浮水滴"
         }
         root.addView(icon, FrameLayout.LayoutParams(-1, -1))
         val params = WindowManager.LayoutParams(
@@ -146,31 +155,19 @@ class FloatingStatusService : Service() {
         return state.isRecording || state.isStarting || state.isStopping
     }
 
-    private fun toggleRecording() {
-        val id = activeMeetingId.ifBlank { recordingController.state.value.meetingId }
-        if (id.isBlank()) return
-        val action = if (recordingController.state.value.isPaused) {
-            RecordingService.ACTION_RESUME
-        } else {
-            RecordingService.ACTION_PAUSE
-        }
-        startService(Intent(this, RecordingService::class.java).apply {
-            this.action = action
-            putExtra(RecordingService.EXTRA_MEETING_ID, id)
-        })
-    }
-
     private fun buildNotification(): Notification {
         val intent = PendingIntent.getActivity(
             this,
             702,
-            Intent(this, MainActivity::class.java),
+            Intent(this, MainActivity::class.java).apply {
+                putExtra(MainActivity.EXTRA_OPEN_RECORDING_MEETING_ID, activeMeetingId)
+            },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_info_details)
             .setContentTitle("智悟本悬浮球已开启")
-            .setContentText("点击打开会议，长按暂停或继续录音")
+            .setContentText("点击返回正在进行的录音")
             .setContentIntent(intent)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
@@ -189,12 +186,11 @@ class FloatingStatusService : Service() {
         )
     }
 
-    private inner class DragAndHoldListener : View.OnTouchListener {
+    private inner class DragListener : View.OnTouchListener {
         private var downX = 0f
         private var downY = 0f
         private var startX = 0
         private var startY = 0
-        private var downAt = 0L
         private var moved = false
 
         override fun onTouch(view: View, event: MotionEvent): Boolean {
@@ -205,7 +201,6 @@ class FloatingStatusService : Service() {
                     downY = event.rawY
                     startX = params.x
                     startY = params.y
-                    downAt = System.currentTimeMillis()
                     moved = false
                     return true
                 }
@@ -219,9 +214,7 @@ class FloatingStatusService : Service() {
                     return true
                 }
                 MotionEvent.ACTION_UP -> {
-                    val held = System.currentTimeMillis() - downAt >= 650
-                    if (!moved && held) toggleRecording()
-                    if (!moved && !held) view.performClick()
+                    if (!moved) view.performClick()
                     return true
                 }
             }

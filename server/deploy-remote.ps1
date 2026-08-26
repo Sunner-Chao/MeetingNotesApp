@@ -227,6 +227,7 @@ try {
         "--exclude=./logs",
         "--exclude=./stt-service/runtime",
         "--exclude=./stt-service/pip",
+        "--exclude=./stt-service/data",
         "--exclude=./stt-service/.switch_pending",
         "--exclude=./backend-service/runtime",
         "--exclude=./stt-service/__pycache__",

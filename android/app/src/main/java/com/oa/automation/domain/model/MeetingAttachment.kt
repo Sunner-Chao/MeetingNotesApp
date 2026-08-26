@@ -15,5 +15,7 @@ data class MeetingAttachment(
     val locationSource: String? = null,
     val recordingMarkerId: String? = null,
     val markerTimestampMs: Long? = null,
-    val markerTranscriptAnchor: String? = null
+    val markerTranscriptAnchor: String? = null,
+    /** Content URI of the optional backup copy in the device gallery. */
+    val galleryUri: String? = null
 )

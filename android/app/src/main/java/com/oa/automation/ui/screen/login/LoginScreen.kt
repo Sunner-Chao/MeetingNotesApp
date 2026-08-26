@@ -211,53 +211,23 @@ fun LoginScreen(
                         onRegister = onNavigateToRegister,
                         layout = layout
                     )
-                    AuthModeSelector(
-                        mode = uiState.mode,
-                        onModeChange = { onEvent(LoginEvent.ModeChanged(it)) }
+                    AuthUsernameField(
+                        value = uiState.username,
+                        placeholder = "邮箱/用户名",
+                        onValueChange = { onEvent(LoginEvent.UsernameChanged(it)) },
+                        onNext = { focusManager.moveFocus(FocusDirection.Down) },
+                        layout = layout
                     )
-                    if (uiState.mode == AuthEntryMode.PASSWORD) {
-                        AuthUsernameField(
-                            value = uiState.username,
-                            placeholder = "旧用户名",
-                            onValueChange = { onEvent(LoginEvent.UsernameChanged(it)) },
-                            onNext = { focusManager.moveFocus(FocusDirection.Down) },
-                            layout = layout
-                        )
-                        AuthPasswordField(
-                            value = uiState.password,
-                            placeholder = "请输入密码",
-                            visible = uiState.passwordVisible,
-                            onValueChange = { onEvent(LoginEvent.PasswordChanged(it)) },
-                            onToggleVisibility = { onEvent(LoginEvent.TogglePasswordVisibility) },
-                            imeAction = ImeAction.Done,
-                            onImeAction = { onEvent(LoginEvent.LoginClicked) },
-                            layout = layout
-                        )
-                    } else {
-                        AuthIdentifierField(
-                            value = uiState.identifier,
-                            mode = uiState.mode,
-                            onValueChange = { onEvent(LoginEvent.IdentifierChanged(it)) },
-                            onNext = { focusManager.moveFocus(FocusDirection.Down) },
-                            layout = layout
-                        )
-                        AuthVerificationCodeField(
-                            value = uiState.verificationCode,
-                            isSending = uiState.isSendingCode,
-                            cooldownSeconds = uiState.codeCooldownSeconds,
-                            onValueChange = { onEvent(LoginEvent.VerificationCodeChanged(it)) },
-                            onSendCode = { onEvent(LoginEvent.SendCodeClicked) },
-                            onDone = { onEvent(LoginEvent.LoginClicked) },
-                            layout = layout
-                        )
-                        if (uiState.codeSentTo.isNotBlank()) {
-                            Text(
-                                text = "验证码已发送至 ${uiState.codeSentTo}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
+                    AuthPasswordField(
+                        value = uiState.password,
+                        placeholder = "密码",
+                        visible = uiState.passwordVisible,
+                        onValueChange = { onEvent(LoginEvent.PasswordChanged(it)) },
+                        onToggleVisibility = { onEvent(LoginEvent.TogglePasswordVisibility) },
+                        imeAction = ImeAction.Done,
+                        onImeAction = { onEvent(LoginEvent.LoginClicked) },
+                        layout = layout
+                    )
                     AnimatedVisibility(
                         visible = uiState.errorMessage != null,
                         enter = fadeIn(),
@@ -270,7 +240,7 @@ fun LoginScreen(
                             style = MaterialTheme.typography.bodySmall
                         )
                     }
-                    if (uiState.mode == AuthEntryMode.PASSWORD) Row(
+                    Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -309,7 +279,7 @@ fun LoginScreen(
                             )
                         } else {
                             Text(
-                                if (uiState.mode == AuthEntryMode.PASSWORD) "登录" else "验证并继续",
+                                "登录",
                                 style = MaterialTheme.typography.titleMedium
                             )
                         }
@@ -324,7 +294,7 @@ fun LoginScreen(
                 }
             }
             TextButton(onClick = onContinueAsGuest) {
-                Text("先本地录音，稍后登录")
+                Text("游客登录")
             }
             AuthAgreement(prefix = "登录", layout = layout)
             AuthBenefits(layout)
@@ -382,7 +352,7 @@ internal fun AuthPageHeader(layout: AuthLayoutSpec) {
         }
         Spacer(Modifier.height(6.dp))
         Text(
-            text = "智记所言，悟行所止。 —— 让每一场会议都有始有终。",
+            text = "我的成长记录",
             modifier = Modifier.padding(horizontal = 30.dp),
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             fontSize = 13.sp,
@@ -714,12 +684,20 @@ private fun SocialProviderButton(provider: SocialAuthProvider, iconSize: Dp, onC
             border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
         ) {
             Box(contentAlignment = Alignment.Center) {
-                Text(
-                    text = glyph,
-                    color = providerColor,
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.Bold
-                )
+                if (provider.id == "wechat") {
+                    Image(
+                        painter = painterResource(R.drawable.ic_wechat_official),
+                        contentDescription = "官方微信",
+                        modifier = Modifier.size(iconSize * 0.64f)
+                    )
+                } else {
+                    Text(
+                        text = glyph,
+                        color = providerColor,
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
             }
         }
         Text(

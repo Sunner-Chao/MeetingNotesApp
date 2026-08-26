@@ -9,6 +9,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 @Database(
     entities = [
         MeetingEntity::class,
+        MeetingAudioSegmentEntity::class,
         TranscriptEntity::class,
         ReportEntity::class,
         MeetingAttachmentEntity::class,
@@ -22,7 +23,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         CommunitySyncOutboxEntity::class,
         PublishedPostMediaEntity::class
     ],
-    version = 15,
+    version = 20,
     exportSchema = false
 )
 @TypeConverters(DbConverters::class)
@@ -430,6 +431,57 @@ abstract class AppDatabase : RoomDatabase() {
                       )
                     """.trimIndent()
                 )
+            }
+        }
+
+        val MIGRATION_15_16 = object : Migration(15, 16) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE reports ADD COLUMN participants TEXT NOT NULL DEFAULT '[]'")
+            }
+        }
+
+        val MIGRATION_16_17 = object : Migration(16, 17) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE meetings ADD COLUMN selectedTemplateName TEXT")
+            }
+        }
+
+        val MIGRATION_17_18 = object : Migration(17, 18) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE meeting_attachments ADD COLUMN galleryUri TEXT")
+            }
+        }
+
+        val MIGRATION_18_19 = object : Migration(18, 19) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS meeting_audio_segments (
+                        id TEXT NOT NULL,
+                        meetingId TEXT NOT NULL,
+                        sequenceNumber INTEGER NOT NULL,
+                        localPath TEXT NOT NULL,
+                        durationMs INTEGER NOT NULL,
+                        bytes INTEGER NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        PRIMARY KEY(id)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_meeting_audio_segments_meetingId " +
+                        "ON meeting_audio_segments(meetingId)"
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS index_meeting_audio_segments_meetingId_sequenceNumber " +
+                        "ON meeting_audio_segments(meetingId, sequenceNumber)"
+                )
+            }
+        }
+
+        val MIGRATION_19_20 = object : Migration(19, 20) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE meetings ADD COLUMN selectedSttEngineName TEXT")
             }
         }
     }

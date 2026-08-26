@@ -12,6 +12,7 @@ import com.oa.automation.domain.model.CommunityCollection
 import com.oa.automation.domain.model.CommunityCollectionFacets
 import com.oa.automation.domain.model.CommunityCollectionInteractionState
 import com.oa.automation.domain.model.CommunityCollectionShare
+import com.oa.automation.domain.model.CommunityPostPage
 import com.oa.automation.domain.model.PublicCommunityPost
 import com.oa.automation.infrastructure.account.AccountApiService
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -49,6 +50,7 @@ data class CommunityUiState(
     val isLoadingMore: Boolean = false,
     val nextPublicCursor: String? = null,
     val nextSavedCursor: String? = null,
+    val isShowingSampleContent: Boolean = false,
     val error: String? = null
 )
 
@@ -56,7 +58,9 @@ class CommunityViewModel(
     private val configDataStore: ConfigDataStore,
     private val accountApiService: AccountApiService
 ) : ViewModel() {
-    private val _uiState = MutableStateFlow(CommunityUiState())
+    private val _uiState = MutableStateFlow(
+        CommunityUiState()
+    )
     val uiState: StateFlow<CommunityUiState> = _uiState.asStateFlow()
 
     fun selectTab(tab: CommunityTab) {
@@ -211,18 +215,34 @@ class CommunityViewModel(
             hasMedia = filters.hasMediaOnly
         ).fold(
             onSuccess = { page ->
+                val useSamples = shouldUseCommunitySamples(_uiState.value, page, append)
+                val samplePosts = if (useSamples) samplePostsForCurrentFilters() else emptyList()
                 _uiState.update {
+                    val collectionsAreSamples = it.collections.isNotEmpty() &&
+                        it.collections.all { collection ->
+                            MockStudyCommunityData.isSampleId(collection.id)
+                        }
                     it.copy(
                         publicPosts = if (append) {
                             (it.publicPosts + page.items).distinctBy(PublicCommunityPost::id)
+                        } else if (useSamples) {
+                            samplePosts
                         } else {
                             page.items
                         },
-                        facets = page.facets ?: CommunityFacets(),
-                        mediaBaseUrl = communityMediaBaseUrl(endpoint),
+                        collections = when {
+                            useSamples -> MockStudyCommunityData.collections
+                            collectionsAreSamples -> emptyList()
+                            else -> it.collections
+                        },
+                        facets = if (useSamples) MockStudyCommunityData.facets
+                        else page.facets ?: CommunityFacets(),
+                        mediaBaseUrl = if (useSamples) "" else communityMediaBaseUrl(endpoint),
                         isLoading = false,
                         isLoadingMore = false,
-                        nextPublicCursor = page.nextCursor
+                        nextPublicCursor = if (useSamples) null else page.nextCursor,
+                        isShowingSampleContent = useSamples,
+                        error = null
                     )
                 }
             },
@@ -238,6 +258,19 @@ class CommunityViewModel(
         )
     }
 
+    private fun samplePostsForCurrentFilters(): List<PublicCommunityPost> {
+        val filters = _uiState.value
+        return MockStudyCommunityData.filteredPosts(
+            query = filters.searchQuery,
+            destination = filters.destinationFilter,
+            tag = filters.tagFilter,
+            poi = filters.poiFilter,
+            minDays = filters.minDaysFilter,
+            maxDays = filters.maxDaysFilter,
+            hasMedia = filters.hasMediaOnly
+        )
+    }
+
     private suspend fun loadPublicCollections() {
         val endpoint = configDataStore.accountEndpointFlow.first()
         val filters = _uiState.value
@@ -249,12 +282,15 @@ class CommunityViewModel(
             sort = filters.collectionSort
         ).onSuccess { page ->
             _uiState.update {
+                val keepSamples = page.items.isEmpty() &&
+                    it.isShowingSampleContent &&
+                    !hasActiveCommunityCollectionFilters(it)
                 it.copy(
-                    collections = page.items,
-                    collectionFacets = page.facets,
+                    collections = if (keepSamples) it.collections else page.items,
+                    collectionFacets = if (keepSamples) it.collectionFacets else page.facets,
                     collectionSort = page.sortMode,
                     collectionSortExplanation = page.sortExplanation,
-                    mediaBaseUrl = communityMediaBaseUrl(endpoint)
+                    mediaBaseUrl = if (keepSamples) "" else communityMediaBaseUrl(endpoint)
                 )
             }
         }
@@ -359,6 +395,30 @@ internal fun communityErrorMessage(error: Throwable): String {
     }
 }
 
+internal fun hasActiveCommunityPostFilters(state: CommunityUiState): Boolean =
+    state.searchQuery.isNotBlank() ||
+        state.destinationFilter.isNotBlank() ||
+        state.tagFilter.isNotBlank() ||
+        state.poiFilter.isNotBlank() ||
+        state.minDaysFilter > 0 ||
+        state.maxDaysFilter > 0 ||
+        state.hasMediaOnly
+
+internal fun hasActiveCommunityCollectionFilters(state: CommunityUiState): Boolean =
+    state.collectionDestinationFilter.isNotBlank() ||
+        state.collectionThemeFilter.isNotBlank()
+
+internal fun shouldUseCommunitySamples(
+    state: CommunityUiState,
+    page: CommunityPostPage<PublicCommunityPost>,
+    append: Boolean
+): Boolean =
+    !append &&
+        page.items.isEmpty() &&
+        page.nextCursor == null &&
+        !hasActiveCommunityPostFilters(state) &&
+        !hasActiveCommunityCollectionFilters(state)
+
 private fun communityMediaBaseUrl(endpoint: String): String {
     val clean = endpoint.trim().trimEnd('/')
     return if (clean.endsWith("/api")) clean.removeSuffix("/api") else clean
@@ -386,6 +446,29 @@ class CommunityCollectionDetailViewModel(
     val uiState: StateFlow<CommunityCollectionDetailUiState> = _uiState.asStateFlow()
 
     fun load(collectionId: String) {
+        val sampleCollection = MockStudyCommunityData.collection(collectionId)
+        if (sampleCollection != null) {
+            _uiState.value = CommunityCollectionDetailUiState(
+                collection = sampleCollection,
+                posts = MockStudyCommunityData.postsForCollection(collectionId),
+                interaction = CommunityCollectionInteractionState(
+                    collectionId = collectionId,
+                    bookmarkCount = sampleCollection.bookmarkCount
+                ),
+                share = CommunityCollectionShare(
+                    collectionId = collectionId,
+                    title = sampleCollection.title,
+                    description = sampleCollection.description,
+                    destination = sampleCollection.destination,
+                    theme = sampleCollection.theme,
+                    postCount = sampleCollection.postCount
+                ),
+                availability = CommunityAvailability(readEnabled = true, writeEnabled = false),
+                isLoading = false,
+                actionMessage = null
+            )
+            return
+        }
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, error = null, actionMessage = null) }
             val endpoint = configDataStore.accountEndpointFlow.first()
@@ -498,6 +581,22 @@ class CommunityPostDetailViewModel(
     val uiState: StateFlow<CommunityPostDetailUiState> = _uiState.asStateFlow()
 
     fun load(postId: String) {
+        val samplePost = MockStudyCommunityData.post(postId)
+        if (samplePost != null) {
+            _uiState.value = CommunityPostDetailUiState(
+                post = samplePost,
+                interaction = CommunityInteractionState(
+                    postId = postId,
+                    likeCount = samplePost.likeCount,
+                    commentCount = samplePost.commentCount
+                ),
+                comments = MockStudyCommunityData.comments(postId),
+                availability = CommunityAvailability(readEnabled = true, writeEnabled = false),
+                isLoading = false,
+                reportMessage = null
+            )
+            return
+        }
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, error = null) }
             val endpoint = configDataStore.accountEndpointFlow.first()

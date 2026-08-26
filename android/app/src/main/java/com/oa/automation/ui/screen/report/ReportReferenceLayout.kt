@@ -101,11 +101,13 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.view.WindowCompat
 import com.oa.automation.domain.model.MeetingAttachment
+import com.oa.automation.domain.model.ForumParticipant
 import com.oa.automation.domain.model.JourneyStage
 import com.oa.automation.domain.model.JourneyStageStatus
 import com.oa.automation.domain.model.PresetReportTemplate
 import com.oa.automation.domain.model.Report
 import com.oa.automation.domain.model.ReportTitleResolver
+import com.oa.automation.domain.model.isForumMeetingTemplate
 import com.oa.automation.infrastructure.audio.ArchivedMeetingAudio
 import com.oa.automation.infrastructure.audio.ArchivedMeetingAudioPlaybackSource
 import com.oa.automation.infrastructure.image.OrientedImageDecoder
@@ -311,7 +313,9 @@ internal fun ReportReferenceContent(
     val isStudyReport = templateName.contains("研学") ||
         templateName.contains("参观考察") ||
         templateName.contains("游记") ||
-        templateName.contains("文旅")
+        templateName.contains("文旅") ||
+        uiState.journeyStages.isNotEmpty()
+    val isForumReport = templateName.isForumMeetingTemplate()
     var showTemplatePreview by remember { mutableStateOf(false) }
     var previewTemplate by remember { mutableStateOf<PresetReportTemplate?>(null) }
 
@@ -389,6 +393,13 @@ internal fun ReportReferenceContent(
                     )
                 }
             } else {
+                if (isForumReport) {
+                    item {
+                        ReferenceForumParticipantWall(
+                            participants = uiState.forumParticipants
+                        )
+                    }
+                }
                 item {
                     ReferenceAudioCard(
                         audio = uiState.archivedAudio.firstOrNull(),
@@ -407,7 +418,7 @@ internal fun ReportReferenceContent(
                         onDelete = onDeleteAttachment,
                         onAddImages = onAddImages,
                         onCaptureImage = onCaptureImage,
-                        isStudyReport = false
+                        isStudyReport = isStudyReport
                     )
                 }
                 item {
@@ -415,6 +426,8 @@ internal fun ReportReferenceContent(
                         report = report,
                         initiatorName = uiState.initiatorName,
                         initiatorAvatarDataUrl = uiState.initiatorAvatarDataUrl,
+                        isStudyReport = isStudyReport,
+                        isForumReport = isForumReport,
                         isProcessing = uiState.isGenerating,
                         height = metrics.reportHeight
                     )
@@ -1027,19 +1040,17 @@ private fun ReferenceImagesCard(
             Icon(Icons.Default.Image, null, tint = ReferenceInk, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(7.dp))
             Text(
-                if (isStudyReport) "照片集锦" else "会议图片",
+                if (isStudyReport) "影像集锦" else "会议图片",
                 color = ReferenceInk,
                 fontSize = 15.sp,
                 fontWeight = FontWeight.SemiBold
             )
             Spacer(Modifier.weight(1f))
-            if (attachments.size >= 6) {
-                IconButton(onClick = onCaptureImage, modifier = Modifier.size(30.dp)) {
-                    Icon(Icons.Default.PhotoCamera, "拍摄照片", tint = ReferenceInk, modifier = Modifier.size(17.dp))
-                }
-                IconButton(onClick = onAddImages, modifier = Modifier.size(30.dp)) {
-                    Icon(Icons.Default.AddPhotoAlternate, "从相册选择", tint = ReferenceInk, modifier = Modifier.size(17.dp))
-                }
+            IconButton(onClick = onCaptureImage, modifier = Modifier.size(30.dp)) {
+                Icon(Icons.Default.PhotoCamera, "拍摄照片", tint = ReferenceInk, modifier = Modifier.size(17.dp))
+            }
+            IconButton(onClick = onAddImages, modifier = Modifier.size(30.dp)) {
+                Icon(Icons.Default.AddPhotoAlternate, "从相册选择", tint = ReferenceInk, modifier = Modifier.size(17.dp))
             }
             Text(
                 text = "查看全部  ›",
@@ -1219,7 +1230,7 @@ internal fun ReferenceImageGalleryDialog(
             Column(modifier = Modifier.padding(14.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                     Text(
-                        title ?: if (isStudyReport) "照片集锦" else "会议图片",
+                        title ?: if (isStudyReport) "影像集锦" else "会议图片",
                         color = ReferenceInk,
                         fontSize = 17.sp,
                         fontWeight = FontWeight.SemiBold
@@ -1305,6 +1316,8 @@ private fun ReferenceReportCard(
     report: Report,
     initiatorName: String,
     initiatorAvatarDataUrl: String?,
+    isStudyReport: Boolean,
+    isForumReport: Boolean,
     isProcessing: Boolean,
     height: Dp
 ) {
@@ -1330,7 +1343,12 @@ private fun ReferenceReportCard(
         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Default.Description, null, tint = ReferenceInk, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(7.dp))
-            Text("会议纪要", color = ReferenceInk, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            Text(
+                if (isStudyReport) "参观纪要" else "会议纪要",
+                color = ReferenceInk,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.SemiBold
+            )
             Spacer(Modifier.weight(1f))
         }
         val contentScrollState = rememberScrollState()
@@ -1362,24 +1380,153 @@ private fun ReferenceReportCard(
                 modifier = Modifier.align(Alignment.CenterEnd)
             )
         }
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text("参会人员（${attendees.size}人）", color = ReferenceMuted, fontSize = 10.sp)
-            if (attendees.isNotEmpty()) {
-                Spacer(Modifier.width(8.dp))
-                ReferenceAttendeeStrip(attendees, initiatorAvatarDataUrl)
+        if (!isForumReport) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("参会人员（${attendees.size}人）", color = ReferenceMuted, fontSize = 10.sp)
+                if (attendees.isNotEmpty()) {
+                    Spacer(Modifier.width(8.dp))
+                    ReferenceAttendeeStrip(attendees, initiatorAvatarDataUrl)
+                }
+                Spacer(Modifier.weight(1f))
+                Text(
+                    text = "查看全部  ›",
+                    color = ReferenceMuted,
+                    fontSize = 10.sp,
+                    modifier = Modifier.clickable { showAttendees = true }
+                )
             }
-            Spacer(Modifier.weight(1f))
-            Text(
-                text = "查看全部  ›",
-                color = ReferenceMuted,
-                fontSize = 10.sp,
-                modifier = Modifier.clickable { showAttendees = true }
-            )
         }
     }
+    }
+}
+
+@Composable
+private fun ReferenceForumParticipantWall(
+    participants: List<ForumParticipant>
+) {
+    val visibleParticipants = participants.take(24)
+    ReferenceGlassCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 148.dp)
+            .animateContentSize()
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Default.Person, null, tint = ReferenceInk, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(7.dp))
+            Text("论坛参会名录", color = ReferenceInk, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.weight(1f))
+            Text(
+                text = if (participants.size > visibleParticipants.size) {
+                    "照片墙 · ${visibleParticipants.size}/${participants.size} 人"
+                } else {
+                    "照片墙 · ${participants.size} 人"
+                },
+                color = ReferenceMuted,
+                fontSize = 10.sp
+            )
+        }
+        if (participants.isEmpty()) {
+            Text(
+                text = "暂未从转写或已确认资料中提取参会人员",
+                color = ReferenceMuted,
+                fontSize = 11.sp,
+                modifier = Modifier.padding(top = 20.dp)
+            )
+        } else {
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                visibleParticipants.chunked(4).forEach { row ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        row.forEach { participant ->
+                            ReferenceForumParticipantCell(
+                                participant = participant,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        repeat(4 - row.size) { Spacer(Modifier.weight(1f)) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReferenceForumParticipantCell(
+    participant: ForumParticipant,
+    modifier: Modifier = Modifier
+) {
+    val image = remember(participant.avatarDataUrl, participant.photoAuthorized) {
+        if (!participant.photoAuthorized) return@remember null
+        runCatching {
+            val encoded = participant.avatarDataUrl
+                ?.substringAfter("base64,", "")
+                ?.takeIf { it.isNotBlank() }
+                ?: return@runCatching null
+            val bytes = Base64.decode(encoded, Base64.DEFAULT)
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+        }.getOrNull()
+    }
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(3.dp)
+    ) {
+        Surface(
+            modifier = Modifier.size(42.dp),
+            shape = CircleShape,
+            color = ReferenceSky,
+            border = BorderStroke(1.dp, ReferenceSky.copy(alpha = .5f))
+        ) {
+            if (image != null) {
+                Image(
+                    bitmap = image,
+                    contentDescription = "${participant.name}的授权头像",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize().clip(CircleShape)
+                )
+            } else {
+                Box(contentAlignment = Alignment.Center) {
+                    Text(
+                        text = participant.name.take(1),
+                        color = Color.White,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
+        Text(
+            text = participant.name,
+            color = ReferenceInk,
+            fontSize = 10.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        val meta = listOf(participant.role, participant.organization)
+            .filter(String::isNotBlank)
+            .joinToString(" · ")
+        if (meta.isNotBlank()) {
+            Text(
+                text = meta,
+                color = ReferenceMuted,
+                fontSize = 8.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
     }
 }
 

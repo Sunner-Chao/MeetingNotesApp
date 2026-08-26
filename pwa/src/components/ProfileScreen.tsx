@@ -1,10 +1,11 @@
-import { Bot, Check, Download, LogOut, Save, Server, UserRound } from "lucide-react";
+import { Bot, Check, Copy, Download, Gift, LogOut, Save, Server, Share2, UserRound, Users } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import type { AccountProfile, RuntimeConfig } from "../types";
+import type { AccountProfile, GrowthOverview, RuntimeConfig } from "../types";
 import { BrandMark } from "./BrandMark";
 
 interface ProfileScreenProps {
   profile: AccountProfile;
+  growth?: GrowthOverview;
   config: RuntimeConfig;
   online: boolean;
   cloudState: "idle" | "syncing" | "synced" | "pending";
@@ -13,6 +14,8 @@ interface ProfileScreenProps {
   onSaveProfile: (displayName: string, avatarDataUrl?: string | null) => Promise<void>;
   onSaveConfig: (config: RuntimeConfig) => void;
   onLogout: () => void;
+  onRedeem: (code: string) => Promise<void>;
+  onOpenCampaign: (campaignId: string) => void;
 }
 
 async function resizeAvatar(file: File): Promise<string> {
@@ -30,6 +33,7 @@ async function resizeAvatar(file: File): Promise<string> {
 
 export function ProfileScreen({
   profile,
+  growth,
   config,
   online,
   cloudState,
@@ -37,15 +41,21 @@ export function ProfileScreen({
   onInstall,
   onSaveProfile,
   onSaveConfig,
-  onLogout
+  onLogout,
+  onRedeem,
+  onOpenCampaign
 }: ProfileScreenProps) {
   const [draftConfig, setDraftConfig] = useState(config);
   const [displayName, setDisplayName] = useState(profile.display_name || profile.username);
   const [avatar, setAvatar] = useState<string | null | undefined>(profile.avatar_data_url);
   const [savingProfile, setSavingProfile] = useState(false);
+  const [redeemCode, setRedeemCode] = useState("");
+  const [redeeming, setRedeeming] = useState(false);
   const avatarInput = useRef<HTMLInputElement>(null);
-  const quota = profile.quota;
-  const quotaPercent = quota.request_limit > 0 ? Math.min(100, (quota.requests_used / quota.request_limit) * 100) : 0;
+  const pointsGranted = Math.max(0, profile.usage?.points_granted ?? 0);
+  const pointsUsed = Math.max(0, profile.usage?.points_used ?? 0);
+  const pointsRemaining = Math.max(0, profile.usage?.points_remaining ?? pointsGranted - pointsUsed);
+  const pointsPercent = pointsGranted > 0 ? Math.min(100, (pointsUsed / pointsGranted) * 100) : 0;
   const connectionLabel = !online
     ? "离线"
     : cloudState === "syncing"
@@ -71,6 +81,15 @@ export function ProfileScreen({
     }
   };
 
+  const redeem = async () => {
+    if (!redeemCode.trim()) return;
+    setRedeeming(true);
+    try { await onRedeem(redeemCode.trim()); setRedeemCode(""); } finally { setRedeeming(false); }
+  };
+  const copy = (value: string) => { if (value) void navigator.clipboard?.writeText(value); };
+  const channel = growth?.private_channel;
+  const inviteLink = growth?.referral ? `${window.location.origin}${growth.referral.share_path}` : "";
+
   return (
     <div className="screen profile-screen">
       <header className="screen-header profile-header">
@@ -85,7 +104,7 @@ export function ProfileScreen({
         <div>
           <strong>{displayName || profile.username}</strong>
           <span>{profile.username}</span>
-          <em>{profile.is_admin ? "管理员" : profile.vip_enabled ? profile.plan_name : "Free"}</em>
+          <em>{profile.is_admin ? "管理员账户" : "积分账户"}</em>
         </div>
         <input
           ref={avatarInput}
@@ -100,13 +119,22 @@ export function ProfileScreen({
         />
       </section>
 
-      <section className="quota-band">
-        <div className="quota-copy">
-          <span>AI 处理额度</span>
-          <strong>{quota.requests_remaining.toLocaleString()}<small> 次可用</small></strong>
+      <section className="growth-grid">
+        <article className="growth-card"><div className="section-heading"><div><Gift /><h2>兑换中心</h2></div></div><p>输入福利码，立即领取积分和专属权益。</p><div className="redeem-form"><input value={redeemCode} onChange={(event) => setRedeemCode(event.target.value.toUpperCase())} placeholder="输入礼品码 / 兑换码" /><button className="primary-button" disabled={redeeming || !redeemCode.trim()} onClick={() => void redeem()}>{redeeming ? "兑换中" : "立即兑换"}</button></div></article>
+        <article className="growth-card"><div className="section-heading"><div><Users /><h2>我的邀请</h2></div></div><p>邀请好友注册，双方各得 100 积分。</p><div className="invite-code"><strong>{growth?.referral?.code || "加载中"}</strong><button className="icon-button" title="复制邀请码" onClick={() => copy(growth?.referral?.code || "")}><Copy /></button></div><div className="growth-meta"><span>已邀请 {growth?.referral?.successful_invites ?? 0} 人</span><button className="text-button" onClick={() => copy(inviteLink)}><Share2 />复制邀请链接</button></div></article>
+      </section>
+
+      {channel && <section className="private-channel-card"><div className="channel-copy"><span className="eyebrow">福利群</span><h2>{channel.name}</h2><p>{channel.slogan}</p><small>入群即送 {channel.reward?.quantity ?? 50} 积分</small></div>{channel.qr_image_url && <img src={channel.qr_image_url} alt="福利群二维码" />}<div className="channel-actions">{channel.join_url && <a className="primary-button" href={channel.join_url} target="_blank" rel="noreferrer"><Users />打开入群链接</a>}{channel.join_url && <button className="secondary-button" onClick={() => copy(channel.join_url)}><Copy />复制链接</button>}</div></section>}
+
+      {growth?.campaigns?.length ? <section className="growth-campaigns"><div className="section-heading"><div><Gift /><h2>近期活动</h2></div></div>{growth.campaigns.slice(0, 3).map((campaign) => <button className="growth-campaign-row" key={campaign.id} onClick={() => onOpenCampaign(campaign.id)}><span><strong>{campaign.title}</strong><p>{campaign.summary}</p><small>{new Date(campaign.starts_at * 1000).toLocaleDateString("zh-CN")} - {new Date(campaign.ends_at * 1000).toLocaleDateString("zh-CN")}</small></span><span className="campaign-arrow">›</span></button>)}</section> : null}
+
+      <section className="points-band">
+        <div className="points-copy">
+          <span>可用积分</span>
+          <strong>{pointsRemaining.toLocaleString()}<small> 积分</small></strong>
         </div>
-        <div className="quota-track"><span style={{ width: `${quotaPercent}%` }} /></div>
-        <small>本期已使用 {quota.requests_used.toLocaleString()} / {quota.request_limit.toLocaleString()}</small>
+        <div className="points-track"><span style={{ width: `${pointsPercent}%` }} /></div>
+        <small>本期已使用 {pointsUsed.toLocaleString()} 积分，共获得 {pointsGranted.toLocaleString()} 积分</small>
       </section>
 
       <section className="settings-section">
@@ -118,12 +146,12 @@ export function ProfileScreen({
       </section>
 
       <section className="settings-section woo-settings">
-        <div className="section-heading"><div><Bot /><h2>智能体 · 小Woo</h2></div></div>
+        <div className="section-heading"><div><Bot /><h2>会议整理</h2></div></div>
         <div className="setting-row">
           <span><strong>智能体</strong><small>会议整理服务</small></span>
           <select value={draftConfig.agentProvider} onChange={(event) => setDraftConfig({ ...draftConfig, agentProvider: event.target.value as RuntimeConfig["agentProvider"] })}>
-            <option value="codex-cli">小Woo · Codex</option>
-            <option value="claude-cli">小Woo · Claude</option>
+            <option value="codex-cli">Codex 服务</option>
+            <option value="claude-cli">Claude 服务</option>
           </select>
         </div>
         <div className="setting-row">

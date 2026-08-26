@@ -84,6 +84,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.io.File
+import java.time.Instant
 
 data class RecordingUiState(
     val meetingTitle: String = "",
@@ -209,15 +211,19 @@ internal data class ImageImportSummary(
     }
 }
 
-internal fun shouldRecoverImportedTranscription(
+internal fun shouldRecoverInterruptedTranscription(
     meeting: Meeting?,
     hasTranscript: Boolean,
     taskState: BackgroundTaskState,
     audioFileAvailable: Boolean,
     recoveryAlreadyAttempted: Boolean
-): Boolean = meeting?.origin == MeetingOrigin.FILE_IMPORT &&
+): Boolean = meeting != null &&
     !hasTranscript &&
-    taskState == BackgroundTaskState.FAILED &&
+    taskState in setOf(
+        BackgroundTaskState.NONE,
+        BackgroundTaskState.FAILED,
+        BackgroundTaskState.CANCELLED
+    ) &&
     audioFileAvailable &&
     !recoveryAlreadyAttempted
 
@@ -254,8 +260,39 @@ internal fun isActiveRecordingSessionForMeeting(
     session.meetingId == meetingId &&
     (session.isRecording || session.isStarting || session.isStopping)
 
+/**
+ * The saved engine is the user's preferred route. During a live session the
+ * route state is authoritative so the switcher reflects an automatic cloud
+ * takeover immediately without changing the app-wide preference.
+ */
+internal fun effectiveSttEngineType(
+    preferred: STTEngineType,
+    route: RealtimeSttRouteState,
+    isRecording: Boolean
+): STTEngineType = when (route) {
+    RealtimeSttRouteState.LOCAL_CONNECTING,
+    RealtimeSttRouteState.LOCAL_ACTIVE,
+    RealtimeSttRouteState.LOCAL_RECOVERING -> STTEngineType.FASTER_WHISPER
+    RealtimeSttRouteState.CLOUD_CONNECTING,
+    RealtimeSttRouteState.SWITCHING_TO_CLOUD,
+    RealtimeSttRouteState.CLOUD_ACTIVE,
+    RealtimeSttRouteState.CLOUD_FALLBACK_ACTIVE -> STTEngineType.TENCENT_HYBRID
+    RealtimeSttRouteState.IDLE,
+    RealtimeSttRouteState.UNAVAILABLE -> preferred
+}
+
+internal fun canGenerateReportFromRecording(state: RecordingUiState): Boolean =
+    (!state.isRecording || state.isPaused) &&
+        !state.isRecordingActionPending &&
+        !state.isFinalizingRecording &&
+        !state.isTranscribing &&
+        !state.isGeneratingReport &&
+        state.hasRecording &&
+        state.liveTranscript.isNotBlank()
+
 internal const val RECORDING_TEMPLATE_REQUIRED_MESSAGE =
-    "请首先选择上方的模板，然后再进行录音！"
+    "请先选择模板再开始录音"
+private const val LEGACY_MEETING_GRACE_PERIOD_MS = 5 * 60 * 1_000L
 
 internal fun isRecordingActionEnabled(state: RecordingUiState): Boolean =
     !state.isRecordingActionPending &&
@@ -266,6 +303,100 @@ internal fun isRecordingActionEnabled(state: RecordingUiState): Boolean =
 internal fun isRecordingMainActionEnabled(state: RecordingUiState): Boolean =
     isRecordingActionEnabled(state) &&
         (state.isRecording || !state.selectedRecordingTemplateName.isNullOrBlank())
+
+/**
+ * Resolves the template to restore when a recording screen is opened.
+ *
+ * A newly created meeting deliberately has no selection. Only an active
+ * foreground session may fall back to the process-wide config; an existing
+ * meeting's saved choice always wins when the screen is reopened later.
+ */
+internal fun resolveRestoredRecordingTemplateName(
+    meeting: Meeting?,
+    appConfig: ReportTemplateConfig,
+    isGlobalRecording: Boolean,
+    hasPriorWork: Boolean = false
+): String? = meeting?.selectedTemplateName
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+    ?: appConfig.selectedName.trim()
+        .takeIf { (isGlobalRecording || hasPriorWork) && it.isNotBlank() }
+
+internal fun resolveRestoredSttEngineType(
+    meeting: Meeting?,
+    appEngineType: STTEngineType,
+    isGlobalRecording: Boolean
+): STTEngineType {
+    if (isGlobalRecording) return appEngineType
+    return meeting?.selectedSttEngineName
+        ?.let { saved -> runCatching { STTEngineType.valueOf(saved) }.getOrNull() }
+        ?: appEngineType
+}
+
+private fun STTConfig.withEngineType(engineType: STTEngineType): STTConfig {
+    val usesTencent = engineType == STTEngineType.TENCENT_HYBRID
+    return copy(
+        engineType = engineType,
+        localModel = engineType.defaultModel.ifBlank { localModel },
+        cloudEndpoint = if (usesTencent) {
+            cloudEndpoint ?: STTConfig.DEFAULT_CLOUD_ENDPOINT
+        } else {
+            cloudEndpoint
+        },
+        cloudApiKey = if (usesTencent) null else cloudApiKey,
+        cloudModel = if (usesTencent) tencentAsrTier.cloudModel else cloudModel
+    )
+}
+
+internal fun inferLegacyRecordingTemplateName(meeting: Meeting?, hasPriorWork: Boolean): String? {
+    if (meeting == null || !hasPriorWork || !meeting.selectedTemplateName.isNullOrBlank()) return null
+    val title = meeting.title.trim()
+    return when {
+        title.contains("项目") -> "项目管理"
+        title.contains("论坛") || title.contains("峰会") -> "论坛会议"
+        title.contains("研学") || title.contains("考察") || title.contains("参观") -> "研学考察"
+        else -> "通用会议"
+    }
+}
+
+internal fun resolveRestoredRecordingTemplateConfig(
+    selectedName: String?,
+    presetTemplates: List<PresetReportTemplate>,
+    appConfig: ReportTemplateConfig,
+    isGlobalRecording: Boolean
+): ReportTemplateConfig {
+    val preset = selectedName?.let { name ->
+        presetTemplates.firstOrNull { it.name == name }
+    }
+    return when {
+        preset != null -> ReportTemplateConfig(
+            selectedName = preset.name,
+            content = preset.content,
+            isCustom = false
+        )
+        isGlobalRecording -> appConfig
+        else -> ReportTemplateConfig()
+    }
+}
+
+internal fun restoredRecordingDurationSeconds(
+    persistedDurationSeconds: Long,
+    session: RecordingSessionState
+): Long {
+    val persisted = persistedDurationSeconds.coerceAtLeast(0L)
+    // A restored JVM/test session may not have an elapsed-realtime anchor yet;
+    // its captured duration is still valid and does not require Android clock access.
+    val sessionDuration = if (session.startedAtElapsedRealtimeMs == null) {
+        session.recordedDurationSeconds.coerceAtLeast(0L)
+    } else {
+        session.durationSecondsAt(SystemClock.elapsedRealtime())
+    }
+    return if (session.isRecording || session.isStarting || session.isStopping) {
+        persisted + sessionDuration
+    } else {
+        maxOf(persisted, sessionDuration)
+    }
+}
 
 internal fun canStartImageImport(state: RecordingUiState): Boolean = !state.isImportingImages
 
@@ -307,11 +438,11 @@ internal fun summarizeImageImport(results: List<Result<*>>): ImageImportSummary 
 
 internal enum class RecordingMainAction {
     START,
-    STOP
+    TOGGLE_PAUSE
 }
 
 internal fun recordingMainAction(state: RecordingUiState): RecordingMainAction =
-    if (state.isRecording) RecordingMainAction.STOP else RecordingMainAction.START
+    if (state.isRecording) RecordingMainAction.TOGGLE_PAUSE else RecordingMainAction.START
 
 internal fun RecordingUiState.resetForMeetingChange(): RecordingUiState = copy(
     meetingTitle = "",
@@ -460,7 +591,11 @@ class RecordingViewModel(
     private var trackedStudyStageStartedDurationSeconds: Long = 0L
     private var pendingStudyStageTranscriptBaseline: String? = null
     private var trackedReportTaskId: java.util.UUID? = null
-    private val recoveredImportMeetingIds = mutableSetOf<String>()
+    // Prevent one automatic recovery attempt per meeting during this process. A
+    // failed recovery remains visible to the user and can be retried manually.
+    private val recoveredTranscriptionMeetingIds = mutableSetOf<String>()
+    private var persistedDurationSeconds: Long = 0L
+    private var preferredSttEngineType: STTEngineType = STTEngineType.FASTER_WHISPER
 
     init {
         _uiState.update {
@@ -468,10 +603,17 @@ class RecordingViewModel(
         }
         viewModelScope.launch {
             configDataStore.appConfigFlow.collect { config ->
+                preferredSttEngineType = config.sttConfig.engineType
+                val session = recordingController.state.value
+                val actualEngine = effectiveSttEngineType(
+                    preferred = preferredSttEngineType,
+                    route = session.realtimeSttRoute,
+                    isRecording = session.isRecording || session.isStarting
+                )
                 _uiState.update {
                     it.copy(
-                        sttEngineLabel = config.sttConfig.engineType.displayName,
-                        sttEngineType = config.sttConfig.engineType,
+                        sttEngineLabel = actualEngine.displayName,
+                        sttEngineType = actualEngine,
                         sttLanguage = config.sttConfig.language,
                         agentProvider = config.llmConfig.agentProvider
                     )
@@ -483,18 +625,46 @@ class RecordingViewModel(
                 if (session.meetingId.isBlank() || session.meetingId != currentMeetingId) return@collect
                 val previousSession = observedRecordingSession
                 observedRecordingSession = session
+                if (
+                    previousSession?.meetingId == session.meetingId &&
+                    (previousSession.isRecording || previousSession.isStarting || previousSession.isStopping) &&
+                    !session.isRecording && !session.isStarting && !session.isStopping &&
+                    session.status != "本次录音已放弃"
+                ) {
+                    persistedDurationSeconds = maxOf(
+                        persistedDurationSeconds,
+                        persistedDurationSeconds + session.recordedDurationSeconds
+                    )
+                }
                 val isFinalizing = isLiveRecordingFinalizing(session)
                 val clearTranscriptionState = isFinalizing ||
                     session.error != null || session.status == "录音启动已取消"
+                val actualEngine = effectiveSttEngineType(
+                    preferred = preferredSttEngineType,
+                    route = session.realtimeSttRoute,
+                    isRecording = session.isRecording || session.isStarting
+                )
+                val sessionTranscript = SimplifiedChineseText.normalize(session.accumulatedTranscript)
                 _uiState.update {
                     it.copy(
                         isRecording = session.isRecording && !session.isStopping,
                         isPaused = session.isPaused,
                         isRecordingActionPending = recordingActionPending(session) || isFinalizing,
                         isFinalizingRecording = isFinalizing,
-                        recordingDuration = session.durationSecondsAt(SystemClock.elapsedRealtime()),
+                        recordingDuration = restoredRecordingDurationSeconds(
+                            persistedDurationSeconds = persistedDurationSeconds,
+                            session = session
+                        ),
                         audioLevel = session.audioLevel,
                         transcriptPreviewMode = session.status,
+                        sttEngineType = actualEngine,
+                        sttEngineLabel = actualEngine.displayName,
+                        hasRecording = it.hasRecording || sessionTranscript.isNotBlank(),
+                        liveTranscript = if (sessionTranscript.isNotBlank() && it.liveTranscript.isBlank()) {
+                            mergeTranscriptText(existingTranscriptText, sessionTranscript)
+                        } else {
+                            it.liveTranscript
+                        },
                         realtimeSttRoute = session.realtimeSttRoute,
                         isTranscribing = if (clearTranscriptionState) false else it.isTranscribing,
                         transcriptionProgressPercent = if (clearTranscriptionState) {
@@ -583,7 +753,12 @@ class RecordingViewModel(
                     break
                 }
                 _uiState.update {
-                    it.copy(recordingDuration = latest.durationSecondsAt(SystemClock.elapsedRealtime()))
+                    it.copy(
+                        recordingDuration = restoredRecordingDurationSeconds(
+                            persistedDurationSeconds = persistedDurationSeconds,
+                            session = latest
+                        )
+                    )
                 }
                 delay(RECORDING_TIMER_REFRESH_MS)
             }
@@ -608,6 +783,7 @@ class RecordingViewModel(
             recordingTimerJob?.cancel()
             recordingTimerJob = null
             activeTimerStartedAtMs = null
+            persistedDurationSeconds = 0L
             studyJourneyAutomationJob?.cancel()
             studyJourneyAutomationJob = null
             observedRecordingSession = null
@@ -657,26 +833,85 @@ class RecordingViewModel(
             val recoverableAudioFile = meeting?.audioFilePath
                 ?.let { path -> java.io.File(path) }
                 ?.takeIf { it.isFile && it.length() > 44L }
-            val shouldRecoverImport = shouldRecoverImportedTranscription(
+            val hasSignedInAccount = configDataStore.authSessionFlow.first() != null
+            val shouldRecoverTranscription = hasSignedInAccount && shouldRecoverInterruptedTranscription(
                 meeting = meeting,
                 hasTranscript = transcriptText.isNotBlank(),
                 taskState = transcriptionTask.state,
                 audioFileAvailable = recoverableAudioFile != null,
-                recoveryAlreadyAttempted = meetingId in recoveredImportMeetingIds
+                recoveryAlreadyAttempted = meetingId in recoveredTranscriptionMeetingIds
             )
             val appConfig = configDataStore.appConfigFlow.first()
             val sttConfig = appConfig.sttConfig
             val recordingState = recordingController.state.value
             val isGlobalRecording = isActiveRecordingSessionForMeeting(recordingState, meetingId)
-            val restoredDurationSeconds = if (recordingState.meetingId == meetingId) {
-                maxOf(
-                    meeting?.durationMs?.div(1_000L) ?: 0L,
-                    recordingState.durationSecondsAt(SystemClock.elapsedRealtime())
+            val restoredSttEngineType = resolveRestoredSttEngineType(
+                meeting = meeting,
+                appEngineType = sttConfig.engineType,
+                isGlobalRecording = isGlobalRecording
+            )
+            val restoredSttConfig = sttConfig.withEngineType(restoredSttEngineType)
+            val presetTemplates = configDataStore.loadPresetTemplates()
+            val hasPriorWork = meeting != null && (
+                meeting.durationMs > 0L ||
+                    meeting.audioFilePath != null ||
+                    transcriptText.isNotBlank() ||
+                    hasReport ||
+                    recordingMarkers.isNotEmpty()
                 )
-            } else {
-                meeting?.durationMs?.div(1_000L) ?: 0L
+            val isLikelyLegacyMeeting = meeting != null &&
+                meeting.createdAt < System.currentTimeMillis() - LEGACY_MEETING_GRACE_PERIOD_MS
+            val restoredTemplateName = resolveRestoredRecordingTemplateName(
+                meeting = meeting,
+                appConfig = appConfig.reportTemplateConfig,
+                isGlobalRecording = isGlobalRecording,
+                hasPriorWork = hasPriorWork
+            ) ?: inferLegacyRecordingTemplateName(
+                meeting,
+                hasPriorWork = hasPriorWork || isLikelyLegacyMeeting
+            )
+            val restoredTemplateConfig = resolveRestoredRecordingTemplateConfig(
+                selectedName = restoredTemplateName,
+                presetTemplates = presetTemplates,
+                appConfig = appConfig.reportTemplateConfig,
+                isGlobalRecording = isGlobalRecording
+            )
+            // Keep the background report worker in sync with the meeting being
+            // resumed. New meetings remain unselected and therefore do not
+            // mutate the app-wide default here.
+            if (
+                meeting != null &&
+                    restoredTemplateName != null &&
+                    meeting.selectedTemplateName != restoredTemplateName &&
+                    !isGlobalRecording
+            ) {
+                configDataStore.updateReportTemplate(restoredTemplateConfig)
+                meetingRepository.save(meeting.copy(selectedTemplateName = restoredTemplateName))
+            }
+            if (!isGlobalRecording && restoredSttEngineType != sttConfig.engineType) {
+                configDataStore.updateSTTConfig(restoredSttConfig)
             }
             if (meeting != null && isCurrentMeeting(meetingId)) {
+                persistedDurationSeconds = maxOf(
+                    meeting.durationMs.div(1_000L).coerceAtLeast(0L),
+                    if (recordingState.meetingId == meetingId &&
+                        !recordingState.isRecording &&
+                        !recordingState.isStarting &&
+                        !recordingState.isStopping
+                    ) {
+                        recordingState.recordedDurationSeconds.coerceAtLeast(0L)
+                    } else {
+                        0L
+                    }
+                )
+                val restoredDurationSeconds = if (recordingState.meetingId == meetingId) {
+                    restoredRecordingDurationSeconds(
+                        persistedDurationSeconds = persistedDurationSeconds,
+                        session = recordingState
+                    )
+                } else {
+                    persistedDurationSeconds
+                }
                 recordingMarkerRecords = recordingMarkers
                 existingTranscriptText = transcriptText
                 updateState {
@@ -687,8 +922,9 @@ class RecordingViewModel(
                         } else {
                             InputMode.VOICE
                         },
-                        sttEngineLabel = sttConfig.engineType.displayName,
-                        sttLanguage = sttConfig.language,
+                        sttEngineLabel = restoredSttEngineType.displayName,
+                        sttEngineType = restoredSttEngineType,
+                        sttLanguage = restoredSttConfig.language,
                         isRecording = isGlobalRecording,
                         isPaused = recordingState.isPaused,
                         hasRecording = isGlobalRecording ||
@@ -717,18 +953,17 @@ class RecordingViewModel(
                             transcriptText.isNotBlank() -> "已保存转写"
                             else -> "流式预览"
                         },
-                        presetTemplates = configDataStore.loadPresetTemplates(),
-                        reportTemplate = appConfig.reportTemplateConfig,
-                        selectedRecordingTemplateName = appConfig.reportTemplateConfig.selectedName
-                            .takeIf { isGlobalRecording }
+                        presetTemplates = presetTemplates,
+                        reportTemplate = restoredTemplateConfig,
+                        selectedRecordingTemplateName = restoredTemplateName
                     )
                 }
                 if (isGlobalRecording) {
                     recordingState.streamUpdate?.let(::updateStreamingPreview)
                 }
                 synchronizeRecordingTimer(recordingState)
-                if (shouldRecoverImport && recoverableAudioFile != null) {
-                    recoveredImportMeetingIds += meetingId
+                if (shouldRecoverTranscription && recoverableAudioFile != null) {
+                    recoveredTranscriptionMeetingIds += meetingId
                     taskScheduler.enqueueTranscription(
                         meetingId = meetingId,
                         audioFile = recoverableAudioFile
@@ -894,29 +1129,20 @@ class RecordingViewModel(
     }
 
     fun switchSttEngine(engineType: STTEngineType) {
-        if (engineType == _uiState.value.sttEngineType || _uiState.value.isSwitchingSttEngine) {
+        val currentState = _uiState.value
+        val actualEngine = effectiveSttEngineType(
+            preferred = currentState.sttEngineType,
+            route = currentState.realtimeSttRoute,
+            isRecording = currentState.isRecording
+        )
+        if (engineType == actualEngine || currentState.isSwitchingSttEngine) {
             return
         }
         val requestedMeetingId = currentMeetingId
         viewModelScope.launch {
             val appConfig = configDataStore.appConfigFlow.first()
             val currentConfig = appConfig.sttConfig
-            val usesTencent = engineType == STTEngineType.TENCENT_HYBRID
-            val nextConfig = currentConfig.copy(
-                engineType = engineType,
-                localModel = engineType.defaultModel.ifBlank { currentConfig.localModel },
-                cloudEndpoint = if (usesTencent) {
-                    currentConfig.cloudEndpoint ?: STTConfig.DEFAULT_CLOUD_ENDPOINT
-                } else {
-                    currentConfig.cloudEndpoint
-                },
-                cloudApiKey = if (usesTencent) null else currentConfig.cloudApiKey,
-                cloudModel = if (usesTencent) {
-                    currentConfig.tencentAsrTier.cloudModel
-                } else {
-                    currentConfig.cloudModel
-                }
-            )
+            val nextConfig = currentConfig.withEngineType(engineType)
             _uiState.update {
                 it.copy(
                     isSwitchingSttEngine = true,
@@ -937,6 +1163,17 @@ class RecordingViewModel(
             switchResult.fold(
                 onSuccess = {
                     configDataStore.updateSTTConfig(nextConfig)
+                    preferredSttEngineType = engineType
+                    if (requestedMeetingId.isNotBlank()) {
+                        meetingRepository.findById(requestedMeetingId)
+                            .getOrNull()
+                            ?.takeIf { it.selectedSttEngineName != engineType.name }
+                            ?.let { meeting ->
+                                meetingRepository.save(
+                                    meeting.copy(selectedSttEngineName = engineType.name)
+                                )
+                            }
+                    }
                     if (isCurrentMeeting(requestedMeetingId)) {
                         _uiState.update {
                             it.copy(
@@ -1042,7 +1279,7 @@ class RecordingViewModel(
                             it.copy(
                                 agentProvider = provider,
                                 isSavingAgentProvider = false,
-                                transcriptPreviewMode = "智能体 · 小Woo 已切换至${provider.displayName}"
+                                transcriptPreviewMode = "已切换至${provider.displayName}"
                             )
                         }
                     }
@@ -1150,8 +1387,11 @@ class RecordingViewModel(
             }
             return
         }
-        if (active.isRecording || active.isStarting) {
-            _uiState.update { it.copy(error = "已经在录音中") }
+        if (active.isStarting || (active.isRecording && !active.isPaused)) {
+            val activeTitle = active.meetingTitle.ifBlank { "上一条记录" }
+            _uiState.update {
+                it.copy(error = "“${activeTitle}”正在记录，请先暂停后再开始。")
+            }
             return
         }
 
@@ -1186,7 +1426,7 @@ class RecordingViewModel(
                 hasRecording = currentTranscript.isNotBlank(),
                 liveTranscript = currentTranscript,
                 isTranscribing = false,
-                recordingDuration = 0,
+                recordingDuration = persistedDurationSeconds,
                 transcriptPreviewMode = "正在启动后台录音",
                 isJourneyActionPending = false,
                 error = null
@@ -1434,6 +1674,38 @@ class RecordingViewModel(
 
         require(journey.status != JourneyStatus.COMPLETED) { "研学记录已经完成" }
         val existingStages = journeyRepository.observeStages(journey.id).first()
+        // A pause/stop transition and an explicit continue tap can reach this
+        // point close together. Reuse the persisted active stage instead of
+        // trying to create the same numbered stage a second time.
+        val persistedActiveStage = existingStages
+            .asReversed()
+            .firstOrNull { it.status == JourneyStageStatus.ACTIVE }
+        if (persistedActiveStage != null) {
+            val resumedJourney = journey.copy(
+                status = JourneyStatus.ACTIVE,
+                currentStageId = persistedActiveStage.id,
+                updatedAt = now,
+                pausedAt = null
+            )
+            if (
+                journey.currentStageId != persistedActiveStage.id ||
+                journey.status != JourneyStatus.ACTIVE
+            ) {
+                journeyRepository.save(resumedJourney).getOrThrow()
+            }
+            _uiState.update {
+                it.copy(
+                    journey = resumedJourney,
+                    currentJourneyStage = persistedActiveStage,
+                    journeyStageCount = maxOf(it.journeyStageCount, existingStages.size),
+                    isJourneyActionPending = false,
+                    journeyStatusMessage = "已继续${persistedActiveStage.title}",
+                    error = null
+                )
+            }
+            trackStudyStageEvidenceIfNeeded(persistedActiveStage)
+            return@runCatching persistedActiveStage
+        }
         val nextSequence = (existingStages.maxOfOrNull { it.sequenceNumber } ?: 0) + 1
         val nextStage = JourneyStage(
             id = java.util.UUID.randomUUID().toString(),
@@ -1805,44 +2077,21 @@ class RecordingViewModel(
             return
         }
 
-        val now = System.currentTimeMillis()
-        val nextStage = JourneyStage(
-            id = java.util.UUID.randomUUID().toString(),
-            journeyId = journey.id,
-            sequenceNumber = state.journeyStageCount + 1,
-            title = "第 ${state.journeyStageCount + 1} 段",
-            startedAt = now,
-            updatedAt = now
-        )
-        val resumedJourney = journey.copy(
-            status = JourneyStatus.ACTIVE,
-            currentStageId = nextStage.id,
-            updatedAt = now,
-            pausedAt = null
-        )
         _uiState.update { it.copy(isJourneyActionPending = true, error = null) }
         viewModelScope.launch {
-            journeyRepository.startNextStage(resumedJourney, nextStage)
-                .onSuccess {
-                    if (isCurrentMeeting(journey.meetingId)) {
-                        _uiState.update {
-                            it.copy(
-                                isJourneyActionPending = false,
-                                journeyStatusMessage = "已继续旅程 · ${nextStage.title}"
-                            )
+            studyJourneyAutomationMutex.withLock {
+                ensureStudyJourneyStage(journey.meetingId)
+                    .onFailure { error ->
+                        if (isCurrentMeeting(journey.meetingId)) {
+                            _uiState.update {
+                                it.copy(
+                                    isJourneyActionPending = false,
+                                    error = "继续旅程失败: ${error.message}"
+                                )
+                            }
                         }
                     }
-                }
-                .onFailure { error ->
-                    if (isCurrentMeeting(journey.meetingId)) {
-                        _uiState.update {
-                            it.copy(
-                                isJourneyActionPending = false,
-                                error = "继续旅程失败: ${error.message}"
-                            )
-                        }
-                    }
-                }
+            }
         }
     }
 
@@ -2498,7 +2747,10 @@ class RecordingViewModel(
             state.journey != null &&
             state.currentJourneyStage == null
 
-    private fun requestRecordingStop(showNoRecordingError: Boolean) {
+    private fun requestRecordingStop(
+        showNoRecordingError: Boolean,
+        generateReportAfterSave: Boolean = false
+    ) {
         val meetingId = currentMeetingId
         if (meetingId.isBlank()) return
         val active = recordingController.state.value
@@ -2531,7 +2783,7 @@ class RecordingViewModel(
             }
             return
         }
-        stopForegroundService(meetingId)
+        stopForegroundService(meetingId, generateReportAfterSave)
         _uiState.update {
             it.copy(
                 isRecording = false,
@@ -2542,7 +2794,7 @@ class RecordingViewModel(
                 transcriptionProgressPercent = null,
                 transcriptionProgressStage = "",
                 transcriptionProgressIndeterminate = false,
-                transcriptPreviewMode = "正在结束并保存录音",
+                transcriptPreviewMode = "正在整理录音",
                 error = null
             )
         }
@@ -2592,9 +2844,9 @@ class RecordingViewModel(
                 transcriptionProgressPercent = null,
                 transcriptionProgressStage = "",
                 transcriptionProgressIndeterminate = false,
-                transcriptPreviewMode = "最终转录已终止",
+                transcriptPreviewMode = "最终转录已取消",
                 textImportStatus = if (it.importedAudioDisplayName.isNotBlank()) {
-                    "${it.importedAudioDisplayName} · 转写已终止"
+                    "${it.importedAudioDisplayName} · 转写已取消"
                 } else {
                     it.textImportStatus
                 },
@@ -2684,12 +2936,6 @@ class RecordingViewModel(
         }
     }
 
-    fun handleScreenExit() {
-        pendingRecordingStartJob?.cancel()
-        pendingRecordingStartJob = null
-        requestRecordingStop(showNoRecordingError = false)
-    }
-
     fun clearError() {
         _uiState.update { it.copy(error = null) }
     }
@@ -2702,12 +2948,21 @@ class RecordingViewModel(
         if (meetingId.isBlank()) return
         audioRefreshJob?.cancel()
         audioRefreshJob = viewModelScope.launch {
-            _uiState.update { it.copy(isLoadingAudio = true) }
+            val localAudio = localMeetingAudio(meetingId)
+            _uiState.update {
+                it.copy(
+                    archivedAudio = localAudio.ifEmpty { it.archivedAudio },
+                    isLoadingAudio = true
+                )
+            }
             audioArchiveService.list(meetingId)
                 .onSuccess { items ->
                     if (currentMeetingId == meetingId) {
                         _uiState.update {
-                            it.copy(archivedAudio = items, isLoadingAudio = false)
+                            it.copy(
+                                archivedAudio = items.ifEmpty { localAudio },
+                                isLoadingAudio = false
+                            )
                         }
                     }
                 }
@@ -2715,9 +2970,14 @@ class RecordingViewModel(
                     if (currentMeetingId == meetingId) {
                         _uiState.update {
                             it.copy(
+                                archivedAudio = localAudio,
                                 isLoadingAudio = false,
                                 audioExportMessage = if (showFailure) {
-                                    "会议音频加载失败: ${error.message}"
+                                    if (localAudio.isNotEmpty()) {
+                                        "服务器归档暂不可用，已切换为本机录音"
+                                    } else {
+                                        "会议音频加载失败: ${error.message}"
+                                    }
                                 } else {
                                     it.audioExportMessage
                                 }
@@ -2726,6 +2986,26 @@ class RecordingViewModel(
                     }
                 }
         }
+    }
+
+    private suspend fun localMeetingAudio(meetingId: String): List<ArchivedMeetingAudio> {
+        val meeting = meetingRepository.findById(meetingId).getOrNull() ?: return emptyList()
+        val file = meeting.audioFilePath?.let(::File)
+            ?.takeIf { it.isFile && it.length() > 44L }
+            ?: return emptyList()
+        return listOf(
+            ArchivedMeetingAudio(
+                id = "local-$meetingId-${file.lastModified()}",
+                meetingId = meetingId,
+                createdAt = Instant.ofEpochMilli(file.lastModified()).toString(),
+                bytes = file.length(),
+                durationSec = meeting.durationMs.takeIf { it > 0L }?.div(1_000.0),
+                filename = file.name,
+                source = "本机录音",
+                downloadPath = "",
+                localFilePath = file.absolutePath
+            )
+        )
     }
 
     fun saveArchivedAudio(audio: ArchivedMeetingAudio) {
@@ -2813,6 +3093,7 @@ class RecordingViewModel(
     }
 
     fun selectReportTemplate(template: PresetReportTemplate) {
+        val meetingId = currentMeetingId
         val config = ReportTemplateConfig(
             selectedName = template.name,
             content = template.content,
@@ -2827,10 +3108,21 @@ class RecordingViewModel(
         }
         viewModelScope.launch {
             configDataStore.updateReportTemplate(config)
+            if (meetingId.isNotBlank()) {
+                meetingRepository.findById(meetingId)
+                    .getOrNull()
+                    ?.takeIf { it.selectedTemplateName != template.name }
+                    ?.let { meeting ->
+                        meetingRepository.save(
+                            meeting.copy(selectedTemplateName = template.name)
+                        )
+                    }
+            }
         }
     }
 
     fun updateReportTemplateContent(content: String) {
+        val meetingId = currentMeetingId
         val config = _uiState.value.reportTemplate.copy(
             content = content,
             isCustom = true
@@ -2838,6 +3130,15 @@ class RecordingViewModel(
         _uiState.update { it.copy(reportTemplate = config) }
         viewModelScope.launch {
             configDataStore.updateReportTemplate(config)
+            if (meetingId.isNotBlank()) {
+                meetingRepository.findById(meetingId)
+                    .getOrNull()
+                    ?.let { meeting ->
+                        meetingRepository.save(
+                            meeting.copy(selectedTemplateName = config.selectedName)
+                        )
+                    }
+            }
         }
     }
 
@@ -2845,7 +3146,13 @@ class RecordingViewModel(
         viewModelScope.launch {
             configDataStore.resetReportTemplate()
             val config = configDataStore.appConfigFlow.first().reportTemplateConfig
-            updateState { it.copy(reportTemplate = config) }
+            updateState { state ->
+                state.copy(
+                    reportTemplate = config,
+                    selectedRecordingTemplateName = config.selectedName
+                        .takeIf { state.hasRecording }
+                )
+            }
         }
     }
 
@@ -3075,7 +3382,16 @@ class RecordingViewModel(
         val meetingId = currentMeetingId
         when {
             meetingId.isBlank() -> _uiState.update { it.copy(error = "会议标识缺失") }
-            state.isRecording -> _uiState.update { it.copy(error = "请先停止录音") }
+            state.isRecording && !state.isPaused -> {
+                _uiState.update { it.copy(error = "暂停录音后即可生成纪要") }
+            }
+            // Generating from a paused recording is the only user-facing way to
+            // close the session. The service saves the final transcript and queues
+            // the report as one continuous action.
+            state.isRecording -> requestRecordingStop(
+                showNoRecordingError = false,
+                generateReportAfterSave = true
+            )
             state.isTranscribing -> _uiState.update { it.copy(error = "请等待后台转写完成") }
             !state.hasRecording || state.liveTranscript.isBlank() -> {
                 _uiState.update { it.copy(error = "请先录音或输入会议内容") }
@@ -3512,6 +3828,7 @@ class RecordingViewModel(
         _uiState.update {
             it.copy(
                 liveTranscript = displayText,
+                hasRecording = it.hasRecording || displayText.isNotBlank(),
                 transcriptPreviewMode = "实时预览（可修订）"
             )
         }
@@ -3532,10 +3849,11 @@ class RecordingViewModel(
         appContext.startForegroundService(intent)
     }
 
-    private fun stopForegroundService(meetingId: String) {
+    private fun stopForegroundService(meetingId: String, generateReportAfterSave: Boolean = false) {
         val intent = Intent(appContext, RecordingService::class.java).apply {
             action = RecordingService.ACTION_STOP
             putExtra(RecordingService.EXTRA_MEETING_ID, meetingId)
+            putExtra(RecordingService.EXTRA_GENERATE_REPORT_ON_STOP, generateReportAfterSave)
         }
         appContext.startService(intent)
     }

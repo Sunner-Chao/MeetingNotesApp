@@ -1,0 +1,9 @@
+{
+  "collection_count": 4,
+  "collections": [
+    {"id": "sample-study-collection-engineering", "post_count": 3},
+    {"id": "sample-study-collection-city-rural", "post_count": 3},
+    {"id": "sample-study-collection-nature-science", "post_count": 3},
+    {"id": "sample-study-collection-multi-day", "post_count": 3}
+  ]
+}

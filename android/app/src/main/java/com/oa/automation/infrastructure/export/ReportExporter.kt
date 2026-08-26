@@ -5,14 +5,18 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.pdf.PdfDocument
 import android.text.Layout
 import android.text.StaticLayout
 import android.text.TextPaint
+import android.util.Base64
+import com.oa.automation.domain.model.ForumParticipant
 import com.oa.automation.domain.model.MeetingAttachment
 import com.oa.automation.domain.model.Report
+import com.oa.automation.domain.model.isForumMeetingTemplate
 import java.io.File
 import java.io.FileOutputStream
 
@@ -165,7 +169,8 @@ object ReportExporter {
         context: Context,
         report: Report,
         attachments: List<MeetingAttachment>,
-        meetingTitle: String = ""
+        meetingTitle: String = "",
+        forumParticipants: List<ForumParticipant> = emptyList()
     ): File {
         val isStudyReport = report.templateName.usesStudyReportStyle()
         val images = attachments.map { attachment ->
@@ -287,10 +292,12 @@ object ReportExporter {
             text: String,
             paint: TextPaint,
             alignment: Layout.Alignment = Layout.Alignment.ALIGN_NORMAL,
-            width: Int = contentWidth.toInt()
+            width: Int = contentWidth.toInt(),
+            maxLines: Int = Int.MAX_VALUE
         ): StaticLayout = StaticLayout.Builder.obtain(text, 0, text.length, paint, width.coerceAtLeast(1))
             .setAlignment(alignment)
             .setLineSpacing(4f, 1.2f)
+            .setMaxLines(maxLines)
             .build()
 
         fun drawText(
@@ -547,6 +554,101 @@ object ReportExporter {
             }
         }
 
+        fun participantAvatar(participant: ForumParticipant) =
+            if (!participant.photoAuthorized) null else runCatching {
+                val encoded = participant.avatarDataUrl
+                    ?.substringAfter("base64,", "")
+                    ?.takeIf(String::isNotBlank)
+                    ?: return@runCatching null
+                val bytes = Base64.decode(encoded, Base64.DEFAULT)
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            }.getOrNull()
+
+        fun drawForumParticipantWall() {
+            val visible = forumParticipants.filter { it.name.isNotBlank() }.take(24)
+            if (!report.templateName.isForumMeetingTemplate() || visible.isEmpty()) return
+            yPosition = drawText("论坛参会名录", headingPaint, minimumFollowingSpace = 18f)
+            yPosition = drawText(
+                "照片墙名单 · ${visible.size} 人 · 未采集头像以姓名首字显示",
+                footerPaint
+            )
+            val columns = 4
+            val cellWidth = contentWidth / columns
+            val cellHeight = 88f
+            visible.chunked(columns).forEach { row ->
+                if (yPosition + cellHeight > contentBottom) startNewPage()
+                row.forEachIndexed { column, participant ->
+                    val left = margin + column * cellWidth
+                    val centerX = left + cellWidth / 2f
+                    val centerY = yPosition + 23f
+                    val avatar = participantAvatar(participant)
+                    if (avatar != null) {
+                        val radius = 18f
+                        val path = Path().apply { addCircle(centerX, centerY, radius, Path.Direction.CW) }
+                        canvas.save()
+                        canvas.clipPath(path)
+                        canvas.drawBitmap(
+                            avatar,
+                            null,
+                            RectF(centerX - radius, centerY - radius, centerX + radius, centerY + radius),
+                            Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+                        )
+                        canvas.restore()
+                        avatar.recycle()
+                    } else {
+                        canvas.drawCircle(
+                            centerX,
+                            centerY,
+                            18f,
+                            Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#8BB4F0") }
+                        )
+                        val initial = createTextLayout(
+                            participant.name.take(1),
+                            TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+                                textSize = 14f
+                                typeface = Typeface.DEFAULT_BOLD
+                                color = Color.WHITE
+                            },
+                            Layout.Alignment.ALIGN_CENTER,
+                            width = 36
+                        )
+                        canvas.save()
+                        canvas.translate(centerX - 18f, centerY - initial.height / 2f)
+                        initial.draw(canvas)
+                        canvas.restore()
+                    }
+                    val nameLayout = createTextLayout(
+                        participant.name,
+                        footerPaint,
+                        Layout.Alignment.ALIGN_CENTER,
+                        width = (cellWidth - 8f).toInt()
+                    )
+                    canvas.save()
+                    canvas.translate(left + 4f, yPosition + 45f)
+                    nameLayout.draw(canvas)
+                    canvas.restore()
+                    val meta = listOf(participant.role, participant.organization)
+                        .filter(String::isNotBlank)
+                        .joinToString(" · ")
+                    if (meta.isNotBlank()) {
+                        val metaLayout = createTextLayout(
+                            meta,
+                            TextPaint(footerPaint).apply { textSize = 7.5f },
+                            Layout.Alignment.ALIGN_CENTER,
+                            width = (cellWidth - 8f).toInt(),
+                            maxLines = 1
+                        )
+                        canvas.save()
+                        canvas.translate(left + 4f, yPosition + 61f)
+                        metaLayout.draw(canvas)
+                        canvas.restore()
+                    }
+                }
+                yPosition += cellHeight
+            }
+            addVerticalSpace(6f)
+        }
+
         // Title
         val title = report.rawContent.lineSequence()
             .map(String::trim)
@@ -558,6 +660,7 @@ object ReportExporter {
         yPosition = drawText(title, titlePaint)
         canvas.drawLine(margin, yPosition, pageWidth - margin, yPosition, linePaint)
         yPosition += 16f
+        drawForumParticipantWall()
 
         if (report.rawContent.isNotBlank()) {
             // Parse raw markdown content
@@ -571,6 +674,16 @@ object ReportExporter {
             while (lineIndex < lines.size) {
                 val line = lines[lineIndex]
                 val trimmed = line.trim()
+                if (
+                    report.templateName.isForumMeetingTemplate() && forumParticipants.isNotEmpty() &&
+                    trimmed.isForumRosterHeading()
+                ) {
+                    lineIndex++
+                    while (lineIndex < lines.size && !lines[lineIndex].trim().isMarkdownHeading()) {
+                        lineIndex++
+                    }
+                    continue
+                }
                 val photoAnchor = photoAnchorPattern.matchEntire(trimmed)
                 when {
                     photoAnchor != null -> {
@@ -772,5 +885,15 @@ object ReportExporter {
         .replace(Regex("__(.+?)__"), "$1")
         .replace("`", "")
         .trim()
+
+    private fun String.isMarkdownHeading(): Boolean = matches(Regex("^#{1,6}\\s+.+$"))
+
+    private fun String.isForumRosterHeading(): Boolean {
+        if (!isMarkdownHeading()) return false
+        val heading = replaceFirst(Regex("^#{1,6}\\s+"), "")
+            .replaceFirst(Regex("^\\d+[.、]\\s*"), "")
+            .trim()
+        return heading.contains("参会") && (heading.contains("名录") || heading.contains("通讯录"))
+    }
 
 }

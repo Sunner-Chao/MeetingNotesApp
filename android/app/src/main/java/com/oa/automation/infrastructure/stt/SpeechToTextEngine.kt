@@ -17,7 +17,8 @@ interface SpeechToTextEngine {
         audioFile: File,
         onProgress: (ProcessingProgress) -> Unit = {},
         meetingId: String? = null,
-        archiveKey: String? = null
+        archiveKey: String? = null,
+        contextHint: String? = null
     ): Result<String>
 
     /** Finalize audio already uploaded by the streaming preview connection. */

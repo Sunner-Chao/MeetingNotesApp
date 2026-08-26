@@ -17,12 +17,16 @@ import com.oa.automation.domain.repository.ScheduledMeetingRepository
 import com.oa.automation.domain.repository.StageDraftRepository
 import com.oa.automation.infrastructure.audio.AudioRecorder
 import com.oa.automation.infrastructure.audio.MeetingAudioArchiveService
+import com.oa.automation.infrastructure.audio.MeetingAudioAssembler
 import com.oa.automation.infrastructure.audio.ImportedAudioStore
+import com.oa.automation.infrastructure.audio.OrphanedMeetingAudioRecovery
 import com.oa.automation.infrastructure.account.AccountApiService
 import com.oa.automation.infrastructure.account.AccountSessionSynchronizer
 import com.oa.automation.infrastructure.account.LocalAccountDataMigrator
 import com.oa.automation.infrastructure.account.ProfileAvatarCodec
 import com.oa.automation.infrastructure.attachment.MeetingAttachmentStore
+import com.oa.automation.infrastructure.attachment.MeetingGalleryBackupStore
+import com.oa.automation.infrastructure.attachment.LegacyMeetingAttachmentRecovery
 import com.oa.automation.infrastructure.background.BackgroundTaskScheduler
 import com.oa.automation.infrastructure.community.CommunitySyncEnqueuer
 import com.oa.automation.infrastructure.community.CommunitySyncScheduler
@@ -49,6 +53,7 @@ import com.oa.automation.infrastructure.textimport.ExternalTextSourceLauncher
 import com.oa.automation.infrastructure.update.AppUpdateService
 import com.oa.automation.ui.screen.home.HomeViewModel
 import com.oa.automation.ui.screen.account.AccountViewModel
+import com.oa.automation.ui.screen.account.PointsPlansViewModel
 import com.oa.automation.ui.screen.account.CommunityModerationViewModel
 import com.oa.automation.ui.screen.community.CommunityPostDetailViewModel
 import com.oa.automation.ui.screen.community.CommunityCollectionDetailViewModel
@@ -60,7 +65,6 @@ import com.oa.automation.ui.screen.login.RegisterViewModel
 import com.oa.automation.ui.screen.recording.RecordingViewModel
 import com.oa.automation.ui.screen.report.ReportViewModel
 import com.oa.automation.ui.screen.settings.SettingsViewModel
-import com.oa.automation.ui.screen.vip.VipViewModel
 import org.koin.android.ext.koin.androidContext
 import org.koin.androidx.viewmodel.dsl.viewModel
 import org.koin.dsl.module
@@ -87,6 +91,11 @@ val appModule = module {
             .addMigrations(AppDatabase.MIGRATION_12_13)
             .addMigrations(AppDatabase.MIGRATION_13_14)
             .addMigrations(AppDatabase.MIGRATION_14_15)
+            .addMigrations(AppDatabase.MIGRATION_15_16)
+            .addMigrations(AppDatabase.MIGRATION_16_17)
+            .addMigrations(AppDatabase.MIGRATION_17_18)
+            .addMigrations(AppDatabase.MIGRATION_18_19)
+            .addMigrations(AppDatabase.MIGRATION_19_20)
             .build()
     }
     single { get<AppDatabase>().meetingDao() }
@@ -110,11 +119,15 @@ val appModule = module {
         CommunitySyncRepositoryImpl(get(), get(), get())
     }
     single { DeviceLocationProvider(androidContext()) }
-    single { MeetingAttachmentStore(androidContext(), get(), get()) }
+    single { MeetingGalleryBackupStore(androidContext()) }
+    single { MeetingAttachmentStore(androidContext(), get(), get(), get()) }
+    single { LegacyMeetingAttachmentRecovery(androidContext(), get(), get()) }
     single<ReportRepository> { ReportRepositoryImpl(get()) }
     single<ScheduledMeetingRepository> { ScheduledMeetingRepositoryImpl(get()) }
     single { AudioRecorder(androidContext()) }
+    single { MeetingAudioAssembler(androidContext()) }
     single { MeetingAudioArchiveService(androidContext(), get(), get()) }
+    single { OrphanedMeetingAudioRecovery(androidContext(), get(), get()) }
     single { ImportedAudioStore(androidContext()) }
     single { AppUpdateService(androidContext()) }
     single { StreamingSttClient() }
@@ -149,6 +162,7 @@ val appModule = module {
     viewModel { RegisterViewModel(get(), get(), get()) }
     viewModel { HomeViewModel(get(), get(), get(), get(), get(), get(), get(), get()) }
     viewModel { AccountViewModel(get(), get(), get(), get(), get()) }
+    viewModel { PointsPlansViewModel(get(), get()) }
     viewModel { CommunityModerationViewModel(get(), get()) }
     viewModel { CommunityViewModel(get(), get()) }
     viewModel { CommunityPublishingViewModel(get(), get(), get()) }
@@ -157,5 +171,4 @@ val appModule = module {
     viewModel { RecordingViewModel(get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), androidContext()) }
     viewModel { ReportViewModel(get(), get(), get(), get(), get(), get(), get(), get()) }
     viewModel { SettingsViewModel(get(), get(), get(), if (BuildConfig.DEBUG) get() else null) }
-    viewModel { VipViewModel(get(), get(), get(), get(), get()) }
 }

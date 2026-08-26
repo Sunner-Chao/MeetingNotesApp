@@ -79,7 +79,8 @@ class FallbackSpeechToTextEngineTest {
             audioFile: File,
             onProgress: (ProcessingProgress) -> Unit,
             meetingId: String?,
-            archiveKey: String?
+            archiveKey: String?,
+            contextHint: String?
         ): Result<String> {
             transcribeCalls += 1
             onProgress(ProcessingProgress(if (type == STTEngineType.TENCENT_HYBRID) 20 else 40, "working"))

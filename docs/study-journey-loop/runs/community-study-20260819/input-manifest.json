@@ -1,0 +1,61 @@
+{
+  "schema_version": "1.0",
+  "sources": [
+    {
+      "id": "owner-brief-community-study-20260819",
+      "source_type": "owner-brief",
+      "location": "conversation://community-study-20260819",
+      "observed_at": "2026-08-19",
+      "note": "Replace repetitive community samples with several rich study-tour activity sharing sets.",
+      "rights": {"license": "project-owner-brief", "usage": "product requirement and acceptance criteria", "ship_allowed": false}
+    },
+    {
+      "id": "xhs-study-search-20260819",
+      "source_type": "internal-browser-research",
+      "location": "https://www.xiaohongshu.com/search_result?keyword=%E7%A0%94%E5%AD%A6%E8%80%83%E5%AF%9F%20%E6%B8%B8%E8%AE%B0%20%E6%94%BB%E7%95%A5",
+      "observed_at": "2026-08-19",
+      "note": "Observed route guides, task-based visits, museum study notes, multi-day journals and preparation lists.",
+      "rights": {"license": "proprietary", "usage": "internal structure and interaction research only", "ship_allowed": false}
+    },
+    {
+      "id": "xhs-tech-route-69d4d633",
+      "source_type": "internal-browser-research",
+      "location": "https://www.xiaohongshu.com/explore/69d4d6330000000023010530",
+      "observed_at": "2026-08-19",
+      "note": "Observed time-point route organization and action-oriented technology study content.",
+      "rights": {"license": "proprietary", "usage": "internal information architecture research only", "ship_allowed": false}
+    },
+    {
+      "id": "xhs-campus-route-6a366555",
+      "source_type": "internal-browser-research",
+      "location": "https://www.xiaohongshu.com/explore/6a3665550000000011004c4d",
+      "observed_at": "2026-08-19",
+      "note": "Observed route variants organized by target audience, core highlight and execution task.",
+      "rights": {"license": "proprietary", "usage": "internal information architecture research only", "ship_allowed": false}
+    },
+    {
+      "id": "zwb-ui-library-20260815",
+      "source_type": "internal-knowledge",
+      "location": "obsidian://project/MeetingNotesApp/04-architecture/15-study-ui-library",
+      "observed_at": "2026-08-19",
+      "note": "Existing ZhiWuBen component matrix, evidence rules and Simple and effective boundary.",
+      "rights": {"license": "project-internal", "usage": "product design and implementation guidance", "ship_allowed": true}
+    },
+    {
+      "id": "approved-community-assets-v1",
+      "source_type": "approved-ui-library",
+      "location": "repo://docs/study-journey-loop/state/UI_ASSETS_LIBRARY.md",
+      "observed_at": "2026-08-19",
+      "note": "Reuse the approved featured carousel and replaceable sample bridge.",
+      "rights": {"license": "project-original", "usage": "reusable product UI behavior", "ship_allowed": true}
+    },
+    {
+      "id": "wikimedia-community-batch-20260819",
+      "source_type": "licensed-media-registry",
+      "location": "repo://android/app/src/main/assets/community/mock/ATTRIBUTION.md",
+      "observed_at": "2026-08-19",
+      "note": "Bundled offline photos with per-file author and reusable license records.",
+      "rights": {"license": "mixed-cc-and-public-domain", "usage": "bundled replaceable community sample media with attribution", "ship_allowed": true}
+    }
+  ]
+}

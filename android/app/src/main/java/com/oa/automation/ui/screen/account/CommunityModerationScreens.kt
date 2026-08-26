@@ -61,9 +61,7 @@ import com.oa.automation.domain.model.CommunityCollectionAuditEntry
 import com.oa.automation.domain.model.CommunityCollectionOperationsSummary
 import com.oa.automation.domain.model.CommunityModerationItem
 import com.oa.automation.domain.model.CommunityOperationsSummary
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import com.oa.automation.ui.formatBeijingTime
 import org.koin.androidx.compose.koinViewModel
 
 @Composable
@@ -895,4 +893,4 @@ private fun reportCategoryLabel(category: String): String = when (category) {
 }
 
 private fun formatModerationDate(timestamp: Long): String =
-    SimpleDateFormat("yyyy/MM/dd HH:mm", Locale.SIMPLIFIED_CHINESE).format(Date(timestamp))
+    formatBeijingTime(timestamp, "yyyy/MM/dd HH:mm")

@@ -5,6 +5,7 @@ import androidx.room.Index
 import androidx.room.PrimaryKey
 import com.oa.automation.domain.model.Meeting
 import com.oa.automation.domain.model.MeetingAttachment
+import com.oa.automation.domain.model.MeetingAudioSegment
 import com.oa.automation.domain.model.MeetingOrigin
 import com.oa.automation.domain.model.RecordingMarker
 import com.oa.automation.domain.model.Report
@@ -18,7 +19,26 @@ data class MeetingEntity(
     val createdAt: Long,
     val durationMs: Long,
     val audioFilePath: String?,
-    val origin: String
+    val origin: String,
+    val selectedTemplateName: String? = null,
+    val selectedSttEngineName: String? = null
+)
+
+@Entity(
+    tableName = "meeting_audio_segments",
+    indices = [
+        Index(value = ["meetingId"]),
+        Index(value = ["meetingId", "sequenceNumber"], unique = true)
+    ]
+)
+data class MeetingAudioSegmentEntity(
+    @PrimaryKey val id: String,
+    val meetingId: String,
+    val sequenceNumber: Int,
+    val localPath: String,
+    val durationMs: Long,
+    val bytes: Long,
+    val createdAt: Long
 )
 
 @Entity(
@@ -45,6 +65,7 @@ data class ReportEntity(
     val tasks: List<Task>,
     val decisions: List<String>,
     val actionItems: List<String>,
+    val participants: List<com.oa.automation.domain.model.ForumParticipant>,
     val rawContent: String = "",
     val templateName: String = "",
     val generatedAt: Long
@@ -72,7 +93,8 @@ data class MeetingAttachmentEntity(
     val locationSource: String?,
     val recordingMarkerId: String?,
     val markerTimestampMs: Long?,
-    val markerTranscriptAnchor: String?
+    val markerTranscriptAnchor: String?,
+    val galleryUri: String?
 )
 
 @Entity(
@@ -110,7 +132,29 @@ fun MeetingEntity.toDomain() = Meeting(
     createdAt = createdAt,
     durationMs = durationMs,
     audioFilePath = audioFilePath,
-    origin = MeetingOrigin.fromPersisted(origin)
+    origin = MeetingOrigin.fromPersisted(origin),
+    selectedTemplateName = selectedTemplateName,
+    selectedSttEngineName = selectedSttEngineName
+)
+
+fun MeetingAudioSegmentEntity.toDomain() = MeetingAudioSegment(
+    id = id,
+    meetingId = meetingId,
+    sequenceNumber = sequenceNumber,
+    localPath = localPath,
+    durationMs = durationMs,
+    bytes = bytes,
+    createdAt = createdAt
+)
+
+fun MeetingAudioSegment.toEntity() = MeetingAudioSegmentEntity(
+    id = id,
+    meetingId = meetingId,
+    sequenceNumber = sequenceNumber,
+    localPath = localPath,
+    durationMs = durationMs,
+    bytes = bytes,
+    createdAt = createdAt
 )
 
 fun Meeting.toEntity() = MeetingEntity(
@@ -119,7 +163,9 @@ fun Meeting.toEntity() = MeetingEntity(
     createdAt = createdAt,
     durationMs = durationMs,
     audioFilePath = audioFilePath,
-    origin = origin.name
+    origin = origin.name,
+    selectedTemplateName = selectedTemplateName,
+    selectedSttEngineName = selectedSttEngineName
 )
 
 fun TranscriptEntity.toDomain() = Transcript(
@@ -152,6 +198,7 @@ fun ReportEntity.toDomain() = Report(
     tasks = tasks,
     decisions = decisions,
     actionItems = actionItems,
+    participants = participants,
     rawContent = rawContent,
     templateName = templateName,
     generatedAt = generatedAt
@@ -165,6 +212,7 @@ fun Report.toEntity() = ReportEntity(
     tasks = tasks,
     decisions = decisions,
     actionItems = actionItems,
+    participants = participants,
     rawContent = rawContent,
     templateName = templateName,
     generatedAt = generatedAt
@@ -185,7 +233,8 @@ fun MeetingAttachmentEntity.toDomain() = MeetingAttachment(
     locationSource = locationSource,
     recordingMarkerId = recordingMarkerId,
     markerTimestampMs = markerTimestampMs,
-    markerTranscriptAnchor = markerTranscriptAnchor
+    markerTranscriptAnchor = markerTranscriptAnchor,
+    galleryUri = galleryUri
 )
 
 fun MeetingAttachment.toEntity() = MeetingAttachmentEntity(
@@ -203,7 +252,8 @@ fun MeetingAttachment.toEntity() = MeetingAttachmentEntity(
     locationSource = locationSource,
     recordingMarkerId = recordingMarkerId,
     markerTimestampMs = markerTimestampMs,
-    markerTranscriptAnchor = markerTranscriptAnchor
+    markerTranscriptAnchor = markerTranscriptAnchor,
+    galleryUri = galleryUri
 )
 
 fun RecordingMarkerEntity.toDomain() = RecordingMarker(

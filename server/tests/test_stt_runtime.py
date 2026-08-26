@@ -1,5 +1,7 @@
 import asyncio
 import base64
+import contextlib
+from contextlib import contextmanager
 import hashlib
 import io
 import json
@@ -21,10 +23,67 @@ STT_SERVICE_DIR = Path(__file__).resolve().parents[1] / "stt-service"
 sys.path.insert(0, str(STT_SERVICE_DIR))
 
 import stt_server as stt  # noqa: E402
+from agent_gateway import AgentGateway  # noqa: E402
+from account_service import AccountConflictError  # noqa: E402
 from common.account_stt_token import issue_account_stt_token  # noqa: E402
 
 
 class SttRuntimeTest(unittest.TestCase):
+    def test_context_hint_is_sanitized_and_bounded(self) -> None:
+        hint = stt.sanitize_context_hint("  大佛寺\x00\n研学考察  " + "词" * 300)
+
+        self.assertNotIn("\x00", hint)
+        self.assertNotIn("\n", hint)
+        self.assertTrue(hint.startswith("大佛寺 研学考察"))
+        self.assertLessEqual(len(hint), stt.STT_FINAL_CONTEXT_HINT_MAX_CHARS)
+
+    def test_final_audio_enhancement_bypasses_clean_recording(self) -> None:
+        quality = stt.FinalAudioQuality(
+            noise_floor_dbfs=-62.0,
+            speech_level_dbfs=-18.0,
+            snr_db=44.0,
+            clipping_ratio=0.0,
+            duration_seconds=30.0,
+        )
+
+        self.assertEqual(stt.final_audio_enhancement_decision(quality), (False, False))
+
+    def test_final_audio_enhancement_handles_noise_and_quiet_speech(self) -> None:
+        noisy = stt.FinalAudioQuality(
+            noise_floor_dbfs=-36.0,
+            speech_level_dbfs=-18.0,
+            snr_db=18.0,
+            clipping_ratio=0.0,
+            duration_seconds=30.0,
+        )
+        quiet = stt.FinalAudioQuality(
+            noise_floor_dbfs=-58.0,
+            speech_level_dbfs=-36.0,
+            snr_db=22.0,
+            clipping_ratio=0.0,
+            duration_seconds=30.0,
+        )
+
+        self.assertEqual(stt.final_audio_enhancement_decision(noisy), (True, False))
+        self.assertEqual(stt.final_audio_enhancement_decision(quiet), (True, True))
+
+    def test_wav_quality_analysis_estimates_noise_and_speech_levels(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "quality.wav"
+            with wave.open(str(path), "wb") as wav_file:
+                wav_file.setnchannels(1)
+                wav_file.setsampwidth(2)
+                wav_file.setframerate(16000)
+                quiet = (300).to_bytes(2, "little", signed=True) * 8000
+                speech = (8000).to_bytes(2, "little", signed=True) * 8000
+                wav_file.writeframes(quiet + speech)
+
+            quality = stt.analyze_wav_quality(path)
+
+        self.assertIsNotNone(quality)
+        self.assertLess(quality.noise_floor_dbfs, quality.speech_level_dbfs)
+        self.assertGreater(quality.snr_db, 20.0)
+
     def test_faster_whisper_model_directory_accepts_json_vocabulary(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             model_dir = Path(directory)
@@ -106,7 +165,10 @@ class SttRuntimeTest(unittest.TestCase):
 
         create_chunks.assert_called_once()
         self.assertEqual(transcribe_chunk.call_count, 3)
-        self.assertEqual(transcribe_chunk.call_args_list[0].args, (str(chunks[0].path), "zh"))
+        self.assertEqual(
+            transcribe_chunk.call_args_list[0].args,
+            (str(chunks[0].path), "zh", ""),
+        )
         self.assertEqual(
             result.text,
             "开场介绍与议程，主持人宣布休会，下午继续圆桌讨论。形成共识。",
@@ -153,6 +215,60 @@ class SttRuntimeTest(unittest.TestCase):
         self.assertEqual(payload["chunk_count"], 2)
         self.assertEqual(payload["audio_duration"], 3606000)
 
+    def test_chunked_tencent_diarization_preserves_offset_segments(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.wav"
+            first = root / "first.wav"
+            second = root / "second.wav"
+            source.write_bytes(b"source")
+            first.write_bytes(b"first")
+            second.write_bytes(b"second")
+            chunks = [
+                stt.TencentAudioChunk(first, 0.0, 2403.0),
+                stt.TencentAudioChunk(second, 2397.0, 1203.0),
+            ]
+
+            with (
+                patch.object(stt, "TENCENT_ASR_MAX_UPLOAD_MB", 0),
+                patch.object(stt, "create_tencent_audio_chunks", return_value=chunks),
+                patch.object(
+                    stt,
+                    "transcribe_with_tencent_flash",
+                    side_effect=[
+                        (
+                            "说话人 1：第一段",
+                            {
+                                "audio_duration": 2403000,
+                                "segments": [
+                                    {"text": "第一段", "start_time": 100, "end_time": 900, "speaker_id": 0}
+                                ],
+                            },
+                        ),
+                        (
+                            "说话人 2：第二段",
+                            {
+                                "audio_duration": 1203000,
+                                "segments": [
+                                    {"text": "第二段", "start_time": 100, "end_time": 900, "speaker_id": 1}
+                                ],
+                            },
+                        ),
+                    ],
+                ),
+            ):
+                text, payload = stt.transcribe_with_tencent_flash_chunked(
+                    source,
+                    "wav",
+                    tier=stt.TENCENT_STANDARD_TIER,
+                    language="zh",
+                    record_usage=False,
+                    speaker_diarization=True,
+                )
+
+        self.assertEqual(text, "说话人 1：第一段\n说话人 2：第二段")
+        self.assertEqual(payload["segments"][1]["start_time"], 2397100.0)
+
     def test_stt_accepts_valid_account_token_and_rejects_expired_or_tampered_tokens(self) -> None:
         now = int(time.time())
         valid = issue_account_stt_token("shared-secret", "user-1", now + 60)
@@ -168,6 +284,40 @@ class SttRuntimeTest(unittest.TestCase):
             self.assertFalse(stt.is_api_token_valid(f"Bearer {valid}x"))
             self.assertEqual(stt.resolve_api_principal(f"Bearer {valid}").owner_id, "user-1")
             self.assertTrue(stt.resolve_api_principal("Bearer service-token").is_management)
+
+    def test_account_secret_disables_anonymous_access_without_management_token(self) -> None:
+        account_token = issue_account_stt_token(
+            "shared-secret",
+            "user-1",
+            int(time.time()) + 60,
+        )
+        with (
+            patch.object(stt, "STT_REQUIRE_API_TOKEN", False),
+            patch.object(stt, "STT_API_TOKEN", ""),
+            patch.object(stt, "ACCOUNT_TOKEN_SECRET", "shared-secret"),
+        ):
+            self.assertIsNone(stt.resolve_api_principal(None))
+            self.assertIsNone(stt.resolve_api_principal("Bearer invalid"))
+            principal = stt.resolve_api_principal(f"Bearer {account_token}")
+            self.assertIsNotNone(principal)
+            self.assertEqual(principal.owner_id, "user-1")
+
+    def test_tencent_audio_duration_is_parsed_as_milliseconds_with_safe_fallback(self) -> None:
+        self.assertEqual(stt.tencent_audio_duration_ms({"audio_duration": "61001"}), 61_001)
+        self.assertEqual(
+            stt.tencent_audio_duration_ms(
+                {"audio_duration": "not-a-number"},
+                fallback_seconds=1.25,
+            ),
+            1_250,
+        )
+        self.assertEqual(
+            stt.tencent_audio_duration_ms(
+                {"audio_duration": float("inf")},
+                fallback_seconds=2.0,
+            ),
+            2_000,
+        )
 
     def test_global_model_switch_accepts_only_static_management_token(self) -> None:
         account_token = issue_account_stt_token("shared-secret", "user-1", int(time.time()) + 60)
@@ -440,6 +590,61 @@ class SttRuntimeTest(unittest.TestCase):
             ),
             "会议内容。",
         )
+
+    def test_speaker_rows_use_stable_human_labels_and_merge_adjacent_turns(self) -> None:
+        text, rows = stt.parse_tencent_flash_response(
+            {
+                "code": 0,
+                "flash_result": [
+                    {"text": "甲先介绍。", "speaker_id": 2},
+                    {"text": "继续说明。", "speaker_id": 2},
+                    {"text": "乙补充。", "speaker_id": 7},
+                ],
+            },
+            include_speakers=True,
+        )
+
+        self.assertEqual(text, "说话人 1：甲先介绍。继续说明。\n说话人 2：乙补充。")
+        self.assertEqual([row["speaker_id"] for row in rows], [2, 2, 7])
+
+    def test_tencent_sentence_list_is_flattened_for_diarization(self) -> None:
+        text, rows = stt.parse_tencent_flash_response(
+            {
+                "code": 0,
+                "flash_result": [
+                    {
+                        "sentence_list": [
+                            {"text": "甲。", "speaker_id": 0},
+                            {"text": "乙。", "speaker_id": 1},
+                        ]
+                    }
+                ],
+            },
+            include_speakers=True,
+        )
+
+        self.assertEqual(text, "说话人 1：甲。\n说话人 2：乙。")
+        self.assertEqual(len(rows), 2)
+
+    def test_local_speaker_attachment_selects_maximum_time_overlap(self) -> None:
+        # Keep the test independent from ONNX model loading while exercising
+        # the same overlap rule used by production attachment.
+        turns = [
+            {"start": 0.0, "end": 1.5, "speaker": 0},
+            {"start": 1.5, "end": 4.0, "speaker": 1},
+        ]
+        with patch.object(stt, "diarize_wav_segments", return_value=turns):
+            attached, metadata = stt.attach_local_speakers(
+                Path("unused.wav"),
+                [
+                    {"start": 0.0, "end": 2.0, "text": "甲"},
+                    {"start": 2.0, "end": 4.0, "text": "乙"},
+                ],
+            )
+
+        self.assertEqual([row["speaker"] for row in attached], [0, 1])
+        self.assertTrue(metadata["active"])
+        self.assertEqual(metadata["speaker_count"], 2)
 
     def test_tencent_realtime_signature_and_transcript_state(self) -> None:
         with (
@@ -819,6 +1024,37 @@ class SttRuntimeTest(unittest.TestCase):
             stt.STT_TEMP_DIR = previous_dir
             stt.STT_TEMP_MAX_AGE_SEC = previous_age
 
+    def test_failed_audio_is_preserved_with_account_and_meeting_context(self) -> None:
+        previous_dir = stt.STT_RECOVERY_DIR
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                stt.STT_RECOVERY_DIR = root / "recovery"
+                source = root / "upload.wav"
+                with wave.open(str(source), "wb") as writer:
+                    writer.setnchannels(1)
+                    writer.setsampwidth(2)
+                    writer.setframerate(16000)
+                    writer.writeframes(b"\x00\x00" * 16000)
+                manifest = stt.preserve_failed_audio(
+                    source,
+                    owner_id="admin-1",
+                    meeting_id="meeting-1",
+                    archive_key="request-1",
+                    original_filename="meeting.wav",
+                    reason="inference failed",
+                )
+                self.assertIsNotNone(manifest)
+                assert manifest is not None
+                self.assertEqual(manifest["owner_id"], "admin-1")
+                self.assertEqual(manifest["meeting_id"], "meeting-1")
+                self.assertEqual(manifest["archive_key"], "request-1")
+                recovery_dir = stt.STT_RECOVERY_DIR / manifest["id"]
+                self.assertTrue((recovery_dir / manifest["audio_file"]).is_file())
+                self.assertTrue((recovery_dir / f"{manifest['id']}.json").is_file())
+        finally:
+            stt.STT_RECOVERY_DIR = previous_dir
+
     def test_audio_archive_is_isolated_by_owner_and_meeting(self) -> None:
         previous = (
             stt.STT_AUDIO_ARCHIVE_ENABLED,
@@ -1119,7 +1355,9 @@ class SttRuntimeSecurityTest(unittest.IsolatedAsyncioTestCase):
                 language="en",
             )
 
-            async def fake_run_inference(callback, file_path, language, *, label):
+            async def fake_run_inference(
+                callback, file_path, language, context_hint="", *, label
+            ):
                 self.assertIs(callback, stt.transcribe_spooled_file)
                 self.assertEqual(file_path, str(path))
                 self.assertEqual(language, "en")
@@ -1129,7 +1367,7 @@ class SttRuntimeSecurityTest(unittest.IsolatedAsyncioTestCase):
             with patch.object(stt, "run_inference", side_effect=fake_run_inference):
                 response = await stt.transcribe_stream_recording(
                     session_id,
-                    stt.ApiPrincipal(owner_id="user-1"),
+                    stt.ApiPrincipal(owner_id="management", is_management=True),
                 )
 
             self.assertEqual(response.text, "server-side final transcript")
@@ -1169,7 +1407,7 @@ class SttRuntimeSecurityTest(unittest.IsolatedAsyncioTestCase):
             ):
                 response = await stt.transcribe_stream_recording(
                     success_session,
-                    stt.ApiPrincipal(owner_id="user-1"),
+                    stt.ApiPrincipal(owner_id="management", is_management=True),
                 )
             self.assertEqual(response.text, "腾讯极速版最终稿")
             self.assertFalse(success_path.exists())
@@ -1178,7 +1416,9 @@ class SttRuntimeSecurityTest(unittest.IsolatedAsyncioTestCase):
             fallback_path = Path(directory) / "fallback.wav"
             await create_recording(fallback_session, fallback_path)
 
-            async def fake_run_inference(callback, file_path, language, *, label):
+            async def fake_run_inference(
+                callback, file_path, language, context_hint="", *, label
+            ):
                 self.assertIs(callback, stt.transcribe_spooled_file)
                 self.assertEqual(file_path, str(fallback_path))
                 self.assertEqual(language, "zh")
@@ -1197,14 +1437,16 @@ class SttRuntimeSecurityTest(unittest.IsolatedAsyncioTestCase):
             ):
                 response = await stt.transcribe_stream_recording(
                     fallback_session,
-                    stt.ApiPrincipal(owner_id="user-1"),
+                    stt.ApiPrincipal(owner_id="management", is_management=True),
                 )
             self.assertEqual(response.text, "本地兜底最终稿")
 
     async def test_tencent_cloud_upload_uses_local_fallback_when_upstream_fails(self) -> None:
         upload = stt.UploadFile(filename="fallback.wav", file=io.BytesIO(b"RIFFfallback"))
 
-        async def fake_run_inference(callback, file_path, language, *, label):
+        async def fake_run_inference(
+            callback, file_path, language, context_hint="", *, label
+        ):
             self.assertIs(callback, stt.transcribe_spooled_file)
             self.assertTrue(Path(file_path).is_file())
             self.assertEqual(language, "zh")
@@ -1225,7 +1467,7 @@ class SttRuntimeSecurityTest(unittest.IsolatedAsyncioTestCase):
                 file=upload,
                 model=stt.TENCENT_STANDARD_MODEL,
                 language="zh",
-                principal=stt.ApiPrincipal(owner_id="user-1"),
+                principal=stt.ApiPrincipal(owner_id="management", is_management=True),
                 x_meeting_id="",
                 x_archive_key="",
             )
@@ -1253,7 +1495,7 @@ class SttRuntimeSecurityTest(unittest.IsolatedAsyncioTestCase):
                 file=upload,
                 model=stt.TENCENT_STANDARD_MODEL,
                 language="zh",
-                principal=stt.ApiPrincipal(owner_id="user-1"),
+                principal=stt.ApiPrincipal(owner_id="management", is_management=True),
                 x_meeting_id="",
                 x_archive_key="",
             )
@@ -1265,8 +1507,16 @@ class SttRuntimeSecurityTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(response["chunked"])
         self.assertEqual(response["chunk_count"], 2)
 
-    async def test_tencent_cloud_chunk_failure_does_not_use_local_model(self) -> None:
+    async def test_tencent_cloud_chunk_failure_falls_back_to_local_model(self) -> None:
         upload = stt.UploadFile(filename="long-recording.wav", file=io.BytesIO(b"RIFFfallback"))
+
+        async def local_fallback(*_args, **_kwargs):
+            return {
+                "text": "本地兜底转写",
+                "provider": "faster-whisper",
+                "language": "zh",
+                "fallback": True,
+            }
 
         with (
             patch.object(stt, "tencent_asr_configured", return_value=True),
@@ -1275,21 +1525,21 @@ class SttRuntimeSecurityTest(unittest.IsolatedAsyncioTestCase):
                 "transcribe_with_tencent_flash_chunked",
                 side_effect=stt.TencentChunkedTranscriptionError("第 2/2 段云端转写失败"),
             ),
-            patch.object(stt, "run_inference") as local_transcribe,
+            patch.object(stt, "local_cloud_asr_fallback", side_effect=local_fallback) as local_fallback_call,
         ):
-            with self.assertRaises(stt.HTTPException) as raised:
-                await stt.managed_cloud_asr_transcription(
-                    file=upload,
-                    model=stt.TENCENT_STANDARD_MODEL,
-                    language="zh",
-                    principal=stt.ApiPrincipal(owner_id="user-1"),
-                    x_meeting_id="",
-                    x_archive_key="",
-                )
+            response = await stt.managed_cloud_asr_transcription(
+                file=upload,
+                model=stt.TENCENT_STANDARD_MODEL,
+                language="zh",
+                principal=stt.ApiPrincipal(owner_id="management", is_management=True),
+                x_meeting_id="",
+                x_archive_key="",
+            )
 
-        local_transcribe.assert_not_called()
-        self.assertEqual(raised.exception.status_code, 502)
-        self.assertIn("分段云转写失败", raised.exception.detail)
+        local_fallback_call.assert_awaited_once()
+        self.assertEqual(response["text"], "本地兜底转写")
+        self.assertEqual(response["provider"], "faster-whisper")
+        self.assertTrue(response["fallback"])
 
     async def test_required_token_cannot_be_empty(self) -> None:
         previous_required = stt.STT_REQUIRE_API_TOKEN
@@ -1303,6 +1553,259 @@ class SttRuntimeSecurityTest(unittest.IsolatedAsyncioTestCase):
         finally:
             stt.STT_REQUIRE_API_TOKEN = previous_required
             stt.STT_API_TOKEN = previous_token
+
+
+class SttBillingIntegrationTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        root = Path(self.temp_dir.name)
+        self.root = root
+        self.db_path = root / "accounts.db"
+        plans_path = root / "plans.json"
+        plans_path.write_text("[]", encoding="utf-8")
+        self.gateway = AgentGateway(
+            self.db_path,
+            root / "tasks",
+            bootstrap_token="billing-agent-token",
+        )
+        self.gateway.initialize()
+        self.account_service = stt.AccountService(
+            self.db_path,
+            token_secret="billing-account-secret",
+            plans_path=plans_path,
+            free_points=1_000,
+            stt_points_per_minute=10,
+        )
+        self.account_service.initialize(bootstrap_admin=False)
+        session = self.account_service.register("billing_user", "strong-password")
+        account_principal = self.account_service.authenticate(
+            f"Bearer {session['access_token']}"
+        )
+        self.account_principal = account_principal
+        self.principal = stt.ApiPrincipal(owner_id=account_principal.user_id)
+
+    def tearDown(self) -> None:
+        for recording in list(stt.stream_recordings.values()):
+            if recording.owner_id == self.principal.owner_id:
+                with contextlib.suppress(FileNotFoundError):
+                    recording.path.unlink()
+        stt.stream_recordings = {
+            key: value
+            for key, value in stt.stream_recordings.items()
+            if value.owner_id != self.principal.owner_id
+        }
+        self.temp_dir.cleanup()
+
+    @contextmanager
+    def billing_environment(self):
+        with (
+            patch.object(stt, "_account_billing_service", self.account_service),
+            patch.object(stt, "ACCOUNT_TOKEN_SECRET", "billing-account-secret"),
+            patch.object(stt, "ACCOUNT_DB_PATH", self.db_path),
+            patch.object(stt, "STT_TEMP_DIR", self.root / "stt-temp"),
+            patch.object(stt, "STT_AUDIO_ARCHIVE_ENABLED", False),
+        ):
+            yield
+
+    @staticmethod
+    async def fake_inference(
+        callback, file_path, language, context_hint="", *, label
+    ):
+        assert callback is stt.transcribe_spooled_file
+        Path(file_path).unlink(missing_ok=True)
+        return stt.TranscribeResponse(
+            text=f"{label}-transcript",
+            language=language,
+            duration_ms=61_001,
+        )
+
+    def _new_upload(self) -> stt.UploadFile:
+        return stt.UploadFile(
+            filename="recording.wav",
+            file=io.BytesIO(b"RIFF" + b"billing-audio"),
+        )
+
+    async def test_file_transcription_charges_once_for_idempotent_retry(self) -> None:
+        with (
+            self.billing_environment(),
+            patch.object(stt, "model", object()),
+            patch.object(stt, "audio_duration_for_tencent_budget", return_value=61.001),
+            patch.object(stt, "archive_audio_file", return_value=None),
+            patch.object(stt, "run_inference", side_effect=self.fake_inference),
+        ):
+            first = await stt.transcribe(
+                self._new_upload(),
+                language="zh",
+                principal=self.principal,
+                x_meeting_id="meeting-file",
+                x_archive_key="",
+                x_usage_key="file-retry-01",
+            )
+            retry = await stt.transcribe(
+                self._new_upload(),
+                language="zh",
+                principal=self.principal,
+                x_meeting_id="meeting-file",
+                x_archive_key="",
+                x_usage_key="file-retry-01",
+            )
+
+        self.assertIsNotNone(first.usage)
+        self.assertEqual(first.usage["id"], retry.usage["id"])
+        self.assertEqual(first.duration_ms, 61_001)
+        self.assertEqual(self.account_service.usage_summary(self.account_principal)["points_used"], 20)
+
+    async def test_cloud_success_and_local_fallback_each_charge_once(self) -> None:
+        cloud_payload = {"code": 0, "audio_duration": "61001"}
+        with (
+            self.billing_environment(),
+            patch.object(stt, "tencent_asr_configured", return_value=True),
+            patch.object(stt, "tencent_asr_budget_enforced", return_value=False),
+            patch.object(stt, "audio_duration_for_tencent_budget", return_value=61.001),
+            patch.object(stt, "archive_audio_file", return_value=None),
+            patch.object(
+                stt,
+                "transcribe_with_tencent_flash_chunked",
+                return_value=("云端转写", cloud_payload),
+            ),
+        ):
+            first = await stt.managed_cloud_asr_transcription(
+                file=self._new_upload(),
+                model=stt.TENCENT_STANDARD_MODEL,
+                language="zh",
+                principal=self.principal,
+                x_meeting_id="meeting-cloud",
+                x_archive_key="",
+                x_usage_key="cloud-success-01",
+            )
+            retry = await stt.managed_cloud_asr_transcription(
+                file=self._new_upload(),
+                model=stt.TENCENT_STANDARD_MODEL,
+                language="zh",
+                principal=self.principal,
+                x_meeting_id="meeting-cloud",
+                x_archive_key="",
+                x_usage_key="cloud-success-01",
+            )
+
+        self.assertEqual(first["usage"]["id"], retry["usage"]["id"])
+        self.assertEqual(first["duration_ms"], 61_001)
+
+        async def fallback_inference(
+            callback, file_path, language, context_hint="", *, label
+        ):
+            self.assertIs(callback, stt.transcribe_spooled_file)
+            self.assertEqual(label, "cloud-asr-fallback")
+            Path(file_path).unlink(missing_ok=True)
+            return stt.TranscribeResponse(text="本地兜底", language=language, duration_ms=0)
+
+        with (
+            self.billing_environment(),
+            patch.object(stt, "tencent_asr_configured", return_value=True),
+            patch.object(stt, "tencent_asr_budget_enforced", return_value=False),
+            patch.object(stt, "audio_duration_for_tencent_budget", return_value=61.001),
+            patch.object(stt, "archive_audio_file", return_value=None),
+            patch.object(
+                stt,
+                "transcribe_with_tencent_flash_chunked",
+                side_effect=ValueError("upstream unavailable"),
+            ),
+            patch.object(stt, "run_inference", side_effect=fallback_inference),
+        ):
+            first_fallback = await stt.managed_cloud_asr_transcription(
+                file=self._new_upload(),
+                model=stt.TENCENT_STANDARD_MODEL,
+                language="zh",
+                principal=self.principal,
+                x_meeting_id="meeting-cloud",
+                x_archive_key="",
+                x_usage_key="cloud-fallback-01",
+            )
+            retry_fallback = await stt.managed_cloud_asr_transcription(
+                file=self._new_upload(),
+                model=stt.TENCENT_STANDARD_MODEL,
+                language="zh",
+                principal=self.principal,
+                x_meeting_id="meeting-cloud",
+                x_archive_key="",
+                x_usage_key="cloud-fallback-01",
+            )
+
+        self.assertEqual(first_fallback["usage"]["id"], retry_fallback["usage"]["id"])
+        self.assertEqual(first_fallback["duration_ms"], 61_001)
+        self.assertEqual(self.account_service.usage_summary(self.account_principal)["points_used"], 40)
+
+    async def test_stream_finalize_charges_once_when_same_session_key_is_retried(self) -> None:
+        with self.account_service._connect() as conn:
+            conn.execute(
+                "UPDATE account_usage_balances SET points_granted = 20, points_used = 0 WHERE user_id = ?",
+                (self.account_principal.user_id,),
+            )
+
+        def create_recording(session_id: str) -> None:
+            path = self.root / f"{session_id}.wav"
+            with wave.open(str(path), "wb") as writer:
+                writer.setnchannels(1)
+                writer.setsampwidth(2)
+                writer.setframerate(16_000)
+                writer.writeframes(b"\x00\x00" * 1_600)
+            ready = asyncio.Event()
+            ready.set()
+            stt.stream_recordings[session_id] = stt.StreamRecording(
+                path=path,
+                ready=ready,
+                created_at=time.time(),
+                owner_id=self.principal.owner_id,
+                meeting_id="meeting-stream",
+                audio_bytes=3_200,
+                language="zh",
+            )
+
+        session_id = "d" * 32
+        create_recording(session_id)
+        with (
+            self.billing_environment(),
+            patch.object(stt, "audio_duration_for_tencent_budget", return_value=61.001),
+            patch.object(stt, "archive_audio_file", return_value=None),
+            patch.object(stt, "run_inference", side_effect=self.fake_inference),
+        ):
+            first = await stt.transcribe_stream_recording(
+                session_id,
+                self.principal,
+                "stream-retry-01",
+            )
+            create_recording(session_id)
+            retry = await stt.transcribe_stream_recording(
+                session_id,
+                self.principal,
+                "stream-retry-01",
+            )
+
+        self.assertEqual(first.usage["id"], retry.usage["id"])
+        self.assertEqual(self.account_service.usage_summary(self.account_principal)["points_used"], 20)
+
+    def test_cross_account_reuse_of_canonical_usage_key_is_rejected(self) -> None:
+        second_session = self.account_service.register("billing_user_two", "strong-password")
+        second = self.account_service.authenticate(
+            f"Bearer {second_session['access_token']}"
+        )
+        key = self.account_service.canonical_stt_usage_key(
+            self.account_principal.user_id,
+            "cross-user-key",
+        )
+        self.account_service.record_stt_usage_for_user(
+            self.account_principal.user_id,
+            duration_ms=1_000,
+            meeting_id="meeting-cross-user",
+            idempotency_key=key,
+        )
+        with self.assertRaises(AccountConflictError):
+            self.account_service.record_stt_usage_for_user(
+                second.user_id,
+                duration_ms=1_000,
+                meeting_id="meeting-cross-user",
+                idempotency_key=key,
+            )
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@ package com.oa.automation.ui.screen.report
 import com.google.gson.Gson
 import java.io.File
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -11,10 +12,10 @@ class StudyJourneyStyleCatalogTest {
     fun `style asset exposes reusable cover page and photo materials`() {
         val catalog = Gson().fromJson(styleAsset().readText(), StudyJourneyStyleCatalog::class.java)
 
-        assertEquals(2, catalog.version)
+        assertEquals(3, catalog.version)
         assertTrue(catalog.styles.size >= 14)
         assertTrue(catalog.materials.coverLayouts.size >= 9)
-        assertTrue(catalog.materials.pagePatterns.size >= 16)
+        assertTrue(catalog.materials.pagePatterns.size >= 15)
         assertTrue(catalog.materials.photoTreatments.size >= 4)
 
         val coverIds = catalog.materials.coverLayouts.map { it.id }.toSet()
@@ -26,6 +27,15 @@ class StudyJourneyStyleCatalogTest {
             assertTrue(style.pagePatterns.isNotEmpty())
             assertTrue(style.pagePatterns.all { it in pageIds })
             assertTrue(style.carouselExtras.all { it == "tips" })
+        }
+        val visibleCatalogCopy = buildString {
+            catalog.materials.pagePatterns.forEach { append(it.displayName).append(' ').append(it.description) }
+            catalog.styles.forEach { style ->
+                append(style.displayName).append(' ').append(style.keywords.joinToString(" "))
+            }
+        }
+        listOf("工业", "工厂", "施工", "车间", "产线", "实验室", "研究院").forEach { marker ->
+            assertFalse("Study journey visual catalog must remain travel-first: $marker", visibleCatalogCopy.contains(marker))
         }
     }
 
@@ -121,11 +131,11 @@ class StudyJourneyStyleCatalogTest {
             )
         )
         val technologyRoute = StudyJourneyArticle(
-            title = "三条 AI 科技研学路线",
-            routeStops = listOf("人工智能小镇", "实验室", "机器人研究院"),
+            title = "三座科技馆的城市研学路线",
+            routeStops = listOf("城市科技馆", "天文馆", "航空馆"),
             sections = listOf(
-                StudyJourneySection(1, "数字城市"),
-                StudyJourneySection(2, "机器人实验室")
+                StudyJourneySection(1, "互动展项"),
+                StudyJourneySection(2, "机器人展")
             )
         )
 
@@ -134,7 +144,7 @@ class StudyJourneyStyleCatalogTest {
     }
 
     @Test
-    fun `museum missions and industrial processes select their dedicated visual systems`() {
+    fun `museum missions and textbook journeys select their dedicated visual systems`() {
         val catalog = Gson().fromJson(styleAsset().readText(), StudyJourneyStyleCatalog::class.java)
         val museumMission = StudyJourneyArticle(
             title = "博物馆小小观察家任务手册",
@@ -143,16 +153,16 @@ class StudyJourneyStyleCatalogTest {
                 StudyJourneySection(2, "文物知识卡")
             )
         )
-        val factoryProcess = StudyJourneyArticle(
-            title = "汽车工厂智造探访",
+        val textbookJourney = StudyJourneyArticle(
+            title = "跟着课本去旅行｜岳阳楼与洞庭湖",
             sections = listOf(
-                StudyJourneySection(1, "参观流程", blocks = listOf(StudyJourneyContentBlock(StudyJourneyBlockType.PARAGRAPH, "签到后进入压铸车间，现场禁止拍摄"))),
-                StudyJourneySection(2, "装配产线")
+                StudyJourneySection(1, "登楼望洞庭", blocks = listOf(StudyJourneyContentBlock(StudyJourneyBlockType.PARAGRAPH, "在历史现场重读诗词与名篇"))),
+                StudyJourneySection(2, "沿湖行走课堂")
             )
         )
 
         assertEquals("museum-explorer", selectStudyJourneyStyle(catalog, museumMission, attachmentCount = 2).id)
-        assertEquals("industrial-process", selectStudyJourneyStyle(catalog, factoryProcess, attachmentCount = 1).id)
+        assertEquals("textbook-journey", selectStudyJourneyStyle(catalog, textbookJourney, attachmentCount = 2).id)
     }
 
     @Test

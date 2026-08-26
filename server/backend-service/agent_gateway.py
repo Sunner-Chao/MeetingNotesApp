@@ -54,6 +54,10 @@ class AgentInputError(AgentError):
     status_code = 400
 
 
+class AgentConflictError(AgentError):
+    status_code = 409
+
+
 class AgentProviderError(AgentError):
     status_code = 503
 
@@ -110,6 +114,8 @@ class AgentGateway:
         claude_effort: str = "medium",
         codex_auth_env: str = "",
         claude_auth_env: str = "",
+        ai_summary_points: int = 30,
+        ai_chat_points: int = 10,
         runner: Runner | None = None,
     ) -> None:
         self.db_path = Path(db_path)
@@ -144,6 +150,8 @@ class AgentGateway:
             )
         self.codex_auth_env = codex_auth_env.strip()
         self.claude_auth_env = claude_auth_env.strip()
+        self.ai_summary_points = max(1, int(ai_summary_points))
+        self.ai_chat_points = max(1, int(ai_chat_points))
         self.runner = runner or self._run_provider
         self._executor = ThreadPoolExecutor(max_workers=self.max_concurrent, thread_name_prefix="meetingnotes-agent")
         self._queue_lock = threading.Lock()
@@ -201,6 +209,59 @@ class AgentGateway:
                 """
             )
             self._ensure_task_billing_columns(conn)
+            now = int(time.time())
+            if self._table_exists(conn, "account_usage_events") and self._table_exists(
+                conn, "account_usage_balances"
+            ):
+                conn.execute(
+                    """
+                    UPDATE account_usage_events
+                    SET status = 'succeeded',
+                        completed_at = COALESCE(
+                            (
+                                SELECT t.finished_at FROM agent_tasks t
+                                WHERE t.usage_event_id = account_usage_events.id
+                                  AND t.status = 'succeeded'
+                                ORDER BY t.finished_at DESC LIMIT 1
+                            ),
+                            ?
+                        )
+                    WHERE status = 'reserved'
+                      AND id IN (
+                          SELECT usage_event_id FROM agent_tasks
+                          WHERE status = 'succeeded' AND usage_event_id IS NOT NULL
+                      )
+                    """,
+                    (now,),
+                )
+                orphan_events = conn.execute(
+                    """
+                    SELECT DISTINCT e.id, e.user_id, e.quantity, e.unit
+                    FROM agent_tasks t
+                    JOIN account_usage_events e ON e.id = t.usage_event_id
+                    WHERE t.status IN ('queued', 'running', 'failed')
+                      AND e.status = 'reserved' AND e.charged = 1
+                    """
+                ).fetchall()
+                for event in orphan_events:
+                    points = int(event["quantity"] or 0) if event["unit"] == "points" else 0
+                    conn.execute(
+                        """
+                        UPDATE account_usage_balances
+                        SET ai_credits_used = MAX(0, ai_credits_used - 1),
+                            points_used = MAX(0, points_used - ?), updated_at = ?
+                        WHERE user_id = ?
+                        """,
+                        (points, now, event["user_id"]),
+                    )
+                    conn.execute(
+                        """
+                        UPDATE account_usage_events
+                        SET status = 'refunded', charged = 0, completed_at = ?
+                        WHERE id = ? AND status = 'reserved'
+                        """,
+                        (now, event["id"]),
+                    )
             conn.execute(
                 """
                 UPDATE agent_tasks
@@ -209,7 +270,7 @@ class AgentGateway:
                     finished_at = ?
                 WHERE status IN ('queued', 'running')
                 """,
-                (int(time.time()),),
+                (now,),
             )
             if self.bootstrap_token:
                 conn.execute(
@@ -287,7 +348,8 @@ class AgentGateway:
             ):
                 usage = conn.execute(
                     """
-                    SELECT ai_credits_granted, ai_credits_used
+                    SELECT ai_credits_granted, ai_credits_used,
+                           points_granted, points_used
                     FROM account_usage_balances WHERE user_id = ?
                     """,
                     (principal.token_id[5:],),
@@ -305,11 +367,16 @@ class AgentGateway:
         if usage is not None:
             granted = int(usage["ai_credits_granted"])
             used = int(usage["ai_credits_used"])
+            points_granted = int(usage["points_granted"])
+            points_used = int(usage["points_used"])
             payload.update(
                 {
                     "ai_credits_granted": granted,
                     "ai_credits_used": used,
                     "ai_credits_remaining": max(0, granted - used),
+                    "points_granted": points_granted,
+                    "points_used": points_used,
+                    "points_remaining": max(0, points_granted - points_used),
                 }
             )
         return payload
@@ -327,18 +394,30 @@ class AgentGateway:
             ):
                 user_id = principal.token_id[5:]
                 now = int(time.time())
-                conn.execute(
+                balance_state = conn.execute(
                     """
-                    UPDATE account_usage_balances
-                    SET ai_credits_used = 0,
-                        stt_seconds_used = 0,
-                        period_start = ?,
-                        period_end = ?,
-                        updated_at = ?
-                    WHERE user_id = ? AND period_end <= ?
+                    SELECT b.period_end, u.role
+                    FROM account_usage_balances b
+                    JOIN users u ON u.id = b.user_id
+                    WHERE b.user_id = ?
                     """,
-                    (now, now + 30 * 24 * 60 * 60, now, user_id, now),
-                )
+                    (user_id,),
+                ).fetchone()
+                if balance_state is None:
+                    raise AgentQuotaError("积分账户不存在，请先刷新账户状态")
+                if int(balance_state["period_end"]) <= now and balance_state["role"] == "admin":
+                    conn.execute(
+                        """
+                        UPDATE account_usage_balances
+                        SET ai_credits_used = 0, stt_seconds_used = 0,
+                            points_used = 0, period_start = ?,
+                            period_end = ?, updated_at = ?
+                        WHERE user_id = ?
+                        """,
+                        (now, now + 30 * 24 * 60 * 60, now, user_id),
+                    )
+                elif int(balance_state["period_end"]) <= now:
+                    raise AgentQuotaError("积分账户已过期，请先刷新账户状态")
                 operation = str(payload.get("operation") or "")
                 kind = "ai_summary" if operation == "generate_report" else "ai_chat"
                 meeting_id = str(payload.get("meeting_id") or "").strip() or None
@@ -348,17 +427,23 @@ class AgentGateway:
                 if len(usage_key) > 200:
                     raise AgentInputError("usage_key is too long")
                 existing = conn.execute(
-                    "SELECT id, status, charged FROM account_usage_events WHERE idempotency_key = ?",
+                    "SELECT id, user_id, kind, status, charged FROM account_usage_events WHERE idempotency_key = ?",
                     (usage_key,),
                 ).fetchone()
+                if existing is not None and str(existing["user_id"]) != user_id:
+                    raise AgentConflictError("usage_key 已被其他账户使用")
+                if existing is not None and str(existing["kind"]) != kind:
+                    raise AgentConflictError("usage_key 已用于其他计费类型")
                 if existing is not None and existing["status"] == "succeeded":
                     cached = conn.execute(
                         """
-                        SELECT id, result_text FROM agent_tasks
-                        WHERE usage_event_id = ? AND status = 'succeeded'
+                        SELECT t.id, t.result_text FROM agent_tasks t
+                        JOIN account_usage_events e ON e.id = t.usage_event_id
+                        WHERE t.usage_event_id = ? AND e.user_id = ?
+                          AND t.status = 'succeeded'
                         ORDER BY finished_at DESC LIMIT 1
                         """,
-                        (existing["id"],),
+                        (existing["id"], user_id),
                     ).fetchone()
                     if cached is not None:
                         return {
@@ -385,17 +470,25 @@ class AgentGateway:
                     ).fetchone()
                     previous_count = int(previous["count"] or 0)
                     charge = previous_count == 0 or previous_count >= 4
+                points_cost = 0
                 if charge:
+                    points_cost = (
+                        self.ai_summary_points
+                        if kind == "ai_summary"
+                        else self.ai_chat_points
+                    )
                     result = conn.execute(
                         """
                         UPDATE account_usage_balances
-                        SET ai_credits_used = ai_credits_used + 1, updated_at = ?
-                        WHERE user_id = ? AND ai_credits_used < ai_credits_granted
+                        SET ai_credits_used = ai_credits_used + 1,
+                            points_used = points_used + ?, updated_at = ?
+                        WHERE user_id = ? AND period_end > ?
+                          AND points_used + ? <= points_granted
                         """,
-                        (int(time.time()), user_id),
+                        (points_cost, now, user_id, now, points_cost),
                     )
                     if result.rowcount != 1:
-                        raise AgentQuotaError("AI Credits 已用完，请升级套餐后继续")
+                        raise AgentQuotaError("积分不足，请先补充积分")
                 now = int(time.time())
                 if existing is None:
                     event_id = str(uuid.uuid4())
@@ -405,20 +498,39 @@ class AgentGateway:
                             id, idempotency_key, user_id, meeting_id, kind,
                             quantity, unit, status, charged, metadata_json,
                             created_at, completed_at
-                        ) VALUES (?, ?, ?, ?, ?, 1, 'credit', 'reserved', ?, '{}', ?, NULL)
+                        ) VALUES (?, ?, ?, ?, ?, ?, 'points', 'reserved', ?, ?, ?, NULL)
                         """,
-                        (event_id, usage_key, user_id, meeting_id, kind, int(charge), now),
+                        (
+                            event_id,
+                            usage_key,
+                            user_id,
+                            meeting_id,
+                            kind,
+                            points_cost if charge else 0,
+                            int(charge),
+                            json.dumps({"points": points_cost if charge else 0}),
+                            now,
+                        ),
                     )
                 else:
                     event_id = existing["id"]
                     conn.execute(
                         """
                         UPDATE account_usage_events
-                        SET meeting_id = ?, kind = ?, status = 'reserved', charged = ?,
+                        SET meeting_id = ?, kind = ?, quantity = ?, unit = 'points',
+                            status = 'reserved', charged = ?, metadata_json = ?,
                             created_at = ?, completed_at = NULL
                         WHERE id = ?
                         """,
-                        (meeting_id, kind, int(charge), now, event_id),
+                        (
+                            meeting_id,
+                            kind,
+                            points_cost if charge else 0,
+                            int(charge),
+                            json.dumps({"points": points_cost if charge else 0}),
+                            now,
+                            event_id,
+                        ),
                     )
                 return {
                     "mode": "usage",
@@ -437,7 +549,7 @@ class AgentGateway:
                 (principal.token_id, int(time.time())),
             )
             if result.rowcount != 1:
-                raise AgentQuotaError("Agent request quota exhausted")
+                raise AgentQuotaError("智能体请求次数已用完")
             return {"mode": "legacy", "charged": True}
 
     @staticmethod
@@ -469,7 +581,7 @@ class AgentGateway:
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             event = conn.execute(
-                "SELECT status, charged FROM account_usage_events WHERE id = ?",
+                "SELECT status, charged, quantity, unit, metadata_json FROM account_usage_events WHERE id = ?",
                 (reservation["event_id"],),
             ).fetchone()
             if event is None or event["status"] != "reserved":
@@ -484,13 +596,15 @@ class AgentGateway:
                 )
             else:
                 if event["charged"]:
+                    points = int(event["quantity"] or 0) if event["unit"] == "points" else 0
                     conn.execute(
                         """
                         UPDATE account_usage_balances
-                        SET ai_credits_used = MAX(0, ai_credits_used - 1), updated_at = ?
+                        SET ai_credits_used = MAX(0, ai_credits_used - 1),
+                            points_used = MAX(0, points_used - ?), updated_at = ?
                         WHERE user_id = ?
                         """,
-                        (now, reservation["user_id"]),
+                        (points, now, reservation["user_id"]),
                     )
                 conn.execute(
                     """
@@ -861,6 +975,8 @@ class AgentGateway:
                     "- 明确区分主持人、主讲人、圆桌嘉宾和提问者；姓名或身份不明确时写‘待确认’，不得猜测。\n"
                     "- 主题演讲按出场顺序保留主张、论据、数据和案例；圆桌讨论并列呈现共识、分歧、主持追问和开放问题。\n"
                     "- 现场问答保持问题与回答人的对应关系；宣传表达、机构观点和嘉宾判断不得自动写成客观事实。\n"
+                    "- 在论坛信息之后、主体内容之前输出独立的‘参会人员名录’ Markdown 表格，表头必须为‘姓名/称谓 | 单位 | 角色’，供客户端生成照片墙通讯录。\n"
+                    "- 名录只收录原始记录中明确出现的人员；姓名不明确者不加入名录，不输出占位行，不从会议照片推断人物身份，不在后文重复整段名录。\n"
                     "- 没有明确后续承诺时，不强行生成项目任务、责任人或截止时间。\n"
                 )
             elif is_general_template:
@@ -1314,4 +1430,6 @@ def gateway_from_env(db_path: Path) -> AgentGateway:
         claude_effort=os.getenv("AGENT_CLAUDE_EFFORT", "medium"),
         codex_auth_env=os.getenv("AGENT_CODEX_AUTH_ENV", ""),
         claude_auth_env=os.getenv("AGENT_CLAUDE_AUTH_ENV", ""),
+        ai_summary_points=int(os.getenv("ACCOUNT_AI_SUMMARY_POINTS", "30")),
+        ai_chat_points=int(os.getenv("ACCOUNT_AI_CHAT_POINTS", "10")),
     )

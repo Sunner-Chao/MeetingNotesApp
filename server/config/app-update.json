@@ -1,9 +1,9 @@
 {
-  "version_code": 10227,
-  "version_name": "1.2.27",
+  "version_code": 10244,
+  "version_name": "1.2.44",
   "mandatory": false,
-  "release_notes": "实时识别更快恢复：本地 STT 连接异常时在 3 秒窗口内快速重试，仍不可用则自动切换腾讯云兜底；录音全程持续保存，并在录音页清晰显示本地恢复、云端转接和接管状态。",
-  "published_at": "2026-08-19T01:11:21Z",
-  "sha256": "94cdabe4a1a651f13df12677c8ef6fadf259de86d014db5f1081b892ddf1bd99",
-  "apk_filename": "ZhiWuBen-Android-10227.apk"
+  "release_notes": "修复本地 STT 连接与鉴权刷新阻塞问题，AVD 使用本机入口，真机保留本地优先和腾讯云兜底；暂存录音移入右上角更多弹窗，实时转录区域更清晰。",
+  "published_at": "2026-08-26T20:03:41+08:00",
+  "sha256": "a1a0ca51a20c6fdb4e28f38ee371ccd7bd2e226172f908008050de77b949839b",
+  "apk_filename": "ZhiWuBen-Android-10244.apk"
 }

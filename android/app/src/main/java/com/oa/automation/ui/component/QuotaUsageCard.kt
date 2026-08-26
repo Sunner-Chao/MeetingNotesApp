@@ -30,9 +30,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.oa.automation.infrastructure.llm.AgentQuota
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import com.oa.automation.ui.formatBeijingTime
 
 @Composable
 fun QuotaUsageCard(
@@ -70,9 +68,9 @@ fun QuotaUsageCard(
                         tint = MaterialTheme.colorScheme.primary
                     )
                     Column {
-                        Text("AI 处理额度", style = MaterialTheme.typography.titleMedium)
+                        Text("积分账户", style = MaterialTheme.typography.titleMedium)
                         Text(
-                            text = quota?.label ?: if (tokenConfigured) "已绑定访问令牌" else "未绑定商业令牌",
+                            text = quota?.label ?: if (tokenConfigured) "已绑定访问令牌" else "未绑定服务",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -83,7 +81,7 @@ fun QuotaUsageCard(
                         if (isLoading) {
                             CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                         } else {
-                            Icon(Icons.Default.Refresh, contentDescription = "刷新额度")
+                            Icon(Icons.Default.Refresh, contentDescription = "刷新积分")
                         }
                     }
                 }
@@ -93,7 +91,7 @@ fun QuotaUsageCard(
                 quota != null -> QuotaDetails(quota)
                 !tokenConfigured -> {
                     Text(
-                        text = "绑定服务端发放的访问令牌后，可查看套餐额度和 Agent 权限。",
+                        text = "绑定服务端发放的访问令牌后，可查看积分和智能体权限。",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -125,19 +123,19 @@ private fun QuotaDetails(quota: AgentQuota) {
     ) {
         Column {
             Text(
-                text = quota.aiCreditsRemaining.toString(),
+                text = quota.pointsRemaining.toString(),
                 style = MaterialTheme.typography.headlineMedium,
                 color = MaterialTheme.colorScheme.primary,
                 fontWeight = FontWeight.Bold
             )
             Text(
-                text = "AI Credits",
+                text = "积分",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
         Text(
-            text = "已用 ${quota.requestsUsed} / ${quota.requestLimit}",
+            text = "已用 ${quota.pointsUsed} / ${quota.pointsGranted} 分",
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -147,7 +145,7 @@ private fun QuotaDetails(quota: AgentQuota) {
         modifier = Modifier
             .fillMaxWidth()
             .height(6.dp),
-        color = if (quota.aiCreditsRemaining > 0) {
+        color = if (quota.pointsRemaining > 0) {
             MaterialTheme.colorScheme.primary
         } else {
             MaterialTheme.colorScheme.error
@@ -174,12 +172,10 @@ private fun QuotaDetails(quota: AgentQuota) {
 }
 
 private fun providerLabel(provider: String): String = when (provider) {
-    "claude-cli" -> "智能体"
-    "codex-cli" -> "小Woo"
+    "claude-cli" -> "智能体小智"
+    "codex-cli" -> "智能体小悟"
     else -> provider
 }
 
-private fun formatExpiry(epochSeconds: Long): String = SimpleDateFormat(
-    "yyyy-MM-dd",
-    Locale.SIMPLIFIED_CHINESE
-).format(Date(epochSeconds * 1000))
+private fun formatExpiry(epochSeconds: Long): String =
+    formatBeijingTime(epochSeconds * 1000, "yyyy-MM-dd")

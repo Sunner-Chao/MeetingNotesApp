@@ -3,6 +3,8 @@ package com.oa.automation.infrastructure.audio
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.media.audiofx.AutomaticGainControl
+import android.media.audiofx.NoiseSuppressor
 import android.util.Log
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -22,6 +24,8 @@ class AudioRecorder(private val context: android.content.Context) {
     private var recordingThread: Thread? = null
     private var chunkListener: ((File) -> Unit)? = null
     private var pcmListener: ((ByteArray, Int) -> Unit)? = null
+    private var noiseSuppressor: NoiseSuppressor? = null
+    private var automaticGainControl: AutomaticGainControl? = null
 
     @Volatile
     private var isRecording = false
@@ -70,7 +74,7 @@ class AudioRecorder(private val context: android.content.Context) {
     /**
      * Start recording audio and return the final WAV file that will be completed on stop().
      */
-    fun start(): File? {
+    fun start(enableAudioEnhancement: Boolean = true): File? {
         // If prefs says "recording" but the AudioRecord instance is gone (app killed/restored),
         // recover by resetting the stale flag so a fresh recording can start.
         if (isRecording && audioRecord == null) {
@@ -98,29 +102,30 @@ class AudioRecorder(private val context: android.content.Context) {
 
             val bufferSize = max(minBufferSize, 4096)
 
-            outputFile = File.createTempFile("oa_recording_", ".wav", context.cacheDir)
+            // The final WAV is referenced by the meeting row and must survive
+            // cache eviction after a study journey is completed.
+            val recordingsDirectory = File(context.filesDir, "recordings").apply { mkdirs() }
+            outputFile = File.createTempFile("oa_recording_", ".wav", recordingsDirectory)
             outputStream = FileOutputStream(outputFile).apply {
                 write(ByteArray(WAV_HEADER_SIZE))
                 flush()
             }
 
-            audioRecord = AudioRecord.Builder()
-                .setAudioSource(MediaRecorder.AudioSource.MIC)
-                .setAudioFormat(
-                    AudioFormat.Builder()
-                        .setSampleRate(SAMPLE_RATE)
-                        .setEncoding(AUDIO_FORMAT)
-                        .setChannelMask(CHANNEL_CONFIG)
-                        .build()
-                )
-                .setBufferSizeInBytes(bufferSize)
-                .build()
-
-            if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
+            val recorderWithSource = createInitializedRecorder(
+                bufferSize = bufferSize,
+                enableAudioEnhancement = enableAudioEnhancement
+            )
+            if (recorderWithSource == null) {
                 Log.e(TAG, "AudioRecord failed to initialize")
                 releaseRecorder()
                 return null
             }
+            audioRecord = recorderWithSource.first
+            attachAudioEffects(
+                recorder = recorderWithSource.first,
+                audioSource = recorderWithSource.second,
+                enabled = enableAudioEnhancement
+            )
 
             synchronized(chunkLock) {
                 chunkBuffer.reset()
@@ -176,6 +181,7 @@ class AudioRecorder(private val context: android.content.Context) {
         } catch (e: IllegalStateException) {
             Log.w(TAG, "AudioRecord stop failed", e)
         } finally {
+            releaseAudioEffects()
             audioRecord?.release()
             audioRecord = null
         }
@@ -250,6 +256,7 @@ class AudioRecorder(private val context: android.content.Context) {
             audioRecord?.stop()
         } catch (_: Exception) {
         } finally {
+            releaseAudioEffects()
             try {
                 audioRecord?.release()
             } catch (_: Exception) {
@@ -315,6 +322,13 @@ class AudioRecorder(private val context: android.content.Context) {
                 continue
             }
 
+            // pause() stops AudioRecord while a read may still be in flight.
+            // Discard that tail frame so pausing never appends another PCM
+            // buffer to the persisted WAV or the streaming STT route.
+            if (isPaused || !isRecording) {
+                continue
+            }
+
             synchronized(fileLock) {
                 outputStream?.write(buffer, 0, readBytes)
                 totalAudioBytes += readBytes
@@ -372,10 +386,78 @@ class AudioRecorder(private val context: android.content.Context) {
         }
     }
 
+    private fun createInitializedRecorder(
+        bufferSize: Int,
+        enableAudioEnhancement: Boolean
+    ): Pair<AudioRecord, Int>? {
+        for (audioSource in audioSourceCandidates(enableAudioEnhancement)) {
+            val candidate = runCatching {
+                AudioRecord.Builder()
+                    .setAudioSource(audioSource)
+                    .setAudioFormat(
+                        AudioFormat.Builder()
+                            .setSampleRate(SAMPLE_RATE)
+                            .setEncoding(AUDIO_FORMAT)
+                            .setChannelMask(CHANNEL_CONFIG)
+                            .build()
+                    )
+                    .setBufferSizeInBytes(bufferSize)
+                    .build()
+            }.onFailure { error ->
+                Log.w(TAG, "Audio source $audioSource is unavailable", error)
+            }.getOrNull() ?: continue
+
+            if (candidate.state == AudioRecord.STATE_INITIALIZED) {
+                Log.i(
+                    TAG,
+                    "Audio capture ready: source=$audioSource, enhancement=$enableAudioEnhancement"
+                )
+                return candidate to audioSource
+            }
+            candidate.release()
+        }
+        return null
+    }
+
+    private fun attachAudioEffects(
+        recorder: AudioRecord,
+        audioSource: Int,
+        enabled: Boolean
+    ) {
+        releaseAudioEffects()
+        if (!enabled) return
+
+        if (NoiseSuppressor.isAvailable()) {
+            noiseSuppressor = runCatching {
+                NoiseSuppressor.create(recorder.audioSessionId)?.apply { setEnabled(true) }
+            }.onFailure { error ->
+                Log.w(TAG, "Noise suppressor could not be enabled", error)
+            }.getOrNull()
+        }
+
+        // VOICE_RECOGNITION usually already has device-level gain tuning. Applying
+        // another AGC stage can pump background noise, so AGC is limited to MIC fallback.
+        if (audioSource == MediaRecorder.AudioSource.MIC && AutomaticGainControl.isAvailable()) {
+            automaticGainControl = runCatching {
+                AutomaticGainControl.create(recorder.audioSessionId)?.apply { setEnabled(true) }
+            }.onFailure { error ->
+                Log.w(TAG, "Automatic gain control could not be enabled", error)
+            }.getOrNull()
+        }
+    }
+
+    private fun releaseAudioEffects() {
+        runCatching { noiseSuppressor?.release() }
+        runCatching { automaticGainControl?.release() }
+        noiseSuppressor = null
+        automaticGainControl = null
+    }
+
     private fun releaseRecorder() {
         isRecording = false
         isPaused = false
         prefs.edit().putBoolean(PREFS_RECORDING_KEY, false).apply()
+        releaseAudioEffects()
         try {
             audioRecord?.release()
         } catch (_: Exception) {
@@ -421,3 +503,13 @@ class AudioRecorder(private val context: android.content.Context) {
         }
     }
 }
+
+internal fun audioSourceCandidates(enableAudioEnhancement: Boolean): List<Int> =
+    if (enableAudioEnhancement) {
+        listOf(
+            MediaRecorder.AudioSource.VOICE_RECOGNITION,
+            MediaRecorder.AudioSource.MIC
+        )
+    } else {
+        listOf(MediaRecorder.AudioSource.MIC)
+    }

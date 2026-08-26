@@ -6,6 +6,7 @@ import com.oa.automation.domain.model.ProcessingProgress
 import com.oa.automation.domain.repository.MeetingRepository
 import com.oa.automation.infrastructure.audio.AudioRecorder
 import com.oa.automation.infrastructure.stt.SpeechToTextEngine
+import com.oa.automation.infrastructure.stt.buildSttContextHint
 import com.oa.automation.locale.SimplifiedChineseText
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
@@ -50,6 +51,11 @@ class StopRecordingUseCase(
             onProgress(ProcessingProgress(12, "读取转录配置"))
             val sttConfig = configDataStore.appConfigFlow.first().sttConfig
             val sttEngine = SpeechToTextEngine.fromConfig(sttConfig)
+            val meeting = meetingRepository.findById(meetingId).getOrNull()
+            val contextHint = buildSttContextHint(
+                meetingTitle = meeting?.title,
+                templateName = meeting?.selectedTemplateName
+            )
 
             // Transcribe audio
             val sttProgress: (ProcessingProgress) -> Unit = onProgress
@@ -62,7 +68,8 @@ class StopRecordingUseCase(
                     audioFile = file,
                     onProgress = sttProgress,
                     meetingId = meetingId,
-                    archiveKey = streamSessionId?.takeIf { it.isNotBlank() } ?: transcriptId
+                    archiveKey = streamSessionId?.takeIf { it.isNotBlank() } ?: transcriptId,
+                    contextHint = contextHint
                 )
             onProgress(ProcessingProgress(88, "整理识别文本"))
             val transcriptText = transcriptionResult

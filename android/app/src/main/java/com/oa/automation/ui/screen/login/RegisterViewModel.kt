@@ -16,7 +16,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 data class RegisterUiState(
-    val mode: AuthEntryMode = AuthEntryMode.PHONE,
+    val mode: AuthEntryMode = AuthEntryMode.EMAIL,
     val identifier: String = "",
     val verificationCode: String = "",
     val username: String = "",
@@ -79,6 +79,10 @@ class RegisterViewModel(
 
     fun requestCode() {
         val state = _uiState.value
+        if (state.mode == AuthEntryMode.PHONE) {
+            _uiState.update { it.copy(errorMessage = "手机号注册暂未开放，请使用邮箱注册") }
+            return
+        }
         val channel = state.mode.channel ?: return
         val identifier = state.identifier.trim()
         validationError(channel, identifier)?.let { message ->
@@ -88,7 +92,7 @@ class RegisterViewModel(
         viewModelScope.launch {
             _uiState.update { it.copy(isSendingCode = true, errorMessage = null) }
             val endpoint = configDataStore.accountEndpointFlow.first()
-            accountApiService.requestAuthCode(endpoint, channel, identifier).fold(
+            accountApiService.requestAuthCode(endpoint, channel, identifier, purpose = "register").fold(
                 onSuccess = { result ->
                     _uiState.update {
                         it.copy(
@@ -118,8 +122,8 @@ class RegisterViewModel(
 
     fun register() {
         val state = _uiState.value
-        if (state.mode == AuthEntryMode.PASSWORD) {
-            registerWithPassword(state)
+        if (state.mode == AuthEntryMode.PHONE) {
+            _uiState.update { it.copy(errorMessage = "手机号注册暂未开放，请使用邮箱注册") }
             return
         }
         val channel = state.mode.channel ?: return
@@ -132,23 +136,10 @@ class RegisterViewModel(
             _uiState.update { it.copy(errorMessage = "请输入 6 位验证码") }
             return
         }
-        viewModelScope.launch {
-            _uiState.update { it.copy(isLoading = true, errorMessage = null) }
-            val endpoint = configDataStore.accountEndpointFlow.first()
-            accountApiService.verifyAuthCode(
-                endpoint,
-                channel,
-                identifier,
-                state.verificationCode
-            ).fold(::completeRegistration, ::showError)
-        }
-    }
-
-    private fun registerWithPassword(state: RegisterUiState) {
         val username = state.username.trim()
         when {
-            username.length !in 3..32 -> {
-                _uiState.update { it.copy(errorMessage = "用户名长度必须为 3-32 个字符") }
+            username.isBlank() -> {
+                _uiState.update { it.copy(errorMessage = "请输入用户名") }
                 return
             }
             state.password.length !in 8..128 -> {
@@ -163,8 +154,14 @@ class RegisterViewModel(
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, errorMessage = null) }
             val endpoint = configDataStore.accountEndpointFlow.first()
-            accountApiService.register(endpoint, username, state.password)
-                .fold(::completeRegistration, ::showError)
+            accountApiService.registerWithCode(
+                endpoint,
+                channel,
+                identifier,
+                state.verificationCode,
+                username,
+                state.password
+            ).fold(::completeRegistration, ::showError)
         }
     }
 

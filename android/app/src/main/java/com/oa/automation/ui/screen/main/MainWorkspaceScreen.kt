@@ -56,6 +56,7 @@ fun MainWorkspaceScreen(
     onNavigateToNotifications: () -> Unit,
     onNavigateToAccountProfile: () -> Unit,
     onNavigateToAccountQuota: () -> Unit,
+    onNavigateToAccountPointsPlans: () -> Unit,
     onNavigateToAccountUsers: () -> Unit,
     onNavigateToCommunityModeration: () -> Unit,
     onNavigateToCommunityPost: (String) -> Unit,
@@ -105,6 +106,7 @@ fun MainWorkspaceScreen(
                         MainDestination.ACCOUNT -> AccountScreen(
                             onNavigateToProfile = onNavigateToAccountProfile,
                             onNavigateToQuotaDetails = onNavigateToAccountQuota,
+                            onNavigateToPointsPlans = onNavigateToAccountPointsPlans,
                             onNavigateToUserManagement = onNavigateToAccountUsers,
                             onNavigateToCommunityModeration = onNavigateToCommunityModeration,
                             onNavigateToSettings = onNavigateToSettings,
@@ -135,7 +137,7 @@ private fun MainNavigationBar(
             selected = selected == MainDestination.HOME,
             onClick = { onSelect(MainDestination.HOME) },
             icon = { MeetingNavigationIcon(selected = selected == MainDestination.HOME) },
-            label = { Text("会议") },
+            label = { Text("记录") },
             colors = NavigationBarItemDefaults.colors(
                 selectedIconColor = selectedTint,
                 selectedTextColor = selectedTint,
@@ -154,7 +156,7 @@ private fun MainNavigationBar(
                     modifier = Modifier.size(30.dp)
                 )
             },
-            label = { Text("研学") },
+            label = { Text("社区") },
             colors = NavigationBarItemDefaults.colors(
                 selectedIconColor = selectedTint,
                 selectedTextColor = selectedTint,

@@ -7,6 +7,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import com.oa.automation.ui.screen.recording.isActiveRecordingSessionForMeeting
+import com.oa.automation.ui.screen.home.blocksNewRecording
 
 class RecordingSessionStateTest {
     @Test
@@ -60,6 +61,24 @@ class RecordingSessionStateTest {
         )
 
         assertEquals(47L, state.durationSecondsAt(999_999L))
+    }
+
+    @Test
+    fun `paused session releases the new recording lock`() {
+        assertFalse(
+            RecordingSessionState(
+                    meetingId = "paused-meeting",
+                    isRecording = true,
+                    isPaused = true
+                ).blocksNewRecording()
+        )
+    }
+
+    @Test
+    fun `unpaused and transitional sessions still block a new recording`() {
+        assertTrue(RecordingSessionState(isRecording = true).blocksNewRecording())
+        assertTrue(RecordingSessionState(isStarting = true).blocksNewRecording())
+        assertTrue(RecordingSessionState(isStopping = true).blocksNewRecording())
     }
 
     @Test

@@ -1,0 +1,31 @@
+{
+  "schema_version": "1.0",
+  "assets": [
+    {
+      "id": "community-featured-carousel-v1",
+      "name": "Community featured story carousel",
+      "category": "community-discovery",
+      "status": "approved",
+      "purpose": "Give a media-rich community first screen a compact, readable story window without adding a second page.",
+      "reusable_rule": "Use a stable 214dp image window, at most seven pages, a 4.2 second interval, manual swipe, and a caption bound only to existing content metadata.",
+      "implementation_source": "android/app/src/main/java/com/oa/automation/ui/screen/community/StudyCommunityScreen.kt:CommunityFeaturedCarousel",
+      "provenance": "Original ZhiWuBen Compose composition informed by structural research; no competitor asset is shipped.",
+      "rights": "project-original UI; research inputs are structure-only",
+      "validation": "community-sample-live-bridge review score 15/16; focused unit tests; assembleDebug passed 2026-08-18",
+      "user_approval_ref": "owner-brief-community-mock-20260818 / trusted-owner"
+    },
+    {
+      "id": "community-sample-live-bridge-v1",
+      "name": "Community replaceable sample bridge",
+      "category": "community-data-boundary",
+      "status": "approved",
+      "purpose": "Keep a new community discover screen useful before server content exists while preserving a clear real-data replacement boundary.",
+      "reusable_rule": "Initialize read-only sample state, keep it on empty or failed discover responses, and clear sample posts and collections as soon as a non-empty real response arrives.",
+      "implementation_source": "android/app/src/main/java/com/oa/automation/ui/screen/community/CommunityViewModel.kt and MockStudyCommunityData.kt",
+      "provenance": "Original ZhiWuBen state and fixture pattern; local photos are separately licensed and attributed.",
+      "rights": "project-original behavior; sample photos remain governed by per-file Wikimedia Commons records",
+      "validation": "MockStudyCommunityDataTest, community fixtures, De-Sloppify review score 15/16, assembleDebug passed 2026-08-18",
+      "user_approval_ref": "owner-brief-community-mock-20260818 / trusted-owner"
+    }
+  ]
+}

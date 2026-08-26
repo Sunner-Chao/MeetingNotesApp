@@ -41,19 +41,25 @@ powershell -Command "Start-Sleep -Seconds 1"
 set "LOG_SUFFIX=%RANDOM%%RANDOM%"
 set "STT_OUT_LOG=%~dp0logs\stt_%LOG_SUFFIX%.log"
 set "STT_ERR_LOG=%~dp0logs\stt_%LOG_SUFFIX%.err.log"
+set "STT_PID_FILE=%~dp0logs\stt_%LOG_SUFFIX%.pid"
 
 echo [STT] Starting STT server in background...
 echo [STT] Output log: %STT_OUT_LOG%
 echo [STT] Error log: %STT_ERR_LOG%
 echo [STT] Model will be saved to: %STT_MODEL_ROOT%
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:STT_MODEL_ROOT='%STT_MODEL_ROOT%'; $env:STT_ENGINE='%STT_ENGINE%'; $env:STT_LOG_PATH='%STT_OUT_LOG%'; $env:STT_ERROR_LOG_PATH='%STT_ERR_LOG%'; Start-Process -FilePath '%PYTHON_EXE%' -ArgumentList @('-u','stt_server.py','--engine','%STT_ENGINE%','--model','%STT_MODEL%','--port','%STT_PORT%') -WorkingDirectory '%~dp0' -WindowStyle Hidden -RedirectStandardOutput '%STT_OUT_LOG%' -RedirectStandardError '%STT_ERR_LOG%'"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:STT_MODEL_ROOT='%STT_MODEL_ROOT%'; $env:STT_ENGINE='%STT_ENGINE%'; $env:STT_LOG_PATH='%STT_OUT_LOG%'; $env:STT_ERROR_LOG_PATH='%STT_ERR_LOG%'; $process = Start-Process -FilePath '%PYTHON_EXE%' -ArgumentList @('-u','stt_server.py','--engine','%STT_ENGINE%','--model','%STT_MODEL%','--port','%STT_PORT%') -WorkingDirectory '%~dp0' -WindowStyle Hidden -RedirectStandardOutput '%STT_OUT_LOG%' -RedirectStandardError '%STT_ERR_LOG%' -PassThru; Set-Content -LiteralPath '%STT_PID_FILE%' -Value $process.Id -Encoding ascii"
 
-echo [STT] Waiting for server to start...
-powershell -Command "Start-Sleep -Seconds 5"
-
-echo [STT] Checking health...
-powershell -NoProfile -Command "try { $h=Invoke-RestMethod -Uri http://127.0.0.1:%STT_PORT%/health -TimeoutSec 10; Write-Host '[STT] Health OK - Engine:' $h.engine 'Model:' $h.model } catch { Write-Host '[STT] Not ready yet, check logs above.' }"
+echo [STT] Waiting for model and health endpoint...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0wait-windows-local-health.ps1" -Uri "http://127.0.0.1:%STT_PORT%/health" -TimeoutSeconds 180
+if errorlevel 1 (
+    echo [ERROR] STT service did not become healthy. Check the logs above.
+    if exist "%STT_PID_FILE%" (
+        set /p STT_STARTED_PID=<"%STT_PID_FILE%"
+        if defined STT_STARTED_PID taskkill /PID !STT_STARTED_PID! /T /F >nul 2>&1
+    )
+    exit /b 1
+)
 
 echo.
 echo [STT] Done. STT Service: http://localhost:%STT_PORT%

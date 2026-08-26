@@ -1,9 +1,15 @@
 package com.oa.automation.domain.model
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class STTConfigRoutingTest {
+    @Test
+    fun `audio enhancement is enabled by default`() {
+        assertTrue(STTConfig.DEFAULT.audioEnhancementEnabled)
+    }
+
     @Test
     fun `local and Tencent engines resolve independent service roots`() {
         val config = STTConfig(

@@ -14,7 +14,7 @@ BACKEND_DIR = Path(__file__).resolve().parents[1] / "backend-service"
 sys.path.insert(0, str(BACKEND_DIR))
 
 import web_backend as backend
-from account_service import AccountService
+from account_service import AccountDeliveryUnavailableError, AccountService
 from agent_gateway import AgentGateway
 
 
@@ -32,6 +32,7 @@ class AccountRouteTests(unittest.TestCase):
                         "name": "Route Plan",
                         "price_cents": 100,
                         "quota_amount": 20,
+                        "points": 2_000,
                         "construction_logs_unlocked": True,
                     }
                 ]
@@ -62,13 +63,42 @@ class AccountRouteTests(unittest.TestCase):
         backend.ACCOUNT_SERVICE = self.previous_accounts
         self.temp_dir.cleanup()
 
+    def register_with_email(self, client: TestClient, username: str):
+        identifier = f"{username}@example.com"
+        requested = client.post(
+            "/api/auth/code/request",
+            json={
+                "channel": "email",
+                "identifier": identifier,
+                "purpose": "register",
+            },
+        )
+        self.assertEqual(requested.status_code, 200, requested.text)
+        registered = client.post(
+            "/api/auth/register/verify",
+            json={
+                "channel": "email",
+                "identifier": identifier,
+                "code": requested.json()["verification_code"],
+                "username": username,
+                "password": "strong-password",
+            },
+        )
+        self.assertEqual(registered.status_code, 200, registered.text)
+        return registered
+
     def test_register_order_and_admin_approval_flow(self) -> None:
         with TestClient(backend.app) as client:
-            registered = client.post(
+            legacy_registration = client.post(
                 "/api/auth/register",
-                json={"username": "route_user", "password": "strong-password"},
+                json={"username": "legacy_route_user", "password": "strong-password"},
             )
-            self.assertEqual(registered.status_code, 200)
+            self.assertEqual(legacy_registration.status_code, 400)
+            self.assertEqual(
+                legacy_registration.json()["detail"],
+                "注册账号必须先完成邮箱验证，请使用邮箱注册",
+            )
+            registered = self.register_with_email(client, "route_user")
             user_token = registered.json()["access_token"]
             self.assertTrue(registered.json()["stt_access_token"].startswith("mn_stt_user_v1."))
             user_headers = {"Authorization": f"Bearer {user_token}"}
@@ -76,8 +106,9 @@ class AccountRouteTests(unittest.TestCase):
             self.assertEqual(client.get("/api/account/me").status_code, 401)
             free_profile = client.get("/api/account/me", headers=user_headers).json()
             self.assertFalse(free_profile["vip_enabled"])
-            self.assertEqual(free_profile["plan_name"], "Free")
+            self.assertEqual(free_profile["plan_name"], "免费账户")
             self.assertEqual(free_profile["quota"]["requests_remaining"], 10)
+            self.assertEqual(free_profile["usage"]["points_remaining"], 1_000)
             updated_profile = client.patch(
                 "/api/account/me",
                 headers=user_headers,
@@ -90,7 +121,7 @@ class AccountRouteTests(unittest.TestCase):
             self.assertEqual(updated_profile.json()["display_name"], "现场负责人")
             refreshed = client.get("/api/account/session", headers=user_headers)
             self.assertEqual(refreshed.status_code, 200)
-            self.assertEqual(refreshed.json()["user"]["plan_name"], "Free")
+            self.assertEqual(refreshed.json()["user"]["plan_name"], "免费账户")
             self.assertEqual(refreshed.json()["user"]["display_name"], "现场负责人")
             self.assertTrue(refreshed.json()["stt_access_token"].startswith("mn_stt_user_v1."))
             order = client.post(
@@ -115,6 +146,7 @@ class AccountRouteTests(unittest.TestCase):
             self.assertTrue(profile["construction_logs_unlocked"])
             self.assertEqual(profile["plan_code"], "route_plan")
             self.assertEqual(profile["quota"]["requests_remaining"], 30)
+            self.assertEqual(profile["usage"]["points_remaining"], 2_000)
 
             deleted = client.delete(
                 f"/api/admin/accounts/users/{profile['id']}",
@@ -130,32 +162,23 @@ class AccountRouteTests(unittest.TestCase):
                 "/api/auth/code/request",
                 json={"channel": "phone", "identifier": "13800138000"},
             )
-            self.assertEqual(requested.status_code, 200)
-            verified = client.post(
-                "/api/auth/code/verify",
-                json={
-                    "channel": "phone",
-                    "identifier": "+8613800138000",
-                    "code": requested.json()["verification_code"],
-                },
-            )
-            self.assertEqual(verified.status_code, 200)
-            headers = {"Authorization": f"Bearer {verified.json()['access_token']}"}
-            profile = client.get("/api/account/me", headers=headers).json()
-            self.assertIn("phone", profile["identity_providers"])
-            self.assertEqual(profile["usage"]["included_minutes"], 120)
-            self.assertEqual(profile["usage"]["ai_credits_remaining"], 5)
+            self.assertEqual(requested.status_code, 503)
+            self.assertIn("手机号验证码服务暂未开放", requested.json()["detail"])
 
             providers = client.get("/api/auth/providers").json()
             self.assertEqual([item["id"] for item in providers], ["wechat", "feishu"])
             self.assertEqual(providers[1]["tier"], "team")
 
+    def test_production_sender_rejects_phone_when_sms_is_not_open(self) -> None:
+        with self.assertRaisesRegex(
+            AccountDeliveryUnavailableError,
+            "手机号验证码服务暂未开放",
+        ):
+            backend.send_account_auth_code("phone", "13800138000", "123456")
+
     def test_password_reset_and_identity_binding_routes_use_scoped_codes(self) -> None:
         with TestClient(backend.app) as client:
-            registered = client.post(
-                "/api/auth/register",
-                json={"username": "binding_user", "password": "strong-password"},
-            ).json()
+            registered = self.register_with_email(client, "binding_user").json()
             headers = {"Authorization": f"Bearer {registered['access_token']}"}
             requested = client.post(
                 "/api/auth/code/request",
@@ -205,14 +228,8 @@ class AccountRouteTests(unittest.TestCase):
 
     def test_account_meetings_are_isolated_synced_and_tombstoned(self) -> None:
         with TestClient(backend.app) as client:
-            first = client.post(
-                "/api/auth/register",
-                json={"username": "meeting_owner", "password": "strong-password"},
-            ).json()
-            second = client.post(
-                "/api/auth/register",
-                json={"username": "other_owner", "password": "strong-password"},
-            ).json()
+            first = self.register_with_email(client, "meeting_owner").json()
+            second = self.register_with_email(client, "other_owner").json()
             first_headers = {"Authorization": f"Bearer {first['access_token']}"}
             second_headers = {"Authorization": f"Bearer {second['access_token']}"}
             meeting_id = "pwa-meeting-01"

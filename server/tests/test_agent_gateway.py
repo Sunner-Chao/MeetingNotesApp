@@ -71,6 +71,62 @@ class AgentGatewayTest(unittest.TestCase):
         self.assertIn("restarted", task["error"])
         self.assertIsNotNone(task["finished_at"])
 
+    def test_initialize_refunds_reserved_points_for_orphaned_tasks(self):
+        account_id = "restart-refund-user"
+        with self.gateway._connect() as conn:
+            conn.executescript(
+                """
+                CREATE TABLE users (
+                    id TEXT PRIMARY KEY,
+                    role TEXT NOT NULL
+                );
+                CREATE TABLE account_usage_balances (
+                    user_id TEXT PRIMARY KEY,
+                    ai_credits_used INTEGER NOT NULL DEFAULT 0,
+                    points_used INTEGER NOT NULL DEFAULT 0,
+                    updated_at INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE TABLE account_usage_events (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    quantity INTEGER NOT NULL,
+                    unit TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    charged INTEGER NOT NULL DEFAULT 0,
+                    completed_at INTEGER
+                );
+                """
+            )
+            conn.execute("INSERT INTO users (id, role) VALUES (?, 'user')", (account_id,))
+            conn.execute(
+                "INSERT INTO account_usage_balances (user_id, ai_credits_used, points_used) VALUES (?, 1, 30)",
+                (account_id,),
+            )
+            conn.execute(
+                "INSERT INTO account_usage_events (id, user_id, quantity, unit, status, charged) VALUES (?, ?, 30, 'points', 'reserved', 1)",
+                ("restart-event", account_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO agent_tasks (
+                    id, token_id, provider, operation, status, usage_event_id, charged, created_at
+                ) VALUES ('restart-task', 'bootstrap', 'codex-cli', 'chat', 'running', 'restart-event', 1, 1)
+                """
+            )
+
+        self.gateway.initialize()
+
+        with self.gateway._connect() as conn:
+            balance = conn.execute(
+                "SELECT ai_credits_used, points_used FROM account_usage_balances WHERE user_id = ?",
+                (account_id,),
+            ).fetchone()
+            event = conn.execute(
+                "SELECT status, charged FROM account_usage_events WHERE id = 'restart-event'"
+            ).fetchone()
+        self.assertEqual((balance["ai_credits_used"], balance["points_used"]), (0, 0))
+        self.assertEqual((event["status"], event["charged"]), ("refunded", 0))
+
     def test_authentication_and_quota_are_enforced(self):
         with self.assertRaises(AgentAuthError):
             self.gateway.authenticate("Bearer wrong")
@@ -184,6 +240,22 @@ class AgentGatewayTest(unittest.TestCase):
         self.assertIn("田野观察板", prompt)
         self.assertIn("### 整体观察", prompt)
         self.assertNotIn("各不超过 4 行", prompt)
+
+    def test_forum_template_prompt_requests_verified_photo_wall_roster(self):
+        prompt = self.gateway._build_prompt(
+            {
+                "operation": "generate_report",
+                "templateName": "论坛会议",
+                "templateContent": "论坛信息、主题演讲、圆桌讨论与现场问答",
+                "transcript": "主持人周岚邀请城市实验室的林老师作主题演讲。",
+            }
+        )
+
+        self.assertIn("参会人员名录", prompt)
+        self.assertIn("姓名/称谓 | 单位 | 角色", prompt)
+        self.assertIn("照片墙通讯录", prompt)
+        self.assertIn("不从会议照片推断人物身份", prompt)
+        self.assertIn("不输出占位行", prompt)
 
     def test_attachment_manifest_ignores_invalid_location_values(self):
         prompt = self.gateway._format_attachment_manifest(

@@ -11,8 +11,8 @@ import com.oa.automation.BuildConfig
  * - P2: Zhiwu enhanced cloud model
  */
 enum class STTEngineType(val displayName: String, val defaultModel: String) {
-    FASTER_WHISPER("智悟本地 Faster-Whisper", "large-v3-turbo"),
-    TENCENT_HYBRID("智悟增强云模型", "tencent-standard")
+    FASTER_WHISPER("本地智悟通用模型", "large-v3-turbo"),
+    TENCENT_HYBRID("云端智悟增强模型", "tencent-standard")
 }
 
 enum class STTLanguage(
@@ -31,13 +31,13 @@ enum class TencentAsrTier(
     val isPaid: Boolean
 ) {
     STANDARD_FREE(
-        displayName = "智悟增强云模型 · 标准",
+        displayName = "云端智悟增强模型 · 标准",
         cloudModel = "tencent-standard",
         streamProvider = "tencent-realtime-standard",
         isPaid = false
     ),
     PRECISION_PAID(
-        displayName = "智悟增强云模型 · 臻享",
+        displayName = "云端智悟增强模型 · 臻享",
         cloudModel = "tencent-precision",
         streamProvider = "tencent-realtime-precision",
         isPaid = true
@@ -67,7 +67,10 @@ data class STTConfig(
     val cloudEndpoint: String? = DEFAULT_CLOUD_ENDPOINT,
     val cloudApiKey: String? = null,
     val cloudModel: String = DEFAULT_CLOUD_MODEL,
-    val tencentAsrTier: TencentAsrTier = TencentAsrTier.STANDARD_FREE
+    val tencentAsrTier: TencentAsrTier = TencentAsrTier.STANDARD_FREE,
+    val audioEnhancementEnabled: Boolean = true,
+    /** Run speaker attribution during final transcription when supported. */
+    val speakerDiarizationEnabled: Boolean = true
 ) {
     companion object {
         const val DEFAULT_LOCAL_ENDPOINT = BuildConfig.DEFAULT_STT_ENDPOINT

@@ -4,6 +4,8 @@ import com.oa.automation.domain.model.Report
 import com.oa.automation.domain.model.ProcessingProgress
 import com.oa.automation.domain.model.Task
 import com.oa.automation.domain.model.canonicalMeetingTranscripts
+import com.oa.automation.domain.model.extractForumParticipants
+import com.oa.automation.domain.model.isForumMeetingTemplate
 import com.oa.automation.domain.repository.MeetingRepository
 import com.oa.automation.domain.repository.ReportRepository
 import com.oa.automation.infrastructure.llm.LLMEngine
@@ -72,6 +74,16 @@ class GenerateReportUseCase(
                 tasks = tasks,
                 decisions = reportData.decisions,
                 actionItems = reportData.actionItems,
+                participants = if (reportData.templateName.isForumMeetingTemplate()) {
+                    reportData.participants.ifEmpty {
+                        extractForumParticipants(
+                            rawContent = reportData.rawContent,
+                            speakerNames = transcripts.mapNotNull { it.speakerName }
+                        )
+                    }
+                } else {
+                    emptyList()
+                },
                 rawContent = reportData.rawContent,
                 templateName = reportData.templateName
             )

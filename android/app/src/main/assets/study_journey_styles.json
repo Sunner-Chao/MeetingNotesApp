@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "defaultStyleId": "route-atlas",
   "materials": {
     "coverLayouts": [
@@ -26,7 +26,6 @@
       { "id": "route-board", "displayName": "路线看板", "description": "阶段影像、顺序和简短说明组成路线页" },
       { "id": "mission-card", "displayName": "研学任务卡", "description": "把观察、提问和记录任务整理为现场互动页" },
       { "id": "exhibit-grid", "displayName": "重点展品图鉴", "description": "将展品照片、名称和讲解摘要并列呈现" },
-      { "id": "process-flow", "displayName": "工业参访流程", "description": "按真实步骤呈现签到、展厅、车间和体验环节" },
       { "id": "question-thread", "displayName": "问题线索页", "description": "将现场问题、讲解回答与观察印证串成可追溯线索" },
       { "id": "field-observation", "displayName": "田野观察板", "description": "围绕单一自然对象呈现环境、特征、线索与继续观察" },
       { "id": "detail-lens", "displayName": "整体与细节", "description": "用整体主图和局部图建立空间与构造关系" }
@@ -69,11 +68,11 @@
     },
     {
       "id": "field-guide",
-      "displayName": "实地考察",
+      "displayName": "景点研学",
       "minimumSections": 2,
       "minimumPhotos": 0,
       "priority": 5,
-      "keywords": ["园区", "施工", "工厂", "实验室", "项目", "技术", "企业"],
+      "keywords": ["景区", "景点", "名胜", "古迹", "观景", "步道", "导游", "讲解"],
       "coverLayout": "field-board",
       "photoCadence": "evidence-first",
       "photoTreatment": "clean",
@@ -196,11 +195,11 @@
     },
     {
       "id": "science-route",
-      "displayName": "科技研学路线",
+      "displayName": "科技馆研学路线",
       "minimumSections": 2,
       "minimumPhotos": 1,
       "priority": 5,
-      "keywords": ["科技", "AI", "人工智能", "机器人", "实验室", "研究院", "数字"],
+      "keywords": ["科技馆", "天文馆", "航空馆", "互动展项", "机器人展", "数字展", "科普馆"],
       "coverLayout": "schedule-cover",
       "photoCadence": "route-first",
       "photoTreatment": "editorial",
@@ -224,18 +223,18 @@
       "palette": { "paper": "#F6F7F9", "surface": "#FFFFFF", "ink": "#263746", "muted": "#687782", "primary": "#365F87", "secondary": "#6C88A1", "accent": "#876B3D", "soft": "#E6E9ED" }
     },
     {
-      "id": "industrial-process",
-      "displayName": "工业智造探访",
+      "id": "textbook-journey",
+      "displayName": "课本里的旅行",
       "minimumSections": 1,
       "minimumPhotos": 0,
       "priority": 6,
-      "keywords": ["工厂", "生产", "车间", "产线", "工序", "压铸", "装配", "参观流程", "禁止拍摄", "保密"],
-      "coverLayout": "field-board",
-      "photoCadence": "process-first",
-      "photoTreatment": "clean",
-      "pagePatterns": ["process-flow", "detail-lens", "knowledge-note", "full-photo", "mission-card", "closing-photo"],
+      "keywords": ["课本", "诗词", "名著", "历史现场", "古迹", "故居", "文化地标", "行走课堂"],
+      "coverLayout": "notebook-cover",
+      "photoCadence": "story-first",
+      "photoTreatment": "notebook",
+      "pagePatterns": ["quote-photo", "full-photo", "knowledge-note", "two-photo", "route-board", "closing-photo"],
       "scoring": { "keywordWeight": 11, "sectionCountWeight": 1, "routeStopWeight": 1, "photoCountWeight": 1, "photoSurplusWeight": 0 },
-      "palette": { "paper": "#F2F5F7", "surface": "#FFFFFF", "ink": "#203644", "muted": "#667783", "primary": "#0F6CBD", "secondary": "#4F809E", "accent": "#4F6B58", "soft": "#DDE6EC" }
+      "palette": { "paper": "#F6F7F9", "surface": "#FFFFFF", "ink": "#243447", "muted": "#68788A", "primary": "#2563A6", "secondary": "#5B8DB8", "accent": "#4F6B58", "soft": "#E6EEF6" }
     }
   ]
 }

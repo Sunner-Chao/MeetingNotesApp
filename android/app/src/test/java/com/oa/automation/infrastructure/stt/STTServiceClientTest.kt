@@ -257,7 +257,8 @@ class STTServiceClientTest {
             val result = engine.transcribe(
                 audio,
                 meetingId = "meeting-1",
-                archiveKey = "transcript-1"
+                archiveKey = "transcript-1",
+                contextHint = "大佛寺 研学考察"
             )
 
             assertEquals("English transcript.", result.getOrThrow())
@@ -267,6 +268,8 @@ class STTServiceClientTest {
             val multipart = request.body.readUtf8()
             assertTrue(multipart.contains("name=\"language\""))
             assertTrue(multipart.contains("en"))
+            assertTrue(multipart.contains("name=\"context_hint\""))
+            assertTrue(multipart.contains("大佛寺 研学考察"))
         } finally {
             audio.delete()
         }

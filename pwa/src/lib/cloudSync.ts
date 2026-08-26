@@ -31,40 +31,41 @@ function fromCloud(remote: CloudMeeting, local?: Meeting): Meeting {
   };
 }
 
-async function removeLocalMeeting(meetingId: string): Promise<void> {
-  await deleteMeetingRecord(meetingId);
-  await acknowledgeDeletedMeeting(meetingId);
+async function removeLocalMeeting(meetingId: string, accountId: string): Promise<void> {
+  await deleteMeetingRecord(meetingId, accountId);
+  await acknowledgeDeletedMeeting(meetingId, accountId);
 }
 
 export async function synchronizeCloudMeetings(
   config: RuntimeConfig,
   session: AuthSession
 ): Promise<Meeting[]> {
-  const pendingDeletes = await listDeletedMeetings();
+  const accountId = session.user.id;
+  const pendingDeletes = await listDeletedMeetings(accountId);
   for (const deletion of pendingDeletes) {
     await deleteCloudMeeting(config, session, deletion.id, deletion.deletedAt);
-    await acknowledgeDeletedMeeting(deletion.id);
+    await acknowledgeDeletedMeeting(deletion.id, accountId);
   }
 
   const snapshot = await fetchCloudMeetings(config, session);
   const deleted = new Map(snapshot.deleted.map((item) => [item.meeting_id, item.deleted_at]));
   const remote = new Map(snapshot.meetings.map((meeting) => [meeting.id, meeting]));
-  const localMeetings = await listMeetings();
+  const localMeetings = await listMeetings(accountId);
 
   for (const local of localMeetings) {
     const deletedAt = deleted.get(local.id);
     if (deletedAt !== undefined && local.updatedAt <= deletedAt) {
-      await removeLocalMeeting(local.id);
+      await removeLocalMeeting(local.id, accountId);
       continue;
     }
     const cloud = remote.get(local.id);
     if (!cloud || local.updatedAt > cloud.updated_at) {
       try {
         const saved = await saveCloudMeeting(config, session, local);
-        if (saved.updated_at > local.updatedAt) await saveMeeting(fromCloud(saved, local));
+        if (saved.updated_at > local.updatedAt) await saveMeeting(fromCloud(saved, local), accountId);
       } catch (error) {
         if (error instanceof CloudMeetingDeletedError) {
-          await removeLocalMeeting(local.id);
+          await removeLocalMeeting(local.id, accountId);
           continue;
         }
         throw error;
@@ -72,10 +73,10 @@ export async function synchronizeCloudMeetings(
       remote.delete(local.id);
       continue;
     }
-    if (cloud.updated_at > local.updatedAt) await saveMeeting(fromCloud(cloud, local));
+    if (cloud.updated_at > local.updatedAt) await saveMeeting(fromCloud(cloud, local), accountId);
     remote.delete(local.id);
   }
 
-  for (const cloud of remote.values()) await saveMeeting(fromCloud(cloud));
-  return listMeetings();
+  for (const cloud of remote.values()) await saveMeeting(fromCloud(cloud), accountId);
+  return listMeetings(accountId);
 }

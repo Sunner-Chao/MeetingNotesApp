@@ -20,15 +20,21 @@ data class AgentQuota(
     @SerializedName("ai_credits_granted") private val billedAiCreditsGranted: Int? = null,
     @SerializedName("ai_credits_used") private val billedAiCreditsUsed: Int? = null,
     @SerializedName("ai_credits_remaining") private val billedAiCreditsRemaining: Int? = null,
+    @SerializedName("points_granted") private val billedPointsGranted: Int? = null,
+    @SerializedName("points_used") private val billedPointsUsed: Int? = null,
+    @SerializedName("points_remaining") private val billedPointsRemaining: Int? = null,
     @SerializedName("allowed_providers") val allowedProviders: List<String>,
     @SerializedName("expires_at") val expiresAt: Long?
 ) {
     val aiCreditsGranted: Int get() = billedAiCreditsGranted ?: requestLimit
     val aiCreditsUsed: Int get() = billedAiCreditsUsed ?: requestsUsed
     val aiCreditsRemaining: Int get() = billedAiCreditsRemaining ?: requestsRemaining
+    val pointsGranted: Int get() = billedPointsGranted ?: aiCreditsGranted
+    val pointsUsed: Int get() = billedPointsUsed ?: aiCreditsUsed
+    val pointsRemaining: Int get() = billedPointsRemaining ?: aiCreditsRemaining
     val usedFraction: Float
-        get() = if (aiCreditsGranted <= 0) 0f else {
-            (aiCreditsUsed.toFloat() / aiCreditsGranted).coerceIn(0f, 1f)
+        get() = if (pointsGranted <= 0) 0f else {
+            (pointsUsed.toFloat() / pointsGranted).coerceIn(0f, 1f)
         }
 }
 
@@ -56,7 +62,7 @@ class AgentQuotaService(
                 val body = response.body?.string().orEmpty()
                 if (!response.isSuccessful) throw IOException(response.toQuotaError(body))
                 gson.fromJson(body, AgentQuota::class.java)
-                    ?: throw IOException("额度服务返回空数据")
+                    ?: throw IOException("积分服务返回空数据")
             }
         }
     }
@@ -69,9 +75,9 @@ private fun Response.toQuotaError(body: String): String {
     val suffix = detail.takeIf { it.isNotBlank() }?.let { "：$it" }.orEmpty()
     return when (code) {
         401 -> "访问令牌无效或已过期"
-        403 -> "当前令牌没有额度查询权限"
-        429 -> "AI 处理额度已用尽"
-        503 -> "额度服务暂时不可用"
-        else -> "额度查询失败（HTTP $code）$suffix"
+        403 -> "当前令牌没有积分查询权限"
+        429 -> "积分不足"
+        503 -> "积分服务暂时不可用"
+        else -> "积分查询失败（HTTP $code）$suffix"
     }
 }

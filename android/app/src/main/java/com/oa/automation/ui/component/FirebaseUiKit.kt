@@ -93,7 +93,7 @@ fun BrandWordmark(
             )
             if (showAgent) {
                 Text(
-                    text = "智能体 · 小Woo",
+                    text = "会议整理",
                     style = MaterialTheme.typography.labelSmall,
                     color = if (dark) BrandCyan else MaterialTheme.colorScheme.primary
                 )

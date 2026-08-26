@@ -3,6 +3,7 @@ package com.oa.automation.ui.screen.home
 import com.oa.automation.domain.model.Meeting
 import com.oa.automation.domain.model.MeetingOrigin
 import com.oa.automation.domain.model.displayTitle
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -30,9 +31,9 @@ class HomeMeetingOriginTest {
 
     @Test
     fun `recent records expose a compact source label for every origin`() {
-        assertEquals("快速", meetingOriginLabel(MeetingOrigin.QUICK))
+        assertEquals("实时转录", meetingOriginLabel(MeetingOrigin.QUICK))
         assertEquals("预定", meetingOriginLabel(MeetingOrigin.SCHEDULED))
-        assertEquals("导入", meetingOriginLabel(MeetingOrigin.FILE_IMPORT))
+        assertEquals("历史解析", meetingOriginLabel(MeetingOrigin.FILE_IMPORT))
     }
 
     @Test
@@ -53,5 +54,27 @@ class HomeMeetingOriginTest {
         )
 
         assertEquals("资料导入后的客户访谈", meeting.displayTitle())
+    }
+
+    @Test
+    fun `recent records retain an unfinished study meeting`() {
+        val pendingStudyMeeting = Meeting(
+            id = "study-pending",
+            title = "研学考察 08-20",
+            createdAt = 2L
+        )
+        val completedMeeting = Meeting(
+            id = "completed",
+            title = "已完成会议",
+            createdAt = 1L
+        )
+
+        val records = meetingsWithReports(
+            meetings = listOf(completedMeeting, pendingStudyMeeting),
+            reportMeetingIds = setOf(completedMeeting.id)
+        )
+
+        assertEquals(listOf(pendingStudyMeeting.id, completedMeeting.id), records.map { it.meeting.id })
+        assertFalse(records.first().hasReport)
     }
 }

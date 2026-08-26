@@ -15,11 +15,12 @@ sys.path.insert(0, str(BACKEND_DIR))
 from account_service import (
     AccountAuthError,
     AccountConflictError,
+    AccountDeliveryUnavailableError,
     AccountError,
     AccountPermissionError,
     AccountService,
 )
-from agent_gateway import AgentAuthError, AgentGateway, AgentProviderError
+from agent_gateway import AgentAuthError, AgentGateway, AgentProviderError, AgentQuotaError
 from common.account_stt_token import verify_account_stt_token
 
 
@@ -103,8 +104,11 @@ class AccountServiceTests(unittest.TestCase):
         profile = self.service.profile(principal)
         self.assertFalse(profile["vip_enabled"])
         self.assertEqual(profile["plan_code"], "free")
-        self.assertEqual(profile["plan_name"], "Free")
+        self.assertEqual(profile["plan_name"], "免费账户")
         self.assertEqual(profile["quota"]["request_limit"], 10)
+        self.assertEqual(profile["usage"]["included_minutes"], 0)
+        self.assertEqual(profile["usage"]["ai_credits_remaining"], 0)
+        self.assertEqual(profile["usage"]["points_remaining"], 1_000)
         self.assertEqual(
             verify_account_stt_token(
                 "account-test-secret",
@@ -116,7 +120,7 @@ class AccountServiceTests(unittest.TestCase):
         self.assertEqual(agent.request_limit, 10)
 
         refreshed = self.service.session_credentials(principal)
-        self.assertEqual(refreshed["user"]["plan_name"], "Free")
+        self.assertEqual(refreshed["user"]["plan_name"], "免费账户")
         self.assertEqual(refreshed["agent_access_token"], session["agent_access_token"])
         self.assertEqual(
             verify_account_stt_token(
@@ -137,7 +141,7 @@ class AccountServiceTests(unittest.TestCase):
         with self.assertRaises(AgentAuthError):
             self.gateway.authenticate(f"Bearer {session['agent_access_token']}")
 
-    def test_email_and_phone_codes_create_verified_identities_once(self) -> None:
+    def test_email_codes_create_verified_identities_once_and_phone_is_disabled(self) -> None:
         requested = self.service.request_auth_code("email", "Owner@Example.com")
         self.assertEqual(requested["masked_identifier"], "ow***@example.com")
         code = requested["verification_code"]
@@ -150,13 +154,11 @@ class AccountServiceTests(unittest.TestCase):
         with self.assertRaises(AccountAuthError):
             self.service.verify_auth_code("email", "owner@example.com", code)
 
-        phone_request = self.service.request_auth_code("phone", "138-0013-8000")
-        phone_session = self.service.verify_auth_code(
-            "phone",
-            "+86 13800138000",
-            phone_request["verification_code"],
-        )
-        self.assertNotEqual(phone_session["user"]["id"], session["user"]["id"])
+        with self.assertRaisesRegex(
+            AccountDeliveryUnavailableError,
+            "手机号验证码服务暂未开放",
+        ):
+            self.service.request_auth_code("phone", "138-0013-8000")
 
     def test_auth_code_is_rate_limited_and_attempt_limited(self) -> None:
         requested = self.service.request_auth_code("email", "rate@example.com")
@@ -172,6 +174,17 @@ class AccountServiceTests(unittest.TestCase):
                 "rate@example.com",
                 requested["verification_code"],
             )
+
+    def test_delivery_unavailable_error_is_preserved_for_disabled_phone_codes(self) -> None:
+        def reject_phone(_channel: str, _subject: str, _code: str) -> None:
+            raise AccountDeliveryUnavailableError("手机号验证码服务暂未开放")
+
+        self.service.auth_code_sender = reject_phone
+        with self.assertRaisesRegex(
+            AccountDeliveryUnavailableError,
+            "手机号验证码服务暂未开放",
+        ):
+            self.service.request_auth_code("phone", "13800138000")
 
     def test_stt_usage_is_charged_after_success_and_is_idempotent(self) -> None:
         session = self.service.register("stt_user", "strong-password")
@@ -191,6 +204,7 @@ class AccountServiceTests(unittest.TestCase):
         self.assertEqual(first["id"], duplicate["id"])
         usage = self.service.usage_summary(principal)
         self.assertEqual(usage["stt_seconds_used"], 62)
+        self.assertEqual(usage["points_used"], 20)
 
         with self.service._connect() as conn:
             conn.execute(
@@ -204,6 +218,55 @@ class AccountServiceTests(unittest.TestCase):
         rolled = self.service.usage_summary(principal)
         self.assertEqual(rolled["stt_seconds_used"], 0)
         self.assertEqual(rolled["ai_credits_used"], 0)
+        self.assertEqual(rolled["points_used"], 0)
+
+    def test_stt_user_id_billing_rejects_disabled_users_and_allows_idempotent_retry(self) -> None:
+        session = self.service.register("direct_stt_user", "strong-password")
+        principal = self.service.authenticate(f"Bearer {session['access_token']}")
+        usage_key = self.service.canonical_stt_usage_key(
+            principal.user_id,
+            "android-upload-01",
+        )
+        with self.service._connect() as conn:
+            conn.execute(
+                "UPDATE account_usage_balances SET points_granted = 20, points_used = 0 WHERE user_id = ?",
+                (principal.user_id,),
+            )
+
+        first = self.service.record_stt_usage_for_user(
+            principal.user_id,
+            duration_ms=61_000,
+            meeting_id="meeting-direct-stt",
+            idempotency_key=usage_key,
+        )
+        self.assertEqual(first["quantity"], 20)
+        retry_balance = self.service.ensure_stt_available_for_user(
+            principal.user_id,
+            idempotency_key=usage_key,
+        )
+        self.assertEqual(retry_balance["points_remaining"], 0)
+        duplicate = self.service.record_stt_usage_for_user(
+            principal.user_id,
+            duration_ms=61_000,
+            meeting_id="meeting-direct-stt",
+            idempotency_key=usage_key,
+        )
+        self.assertEqual(duplicate["id"], first["id"])
+
+        with self.service._connect() as conn:
+            conn.execute("UPDATE users SET enabled = 0 WHERE id = ?", (principal.user_id,))
+        with self.assertRaises(AccountAuthError):
+            self.service.ensure_stt_available_for_user(
+                principal.user_id,
+                idempotency_key=usage_key,
+            )
+        with self.assertRaises(AccountAuthError):
+            self.service.record_stt_usage_for_user(
+                principal.user_id,
+                duration_ms=1_000,
+                meeting_id="meeting-direct-stt",
+                idempotency_key=usage_key,
+            )
 
     def test_agent_credits_refund_failures_and_allow_three_free_regenerations(self) -> None:
         session = self.service.register("credit_user", "strong-password")
@@ -233,6 +296,7 @@ class AccountServiceTests(unittest.TestCase):
             )
         account = self.service.authenticate(f"Bearer {session['access_token']}")
         self.assertEqual(self.service.usage_summary(account)["ai_credits_used"], 0)
+        self.assertEqual(self.service.usage_summary(account)["points_used"], 0)
 
         succeeding = AgentGateway(
             db_path=self.db_path,
@@ -256,6 +320,58 @@ class AccountServiceTests(unittest.TestCase):
             charges.append(result["charged"])
         self.assertEqual(charges, [True, False, False, False, True])
         self.assertEqual(self.service.usage_summary(account)["ai_credits_used"], 2)
+        self.assertEqual(self.service.usage_summary(account)["points_used"], 60)
+
+    def test_agent_is_limited_by_points_not_legacy_ai_credits(self) -> None:
+        session = self.service.register("points_only_user", "strong-password")
+        account = self.service.authenticate(f"Bearer {session['access_token']}")
+        points_gateway = AgentGateway(
+            db_path=self.db_path,
+            work_root=Path(self.temp_dir.name) / "points-only-tasks",
+            runner=lambda *_args: "ok",
+        )
+        points_gateway.initialize()
+        principal = points_gateway.authenticate(f"Bearer {session['agent_access_token']}")
+        with self.service._connect() as conn:
+            conn.execute(
+                """
+                UPDATE account_usage_balances
+                SET ai_credits_granted = 0, ai_credits_used = 0,
+                    points_granted = 100, points_used = 0
+                WHERE user_id = ?
+                """,
+                (account.user_id,),
+            )
+
+        result = points_gateway.execute(
+            principal,
+            {
+                "provider": "codex-cli",
+                "operation": "chat",
+                "messages": [{"role": "user", "content": "hello"}],
+                "usage_key": "points-only-chat",
+            },
+            [],
+        )
+        self.assertEqual(result["status"], "succeeded")
+        self.assertEqual(self.service.usage_summary(account)["points_used"], 10)
+
+        with self.service._connect() as conn:
+            conn.execute(
+                "UPDATE account_usage_balances SET period_end = 1 WHERE user_id = ?",
+                (account.user_id,),
+            )
+        with self.assertRaises(AgentQuotaError):
+            points_gateway.execute(
+                principal,
+                {
+                    "provider": "codex-cli",
+                    "operation": "chat",
+                    "messages": [{"role": "user", "content": "expired"}],
+                    "usage_key": "expired-points-chat",
+                },
+                [],
+            )
 
     def test_profile_can_update_display_name_and_avatar(self) -> None:
         session = self.service.register("profile_user", "strong-password")
@@ -342,8 +458,9 @@ class AccountServiceTests(unittest.TestCase):
         self.assertEqual(profile["plan_code"], "vip_test")
         self.assertEqual(profile["plan_name"], "VIP Test")
         self.assertEqual(profile["quota"]["requests_remaining"], 310)
-        self.assertEqual(profile["usage"]["included_minutes"], 120)
+        self.assertEqual(profile["usage"]["included_minutes"], 100)
         self.assertEqual(profile["usage"]["ai_credits_remaining"], 20)
+        self.assertEqual(profile["usage"]["points_remaining"], 1_600)
         agent = self.gateway.authenticate(f"Bearer {user_session['agent_access_token']}")
         self.assertEqual(agent.request_limit, 310)
 

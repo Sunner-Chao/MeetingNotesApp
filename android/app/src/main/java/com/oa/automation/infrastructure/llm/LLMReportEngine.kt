@@ -4,6 +4,7 @@ import com.oa.automation.domain.model.LLMConfig
 import com.oa.automation.domain.model.LLMEngineType
 import com.oa.automation.domain.model.ReportTemplateConfig
 import com.oa.automation.domain.model.reportDocumentKind
+import com.oa.automation.domain.model.ForumParticipant
 import java.io.File
 
 /**
@@ -98,6 +99,7 @@ data class ReportData(
     val tasks: List<TaskData> = emptyList(),
     val decisions: List<String> = emptyList(),
     val actionItems: List<String> = emptyList(),
+    val participants: List<ForumParticipant> = emptyList(),
     val rawContent: String = "",
     val templateName: String = ""
 )
@@ -202,6 +204,8 @@ object ReportPromptTemplates {
                 - 按真实时间、主持转场、议程变化和发言人切换分段，不得把数小时内容过度压缩。
                 - 区分主持人、主讲人、圆桌嘉宾和提问者，姓名不明确时写“待确认”。
                 - 保留演讲论据、数据、案例、圆桌分歧和问答对应关系。
+                - 在论坛信息之后、主体内容之前输出独立的“参会人员名录”表格，列为“姓名/称谓、单位、角色”，供客户端生成照片墙通讯录。
+                - 名录只填写原文明确出现的人员；姓名不明确者不加入名录，不输出占位行，不从照片推断身份，不在后文重复整段名录。
             """.trimIndent()
             "研学考察" -> """
                 研学考察游记式整理：

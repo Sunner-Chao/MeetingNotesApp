@@ -195,8 +195,8 @@ android {
         applicationId = "com.oa.automation"
         minSdk = 26
         targetSdk = 34
-        versionCode = 10227
-        versionName = "1.2.27"
+        versionCode = 10244
+        versionName = "1.2.44"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -592,7 +592,7 @@ tasks.register("generateIconPngs") {
         launcherGraphics.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
         launcherGraphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC)
         launcherGraphics.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY)
-        launcherGraphics.color = Color(0x02, 0x37, 0x88)
+        launcherGraphics.color = Color(0x47, 0x74, 0xBE)
         launcherGraphics.fillRect(0, 0, launcherCanvasSize, launcherCanvasSize)
         val availableSize = launcherCanvasSize * contentScale
         val imageScale = minOf(availableSize / croppedMaster.width, availableSize / croppedMaster.height)
@@ -612,7 +612,7 @@ tasks.register("generateIconPngs") {
         legacyGraphics.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
         legacyGraphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC)
         legacyGraphics.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY)
-        legacyGraphics.color = Color(0x02, 0x37, 0x88)
+        legacyGraphics.color = Color(0x47, 0x74, 0xBE)
         legacyGraphics.fillRect(0, 0, launcherCanvasSize, launcherCanvasSize)
         legacyGraphics.drawImage(launcherArtwork, 0, 0, null)
         legacyGraphics.dispose()

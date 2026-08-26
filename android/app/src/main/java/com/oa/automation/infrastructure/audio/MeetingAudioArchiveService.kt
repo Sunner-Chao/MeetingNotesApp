@@ -33,7 +33,8 @@ data class ArchivedMeetingAudio(
     val source: String,
     val downloadPath: String,
     val sha256: String = "",
-    val serviceEndpoint: String = ""
+    val serviceEndpoint: String = "",
+    val localFilePath: String? = null
 )
 
 data class PreparedMeetingAudioShare(
@@ -106,6 +107,20 @@ class MeetingAudioArchiveService(
         meetingTitle: String
     ): Result<PreparedMeetingAudioShare> = withContext(Dispatchers.IO) {
         runCatching {
+            audio.localFilePath
+                ?.let(::File)
+                ?.takeIf { it.isFile && it.length() > 44L }
+                ?.let { localFile ->
+                    return@runCatching PreparedMeetingAudioShare(
+                        uri = FileProvider.getUriForFile(
+                            context,
+                            "${context.packageName}.fileprovider",
+                            localFile
+                        ),
+                        displayName = buildShareFilename(meetingTitle, audio),
+                        mimeType = audioMimeType(localFile.name)
+                    )
+                }
             executeAuthorizedRequest(
                 endpointProvider = { config -> audio.serviceEndpoint.ifBlank { config.serviceEndpointFor() } },
                 requestFactory = { serviceEndpoint, token ->
@@ -158,6 +173,19 @@ class MeetingAudioArchiveService(
         audio: ArchivedMeetingAudio
     ): Result<ArchivedMeetingAudioPlaybackSource> = withContext(Dispatchers.IO) {
         runCatching {
+            audio.localFilePath
+                ?.let(::File)
+                ?.takeIf { it.isFile && it.length() > 44L }
+                ?.let { localFile ->
+                    return@runCatching ArchivedMeetingAudioPlaybackSource(
+                        uri = FileProvider.getUriForFile(
+                            context,
+                            "${context.packageName}.fileprovider",
+                            localFile
+                        ),
+                        headers = emptyMap()
+                    )
+                }
             val config = loadSttConfig(refreshAccountSession = true, requireRefresh = false)
             val token = config.apiToken?.trim().orEmpty()
             require(token.isNotBlank()) { "STT 访问令牌未配置" }

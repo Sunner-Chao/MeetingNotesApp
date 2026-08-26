@@ -58,6 +58,7 @@ import com.oa.automation.infrastructure.export.ReportExportFileNaming
 import com.oa.automation.infrastructure.image.OrientedImageDecoder
 import com.oa.automation.infrastructure.audio.ArchivedMeetingAudio
 import com.oa.automation.ui.location.ImageLocationPermission
+import com.oa.automation.ui.location.MeetingGalleryPermission
 import com.oa.automation.ui.component.ProcessingStatusRow
 import java.io.File
 import java.text.SimpleDateFormat
@@ -90,21 +91,29 @@ fun ReportScreen(
     var pendingImageImportUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
     val locationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
+    ) { _ ->
         val uris = pendingImageImportUris
         pendingImageImportUris = emptyList()
         if (uris.isNotEmpty()) {
-            viewModel.importImages(meetingId, uris, captureLocation = permissions.values.any { it })
+            viewModel.importImages(
+                meetingId,
+                uris,
+                captureLocation = ImageLocationPermission.isGranted(context)
+            )
         }
     }
 
     fun importImagesWithOptionalLocation(uris: List<Uri>) {
         if (uris.isEmpty()) return
-        if (ImageLocationPermission.isGranted(context)) {
+        if (ImageLocationPermission.isGranted(context) && MeetingGalleryPermission.isGranted(context)) {
             viewModel.importImages(meetingId, uris, captureLocation = true)
         } else {
             pendingImageImportUris = uris
-            locationPermissionLauncher.launch(ImageLocationPermission.requestedPermissions)
+            locationPermissionLauncher.launch(
+                (ImageLocationPermission.requestedPermissions + MeetingGalleryPermission.requestedPermissions)
+                    .distinct()
+                    .toTypedArray()
+            )
         }
     }
 
@@ -121,7 +130,7 @@ fun ReportScreen(
     }
 
     fun launchCamera() {
-        val captureDirectory = File(context.cacheDir, "exports/camera").apply { mkdirs() }
+        val captureDirectory = File(context.filesDir, "meeting-attachments/$meetingId/camera").apply { mkdirs() }
         val captureFile = File(captureDirectory, "meeting_${System.currentTimeMillis()}.jpg")
         val captureUri = FileProvider.getUriForFile(
             context,
@@ -259,6 +268,7 @@ fun ReportScreen(
                                                 report,
                                                 uiState.meetingTitle,
                                                 attachments,
+                                                uiState.forumParticipants,
                                                 format
                                             )
                                         }
@@ -636,7 +646,8 @@ private fun MeetingAudioArchiveSection(
 @Composable
 private fun MeetingImageAttachments(
     attachments: List<MeetingAttachment>,
-    onDelete: (MeetingAttachment) -> Unit
+    onDelete: (MeetingAttachment) -> Unit,
+    title: String = "会议图片"
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(
@@ -650,7 +661,7 @@ private fun MeetingImageAttachments(
                 tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.size(20.dp)
             )
-            Text("会议图片", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
         }
         LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             items(attachments, key = { it.id }) { attachment ->
@@ -1597,6 +1608,7 @@ private suspend fun exportReport(
     report: Report,
     meetingTitle: String,
     attachments: List<MeetingAttachment>,
+    forumParticipants: List<com.oa.automation.domain.model.ForumParticipant>,
     format: ExportFormat
 ) {
     try {
@@ -1622,10 +1634,17 @@ private suspend fun exportReport(
                     context,
                     report,
                     attachments,
-                    meetingTitle
+                    meetingTitle,
+                    forumParticipants
                 )
                 ExportFormat.PDF -> {
-                    ReportExporter.exportToPdf(context, report, attachments, meetingTitle)
+                    ReportExporter.exportToPdf(
+                        context,
+                        report,
+                        attachments,
+                        meetingTitle,
+                        forumParticipants
+                    )
                 }
             }
         }

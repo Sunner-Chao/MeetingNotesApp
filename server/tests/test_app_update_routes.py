@@ -94,6 +94,49 @@ class AppUpdateRouteTests(unittest.TestCase):
             self.assertEqual(client.get("/api/app-update/android/apk/10210").status_code, 200)
             self.assertEqual(client.get("/api/app-update/android/apk/10209").status_code, 404)
 
+    def test_apk_directory_lists_current_and_previous_downloads(self) -> None:
+        for version_code in (10209, 10210, 10211):
+            backend.APP_UPDATE_ANDROID_APK_PATH.parent.joinpath(
+                f"ZhiWuBen-Android-{version_code}.apk"
+            ).write_bytes(f"apk-{version_code}".encode())
+        backend.APP_UPDATE_CONFIG_PATH.write_text(
+            json.dumps(
+                {
+                    "version_code": 10211,
+                    "version_name": "1.2.11",
+                    "release_notes": "Directory page release notes",
+                    "sha256": "a" * 64,
+                    "apk_filename": "ZhiWuBen-Android-10211.apk",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with TestClient(backend.app) as client:
+            response = client.get("/api/app-update/android/apk/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.headers["content-type"].startswith("text/html"))
+        self.assertEqual(response.headers["cache-control"], "no-store")
+        self.assertIn("智悟本 Android 发布中心", response.text)
+        self.assertIn("ZhiWuBen-Android-10211.apk", response.text)
+        self.assertIn("ZhiWuBen-Android-10210.apk", response.text)
+        self.assertNotIn("ZhiWuBen-Android-10209.apk", response.text)
+        self.assertIn("当前版本", response.text)
+        self.assertIn("上一版本", response.text)
+        self.assertIn("北京时间", response.text)
+        self.assertNotIn("UTC", response.text)
+        self.assertIn('href="http://testserver/api/app-update/android/apk/10211"', response.text)
+        self.assertIn('data-copy-url="http://testserver/api/app-update/android/apk/10210"', response.text)
+
+    def test_apk_directory_shows_an_empty_state_without_a_release(self) -> None:
+        with TestClient(backend.app) as client:
+            response = client.get("/api/app-update/android/apk/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("暂无可下载版本", response.text)
+        self.assertIn("0 个", response.text)
+
     def test_manifest_rejects_an_unsafe_artifact_filename(self) -> None:
         backend.APP_UPDATE_CONFIG_PATH.write_text(
             json.dumps(

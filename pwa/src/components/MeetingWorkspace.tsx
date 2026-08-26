@@ -125,7 +125,7 @@ export function MeetingWorkspace({
     }
   }, [config, onNotify, onRefreshSession, update]);
 
-  const recorder = useRecorder(useCallback(({ blob, durationSeconds, mimeType }) => {
+  const recorder = useRecorder(session.user.id, useCallback(({ blob, durationSeconds, mimeType }) => {
     const extension = audioExtension(mimeType);
     const completedMeeting = update({
       audio: blob,
@@ -157,7 +157,7 @@ export function MeetingWorkspace({
       const report = await generateReport(config, freshSession, meeting, controller.signal);
       update({ report });
       setReportMode("preview");
-      onNotify("小Woo纪要已生成", "success");
+      onNotify("会议纪要已生成", "success");
     } catch (error) {
       if (!(error instanceof DOMException && error.name === "AbortError")) {
         onNotify(error instanceof Error ? error.message : "纪要生成失败", "error");
@@ -281,7 +281,7 @@ export function MeetingWorkspace({
         {busy && (
           <section className="processing-panel" aria-live="polite">
             <div>
-              <strong>{processing.kind === "uploading" ? "正在上传音频" : processing.kind === "transcribing" ? "正在生成最终稿" : "小Woo正在整理会议"}</strong>
+              <strong>{processing.kind === "uploading" ? "正在上传音频" : processing.kind === "transcribing" ? "正在生成最终稿" : "正在整理会议"}</strong>
               <span>{processing.kind === "uploading" ? `${processing.progress}%` : "处理中"}</span>
             </div>
             <div className={`processing-track ${processing.kind !== "uploading" ? "indeterminate" : ""}`}>
@@ -310,7 +310,7 @@ export function MeetingWorkspace({
         </section>
 
         <section className="workspace-section template-picker-section">
-          <div className="section-heading"><div><Bot /><h2>智能体 · 小Woo</h2></div></div>
+          <div className="section-heading"><div><Bot /><h2>会议整理</h2></div></div>
           <div className="template-radio-grid">
             {MEETING_TEMPLATES.map((template) => (
               <button key={template.key} className={meeting.templateKey === template.key ? "active" : ""} onClick={() => update({ templateKey: template.key as TemplateKey })}>

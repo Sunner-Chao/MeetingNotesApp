@@ -31,10 +31,10 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.ManageAccounts
 import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material.icons.filled.Payments
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.WorkspacePremium
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.OutlinedButton
@@ -85,14 +85,11 @@ import com.oa.automation.ui.theme.BrandCyan
 import com.oa.automation.ui.theme.BrandDeepGreen
 import com.oa.automation.ui.theme.BrandDeepGreenAlt
 import java.text.NumberFormat
-import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
 import kotlin.math.floor
 import org.koin.androidx.compose.koinViewModel
 
 private val AccountGreen = Color(0xFF0078D4)
-private val AccountGold = Color(0xFFF2B84B)
 
 private data class AccountLayoutSpec(
     val compact: Boolean,
@@ -145,6 +142,7 @@ private fun accountLayoutSpec(maxWidth: Dp, maxHeight: Dp): AccountLayoutSpec {
 fun AccountScreen(
     onNavigateToProfile: () -> Unit,
     onNavigateToQuotaDetails: () -> Unit,
+    onNavigateToPointsPlans: () -> Unit,
     onNavigateToUserManagement: () -> Unit,
     onNavigateToCommunityModeration: () -> Unit,
     onNavigateToSettings: () -> Unit,
@@ -213,7 +211,6 @@ fun AccountScreen(
                     AccountHero(
                         username = uiState.username,
                         profile = uiState.profile,
-                        quota = uiState.quota,
                         layout = layout,
                         onOpenProfile = onNavigateToProfile,
                         onLogout = { showLogoutDialog = true }
@@ -237,7 +234,7 @@ fun AccountScreen(
                         AccountActionGroup(
                             isAdmin = uiState.profile?.isAdmin == true,
                             layout = layout,
-                            onOpenProfile = onNavigateToProfile,
+                            onOpenPointsPlans = onNavigateToPointsPlans,
                             onOpenSettings = onNavigateToSettings,
                             onManageUsers = onNavigateToUserManagement,
                             onModerateCommunity = onNavigateToCommunityModeration
@@ -293,7 +290,6 @@ private fun GuestAccountPanel(
 private fun AccountHero(
     username: String,
     profile: AccountProfile?,
-    quota: AgentQuota?,
     layout: AccountLayoutSpec,
     onOpenProfile: () -> Unit,
     onLogout: () -> Unit
@@ -329,20 +325,13 @@ private fun AccountHero(
                         contentDescription = "智悟本"
                     )
                     Spacer(Modifier.width(11.dp))
-                    Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                        Text(
-                            text = "智悟本",
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = if (layout.compact) 23.sp else 25.sp,
-                            lineHeight = 29.sp
-                        )
-                        Text(
-                            text = "智能体 · 小Woo",
-                            color = BrandCyan,
-                            style = MaterialTheme.typography.labelSmall
-                        )
-                    }
+                    Text(
+                        text = "智悟本",
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = if (layout.compact) 23.sp else 25.sp,
+                        lineHeight = 29.sp
+                    )
                 }
                 Surface(
                     onClick = onLogout,
@@ -366,7 +355,6 @@ private fun AccountHero(
         IdentityCard(
             username = username,
             profile = profile,
-            quota = quota,
             avatarSize = layout.profileAvatarSize,
             onClick = onOpenProfile,
             modifier = Modifier
@@ -413,7 +401,6 @@ private fun AccountHeaderArtwork(modifier: Modifier = Modifier) {
 private fun IdentityCard(
     username: String,
     profile: AccountProfile?,
-    quota: AgentQuota?,
     avatarSize: Dp,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
@@ -451,36 +438,16 @@ private fun IdentityCard(
                 )
                 Surface(
                     shape = RoundedCornerShape(50),
-                    color = if (profile?.vipEnabled == true || profile?.isAdmin == true) {
-                        AccountGold
-                    } else {
-                        MaterialTheme.colorScheme.primaryContainer
-                    }
+                    color = MaterialTheme.colorScheme.primaryContainer
                 ) {
                     Row(
                         modifier = Modifier.padding(horizontal = 9.dp, vertical = 1.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        if (profile?.vipEnabled == true || profile?.isAdmin == true) {
-                            Icon(
-                                imageVector = Icons.Default.WorkspacePremium,
-                                contentDescription = null,
-                                tint = Color.White,
-                                modifier = Modifier.size(13.dp)
-                            )
-                        }
                         Text(
-                            text = if (profile?.vipEnabled == true || profile?.isAdmin == true) {
-                                "VIP"
-                            } else {
-                                "FREE"
-                            },
-                            color = if (profile?.vipEnabled == true || profile?.isAdmin == true) {
-                                Color.White
-                            } else {
-                                AccountGreen
-                            },
+                            text = if (profile?.isAdmin == true) "管理员" else "用户",
+                            color = AccountGreen,
                             fontWeight = FontWeight.Bold,
                             fontSize = 11.sp
                         )
@@ -497,7 +464,7 @@ private fun IdentityCard(
                         modifier = Modifier.size(16.dp)
                     )
                     Text(
-                        text = membershipSummary(profile, quota),
+                        text = membershipSummary(profile),
                         fontSize = 11.sp,
                         lineHeight = 15.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -508,7 +475,7 @@ private fun IdentityCard(
             }
             Icon(
                 imageVector = Icons.Default.ChevronRight,
-                contentDescription = "查看 VIP 会员与专业能力",
+                contentDescription = "查看个人资料",
                 tint = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.size(28.dp)
             )
@@ -528,8 +495,8 @@ private fun AccountQuotaPanel(
     onConfigure: () -> Unit,
     onOpenDetails: () -> Unit
 ) {
-    val limit = quota?.aiCreditsGranted ?: profile?.usage?.aiCreditsGranted ?: 0
-    val remaining = quota?.aiCreditsRemaining ?: profile?.usage?.aiCreditsRemaining ?: 0
+    val limit = profile?.usage?.pointsGranted ?: quota?.pointsGranted ?: 0
+    val remaining = profile?.usage?.pointsRemaining ?: quota?.pointsRemaining ?: 0
     val remainingFraction = when {
         limit > 0 -> (remaining.toFloat() / limit).coerceIn(0f, 1f)
         remaining > 0 -> 1f
@@ -568,7 +535,7 @@ private fun AccountQuotaPanel(
                     )
                     Spacer(Modifier.width(8.dp))
                     Text(
-                        text = "AI 处理额度",
+                        text = "积分账户",
                         color = Color.White,
                         fontWeight = FontWeight.SemiBold,
                         fontSize = 16.sp
@@ -588,7 +555,7 @@ private fun AccountQuotaPanel(
                         } else {
                             Icon(
                                 imageVector = Icons.Default.Refresh,
-                                contentDescription = if (tokenConfigured) "刷新额度" else "配置服务",
+                                contentDescription = if (tokenConfigured) "刷新积分" else "配置服务",
                                 tint = Color.White.copy(alpha = 0.82f),
                                 modifier = Modifier.size(19.dp)
                             )
@@ -606,7 +573,7 @@ private fun AccountQuotaPanel(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = "额度明细",
+                                text = "积分明细",
                                 color = Color.White.copy(alpha = 0.90f),
                                 style = MaterialTheme.typography.labelMedium
                             )
@@ -637,7 +604,7 @@ private fun AccountQuotaPanel(
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = "AI Credits",
+                            text = "积分",
                             color = Color.White,
                             fontSize = 15.sp,
                             lineHeight = 20.sp
@@ -673,7 +640,7 @@ private fun AccountQuotaPanel(
                                 lineHeight = 22.sp
                             )
                             Text(
-                                text = "剩余额度",
+                                text = "剩余积分",
                                 color = Color.White.copy(alpha = 0.58f),
                                 style = MaterialTheme.typography.labelSmall
                             )
@@ -685,7 +652,7 @@ private fun AccountQuotaPanel(
                     text = when {
                         errorMessage != null && quota == null -> errorMessage
                         !tokenConfigured -> "点击刷新图标配置服务"
-                        else -> "总额度 ${formatter.format(limit)} 请求"
+                        else -> "总积分 ${formatter.format(limit)} 分"
                     },
                     color = if (errorMessage != null && quota == null) {
                         Color(0xFFFFC4BC)
@@ -736,7 +703,7 @@ private fun QuotaCircuitArtwork(modifier: Modifier = Modifier) {
 private fun AccountActionGroup(
     isAdmin: Boolean,
     layout: AccountLayoutSpec,
-    onOpenProfile: () -> Unit,
+    onOpenPointsPlans: () -> Unit,
     onOpenSettings: () -> Unit,
     onManageUsers: () -> Unit,
     onModerateCommunity: () -> Unit
@@ -750,10 +717,10 @@ private fun AccountActionGroup(
     ) {
         Column {
             AccountActionRow(
-                icon = Icons.Default.AccountBox,
-                title = "账户管理",
+                icon = Icons.Default.Payments,
+                title = "积分套餐",
                 rowHeight = layout.actionRowHeight,
-                onClick = onOpenProfile
+                onClick = onOpenPointsPlans
             )
             HorizontalDivider(
                 modifier = Modifier.padding(horizontal = 18.dp),
@@ -923,9 +890,8 @@ internal fun ManagedUserRow(
             val usage = user.usage ?: AccountUsageSummary()
             Text(
                 text = when {
-                    user.isAdmin -> "@${user.username} · 管理员 · 默认 VIP"
-                    user.vipEnabled -> "@${user.username} · ${user.planName} · ${usage.aiCreditsRemaining} Credits"
-                    else -> "@${user.username} · ${user.planName} · ${usage.sttMinutesRemaining} 分钟"
+                    user.isAdmin -> "@${user.username} · 管理员 · 积分不限"
+                    else -> "@${user.username} · ${localizedPlanName(user.planName)} · 剩余 ${usage.pointsRemaining} 分"
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1088,25 +1054,18 @@ internal fun ProfileAvatar(
     }
 }
 
-private fun membershipSummary(profile: AccountProfile?, quota: AgentQuota?): String {
-    val membership = when {
-        profile?.isAdmin == true -> "尊享会员"
-        profile?.vipEnabled == true -> "${profile.planName} · 尊享会员"
+private fun membershipSummary(profile: AccountProfile?): String = when {
+        profile?.isAdmin == true -> "管理员 · 积分不限"
+        profile?.vipEnabled == true -> "${localizedPlanName(profile.planName)} · 积分账户"
         profile != null -> {
             val usage = profile.usage ?: AccountUsageSummary()
-            "${profile.planName} · ${usage.sttMinutesRemaining} 分钟 / ${usage.aiCreditsRemaining} Credits"
+            "${localizedPlanName(profile.planName)} · 剩余 ${usage.pointsRemaining} 分"
         }
-        else -> "Free 套餐"
-    }
-    val expiry = quota?.expiresAt?.let(::formatExpiry)
-    return if (expiry != null && (profile?.vipEnabled == true || profile?.isAdmin == true)) {
-        "$membership  |  有效期至 $expiry"
-    } else {
-        membership
-    }
+        else -> "普通用户"
 }
 
-private fun formatExpiry(epochSeconds: Long): String = SimpleDateFormat(
-    "yyyy-MM-dd",
-    Locale.SIMPLIFIED_CHINESE
-).format(Date(epochSeconds * 1000))
+private fun localizedPlanName(planName: String?): String = when (planName?.trim()?.lowercase()) {
+    null, "", "free" -> "免费账户"
+    "vip" -> "积分账户"
+    else -> planName.orEmpty()
+}

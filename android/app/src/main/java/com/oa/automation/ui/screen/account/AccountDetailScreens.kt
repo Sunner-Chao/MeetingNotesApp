@@ -28,7 +28,6 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.WorkspacePremium
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -65,10 +64,9 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.oa.automation.domain.model.AccountProfile
 import com.oa.automation.infrastructure.llm.AgentQuota
+import com.oa.automation.ui.formatBeijingTime
 import com.oa.automation.ui.theme.BrandDeepGreen
 import java.text.NumberFormat
-import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
 import kotlin.math.floor
 import org.koin.androidx.compose.koinViewModel
@@ -79,7 +77,6 @@ private val DetailGreen = Color(0xFF0078D4)
 @Composable
 fun AccountProfileScreen(
     onNavigateBack: () -> Unit,
-    onNavigateToVip: () -> Unit,
     viewModel: AccountViewModel = koinViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -128,11 +125,6 @@ fun AccountProfileScreen(
                 username = uiState.username,
                 profile = uiState.profile,
                 onEdit = viewModel::startProfileEdit
-            )
-            MembershipDetailCard(
-                profile = uiState.profile,
-                quota = uiState.quota,
-                onClick = onNavigateToVip
             )
             ProfileInformationCard(uiState.profile, uiState.username)
         }
@@ -191,69 +183,6 @@ private fun ProfileSummaryCard(
 }
 
 @Composable
-private fun MembershipDetailCard(
-    profile: AccountProfile?,
-    quota: AgentQuota?,
-    onClick: () -> Unit
-) {
-    Surface(
-        onClick = onClick,
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
-        color = BrandDeepGreen
-    ) {
-        Row(
-            modifier = Modifier.padding(18.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Surface(
-                modifier = Modifier.size(44.dp),
-                shape = RoundedCornerShape(12.dp),
-                color = Color.White.copy(alpha = 0.10f)
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        Icons.Default.WorkspacePremium,
-                        contentDescription = null,
-                        tint = Color(0xFFF2B84B),
-                        modifier = Modifier.size(25.dp)
-                    )
-                }
-            }
-            Spacer(Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = if (profile?.vipEnabled == true || profile?.isAdmin == true) {
-                        "VIP 会员与专业能力"
-                    } else {
-                        "开通 VIP 会员"
-                    },
-                    color = Color.White,
-                    style = MaterialTheme.typography.titleMedium
-                )
-                Text(
-                    text = buildString {
-                        append(profile?.planName ?: "Free")
-                        (profile?.vipExpiresAt ?: quota?.expiresAt)?.let {
-                            append(" · 有效期至 ${formatDetailDate(it)}")
-                        }
-                    },
-                    color = Color.White.copy(alpha = 0.64f),
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-            Icon(
-                Icons.Default.ChevronRight,
-                contentDescription = null,
-                tint = Color.White.copy(alpha = 0.72f)
-            )
-        }
-    }
-}
-
-@Composable
 private fun ProfileInformationCard(profile: AccountProfile?, username: String) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -273,15 +202,9 @@ private fun ProfileInformationCard(profile: AccountProfile?, username: String) {
                 DetailRow("用户 ID", profile?.id ?: "-")
                 DetailRow("账户角色", if (profile?.isAdmin == true) "管理员" else "普通用户")
                 DetailRow("账户状态", if (profile?.enabled != false) "正常" else "已停用")
-                DetailRow("当前套餐", profile?.planName ?: "Free")
-                DetailRow(
-                    "会员有效期",
-                    profile?.vipExpiresAt?.let(::formatDetailDate)
-                        ?: if (profile?.vipEnabled == true) "有效" else "未开通"
-                )
-                DetailRow("剩余转写", "${profile?.usage?.sttMinutesRemaining ?: 0.0} 分钟")
-                DetailRow("AI Credits", "${profile?.usage?.aiCreditsRemaining ?: 0}")
-                DetailRow("团队席位", "${profile?.usage?.teamSeats ?: 1} 席")
+                DetailRow("账户类型", localizedDetailPlanName(profile?.planName))
+                DetailRow("剩余积分", "${profile?.usage?.pointsRemaining ?: 0} 分")
+                DetailRow("积分规则", "转写每分钟 10 分；智能整理每次 30 分；智能问答每次 10 分")
                 DetailRow("注册时间", profile?.createdAt?.let(::formatDetailDateTime) ?: "-")
             }
         }
@@ -300,14 +223,14 @@ fun AccountQuotaDetailsScreen(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             AccountDetailTopBar(
-                title = "额度明细",
+                title = "积分明细",
                 onNavigateBack = onNavigateBack,
                 actions = {
                     IconButton(onClick = viewModel::refreshAccount, enabled = !uiState.isQuotaLoading) {
                         if (uiState.isQuotaLoading) {
                             CircularProgressIndicator(modifier = Modifier.size(19.dp), strokeWidth = 2.dp)
                         } else {
-                            Icon(Icons.Default.Refresh, contentDescription = "刷新额度")
+                            Icon(Icons.Default.Refresh, contentDescription = "刷新积分")
                         }
                     }
                 }
@@ -349,8 +272,8 @@ fun AccountQuotaDetailsScreen(
 
 @Composable
 private fun QuotaDetailsHero(quota: AgentQuota?, profile: AccountProfile?) {
-    val limit = quota?.requestLimit ?: profile?.quota?.requestLimit ?: 0
-    val remaining = quota?.aiCreditsRemaining ?: profile?.usage?.aiCreditsRemaining ?: 0
+    val limit = profile?.usage?.pointsGranted ?: quota?.pointsGranted ?: 0
+    val remaining = profile?.usage?.pointsRemaining ?: quota?.pointsRemaining ?: 0
     val fraction = if (limit > 0) (remaining.toFloat() / limit).coerceIn(0f, 1f) else 0f
     val percent = floor(fraction * 10_000f) / 100f
     val formatter = remember { NumberFormat.getIntegerInstance(Locale.US) }
@@ -380,7 +303,7 @@ private fun QuotaDetailsHero(quota: AgentQuota?, profile: AccountProfile?) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("AI 处理额度", color = Color.White, style = MaterialTheme.typography.titleMedium)
+                    Text("积分账户", color = Color.White, style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(18.dp))
                     Text(
                         formatter.format(remaining),
@@ -391,10 +314,10 @@ private fun QuotaDetailsHero(quota: AgentQuota?, profile: AccountProfile?) {
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    Text("AI Credits", color = Color.White.copy(alpha = 0.84f))
+                    Text("可用积分", color = Color.White.copy(alpha = 0.84f))
                     Spacer(Modifier.height(15.dp))
                     Text(
-                        "总额度 ${formatter.format(limit)} 请求",
+                        "总积分 ${formatter.format(limit)} 分",
                         color = Color.White.copy(alpha = 0.58f),
                         style = MaterialTheme.typography.bodySmall
                     )
@@ -415,7 +338,7 @@ private fun QuotaDetailsHero(quota: AgentQuota?, profile: AccountProfile?) {
                             fontWeight = FontWeight.Bold,
                             fontSize = 20.sp
                         )
-                        Text("剩余额度", color = Color.White.copy(alpha = 0.58f), fontSize = 11.sp)
+                        Text("剩余积分", color = Color.White.copy(alpha = 0.58f), fontSize = 11.sp)
                     }
                 }
             }
@@ -426,9 +349,6 @@ private fun QuotaDetailsHero(quota: AgentQuota?, profile: AccountProfile?) {
 @Composable
 private fun QuotaInformationCard(quota: AgentQuota?, profile: AccountProfile?) {
     val formatter = remember { NumberFormat.getIntegerInstance(Locale.US) }
-    val limit = quota?.requestLimit ?: profile?.quota?.requestLimit ?: 0
-    val used = quota?.requestsUsed ?: profile?.quota?.requestsUsed ?: 0
-    val remaining = quota?.aiCreditsRemaining ?: profile?.usage?.aiCreditsRemaining ?: 0
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(18.dp),
@@ -437,35 +357,24 @@ private fun QuotaInformationCard(quota: AgentQuota?, profile: AccountProfile?) {
     ) {
         Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
             Text(
-                "套餐详情",
+                "积分明细",
                 modifier = Modifier.padding(vertical = 10.dp),
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onSurface
             )
-            DetailRow("套餐名称", quota?.label ?: profile?.planName ?: "Free")
-            DetailRow("总额度", "${formatter.format(limit)} 次")
-            DetailRow("已使用", "${formatter.format(used)} 次")
-            DetailRow("剩余额度", "${formatter.format(remaining)} 次")
-            DetailRow(
-                "有效期",
-                (profile?.vipExpiresAt ?: quota?.expiresAt)?.let(::formatDetailDate) ?: "长期有效"
-            )
-            DetailRow("团队席位", "${profile?.usage?.teamSeats ?: 1} 席")
-            DetailRow(
-                "可用智能体",
-                quota?.allowedProviders
-                    ?.joinToString(" · ") { provider ->
-                        when (provider) {
-                            "claude-cli" -> "智能体"
-                            "codex-cli" -> "小Woo"
-                            else -> provider
-                        }
-                    }
-                    .orEmpty()
-                    .ifBlank { "暂无" }
-            )
+            DetailRow("账户类型", localizedDetailPlanName(profile?.planName ?: quota?.label))
+            DetailRow("总积分", "${formatter.format(profile?.usage?.pointsGranted ?: 0)} 分")
+            DetailRow("已使用", "${formatter.format(profile?.usage?.pointsUsed ?: 0)} 分")
+            DetailRow("剩余积分", "${formatter.format(profile?.usage?.pointsRemaining ?: 0)} 分")
+            DetailRow("计费规则", "转写每分钟 10 分；智能整理每次 30 分；智能问答每次 10 分")
         }
     }
+}
+
+private fun localizedDetailPlanName(planName: String?): String = when (planName?.trim()?.lowercase()) {
+    null, "", "free" -> "免费账户"
+    "vip" -> "积分账户"
+    else -> planName.orEmpty()
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -481,7 +390,7 @@ fun AccountUserManagementScreen(
         AlertDialog(
             onDismissRequest = { userPendingDeletion = null },
             title = { Text("删除用户") },
-            text = { Text("将永久删除“${user.username}”及其会话、会员权益、充值记录和 AI 任务。此操作无法撤销。") },
+            text = { Text("将永久删除“${user.username}”及其会话、积分记录、充值记录和智能任务。此操作无法撤销。") },
             confirmButton = {
                 TextButton(
                     onClick = {
@@ -610,12 +519,8 @@ private fun AccountDetailTopBar(
     )
 }
 
-private fun formatDetailDate(epochSeconds: Long): String = SimpleDateFormat(
-    "yyyy-MM-dd",
-    Locale.SIMPLIFIED_CHINESE
-).format(Date(epochSeconds * 1000))
+private fun formatDetailDate(epochSeconds: Long): String =
+    formatBeijingTime(epochSeconds * 1000, "yyyy-MM-dd")
 
-private fun formatDetailDateTime(epochSeconds: Long): String = SimpleDateFormat(
-    "yyyy-MM-dd HH:mm",
-    Locale.SIMPLIFIED_CHINESE
-).format(Date(epochSeconds * 1000))
+private fun formatDetailDateTime(epochSeconds: Long): String =
+    formatBeijingTime(epochSeconds * 1000, "yyyy-MM-dd HH:mm")
