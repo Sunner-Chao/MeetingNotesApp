@@ -175,6 +175,42 @@ class SttRuntimeTest(unittest.TestCase):
         )
         self.assertEqual(result.language, "zh")
 
+    def test_long_local_audio_requires_active_diarization_for_cloud_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "long-recording.wav"
+            source.write_bytes(b"source")
+            chunk = stt.AudioChunk(root / "chunk-001.wav", 0.0, 3000.0)
+            with (
+                patch.object(stt, "STT_TEMP_DIR", root),
+                patch.object(stt, "STT_LONG_AUDIO_CHUNK_THRESHOLD_SEC", 2700),
+                patch.object(stt, "audio_duration_for_tencent_budget", return_value=3000.0),
+                patch.object(stt, "create_audio_chunks", return_value=[chunk]),
+                patch.object(
+                    stt,
+                    "transcribe_local_single_file",
+                    return_value=stt.TranscribeResponse(
+                        text="普通转写",
+                        language="zh",
+                        segments=[{"start": 0.0, "end": 2.0, "text": "普通转写"}],
+                    ),
+                ),
+                patch.object(
+                    stt,
+                    "attach_local_speakers",
+                    return_value=(
+                        [{"start": 0.0, "end": 2.0, "text": "普通转写"}],
+                        {"enabled": True, "provider": "local", "active": False},
+                    ),
+                ),
+            ):
+                with self.assertRaisesRegex(stt.AudioChunkingError, "本地说话人分离未就绪"):
+                    stt.transcribe_local_long_audio(
+                        str(source),
+                        "zh",
+                        speaker_diarization=True,
+                    )
+
     def test_chunked_tencent_transcription_merges_cloud_results(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -625,6 +661,28 @@ class SttRuntimeTest(unittest.TestCase):
 
         self.assertEqual(text, "说话人 1：甲。\n说话人 2：乙。")
         self.assertEqual(len(rows), 2)
+
+    def test_tencent_diarization_requires_real_speaker_labels(self) -> None:
+        with self.assertRaisesRegex(ValueError, "did not return speaker diarization labels"):
+            stt.parse_tencent_flash_response(
+                {"code": 0, "flash_result": [{"text": "没有说话人标签。"}]},
+                include_speakers=True,
+            )
+
+    def test_cloud_diarization_metadata_only_activates_for_speaker_ids(self) -> None:
+        inactive = stt.cloud_diarization_metadata([{"text": "普通文本"}])
+        active = stt.cloud_diarization_metadata(
+            [
+                {"text": "甲", "speaker_id": 3},
+                {"text": "乙", "speaker_id": 7},
+                {"text": "甲继续", "speaker_id": 3},
+            ]
+        )
+
+        self.assertFalse(inactive["active"])
+        self.assertEqual(inactive["speaker_count"], 0)
+        self.assertTrue(active["active"])
+        self.assertEqual(active["speaker_count"], 2)
 
     def test_local_speaker_attachment_selects_maximum_time_overlap(self) -> None:
         # Keep the test independent from ONNX model loading while exercising

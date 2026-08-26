@@ -705,6 +705,21 @@ def format_speaker_rows(rows: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def cloud_diarization_metadata(rows: object) -> dict[str, Any]:
+    valid_rows = rows if isinstance(rows, list) else []
+    speaker_ids = {
+        str(row.get("speaker_id"))
+        for row in valid_rows
+        if isinstance(row, dict) and row.get("speaker_id") is not None
+    }
+    return {
+        "enabled": True,
+        "provider": "tencent-cloud",
+        "active": bool(speaker_ids),
+        "speaker_count": len(speaker_ids),
+    }
+
+
 def _load_local_speaker_diarizer():
     global speaker_diarizer, speaker_diarizer_error
     if speaker_diarizer is not None:
@@ -849,6 +864,8 @@ def parse_tencent_flash_response(
                 if key in sentence:
                     row[key] = sentence[key]
             rows.append(row)
+    if include_speakers and not cloud_diarization_metadata(rows)["active"]:
+        raise ValueError("Tencent Cloud ASR did not return speaker diarization labels")
     text = format_speaker_rows(rows) if include_speakers else normalize_preview_text(
         "\n".join(str(row["text"]) for row in rows)
     )
@@ -3594,6 +3611,10 @@ def transcribe_local_long_audio(
                 merged_segments, diarization = attach_local_speakers(source, merged_segments)
                 if diarization.get("active"):
                     merged_text = format_speaker_rows(merged_segments)
+                else:
+                    raise RuntimeError(
+                        "本地说话人分离未就绪，已交由调用方切换腾讯云说话人分离"
+                    )
             return TranscribeResponse(
                 text=merged_text,
                 language=detected_language,
@@ -4604,18 +4625,7 @@ async def managed_cloud_asr_transcription(
             "chunk_count": int(payload.get("chunk_count") or 1),
             "segments": payload.get("segments", []),
             "diarization": (
-                {
-                    "enabled": True,
-                    "provider": "tencent-cloud",
-                    "active": bool(payload.get("segments")),
-                    "speaker_count": len(
-                        {
-                            str(row.get("speaker_id"))
-                            for row in payload.get("segments", [])
-                            if row.get("speaker_id") is not None
-                        }
-                    ),
-                }
+                cloud_diarization_metadata(payload.get("segments"))
                 if speaker_diarization
                 else None
             ),
@@ -4827,18 +4837,7 @@ async def transcribe_stream_recording(
                     usage=usage,
                     segments=cloud_payload.get("segments", []),
                     diarization=(
-                        {
-                            "enabled": True,
-                            "provider": "tencent-cloud",
-                            "active": bool(cloud_payload.get("segments")),
-                            "speaker_count": len(
-                                {
-                                    str(row.get("speaker_id"))
-                                    for row in cloud_payload.get("segments", [])
-                                    if row.get("speaker_id") is not None
-                                }
-                            ),
-                        }
+                        cloud_diarization_metadata(cloud_payload.get("segments"))
                         if recording.speaker_diarization
                         else None
                     ),

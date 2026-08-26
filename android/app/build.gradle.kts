@@ -195,8 +195,8 @@ android {
         applicationId = "com.oa.automation"
         minSdk = 26
         targetSdk = 34
-        versionCode = 10244
-        versionName = "1.2.44"
+        versionCode = 10245
+        versionName = "1.2.45"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
