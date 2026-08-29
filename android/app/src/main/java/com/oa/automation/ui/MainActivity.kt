@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -24,6 +25,7 @@ import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import com.oa.automation.ui.navigation.OAAutomationNavHost
 import com.oa.automation.ui.theme.OAAutomationTheme
+import com.oa.automation.BuildConfig
 import com.oa.automation.data.local.ConfigDataStore
 import com.oa.automation.locale.withSimplifiedChineseLocale
 import com.oa.automation.infrastructure.textimport.SharedTextImportCoordinator
@@ -31,6 +33,8 @@ import com.oa.automation.infrastructure.service.FloatingStatusService
 import com.oa.automation.infrastructure.service.RecordingSessionController
 import com.oa.automation.infrastructure.audio.OrphanedMeetingAudioRecovery
 import com.oa.automation.infrastructure.attachment.LegacyMeetingAttachmentRecovery
+import com.oa.automation.infrastructure.account.AccountApiService
+import com.oa.automation.infrastructure.account.LocalAccountDataMigrator
 import com.oa.automation.infrastructure.update.AndroidAppUpdate
 import com.oa.automation.infrastructure.update.AppUpdateCheck
 import com.oa.automation.infrastructure.update.AppUpdateService
@@ -51,6 +55,8 @@ class MainActivity : ComponentActivity() {
     private val orphanedMeetingAudioRecovery: OrphanedMeetingAudioRecovery by inject()
     private val legacyMeetingAttachmentRecovery: LegacyMeetingAttachmentRecovery by inject()
     private val appUpdateService: AppUpdateService by inject()
+    private val accountApiService: AccountApiService by inject()
+    private val localAccountDataMigrator: LocalAccountDataMigrator by inject()
     private var updateCheckJob: Job? = null
     private var pendingAppUpdate by mutableStateOf<AndroidAppUpdate?>(null)
     private var isDownloadingAppUpdate by mutableStateOf(false)
@@ -58,6 +64,8 @@ class MainActivity : ComponentActivity() {
     private var appUpdateMessage by mutableStateOf<String?>(null)
     private var updateCheckQueued = false
     private var pendingRecordingNavigationMeetingId by mutableStateOf<String?>(null)
+    private var socialAuthLoginVersion by mutableIntStateOf(0)
+    private var socialAuthExchangeInProgress = false
 
     override fun attachBaseContext(newBase: Context) {
         super.attachBaseContext(newBase.withSimplifiedChineseLocale())
@@ -74,6 +82,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         acceptRecordingNavigation(intent)
+        acceptSocialAuthCallback(intent)
 
         // Request microphone permission if not granted
         requestAudioPermission()
@@ -93,6 +102,7 @@ class MainActivity : ComponentActivity() {
                 ) {
                     Box(modifier = Modifier.fillMaxSize()) {
                         OAAutomationNavHost(
+                            socialAuthLoginVersion = socialAuthLoginVersion,
                             openRecordingMeetingId = pendingRecordingNavigationMeetingId,
                             onRecordingMeetingOpened = { meetingId ->
                                 if (pendingRecordingNavigationMeetingId == meetingId) {
@@ -119,6 +129,7 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         acceptRecordingNavigation(intent)
+        acceptSocialAuthCallback(intent)
         lifecycleScope.launch { sharedTextImportCoordinator.accept(intent) }
     }
 
@@ -148,6 +159,59 @@ class MainActivity : ComponentActivity() {
         intent.getStringExtra(EXTRA_OPEN_RECORDING_MEETING_ID)
             ?.takeIf { it.isNotBlank() }
             ?.let { pendingRecordingNavigationMeetingId = it }
+    }
+
+    private fun acceptSocialAuthCallback(intent: Intent) {
+        val callback = intent.data ?: return
+        val expected = android.net.Uri.parse(BuildConfig.SOCIAL_AUTH_CALLBACK_URI)
+        if (
+            callback.scheme != expected.scheme ||
+            callback.host != expected.host ||
+            callback.path != expected.path
+        ) return
+
+        val ticket = callback.getQueryParameter("social_ticket").orEmpty()
+        val error = callback.getQueryParameter("social_error").orEmpty()
+        intent.data = null
+        if (error.isNotBlank()) {
+            Toast.makeText(this, "第三方登录失败：$error", Toast.LENGTH_LONG).show()
+            return
+        }
+        if (ticket.isBlank() || socialAuthExchangeInProgress) return
+
+        socialAuthExchangeInProgress = true
+        lifecycleScope.launch {
+            try {
+                val endpoint = configDataStore.accountEndpointFlow.first()
+                accountApiService.exchangeSocialAuthTicket(endpoint, ticket).fold(
+                    onSuccess = { session ->
+                        configDataStore.saveAuthSession(session, endpoint)
+                        localAccountDataMigrator.migrateAsync(endpoint, session)
+                        socialAuthLoginVersion += 1
+                        Toast.makeText(
+                            this@MainActivity,
+                            "已通过第三方账号登录",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    },
+                    onFailure = { failure ->
+                        Toast.makeText(
+                            this@MainActivity,
+                            failure.message ?: "第三方登录票据验证失败",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                )
+            } catch (failure: Exception) {
+                Toast.makeText(
+                    this@MainActivity,
+                    failure.message ?: "第三方登录会话保存失败",
+                    Toast.LENGTH_LONG
+                ).show()
+            } finally {
+                socialAuthExchangeInProgress = false
+            }
+        }
     }
 
     private fun requestAudioPermission() {

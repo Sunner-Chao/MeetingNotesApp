@@ -48,7 +48,7 @@ class FasterWhisperEngine(
 ) : SpeechToTextEngine {
 
     private val client = OkHttpClient.Builder()
-        .dns(STT_IPV4_RELAY_DNS)
+        .dns(STT_LOCAL_DNS)
         .connectTimeout(BuildConfig.STT_CLOUD_CONNECT_TIMEOUT_SECONDS.toLong(), TimeUnit.SECONDS)
         .readTimeout(BuildConfig.STT_CLOUD_READ_TIMEOUT_SECONDS.toLong(), TimeUnit.SECONDS)
         .writeTimeout(BuildConfig.STT_CLOUD_WRITE_TIMEOUT_SECONDS.toLong(), TimeUnit.SECONDS)
@@ -246,7 +246,13 @@ private fun File.toMediaType() = when (extension.lowercase()) {
  */
 object STTServiceClient {
 
-    private val client = OkHttpClient.Builder()
+    private val localClient = OkHttpClient.Builder()
+        .dns(STT_LOCAL_DNS)
+        .connectTimeout(5, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .build()
+
+    private val cloudClient = OkHttpClient.Builder()
         .dns(STT_IPV4_RELAY_DNS)
         .connectTimeout(5, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
@@ -270,7 +276,7 @@ object STTServiceClient {
                 .url("$normalizedEndpoint/health")
                 .get()
                 .build()
-            client.newCall(healthRequest).execute().use { response ->
+            localClient.newCall(healthRequest).execute().use { response ->
                 if (!response.isSuccessful) {
                     return Result.failure(response.toSttFailure(response.body?.string().orEmpty()))
                 }
@@ -283,7 +289,7 @@ object STTServiceClient {
                 .addHeader("Authorization", "Bearer $token")
                 .get()
                 .build()
-            client.newCall(authRequest).execute().use { response ->
+            localClient.newCall(authRequest).execute().use { response ->
                 if (response.isSuccessful) Result.success(Unit)
                 else Result.failure(response.toSttFailure(response.body?.string().orEmpty()))
             }
@@ -316,7 +322,7 @@ object STTServiceClient {
                 .addHeader("Authorization", "Bearer $token")
                 .get()
                 .build()
-            client.newCall(request).execute().use { response ->
+            cloudClient.newCall(request).execute().use { response ->
                 val responseBody = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
                     Result.failure(response.toSttFailure(responseBody))
@@ -347,7 +353,7 @@ object STTServiceClient {
                 .addHeader("Authorization", "Bearer $token")
                 .get()
                 .build()
-            client.newCall(request).execute().use { response ->
+            cloudClient.newCall(request).execute().use { response ->
                 val responseBody = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
                     Result.failure(response.toSttFailure(responseBody))
@@ -446,11 +452,15 @@ object STTServiceClient {
      */
     suspend fun scanEndpoint(endpoint: String): DiscoveredSTTServer? = withContext(Dispatchers.IO) {
         try {
+            val scanClient = OkHttpClient.Builder()
+                .connectTimeout(2, TimeUnit.SECONDS)
+                .readTimeout(3, TimeUnit.SECONDS)
+                .build()
             val request = Request.Builder()
                 .url("$endpoint/health")
                 .get()
                 .build()
-            client.newCall(request).execute().use { response ->
+            scanClient.newCall(request).execute().use { response ->
                 if (response.isSuccessful) {
                     val body = response.body?.string() ?: "{}"
                     return@withContext parseServerInfo(body, endpoint)

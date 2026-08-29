@@ -1,7 +1,9 @@
 package com.oa.automation.infrastructure.stt
 
 import java.net.Inet4Address
+import java.net.Inet6Address
 import java.net.InetAddress
+import java.net.UnknownHostException
 import okhttp3.Dns
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -62,5 +64,49 @@ class SttDnsTest {
         )
 
         assertEquals(listOf(original), dns.lookup("example.com"))
+    }
+
+    @Test
+    fun `local public host keeps only IPv6 address`() {
+        val ipv6 = InetAddress.getByName("2001:db8::10")
+        val ipv4 = InetAddress.getByName("192.0.2.10")
+        val dns = LocalSttDns(
+            delegate = object : Dns {
+                override fun lookup(hostname: String): List<InetAddress> = listOf(ipv4, ipv6)
+            },
+            localPublicHost = "lstwin.space"
+        )
+
+        val result = dns.lookup("LSTWIN.SPACE.")
+
+        assertEquals(1, result.size)
+        assertTrue(result.single() is Inet6Address)
+    }
+
+    @Test(expected = UnknownHostException::class)
+    fun `local public host fails instead of leaking onto cloud IPv4`() {
+        val dns = LocalSttDns(
+            delegate = object : Dns {
+                override fun lookup(hostname: String): List<InetAddress> = listOf(
+                    InetAddress.getByName("192.0.2.10")
+                )
+            },
+            localPublicHost = "lstwin.space"
+        )
+
+        dns.lookup("lstwin.space")
+    }
+
+    @Test
+    fun `AVD host IPv4 remains available for local debug service`() {
+        val avdHost = InetAddress.getByName("10.0.2.2")
+        val dns = LocalSttDns(
+            delegate = object : Dns {
+                override fun lookup(hostname: String): List<InetAddress> = listOf(avdHost)
+            },
+            localPublicHost = "10.0.2.2"
+        )
+
+        assertEquals(listOf(avdHost), dns.lookup("10.0.2.2"))
     }
 }

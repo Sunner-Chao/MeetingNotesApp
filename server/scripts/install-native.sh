@@ -73,10 +73,20 @@ fi
 CPU_COUNT="$(nproc)"
 MEMORY_MB="$(awk '/MemTotal/ {print int($2 / 1024)}' /proc/meminfo)"
 DISK_MB="$(df -Pm /opt | awk 'NR == 2 {print $4}')"
+# The multi-GB headroom only protects the model import, which cannot run unless the
+# caller supplies a models source or archive. A code-only deploy needs the release
+# tree plus one Python venv, so hold it to a threshold sized for that.
+if [[ -n "$MODELS_ARCHIVE" || -n "$MODELS_SOURCE" ]]; then
+  REQUIRED_DISK_MB=6144
+  DISK_SCOPE="release, venv and model import"
+else
+  REQUIRED_DISK_MB=2048
+  DISK_SCOPE="release and venv only"
+fi
 [[ "$CPU_COUNT" -ge 4 ]] || fail "At least 4 CPU cores are required; found ${CPU_COUNT}."
 [[ "$MEMORY_MB" -ge 3500 ]] || fail "At least 3500 MB RAM is required; found ${MEMORY_MB} MB."
-[[ "$DISK_MB" -ge 6144 ]] || fail "At least 6 GB free disk is required; found ${DISK_MB} MB."
-echo "[PREFLIGHT] Ubuntu ${VERSION_ID:-unknown}, CPU=${CPU_COUNT}, RAM=${MEMORY_MB}MB, free=${DISK_MB}MB"
+[[ "$DISK_MB" -ge "$REQUIRED_DISK_MB" ]] || fail "At least ${REQUIRED_DISK_MB} MB free disk is required for ${DISK_SCOPE}; found ${DISK_MB} MB."
+echo "[PREFLIGHT] Ubuntu ${VERSION_ID:-unknown}, CPU=${CPU_COUNT}, RAM=${MEMORY_MB}MB, free=${DISK_MB}MB, required=${REQUIRED_DISK_MB}MB (${DISK_SCOPE})"
 
 export DEBIAN_FRONTEND=noninteractive
 if [[ "$SKIP_PACKAGES" -eq 0 ]]; then
@@ -307,6 +317,14 @@ if ! grep -Eq '^ACCOUNT_AI_CHAT_POINTS=.+$' "$CONFIG_FILE"; then
 fi
 if ! grep -Eq '^ACCOUNT_STT_TOKEN_TTL_SEC=.+$' "$CONFIG_FILE"; then
   set_env_value ACCOUNT_STT_TOKEN_TTL_SEC "43200"
+fi
+# Alipay stays off until the operator injects production credentials. Pinning the
+# environment to production also stops this host from ever reading a sandbox key file.
+if ! grep -Eq '^ALIPAY_ENABLED=.+$' "$CONFIG_FILE"; then
+  set_env_value ALIPAY_ENABLED "false"
+fi
+if ! grep -Eq '^ALIPAY_ENVIRONMENT=.+$' "$CONFIG_FILE"; then
+  set_env_value ALIPAY_ENVIRONMENT "production"
 fi
 if ! grep -Eq '^STT_LOG_PATH=.+$' "$CONFIG_FILE"; then
   set_env_value STT_LOG_PATH "$STATE_ROOT/logs/stt.log"

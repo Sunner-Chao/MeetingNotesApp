@@ -338,6 +338,20 @@ class SttRuntimeTest(unittest.TestCase):
             self.assertIsNotNone(principal)
             self.assertEqual(principal.owner_id, "user-1")
 
+    def test_personal_edge_node_can_delegate_account_billing_upstream(self) -> None:
+        principal = stt.ApiPrincipal(owner_id="user-1")
+        with (
+            patch.object(stt, "ACCOUNT_TOKEN_SECRET", "shared-secret"),
+            patch.object(stt, "ACCOUNT_STT_BILLING_ENABLED", False),
+        ):
+            self.assertFalse(stt.account_stt_billing_required(principal))
+
+        with (
+            patch.object(stt, "ACCOUNT_TOKEN_SECRET", "shared-secret"),
+            patch.object(stt, "ACCOUNT_STT_BILLING_ENABLED", True),
+        ):
+            self.assertTrue(stt.account_stt_billing_required(principal))
+
     def test_tencent_audio_duration_is_parsed_as_milliseconds_with_safe_fallback(self) -> None:
         self.assertEqual(stt.tencent_audio_duration_ms({"audio_duration": "61001"}), 61_001)
         self.assertEqual(
@@ -1659,6 +1673,7 @@ class SttBillingIntegrationTest(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(stt, "_account_billing_service", self.account_service),
             patch.object(stt, "ACCOUNT_TOKEN_SECRET", "billing-account-secret"),
+            patch.object(stt, "ACCOUNT_STT_BILLING_ENABLED", True),
             patch.object(stt, "ACCOUNT_DB_PATH", self.db_path),
             patch.object(stt, "STT_TEMP_DIR", self.root / "stt-temp"),
             patch.object(stt, "STT_AUDIO_ARCHIVE_ENABLED", False),

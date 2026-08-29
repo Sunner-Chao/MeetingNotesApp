@@ -202,6 +202,51 @@ class AccountApiServiceTest {
     }
 
     @Test
+    fun createAlipayPaymentUsesOrderEndpointAndParsesOrderString() = runBlocking {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody(
+                    """{"provider":"alipay","product":"app_pay","environment":"sandbox","order_id":"order-1","out_trade_no":"ZW-1","amount_cents":990,"orderStr":"app_id=test&sign=server-signature","payment_status":"created"}"""
+                )
+        )
+
+        val endpoint = server.url("/api").toString().trimEnd('/')
+        val payment = service.createAlipayPayment(endpoint, "user-session", "order-1").getOrThrow()
+
+        val request = server.takeRequest()
+        assertEquals("POST", request.method)
+        assertEquals("/api/account/orders/order-1/alipay/pay", request.path)
+        assertEquals("Bearer user-session", request.getHeader("Authorization"))
+        assertEquals("sandbox", payment.environment)
+        assertEquals("app_id=test&sign=server-signature", payment.orderString)
+        assertEquals(990, payment.amountCents)
+    }
+
+    @Test
+    fun queryAlipayPaymentParsesAuthoritativeServerStatus() = runBlocking {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody(
+                    """{"payment":{"id":"tx-1","order_id":"order-1","out_trade_no":"ZW-1","trade_no":"20260828001","status":"paid","last_trade_status":"TRADE_SUCCESS","amount_cents":990,"environment":"sandbox","paid_at":1893456000},"processed":{"result":"success"}}"""
+                )
+        )
+
+        val endpoint = server.url("/api").toString().trimEnd('/')
+        val query = service.queryAlipayPayment(endpoint, "user-session", "order-1").getOrThrow()
+
+        val request = server.takeRequest()
+        assertEquals("POST", request.method)
+        assertEquals("/api/account/orders/order-1/alipay/query", request.path)
+        assertEquals("Bearer user-session", request.getHeader("Authorization"))
+        assertEquals("paid", query.payment.status)
+        assertEquals("TRADE_SUCCESS", query.payment.lastTradeStatus)
+    }
+
+    @Test
     fun deleteUserUsesAdminBearerAndDeleteMethod() = runBlocking {
         server.enqueue(
             MockResponse()
@@ -262,5 +307,110 @@ class AccountApiServiceTest {
         val request = server.takeRequest()
         assertEquals("/api/auth/code/request", request.path)
         assertTrue(request.body.readUtf8().contains("\"purpose\":\"reset_password\""))
+    }
+
+    @Test
+    fun verifiedRegistrationCarriesOptionalReferralCode() = runBlocking {
+        server.enqueue(
+            MockResponse().setResponseCode(200).setHeader("Content-Type", "application/json").setBody(
+                """{"access_token":"user-token","agent_access_token":"agent-token","stt_access_token":"stt-token","token_type":"bearer","expires_at":1893456000,"user":{"id":"u3","username":"new-user","role":"user","is_admin":false,"enabled":true,"vip_enabled":false,"construction_logs_unlocked":false,"created_at":1}}"""
+            )
+        )
+
+        val endpoint = server.url("/api").toString().trimEnd('/')
+        service.registerWithCode(
+            endpoint,
+            "email",
+            "new@example.com",
+            "123456",
+            "new-user",
+            "password123",
+            "zw-ab12"
+        ).getOrThrow()
+
+        val request = server.takeRequest()
+        assertEquals("/api/auth/register/verify", request.path)
+        assertTrue(request.body.readUtf8().contains("\"referral_code\":\"ZW-AB12\""))
+    }
+
+    @Test
+    fun growthOverviewAndCampaignDetailMapAndroidFields() = runBlocking {
+        server.enqueue(
+            MockResponse().setResponseCode(200).setHeader("Content-Type", "application/json").setBody(
+                """{
+                  "referral":{"code":"ZW-1234","successful_invites":2,"pending_rewards":0,"reward_points":300,"share_path":"/app/?ref=ZW-1234"},
+                  "rewards":{"points":120},
+                  "campaigns":[{"id":"daily-quiz","title":"每日答题兑好礼","campaign_type":"quiz","summary":"答题得积分","rules":{"checkin_reward":10,"answer_reward":20,"questions":[{"key":"q1","question":"浙江省省会是哪里？","options":["杭州","宁波"]}]},"reward_pool":{"ranks":{"1":500}},"starts_at":1700000000,"ends_at":1800000000,"status":"active"}],
+                  "private_channel":{"id":"default-welfare-group","name":"智悟本福利7群","qr_image_url":"/api/growth/private-channel/default-qr","join_url":"","short_url":"","slogan":"扫码入群","reward_type":"points","reward":{"quantity":200},"enabled":true}
+                }"""
+            )
+        )
+        server.enqueue(
+            MockResponse().setResponseCode(200).setHeader("Content-Type", "application/json").setBody(
+                """{"id":"daily-quiz","title":"每日答题兑好礼","campaign_type":"quiz","summary":"答题得积分","rules":{"checkin_reward":10,"answer_reward":20,"questions":[{"key":"q1","question":"浙江省省会是哪里？","options":["杭州","宁波"]}]},"reward_pool":{"ranks":{"1":500}},"starts_at":1700000000,"ends_at":1800000000,"status":"active","joined":true,"my_score":3,"my_rank":1,"actions":[],"leaderboard":[{"user_id":"u1","display_name":"高老师","score":3,"rank":1}]}"""
+            )
+        )
+
+        val endpoint = server.url("/api").toString().trimEnd('/')
+        val overview = service.growthOverview(endpoint, "user-session").getOrThrow()
+        val detail = service.growthCampaignDetail(endpoint, "user-session", "daily-quiz").getOrThrow()
+
+        assertEquals("ZW-1234", overview.referral.code)
+        assertEquals(300, overview.referral.rewardPoints)
+        assertEquals(20, overview.campaigns.single().rules.answerReward)
+        assertEquals("智悟本福利7群", overview.privateChannel?.name)
+        assertEquals(200, overview.privateChannel?.reward?.quantity)
+        assertEquals(3, detail.myScore)
+        assertEquals("高老师", detail.leaderboard.single().displayName)
+        assertEquals("Bearer user-session", server.takeRequest().getHeader("Authorization"))
+        assertEquals("/api/growth/campaigns/daily-quiz", server.takeRequest().path)
+    }
+
+    @Test
+    fun publicGrowthPrivateChannelDoesNotRequireSession() = runBlocking {
+        server.enqueue(
+            MockResponse().setResponseCode(200).setHeader("Content-Type", "application/json").setBody(
+                """{"id":"default-welfare-group","name":"智悟本福利7群","qr_image_url":"/api/growth/private-channel/default-qr","slogan":"扫码加入福利群","reward":{"quantity":200},"enabled":true}"""
+            )
+        )
+
+        val endpoint = server.url("/api").toString().trimEnd('/')
+        val channel = service.publicGrowthPrivateChannel(endpoint).getOrThrow()
+        val request = server.takeRequest()
+
+        assertEquals("智悟本福利7群", channel.name)
+        assertEquals("/api/growth/private-channel/default-qr", channel.qrImageUrl)
+        assertEquals(null, request.getHeader("Authorization"))
+        assertEquals("/api/growth/private-channel", request.path)
+    }
+
+    @Test
+    fun growthSystemMessagesCanBeListedAndMarkedRead() = runBlocking {
+        server.enqueue(
+            MockResponse().setResponseCode(200).setHeader("Content-Type", "application/json").setBody(
+                """[{"id":"campaign:1:announcement","message_type":"campaign_announcement","title":"获奖公告","body":"活动已结算","campaign_id":"campaign-1","action_path":"/growth/campaigns/campaign-1","created_at":1800000000,"read_at":null}]"""
+            )
+        )
+        server.enqueue(
+            MockResponse().setResponseCode(200).setHeader("Content-Type", "application/json").setBody(
+                """{"status":"read","id":"campaign:1:announcement","read_at":1800000010}"""
+            )
+        )
+
+        val endpoint = server.url("/api").toString().trimEnd('/')
+        val messages = service.growthSystemMessages(endpoint, "user-session").getOrThrow()
+        service.markGrowthSystemMessageRead(
+            endpoint,
+            "user-session",
+            messages.single().id
+        ).getOrThrow()
+
+        assertEquals("获奖公告", messages.single().title)
+        assertEquals(null, messages.single().readAt)
+        assertEquals("/api/account/growth/messages", server.takeRequest().path)
+        assertEquals(
+            "/api/account/growth/messages/campaign%3A1%3Aannouncement/read",
+            server.takeRequest().path
+        )
     }
 }

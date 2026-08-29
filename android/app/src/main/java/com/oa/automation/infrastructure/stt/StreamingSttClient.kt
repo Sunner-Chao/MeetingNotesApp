@@ -317,15 +317,21 @@ class StreamingSttClient internal constructor(
                             val errorMessage = message.message.orEmpty()
                             failProviderSwitch(errorMessage)
                             failLanguageSwitch(errorMessage)
-                            if (isAuthorizationError(errorMessage)) {
+                            val authorizationFailure = isAuthorizationError(errorMessage)
+                            if (authorizationFailure) {
                                 authorizationRejected = true
-                                isConnected = false
-                                streamCanFinalize = false
-                                onError("STT 访问令牌无效或无权限，请到服务设置中更新令牌")
                                 webSocket.close(1008, "unauthorized")
                             } else {
-                                onError(errorMessage)
+                                webSocket.cancel()
                             }
+                            handleConnectionTermination(
+                                generation = generation,
+                                connectionId = connectionId,
+                                detail = errorMessage,
+                                authorizationFailure = authorizationFailure,
+                                onStatus = onStatus,
+                                onError = onError
+                            )
                         }
                     }
                 }

@@ -179,6 +179,74 @@ class StreamingSttClientTest {
     }
 
     @Test
+    fun `server error message closes broken socket and reconnects`() {
+        val server = MockWebServer()
+        val firstStartReceived = CountDownLatch(1)
+        val secondStartReceived = CountDownLatch(1)
+        val statuses = Collections.synchronizedList(mutableListOf<String>())
+        server.enqueue(
+            MockResponse().withWebSocketUpgrade(
+                object : WebSocketListener() {
+                    override fun onMessage(webSocket: WebSocket, text: String) {
+                        val payload = JsonParser.parseString(text).asJsonObject
+                        if (payload.get("event")?.asString == "start") {
+                            firstStartReceived.countDown()
+                            webSocket.send("""{"type":"error","message":"provider reset"}""")
+                        }
+                    }
+
+                    override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                        webSocket.close(code, reason)
+                    }
+                }
+            )
+        )
+        server.enqueue(
+            MockResponse().withWebSocketUpgrade(
+                object : WebSocketListener() {
+                    override fun onMessage(webSocket: WebSocket, text: String) {
+                        val payload = JsonParser.parseString(text).asJsonObject
+                        if (payload.get("event")?.asString == "start") {
+                            secondStartReceived.countDown()
+                        }
+                    }
+
+                    override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                        webSocket.close(code, reason)
+                    }
+                }
+            )
+        )
+        server.start()
+        val client = StreamingSttClient(
+            client = OkHttpClient.Builder().build(),
+            reconnectDelay = {},
+            maxReconnectAttempts = 1,
+            baseDelayMs = 1,
+            debugLog = {},
+            warningLog = {}
+        )
+        try {
+            client.start(
+                endpoint = server.url("/local").toString(),
+                meetingId = "meeting-server-error",
+                streamProvider = StreamingSttProvider.LOCAL,
+                onPartialText = {},
+                onStatus = statuses::add,
+                onError = {}
+            )
+
+            assertTrue(firstStartReceived.await(5, TimeUnit.SECONDS))
+            assertTrue("server error did not trigger reconnect", secondStartReceived.await(5, TimeUnit.SECONDS))
+            assertEquals(2, server.requestCount)
+            assertTrue(statuses.any { it.startsWith("本地连接波动") })
+        } finally {
+            client.stop()
+            server.shutdown()
+        }
+    }
+
+    @Test
     fun `terminal local websocket failure reports provider for automatic fallback`() {
         val server = MockWebServer()
         val failureLatch = CountDownLatch(1)

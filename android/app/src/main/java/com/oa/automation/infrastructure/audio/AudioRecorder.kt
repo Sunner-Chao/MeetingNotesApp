@@ -1,11 +1,14 @@
 package com.oa.automation.infrastructure.audio
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.media.audiofx.AutomaticGainControl
 import android.media.audiofx.NoiseSuppressor
 import android.util.Log
+import androidx.core.content.ContextCompat
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -390,6 +393,13 @@ class AudioRecorder(private val context: android.content.Context) {
         bufferSize: Int,
         enableAudioEnhancement: Boolean
     ): Pair<AudioRecord, Int>? {
+        if (
+            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            Log.w(TAG, "Audio recorder initialization skipped because permission is unavailable")
+            return null
+        }
         for (audioSource in audioSourceCandidates(enableAudioEnhancement)) {
             val candidate = runCatching {
                 AudioRecord.Builder()

@@ -75,9 +75,7 @@ class LoginViewModel(
             accountApiService.authProviders(endpoint).onSuccess { providers ->
                 _uiState.update {
                     it.copy(
-                        authProviders = providers.filter { provider ->
-                            provider.id == "wechat" && provider.tier != "team"
-                        }
+                        authProviders = providers
                     )
                 }
             }
@@ -230,7 +228,12 @@ class LoginViewModel(
 }
 
 internal fun defaultSocialAuthProviders() = listOf(
-    SocialAuthProvider(id = "wechat", name = "微信")
+    SocialAuthProvider(id = "wechat", name = "微信"),
+    SocialAuthProvider(id = "qq", name = "QQ"),
+    SocialAuthProvider(id = "feishu", name = "飞书", tier = "team"),
+    SocialAuthProvider(id = "telegram", name = "Telegram"),
+    SocialAuthProvider(id = "whatsapp", name = "WhatsApp"),
+    SocialAuthProvider(id = "instagram", name = "Instagram")
 )
 
 internal fun validationError(channel: String, identifier: String): String? = when (channel) {

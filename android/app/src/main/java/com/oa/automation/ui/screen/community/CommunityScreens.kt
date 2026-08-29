@@ -1,7 +1,9 @@
 package com.oa.automation.ui.screen.community
 
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -61,6 +63,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
@@ -84,6 +87,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
@@ -97,6 +101,7 @@ import com.oa.automation.domain.model.CommunityComment
 import com.oa.automation.domain.model.CommunityCollection
 import com.oa.automation.domain.model.CommunityInteractionState
 import com.oa.automation.domain.model.PublicCommunityPost
+import com.oa.automation.R
 import com.oa.automation.ui.formatBeijingTime
 import org.koin.androidx.compose.koinViewModel
 import kotlinx.coroutines.Dispatchers
@@ -822,7 +827,7 @@ private fun PublicPostCard(
             Text(post.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             CommunityPostMetadata(post)
             Text(
-                post.content,
+                communityPostExcerpt(post),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 3,
@@ -970,6 +975,7 @@ fun CommunityPostDetailScreen(
     val isSamplePost = post?.id?.let(MockStudyCommunityData::isSampleId) == true
     val context = LocalContext.current
     var showActions by remember { mutableStateOf(false) }
+    var showShareOptions by remember { mutableStateOf(false) }
     var previewMediaIndex by remember { mutableStateOf<Int?>(null) }
     LaunchedEffect(postId) { viewModel.load(postId) }
     if (uiState.showReportDialog) {
@@ -1004,6 +1010,19 @@ fun CommunityPostDetailScreen(
             onDismiss = { previewMediaIndex = null }
         )
     }
+    if (post != null && showShareOptions) {
+        CommunityPostShareDialog(
+            onDismiss = { showShareOptions = false },
+            onShareToWeChat = {
+                showShareOptions = false
+                shareCommunityPostToWeChat(context, post)
+            },
+            onShareToMoreApps = {
+                showShareOptions = false
+                shareCommunityPost(context, post)
+            }
+        )
+    }
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
@@ -1022,7 +1041,7 @@ fun CommunityPostDetailScreen(
                 },
                 actions = {
                     IconButton(
-                        onClick = { post?.let { shareCommunityPost(context, it) } },
+                        onClick = { showShareOptions = true },
                         enabled = post != null
                     ) {
                         Icon(Icons.Default.Share, contentDescription = "分享")
@@ -1116,7 +1135,22 @@ fun CommunityCollectionDetailScreen(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    var showShareOptions by remember { mutableStateOf(false) }
     LaunchedEffect(collectionId) { viewModel.load(collectionId) }
+    if (state.collection != null && showShareOptions) {
+        CommunityPostShareDialog(
+            title = "分享这个专题",
+            onDismiss = { showShareOptions = false },
+            onShareToWeChat = {
+                showShareOptions = false
+                shareCommunityCollectionToWeChat(context, state)
+            },
+            onShareToMoreApps = {
+                showShareOptions = false
+                shareCommunityCollection(context, state)
+            }
+        )
+    }
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
@@ -1146,7 +1180,7 @@ fun CommunityCollectionDetailScreen(
                         )
                     }
                     IconButton(
-                        onClick = { shareCommunityCollection(context, state) },
+                        onClick = { showShareOptions = true },
                         enabled = state.collection != null
                     ) {
                         Icon(Icons.Default.Share, contentDescription = "分享专题")
@@ -1200,14 +1234,6 @@ fun CommunityCollectionDetailScreen(
                     item { Text("专题中的笔记暂不可查看", color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 } else {
                     items(state.posts, key = { it.id }) { post ->
-                        if (post.curationNote.isNotBlank()) {
-                            Text(
-                                "收录说明：${post.curationNote}",
-                                modifier = Modifier.padding(horizontal = 4.dp),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
                         PublicPostCard(
                             post = post,
                             mediaBaseUrl = state.mediaBaseUrl,
@@ -1220,22 +1246,38 @@ fun CommunityCollectionDetailScreen(
     }
 }
 
+private fun communityCollectionShareIntent(state: CommunityCollectionDetailUiState): Intent {
+    val collection = state.collection ?: return Intent(Intent.ACTION_SEND)
+    return Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_SUBJECT, collection.title)
+        putExtra(Intent.EXTRA_TEXT, communityCollectionShareText(state))
+    }
+}
+
 private fun shareCommunityCollection(
     context: Context,
     state: CommunityCollectionDetailUiState
 ) {
-    val collection = state.collection ?: return
-    val text = communityCollectionShareText(state)
+    if (state.collection == null) return
     context.startActivity(
         Intent.createChooser(
-            Intent(Intent.ACTION_SEND).apply {
-                type = "text/plain"
-                putExtra(Intent.EXTRA_SUBJECT, collection.title)
-                putExtra(Intent.EXTRA_TEXT, text)
-            },
+            communityCollectionShareIntent(state),
             "分享专题"
         )
     )
+}
+
+private fun shareCommunityCollectionToWeChat(
+    context: Context,
+    state: CommunityCollectionDetailUiState
+) {
+    try {
+        context.startActivity(communityCollectionShareIntent(state).setPackage("com.tencent.mm"))
+    } catch (_: ActivityNotFoundException) {
+        Toast.makeText(context, "未检测到微信，已为你打开其他分享方式", Toast.LENGTH_SHORT).show()
+        shareCommunityCollection(context, state)
+    }
 }
 
 internal fun communityCollectionShareText(state: CommunityCollectionDetailUiState): String {
@@ -1569,7 +1611,7 @@ private fun CommunityMediaPager(
 @Composable
 private fun CommunityRichText(content: String) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        parseCommunityRichText(content).forEach { block ->
+        communityPostBodyBlocks(content).forEach { block ->
             when (block.kind) {
                 CommunityRichTextKind.SPACER -> Spacer(Modifier.height(4.dp))
                 CommunityRichTextKind.HEADING_THREE -> Text(
@@ -1654,35 +1696,44 @@ internal fun parseCommunityRichText(content: String): List<CommunityRichTextBloc
         }
     }.toList()
 
+internal fun communityPostBodyBlocks(content: String): List<CommunityRichTextBlock> {
+    val blocks = parseCommunityRichText(content)
+    val firstContentIndex = blocks.indexOfFirst { it.kind != CommunityRichTextKind.SPACER }
+    return blocks.filterIndexed { index, block ->
+        !(index == firstContentIndex && block.kind == CommunityRichTextKind.HEADING_ONE)
+    }.dropWhile { it.kind == CommunityRichTextKind.SPACER }
+}
+
+internal fun communityPostExcerpt(post: PublicCommunityPost, maxLength: Int = 180): String {
+    val body = communityPostBodyBlocks(post.content)
+    val preferred = body.firstOrNull {
+        it.kind == CommunityRichTextKind.PARAGRAPH && it.text.length >= 18
+    } ?: body.firstOrNull { it.text.isNotBlank() }
+    val excerpt = preferred?.text.orEmpty().trim()
+    return if (excerpt.length <= maxLength) excerpt else excerpt.take(maxLength).trimEnd() + "..."
+}
+
 @Composable
 private fun CommunityStageTimeline(stages: List<String>) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(
-            "行程分段",
+            "沿途记录",
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold
         )
-        stages.forEachIndexed { index, stage ->
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(stages) { stage ->
                 Surface(
-                    modifier = Modifier.size(24.dp),
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+                    shape = RoundedCornerShape(6.dp),
+                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
                 ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Text(
-                            "${index + 1}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
+                    Text(
+                        stage,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
                 }
-                Text(
-                    stage,
-                    modifier = Modifier.padding(top = 2.dp),
-                    style = MaterialTheme.typography.bodyMedium
-                )
             }
         }
     }
@@ -1847,18 +1898,63 @@ private fun CommunityComments(
     }
 }
 
+@Composable
+private fun CommunityPostShareDialog(
+    title: String = "分享这篇见闻",
+    onDismiss: () -> Unit,
+    onShareToWeChat: () -> Unit,
+    onShareToMoreApps: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onShareToWeChat, modifier = Modifier.fillMaxWidth()) {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_wechat_official),
+                        contentDescription = null,
+                        modifier = Modifier.size(24.dp),
+                        tint = Color.Unspecified
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text("微信好友")
+                }
+                OutlinedButton(onClick = onShareToMoreApps, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(22.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("更多应用")
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
+    )
+}
+
+private fun communityPostShareIntent(post: PublicCommunityPost): Intent =
+    Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_SUBJECT, post.title)
+        putExtra(Intent.EXTRA_TEXT, communityPostShareText(post))
+    }
+
 private fun shareCommunityPost(context: Context, post: PublicCommunityPost) {
-    val text = communityPostShareText(post)
     context.startActivity(
         Intent.createChooser(
-            Intent(Intent.ACTION_SEND).apply {
-                type = "text/plain"
-                putExtra(Intent.EXTRA_SUBJECT, post.title)
-                putExtra(Intent.EXTRA_TEXT, text)
-            },
+            communityPostShareIntent(post),
             "分享见闻"
         )
     )
+}
+
+private fun shareCommunityPostToWeChat(context: Context, post: PublicCommunityPost) {
+    try {
+        context.startActivity(communityPostShareIntent(post).setPackage("com.tencent.mm"))
+    } catch (_: ActivityNotFoundException) {
+        Toast.makeText(context, "未检测到微信，已为你打开其他分享方式", Toast.LENGTH_SHORT).show()
+        shareCommunityPost(context, post)
+    }
 }
 
 internal fun communityPostShareText(post: PublicCommunityPost): String {
@@ -1871,8 +1967,13 @@ internal fun communityPostShareText(post: PublicCommunityPost): String {
         appendLine(post.title)
         if (meta.isNotBlank()) appendLine(meta)
         appendLine()
-        append(post.content.trim().take(800))
-        if (post.content.length > 800) append("...")
+        val body = communityPostBodyBlocks(post.content)
+            .filter { it.kind != CommunityRichTextKind.SPACER }
+            .joinToString("\n") { block ->
+                if (block.kind == CommunityRichTextKind.BULLET) "• ${block.text}" else block.text
+            }
+        append(body.take(800))
+        if (body.length > 800) append("...")
     }.trim()
     return text
 }

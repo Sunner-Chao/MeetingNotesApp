@@ -43,5 +43,20 @@
     "construction_logs_unlocked": true,
     "active": true,
     "sort_order": 30
+  },
+  {
+    "code": "points_paylink_probe",
+    "name": "支付联调测试包（请勿购买）",
+    "description": "仅用于支付宝真机联调，金额 0.01 元且只发放 1 积分；联调结束后会立即下线",
+    "price_cents": 1,
+    "points": 1,
+    "quota_amount": 1,
+    "included_minutes": 0,
+    "ai_credits": 0,
+    "team_seats": 1,
+    "duration_days": 1,
+    "construction_logs_unlocked": false,
+    "active": true,
+    "sort_order": 999
   }
 ]

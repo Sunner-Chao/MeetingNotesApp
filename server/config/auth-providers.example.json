@@ -3,17 +3,105 @@
     "wechat": {
       "name": "微信",
       "enabled": false,
-      "authorization_url": ""
+      "client_id": "",
+      "client_secret_env": "ACCOUNT_AUTH_WECHAT_CLIENT_SECRET",
+      "authorize_endpoint": "https://open.weixin.qq.com/connect/qrconnect",
+      "token_endpoint": "https://api.weixin.qq.com/sns/oauth2/access_token",
+      "userinfo_endpoint": "https://api.weixin.qq.com/sns/userinfo",
+      "scopes": ["snsapi_login"],
+      "authorize_client_id_param": "appid",
+      "authorize_url_suffix": "#wechat_redirect",
+      "token_method": "GET",
+      "pkce_enabled": false,
+      "token_client_id_param": "appid",
+      "token_client_secret_param": "secret",
+      "token_subject_field": "openid",
+      "userinfo_token_param": "access_token",
+      "userinfo_subject_param": "openid",
+      "userinfo_extra_params": {
+        "lang": "zh_CN"
+      },
+      "subject_field": "openid",
+      "display_name_field": "nickname",
+      "avatar_field": "headimgurl"
     },
     "qq": {
       "name": "QQ",
       "enabled": false,
-      "authorization_url": ""
+      "client_id": "",
+      "client_secret_env": "ACCOUNT_AUTH_QQ_CLIENT_SECRET",
+      "authorize_endpoint": "https://graph.qq.com/oauth2.0/authorize",
+      "token_endpoint": "https://graph.qq.com/oauth2.0/token",
+      "userinfo_endpoint": "https://graph.qq.com/user/get_user_info",
+      "scopes": ["get_user_info"],
+      "pkce_enabled": false,
+      "token_method": "GET",
+      "token_response_format": "form",
+      "subject_endpoint": "https://graph.qq.com/oauth2.0/me",
+      "subject_response_format": "jsonp",
+      "subject_token_param": "access_token",
+      "userinfo_token_param": "access_token",
+      "userinfo_subject_param": "openid",
+      "userinfo_client_id_param": "oauth_consumer_key",
+      "subject_field": "openid",
+      "display_name_field": "nickname",
+      "avatar_field": "figureurl_qq_2"
     },
     "feishu": {
       "name": "飞书",
       "enabled": false,
-      "authorization_url": ""
+      "tier": "team",
+      "client_id": "",
+      "client_secret_env": "ACCOUNT_AUTH_FEISHU_CLIENT_SECRET",
+      "authorize_endpoint": "https://accounts.feishu.cn/open-apis/authen/v1/authorize",
+      "token_endpoint": "https://open.feishu.cn/open-apis/authen/v2/oauth/token",
+      "userinfo_endpoint": "https://open.feishu.cn/open-apis/authen/v1/user_info",
+      "scopes": [],
+      "pkce_enabled": false,
+      "token_body_format": "json",
+      "subject_field": "data.open_id",
+      "display_name_field": "data.name",
+      "avatar_field": "data.avatar_url"
+    },
+    "telegram": {
+      "name": "Telegram",
+      "enabled": false,
+      "bot_token_env": "ACCOUNT_AUTH_TELEGRAM_BOT_TOKEN",
+      "bot_id": ""
+    },
+    "whatsapp": {
+      "name": "WhatsApp",
+      "enabled": false,
+      "client_id": "",
+      "client_secret_env": "ACCOUNT_AUTH_WHATSAPP_CLIENT_SECRET",
+      "authorize_endpoint": "https://www.facebook.com/v23.0/dialog/oauth",
+      "token_endpoint": "https://graph.facebook.com/v23.0/oauth/access_token",
+      "userinfo_endpoint": "https://graph.facebook.com/v23.0/me",
+      "scopes": ["public_profile"],
+      "pkce_enabled": false,
+      "userinfo_extra_params": {
+        "fields": "id,name,picture"
+      },
+      "subject_field": "id",
+      "display_name_field": "name",
+      "avatar_field": "picture.data.url"
+    },
+    "instagram": {
+      "name": "Instagram",
+      "enabled": false,
+      "client_id": "",
+      "client_secret_env": "ACCOUNT_AUTH_INSTAGRAM_CLIENT_SECRET",
+      "authorize_endpoint": "https://www.facebook.com/v23.0/dialog/oauth",
+      "token_endpoint": "https://graph.facebook.com/v23.0/oauth/access_token",
+      "userinfo_endpoint": "https://graph.facebook.com/v23.0/me",
+      "scopes": ["public_profile"],
+      "pkce_enabled": false,
+      "userinfo_extra_params": {
+        "fields": "id,name,picture"
+      },
+      "subject_field": "id",
+      "display_name_field": "name",
+      "avatar_field": "picture.data.url"
     }
   }
 }

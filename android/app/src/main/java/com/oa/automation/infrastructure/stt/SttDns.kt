@@ -56,10 +56,22 @@ internal class LocalSttDns(
         val addresses = delegate.lookup(hostname)
         val normalizedHostname = hostname.trim().trimEnd('.').lowercase()
         val configuredHost = localPublicHost?.trim()?.trimEnd('.')?.lowercase()
-        if (configuredHost != normalizedHostname) return addresses
+        // Debug builds use 10.0.2.2 to reach the Windows host from an AVD.
+        // IPv6 pinning only applies to the dual-stack public hostname.
+        if (configuredHost != normalizedHostname || normalizedHostname.isIpv4Literal()) {
+            return addresses
+        }
         return addresses.filterIsInstance<Inet6Address>().ifEmpty {
             throw UnknownHostException("Local STT IPv6 endpoint is unavailable")
         }
+    }
+}
+
+private fun String.isIpv4Literal(): Boolean {
+    val parts = split('.')
+    return parts.size == 4 && parts.all { part ->
+        part.isNotEmpty() && part.all(Char::isDigit) &&
+            part.toIntOrNull()?.let { it in 0..255 } == true
     }
 }
 

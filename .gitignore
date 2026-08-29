@@ -48,6 +48,7 @@
 **/logs/
 
 # 忽略 .env 文件及常见变体
+/.alipay-sandbox.json
 **/.env
 **/.env.*
 !**/.env.example

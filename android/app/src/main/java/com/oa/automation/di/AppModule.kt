@@ -53,6 +53,7 @@ import com.oa.automation.infrastructure.textimport.ExternalTextSourceLauncher
 import com.oa.automation.infrastructure.update.AppUpdateService
 import com.oa.automation.ui.screen.home.HomeViewModel
 import com.oa.automation.ui.screen.account.AccountViewModel
+import com.oa.automation.ui.screen.account.GrowthCenterViewModel
 import com.oa.automation.ui.screen.account.PointsPlansViewModel
 import com.oa.automation.ui.screen.account.CommunityModerationViewModel
 import com.oa.automation.ui.screen.community.CommunityPostDetailViewModel
@@ -162,6 +163,7 @@ val appModule = module {
     viewModel { RegisterViewModel(get(), get(), get()) }
     viewModel { HomeViewModel(get(), get(), get(), get(), get(), get(), get(), get()) }
     viewModel { AccountViewModel(get(), get(), get(), get(), get()) }
+    viewModel { GrowthCenterViewModel(get(), get()) }
     viewModel { PointsPlansViewModel(get(), get()) }
     viewModel { CommunityModerationViewModel(get(), get()) }
     viewModel { CommunityViewModel(get(), get()) }

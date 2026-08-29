@@ -10,7 +10,7 @@ import { MeetingWorkspace } from "./components/MeetingWorkspace";
 import { ProfileScreen } from "./components/ProfileScreen";
 import { GrowthCampaignDialog } from "./components/GrowthCampaignDialog";
 import { Toast, type ToastState } from "./components/Toast";
-import { fetchGrowthOverview, login, redeemGrowthCode, refreshSession, requestRegistrationCode, updateProfile, verifyEmailRegistration } from "./lib/api";
+import { exchangeSocialAuthTicket, fetchGrowthOverview, login, redeemGrowthCode, refreshSession, requestRegistrationCode, updateProfile, verifyEmailRegistration } from "./lib/api";
 import { claimLegacyGuestData, clearMeetings, deleteMeetingRecord, listMeetings, recoverInterruptedRecordings, saveMeeting } from "./lib/db";
 import { synchronizeCloudMeetings } from "./lib/cloudSync";
 import { audioExtension } from "./lib/format";
@@ -84,6 +84,7 @@ export default function App() {
   const configRef = useRef(config);
   const onlineRef = useRef(online);
   const claimedAccountId = useRef<string>();
+  const socialCallbackHandled = useRef(false);
   sessionRef.current = session;
   configRef.current = config;
   onlineRef.current = online;
@@ -96,6 +97,41 @@ export default function App() {
     setToast({ message, kind });
     toastTimer.current = window.setTimeout(() => setToast(undefined), 3600);
   }, []);
+
+  useEffect(() => {
+    if (socialCallbackHandled.current) return;
+    const params = new URLSearchParams(window.location.search);
+    const ticket = params.get("social_ticket");
+    const socialError = params.get("social_error");
+    if (!ticket && !socialError) return;
+    socialCallbackHandled.current = true;
+    const clearCallbackParameters = () => {
+      const next = new URL(window.location.href);
+      next.searchParams.delete("social_ticket");
+      next.searchParams.delete("social_provider");
+      next.searchParams.delete("social_error");
+      window.history.replaceState({}, "", `${next.pathname}${next.search}${next.hash}`);
+    };
+    if (socialError) {
+      notify(socialError, "error");
+      clearCallbackParameters();
+      return;
+    }
+    setBusy(true);
+    void exchangeSocialAuthTicket(configRef.current, ticket || "")
+      .then((authenticated) => {
+        setReady(false);
+        setMeetings([]);
+        setSelectedMeetingId(undefined);
+        setSession(authenticated);
+        notify("第三方登录成功", "success");
+      })
+      .catch((error) => notify(error instanceof Error ? error.message : "第三方登录失败", "error"))
+      .finally(() => {
+        setBusy(false);
+        clearCallbackParameters();
+      });
+  }, [notify]);
 
   useEffect(() => {
     let active = true;

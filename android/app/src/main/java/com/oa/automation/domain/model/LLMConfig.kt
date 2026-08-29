@@ -8,7 +8,7 @@ import com.oa.automation.BuildConfig
  * - P1: Cloud API (backup)
  */
 enum class LLMEngineType(val displayName: String) {
-    AGENT_GATEWAY("云端 Agent"),
+    AGENT_GATEWAY("智悟云端模型"),
     LOCAL_OLLAMA("本地 Ollama"),
     CLOUD_API("云端大模型")
 }

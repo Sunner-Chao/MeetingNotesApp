@@ -1,4 +1,4 @@
-import type { AccountProfile, AuthCodeDelivery, AuthSession, GrowthCampaignDetail, GrowthOverview, Meeting, PrivateChannel, RuntimeConfig } from "../types";
+import type { AccountProfile, AuthCodeDelivery, AuthSession, GrowthCampaignDetail, GrowthOverview, Meeting, PrivateChannel, RuntimeConfig, SocialAuthProvider } from "../types";
 import { templateFor } from "../templates";
 
 interface SessionRefreshResponse {
@@ -86,6 +86,18 @@ export async function login(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ username, password })
+  });
+}
+
+export async function fetchSocialAuthProviders(config: RuntimeConfig): Promise<SocialAuthProvider[]> {
+  return jsonRequest<SocialAuthProvider[]>(apiUrl(config, "/api/auth/providers"), { method: "GET" });
+}
+
+export async function exchangeSocialAuthTicket(config: RuntimeConfig, ticket: string): Promise<AuthSession> {
+  return jsonRequest<AuthSession>(apiUrl(config, "/api/auth/social/exchange"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ticket })
   });
 }
 

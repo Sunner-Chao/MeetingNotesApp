@@ -344,6 +344,22 @@ class HomeViewModel(
         }
     }
 
+    fun markNotificationRead(meetingId: String, hasReport: Boolean) {
+        if (meetingId.isBlank()) return
+        val event = "$meetingId:${if (hasReport) "report" else "meeting"}"
+        val updatedEvents = _uiState.value.seenNotificationEvents + event
+        _uiState.update {
+            it.copy(
+                seenNotificationEvents = updatedEvents,
+                hasUnreadNotifications = notificationEvents(it.meetings)
+                    .any { notification -> notification !in updatedEvents }
+            )
+        }
+        viewModelScope.launch {
+            configDataStore.saveSeenNotificationEvents(updatedEvents)
+        }
+    }
+
     fun startEditTitle(meetingId: String, currentTitle: String) {
         _uiState.update { it.copy(editingMeetingId = meetingId, editingTitle = currentTitle) }
     }

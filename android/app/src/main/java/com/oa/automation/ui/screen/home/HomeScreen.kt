@@ -10,6 +10,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.keyframes
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Arrangement
@@ -109,6 +110,7 @@ import com.oa.automation.ui.component.AppLauncherIcon
 import com.oa.automation.ui.component.FirebaseUiTokens
 import com.oa.automation.ui.component.MeetingCard
 import com.oa.automation.ui.component.ZhiWuScreenBackground
+import com.oa.automation.ui.screen.account.GrowthCenterViewModel
 import com.oa.automation.ui.theme.BrandBlue
 import com.oa.automation.ui.theme.LocalAppIsDarkTheme
 import com.oa.automation.infrastructure.notification.requestNotificationPermissionIfNeeded
@@ -233,9 +235,11 @@ fun HomeScreen(
     onNavigateToRecording: (String, HomeLaunchAction) -> Unit,
     onNavigateToReport: (String) -> Unit = {},
     onNavigateToNotifications: () -> Unit,
-    viewModel: HomeViewModel = koinViewModel()
+    viewModel: HomeViewModel = koinViewModel(),
+    growthViewModel: GrowthCenterViewModel = koinViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val growthState by growthViewModel.uiState.collectAsStateWithLifecycle()
     val lifecycleOwner = LocalLifecycleOwner.current
     val snackbarHostState = remember { SnackbarHostState() }
     var showAllMeetings by remember { mutableStateOf(false) }
@@ -261,11 +265,13 @@ fun HomeScreen(
     // is off screen. Re-read the Room snapshot whenever Home becomes visible.
     LaunchedEffect(Unit) {
         viewModel.refreshMeetings()
+        growthViewModel.refresh()
     }
     DisposableEffect(lifecycleOwner, viewModel) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 viewModel.refreshMeetings()
+                growthViewModel.refresh()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -278,13 +284,13 @@ fun HomeScreen(
             AlertDialog(
                 onDismissRequest = viewModel::dismissActiveRecordingNotice,
                 icon = { Icon(Icons.Default.Mic, contentDescription = null, tint = BrandBlue) },
-                title = { Text("当前记录正在进行") },
-                text = { Text("“${active.meetingTitle}”正在记录，请先暂停后再开始新记录。") },
+                title = { Text("已有录音进行中") },
+                text = { Text("“${active.meetingTitle}”正在录音，请先暂停后再开始。") },
                 confirmButton = {
                     TextButton(onClick = viewModel::openActiveRecording) { Text("回到录音") }
                 },
                 dismissButton = {
-                    TextButton(onClick = viewModel::dismissActiveRecordingNotice) { Text("稍后再说") }
+                    TextButton(onClick = viewModel::dismissActiveRecordingNotice) { Text("稍后处理") }
                 }
             )
         }
@@ -368,7 +374,12 @@ fun HomeScreen(
                             )
                     ) {
                         HomeHeader(
-                            showNotificationDot = uiState.hasUnreadNotifications,
+                            showNotificationDot = uiState.hasUnreadNotifications ||
+                                growthState.systemMessages.any { it.readAt == null } ||
+                                growthState.overview?.campaigns.orEmpty().any { campaign ->
+                                    campaign.id !in growthState.seenCampaignIds &&
+                                        (campaign.status == "active" || campaign.status == "running")
+                                },
                             onNavigateToNotifications = onNavigateToNotifications,
                             layout = layout
                         )
@@ -469,12 +480,42 @@ private fun HomeHeader(
             )
         }
         Box {
+            // A ringing swing that repeats while unread notifications exist:
+            // a short burst of decaying oscillation, then a long rest.
+            val bellRotation = if (showNotificationDot) {
+                rememberInfiniteTransition(label = "bell-shake")
+                    .animateFloat(
+                        initialValue = 0f,
+                        targetValue = 0f,
+                        animationSpec = infiniteRepeatable(
+                            animation = keyframes {
+                                durationMillis = 2600
+                                0f at 0
+                                -22f at 120
+                                18f at 260
+                                -13f at 400
+                                9f at 540
+                                -5f at 680
+                                0f at 820
+                                0f at 2600
+                            }
+                        ),
+                        label = "bell-rotation"
+                    ).value
+            } else {
+                0f
+            }
             IconButton(onClick = onNavigateToNotifications) {
                 Icon(
                     imageVector = Icons.Default.NotificationsNone,
-                    contentDescription = "消息通知",
+                    contentDescription = "通知中心",
                     tint = colors.ink,
-                    modifier = Modifier.size(27.dp)
+                    modifier = Modifier
+                        .size(27.dp)
+                        .graphicsLayer {
+                            rotationZ = bellRotation
+                            transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0.5f, 0.12f)
+                        }
                 )
             }
             if (showNotificationDot) {
@@ -1295,7 +1336,7 @@ private fun HomeMeetingRow(
                         maxLines = 1
                     )
                     Text(
-                        text = meetingMeta(item.meeting),
+                        text = meetingDurationLabel(item.meeting),
                         style = MaterialTheme.typography.bodySmall,
                         color = colors.mutedInk,
                         maxLines = 1,
@@ -1714,18 +1755,13 @@ private fun reminderLabel(minutes: Int): String = when (minutes) {
     else -> "提前 $minutes 分钟"
 }
 
-private fun meetingMeta(meeting: Meeting): String {
-    val date = SimpleDateFormat("yyyy/MM/dd  HH:mm", Locale.SIMPLIFIED_CHINESE).format(Date(meeting.createdAt))
-    return if (meeting.durationMs > 0L) "$date  |  ${formatDuration(meeting.durationMs)}" else date
+internal fun meetingDurationLabel(meeting: Meeting): String {
+    val minutes = (meeting.durationMs.coerceAtLeast(0L) / 60_000L)
+    return "${minutes}分钟"
 }
 
 internal fun meetingOriginLabel(origin: MeetingOrigin): String = when (origin) {
     MeetingOrigin.QUICK -> "实时转录"
     MeetingOrigin.SCHEDULED -> "预定"
     MeetingOrigin.FILE_IMPORT -> "历史解析"
-}
-
-private fun formatDuration(durationMs: Long): String {
-    val totalSeconds = durationMs / 1_000
-    return "%d:%02d".format(totalSeconds / 60, totalSeconds % 60)
 }

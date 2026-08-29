@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Image
@@ -14,6 +15,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -33,6 +36,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.Email
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
@@ -59,14 +63,22 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.SpanStyle
@@ -81,19 +93,26 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
+import androidx.compose.ui.window.PopupProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.oa.automation.R
+import com.oa.automation.BuildConfig
 import com.oa.automation.domain.model.SocialAuthProvider
 import com.oa.automation.ui.component.AppLauncherIcon
 import com.oa.automation.ui.component.FirebaseUiTokens
 import com.oa.automation.ui.theme.OAAutomationTheme
 
 private val AuthPageBackground = Color(0xFFF6F8FB)
-private val WeChatGreen = Color(0xFF07C160)
-private val QqBlue = Color(0xFF12A5E8)
-private val FeishuBlue = Color(0xFF3370FF)
-
+// The brand header is rendered over a fixed light illustration in both themes.
+private val AuthHeaderTitle = Color(0xFF172033)
+private val AuthHeaderSubtitle = Color(0xFF46556A)
 internal data class AuthLayoutSpec(
     val compact: Boolean,
     val backgroundHeight: Dp,
@@ -109,6 +128,7 @@ internal data class AuthLayoutSpec(
     val fieldHeight: Dp,
     val buttonHeight: Dp,
     val providerIconSize: Dp,
+    val socialRowHeight: Dp,
     val agreementVerticalPadding: Dp,
     val benefitsVerticalPadding: Dp,
     val bottomSpacing: Dp
@@ -132,6 +152,7 @@ internal fun authLayoutSpec(maxWidth: Dp, maxHeight: Dp): AuthLayoutSpec {
             fieldHeight = 52.dp,
             buttonHeight = 50.dp,
             providerIconSize = 40.dp,
+            socialRowHeight = 44.dp,
             agreementVerticalPadding = 8.dp,
             benefitsVerticalPadding = 8.dp,
             bottomSpacing = 0.dp
@@ -152,6 +173,7 @@ internal fun authLayoutSpec(maxWidth: Dp, maxHeight: Dp): AuthLayoutSpec {
             fieldHeight = 58.dp,
             buttonHeight = 54.dp,
             providerIconSize = 48.dp,
+            socialRowHeight = 48.dp,
             agreementVerticalPadding = 17.dp,
             benefitsVerticalPadding = 15.dp,
             bottomSpacing = 24.dp
@@ -336,7 +358,7 @@ internal fun AuthPageHeader(layout: AuthLayoutSpec) {
             text = "智悟本",
             style = MaterialTheme.typography.headlineLarge,
             fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onSurface
+            color = AuthHeaderTitle
         )
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -354,7 +376,7 @@ internal fun AuthPageHeader(layout: AuthLayoutSpec) {
         Text(
             text = "我的成长记录",
             modifier = Modifier.padding(horizontal = 30.dp),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = AuthHeaderSubtitle,
             fontSize = 13.sp,
             lineHeight = 19.sp,
             textAlign = TextAlign.Center
@@ -625,49 +647,176 @@ internal fun authFieldColors() = OutlinedTextFieldDefaults.colors(
     unfocusedTrailingIconColor = MaterialTheme.colorScheme.outline
 )
 
+private val SocialPopupGap = 8.dp
+private val SocialPopupCornerRadius = 18.dp
+private const val SOCIAL_POPUP_COLUMNS = 3
+
+/**
+ * The entry row keeps a fixed height and the provider list opens in a [Popup] overlay, so the
+ * auth page never grows or starts scrolling when the section is expanded.
+ */
 @Composable
 internal fun SocialLoginSection(
     providers: List<SocialAuthProvider>,
     onProviderClick: (SocialAuthProvider) -> Unit,
     layout: AuthLayoutSpec
 ) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        HorizontalDivider(modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.outlineVariant)
-        Text(
-            text = "其他登录方式",
-            modifier = Modifier.padding(horizontal = 12.dp),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        HorizontalDivider(modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.outlineVariant)
-    }
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceEvenly
-    ) {
-        providers.forEach { provider ->
-            SocialProviderButton(
-                provider = provider,
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    var anchorWidth by remember { mutableStateOf(0.dp) }
+    val density = LocalDensity.current
+    val chevronRotation by animateFloatAsState(
+        targetValue = if (expanded) 180f else 0f,
+        label = "social-login-chevron"
+    )
+    val availableCount = providers.count { it.enabled }
+    Box(modifier = Modifier.fillMaxWidth().height(layout.socialRowHeight)) {
+        Surface(
+            modifier = Modifier
+                .fillMaxSize()
+                .onSizeChanged { anchorWidth = with(density) { it.width.toDp() } }
+                .clickable { expanded = !expanded },
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.46f),
+            border = androidx.compose.foundation.BorderStroke(
+                1.dp,
+                MaterialTheme.colorScheme.outlineVariant
+            )
+        ) {
+            Row(
+                modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "其他登录方式",
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1
+                )
+                Text(
+                    text = if (availableCount > 0) "${availableCount} 项可用" else "平台接入中",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1
+                )
+                Icon(
+                    imageVector = Icons.Default.ExpandMore,
+                    contentDescription = if (expanded) "收起其他登录方式" else "展开其他登录方式",
+                    modifier = Modifier
+                        .padding(start = 6.dp)
+                        .size(20.dp)
+                        .graphicsLayer { rotationZ = chevronRotation },
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        if (expanded) {
+            SocialProviderPopup(
+                providers = providers,
                 iconSize = layout.providerIconSize,
-                onClick = { onProviderClick(provider) }
+                width = anchorWidth,
+                onDismiss = { expanded = false },
+                onProviderClick = { provider ->
+                    // Unavailable platforms only surface a toast, so keep the overlay open there.
+                    if (provider.enabled) expanded = false
+                    onProviderClick(provider)
+                }
             )
         }
     }
 }
 
 @Composable
-private fun SocialProviderButton(provider: SocialAuthProvider, iconSize: Dp, onClick: () -> Unit) {
-    val providerColor = when (provider.id) {
-        "wechat" -> WeChatGreen
-        "qq" -> QqBlue
-        "feishu" -> FeishuBlue
-        else -> MaterialTheme.colorScheme.primary
+@OptIn(ExperimentalLayoutApi::class)
+private fun SocialProviderPopup(
+    providers: List<SocialAuthProvider>,
+    iconSize: Dp,
+    width: Dp,
+    onDismiss: () -> Unit,
+    onProviderClick: (SocialAuthProvider) -> Unit
+) {
+    val gapPx = with(LocalDensity.current) { SocialPopupGap.roundToPx() }
+    val positionProvider = remember(gapPx) { SocialProviderPopupPositionProvider(gapPx) }
+    Popup(
+        popupPositionProvider = positionProvider,
+        onDismissRequest = onDismiss,
+        properties = PopupProperties(focusable = true)
+    ) {
+        Surface(
+            modifier = if (width > 0.dp) Modifier.width(width) else Modifier,
+            shape = RoundedCornerShape(SocialPopupCornerRadius),
+            color = MaterialTheme.colorScheme.surface,
+            shadowElevation = 12.dp,
+            border = androidx.compose.foundation.BorderStroke(
+                1.dp,
+                MaterialTheme.colorScheme.outlineVariant
+            )
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 14.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = "选择其他登录方式",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    maxItemsInEachRow = SOCIAL_POPUP_COLUMNS,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    providers.forEach { provider ->
+                        Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                            SocialProviderButton(
+                                provider = provider,
+                                iconSize = iconSize,
+                                onClick = { onProviderClick(provider) }
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
-    val glyph = when (provider.id) {
-        "wechat" -> "微"
-        "qq" -> "Q"
-        "feishu" -> "飞"
-        else -> provider.name.take(1)
+}
+
+/**
+ * Places the overlay right below the anchor row, flipping above it when the bottom of the window
+ * cannot fit the content, and always keeping it inside the window horizontally.
+ */
+internal class SocialProviderPopupPositionProvider(
+    private val verticalGapPx: Int
+) : PopupPositionProvider {
+    override fun calculatePosition(
+        anchorBounds: IntRect,
+        windowSize: IntSize,
+        layoutDirection: LayoutDirection,
+        popupContentSize: IntSize
+    ): IntOffset {
+        val below = anchorBounds.bottom + verticalGapPx
+        val above = anchorBounds.top - verticalGapPx - popupContentSize.height
+        val y = when {
+            below + popupContentSize.height <= windowSize.height -> below
+            above >= 0 -> above
+            else -> (windowSize.height - popupContentSize.height).coerceAtLeast(0)
+        }
+        val maxX = (windowSize.width - popupContentSize.width).coerceAtLeast(0)
+        return IntOffset(x = anchorBounds.left.coerceIn(0, maxX), y = y)
+    }
+}
+
+@Composable
+private fun SocialProviderButton(provider: SocialAuthProvider, iconSize: Dp, onClick: () -> Unit) {
+    val iconResource = when (provider.id) {
+        "wechat" -> R.drawable.ic_wechat_official
+        "qq" -> R.drawable.ic_social_qq
+        "feishu" -> R.drawable.ic_social_feishu
+        "telegram" -> R.drawable.ic_social_telegram
+        "whatsapp" -> R.drawable.ic_social_whatsapp
+        "instagram" -> R.drawable.ic_social_instagram
+        else -> R.drawable.ic_wechat_official
     }
     Column(
         modifier = Modifier.alpha(if (provider.enabled) 1f else 0.42f),
@@ -677,27 +826,19 @@ private fun SocialProviderButton(provider: SocialAuthProvider, iconSize: Dp, onC
         Surface(
             modifier = Modifier
                 .size(iconSize)
-                .clickable(enabled = provider.enabled, onClick = onClick),
+                .clickable(onClick = onClick),
             shape = CircleShape,
             color = MaterialTheme.colorScheme.surface,
             shadowElevation = 3.dp,
             border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
         ) {
             Box(contentAlignment = Alignment.Center) {
-                if (provider.id == "wechat") {
-                    Image(
-                        painter = painterResource(R.drawable.ic_wechat_official),
-                        contentDescription = "官方微信",
-                        modifier = Modifier.size(iconSize * 0.64f)
-                    )
-                } else {
-                    Text(
-                        text = glyph,
-                        color = providerColor,
-                        fontSize = 20.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
+                Image(
+                    painter = painterResource(iconResource),
+                    contentDescription = provider.name,
+                    modifier = Modifier.size(iconSize * 0.64f),
+                    contentScale = ContentScale.Fit
+                )
             }
         }
         Text(
@@ -796,10 +937,27 @@ private fun AuthBenefit(
     }
 }
 
-private fun launchSocialLogin(context: Context, provider: SocialAuthProvider) {
-    if (!provider.enabled || provider.authorizationUrl.isBlank()) return
+internal fun launchSocialLogin(
+    context: Context,
+    provider: SocialAuthProvider,
+    referralCode: String = ""
+) {
+    if (!provider.enabled || provider.authorizationUrl.isBlank()) {
+        val reason = provider.unavailableReason.ifBlank { "${provider.name}登录暂未开放" }
+        Toast.makeText(context, reason, Toast.LENGTH_LONG).show()
+        return
+    }
     runCatching {
-        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(provider.authorizationUrl)))
+        val target = Uri.parse(provider.authorizationUrl).buildUpon()
+            .appendQueryParameter("client", "android")
+            .appendQueryParameter("redirect_uri", BuildConfig.SOCIAL_AUTH_CALLBACK_URI)
+            .apply {
+                referralCode.trim().takeIf { it.isNotBlank() }?.let {
+                    appendQueryParameter("ref", it.uppercase())
+                }
+            }
+            .build()
+        context.startActivity(Intent(Intent.ACTION_VIEW, target))
     }.onFailure {
         Toast.makeText(context, "无法打开${provider.name}登录", Toast.LENGTH_SHORT).show()
     }

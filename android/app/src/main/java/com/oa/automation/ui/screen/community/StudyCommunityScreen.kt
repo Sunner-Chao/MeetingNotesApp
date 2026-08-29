@@ -1418,29 +1418,8 @@ private fun StudyPostCard(
                     overflow = TextOverflow.Ellipsis
                 )
                 StudyPostMetadata(post)
-                post.curationNote.takeIf(String::isNotBlank)?.let { note ->
-                    Row(verticalAlignment = Alignment.Top) {
-                        Box(
-                            Modifier
-                                .padding(top = 4.dp)
-                                .size(width = 3.dp, height = 28.dp)
-                                .background(
-                                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.72f),
-                                    shape = RoundedCornerShape(2.dp)
-                                )
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            "编辑推荐 · $note",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                }
                 Text(
-                    post.content,
+                    communityPostExcerpt(post),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = if (post.media.isEmpty()) 4 else 2,

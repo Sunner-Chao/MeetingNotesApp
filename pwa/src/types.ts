@@ -70,7 +70,7 @@ export interface GrowthCampaignDetail extends GrowthCampaign {
 }
 
 export interface GrowthOverview {
-  referral: { code: string; successful_invites: number; pending_rewards: number; share_path: string };
+  referral: { code: string; successful_invites: number; pending_rewards: number; reward_points: number; share_path: string };
   rewards: Record<string, number>;
   campaigns: GrowthCampaign[];
   private_channel?: PrivateChannel | null;
@@ -82,6 +82,18 @@ export interface AuthSession {
   stt_access_token?: string | null;
   expires_at: number;
   user: AccountProfile;
+}
+
+export interface SocialAuthProvider {
+  id: string;
+  name: string;
+  enabled: boolean;
+  configured: boolean;
+  status: "available" | "not_configured";
+  unavailable_reason: string;
+  authorization_url: string;
+  start_path: string;
+  tier: "consumer" | "team";
 }
 
 export interface RuntimeConfig {

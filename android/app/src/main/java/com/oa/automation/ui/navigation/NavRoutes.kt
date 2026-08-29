@@ -30,7 +30,7 @@ object Home
 object Settings
 
 @Serializable
-object Notifications
+data class Notifications(val initialTab: String = "messages")
 
 @Serializable
 object AccountProfile
@@ -40,6 +40,12 @@ object AccountQuota
 
 @Serializable
 object AccountPointsPlans
+
+@Serializable
+object AccountRechargeOrders
+
+@Serializable
+object AccountInvitation
 
 @Serializable
 object AccountUsers

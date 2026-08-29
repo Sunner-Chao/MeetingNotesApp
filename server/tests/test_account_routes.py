@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import io
 import sys
 import tempfile
 import time
@@ -19,6 +20,26 @@ from agent_gateway import AgentGateway
 
 
 class AccountRouteTests(unittest.TestCase):
+    def test_social_redirect_allowlist_uses_structured_exact_matching(self) -> None:
+        self.assertTrue(
+            backend._same_redirect_target(
+                "zhiwuben://auth/callback?source=android",
+                "zhiwuben://auth/callback",
+            )
+        )
+        self.assertFalse(
+            backend._same_redirect_target(
+                "zhiwuben://auth/callback.evil",
+                "zhiwuben://auth/callback",
+            )
+        )
+        self.assertFalse(
+            backend._same_redirect_target(
+                "https://trusted.example.evil/app/",
+                "https://trusted.example/app/",
+            )
+        )
+
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         root = Path(self.temp_dir.name)
@@ -42,7 +63,13 @@ class AccountRouteTests(unittest.TestCase):
         self.previous_db = backend.DB_PATH
         self.previous_gateway = backend.AGENT_GATEWAY
         self.previous_accounts = backend.ACCOUNT_SERVICE
+        self.previous_web_api_token = backend.WEB_API_TOKEN
+        self.previous_web_api_username = backend.WEB_API_USERNAME
+        self.previous_growth_media_dir = backend.PRIVATE_CHANNEL_MEDIA_DIR
         backend.DB_PATH = self.db_path
+        backend.WEB_API_TOKEN = "web-dashboard-secret"
+        backend.WEB_API_USERNAME = "dashboard-admin"
+        backend.PRIVATE_CHANNEL_MEDIA_DIR = root / "growth-media"
         backend.AGENT_GATEWAY = AgentGateway(
             db_path=self.db_path,
             work_root=root / "tasks",
@@ -61,6 +88,9 @@ class AccountRouteTests(unittest.TestCase):
         backend.DB_PATH = self.previous_db
         backend.AGENT_GATEWAY = self.previous_gateway
         backend.ACCOUNT_SERVICE = self.previous_accounts
+        backend.WEB_API_TOKEN = self.previous_web_api_token
+        backend.WEB_API_USERNAME = self.previous_web_api_username
+        backend.PRIVATE_CHANNEL_MEDIA_DIR = self.previous_growth_media_dir
         self.temp_dir.cleanup()
 
     def register_with_email(self, client: TestClient, username: str):
@@ -156,6 +186,113 @@ class AccountRouteTests(unittest.TestCase):
             self.assertEqual(deleted.json()["status"], "deleted")
             self.assertEqual(client.get("/api/account/me", headers=user_headers).status_code, 401)
 
+    def test_admin_dashboard_alias_and_web_credentials_manage_accounts(self) -> None:
+        import base64
+
+        credentials = base64.b64encode(b"dashboard-admin:web-dashboard-secret").decode("ascii")
+        web_headers = {"Authorization": f"Basic {credentials}"}
+        with TestClient(backend.app) as client:
+            self.assertEqual(client.get("/admin").status_code, 401)
+            dashboard = client.get("/admin", headers=web_headers)
+            self.assertEqual(dashboard.status_code, 200)
+            self.assertIn("用户管理", dashboard.text)
+
+            self.register_with_email(client, "web_dashboard_user")
+            users = client.get("/api/admin/accounts/users", headers=web_headers)
+            self.assertEqual(users.status_code, 200, users.text)
+            self.assertTrue(any(item["username"] == "web_dashboard_user" for item in users.json()))
+            orders = client.get("/api/admin/accounts/orders", headers=web_headers)
+            self.assertEqual(orders.status_code, 200, orders.text)
+            metrics = client.get("/api/admin/system/metrics", headers=web_headers)
+            self.assertEqual(metrics.status_code, 200, metrics.text)
+            self.assertIn("memory", metrics.json())
+            self.assertIn("disk", metrics.json())
+
+            batch = client.post(
+                "/api/admin/growth/redemptions/batches",
+                headers=web_headers,
+                json={
+                    "name": "路由测试福利",
+                    "quantity": 2,
+                    "reward_type": "points",
+                    "reward_quantity": 30,
+                    "max_uses": 1,
+                    "prefix": "ROUTE",
+                },
+            )
+            self.assertEqual(batch.status_code, 200, batch.text)
+            codes = client.get(
+                f"/api/admin/growth/redemptions/{batch.json()['id']}/codes",
+                headers=web_headers,
+            )
+            self.assertEqual(codes.status_code, 200, codes.text)
+            self.assertEqual(codes.json()["status_counts"]["unused"], 2)
+
+            uploaded = client.post(
+                "/api/admin/growth/private-channel/qr",
+                headers=web_headers,
+                files={
+                    "file": (
+                        "qr.png",
+                        io.BytesIO(b"\x89PNG\r\n\x1a\nroute-test"),
+                        "image/png",
+                    )
+                },
+            )
+            self.assertEqual(uploaded.status_code, 200, uploaded.text)
+            qr_url = uploaded.json()["qr_image_url"]
+            self.assertEqual(client.get(qr_url).status_code, 403)
+            admin = client.post(
+                "/api/auth/login",
+                json={"username": "admin", "password": "route-admin-password"},
+            )
+            self.assertEqual(admin.status_code, 200, admin.text)
+            admin_headers = {"Authorization": f"Bearer {admin.json()['access_token']}"}
+            self.assertEqual(client.get(qr_url, headers=admin_headers).status_code, 200)
+
+    def test_growth_admin_api_never_uses_open_dashboard_mode(self) -> None:
+        previous_token = backend.WEB_API_TOKEN
+        backend.WEB_API_TOKEN = ""
+        try:
+            with TestClient(backend.app) as client:
+                dashboard = client.get("/admin")
+                self.assertEqual(dashboard.status_code, 200)
+                users = client.get("/api/admin/accounts/users")
+                self.assertEqual(users.status_code, 403, users.text)
+                growth = client.get("/api/admin/growth/overview")
+                self.assertEqual(growth.status_code, 403, growth.text)
+        finally:
+            backend.WEB_API_TOKEN = previous_token
+
+    def test_private_channel_events_accept_guests_but_reject_invalid_tokens(self) -> None:
+        with TestClient(backend.app) as client:
+            public_channel = client.get("/api/growth/private-channel")
+            self.assertEqual(public_channel.status_code, 200, public_channel.text)
+            self.assertEqual(public_channel.json()["qr_image_url"], "")
+            manager_card_url = public_channel.json()["manager_card_image_url"]
+            self.assertEqual(client.get(manager_card_url).status_code, 200)
+            guest_event = client.post(
+                "/api/growth/private-channel/events",
+                json={
+                    "event_type": "open_qr",
+                    "channel_id": "default-welfare-group",
+                    "source": "android",
+                },
+            )
+            self.assertEqual(guest_event.status_code, 200, guest_event.text)
+            self.assertEqual(guest_event.json()["status"], "recorded")
+
+            invalid_token_event = client.post(
+                "/api/growth/private-channel/events",
+                headers={"Authorization": "Bearer invalid-account-token"},
+                json={
+                    "event_type": "click",
+                    "channel_id": "default-welfare-group",
+                    "source": "android",
+                },
+            )
+            self.assertEqual(invalid_token_event.status_code, 401)
+
     def test_code_auth_and_provider_discovery_use_mobile_first_policy(self) -> None:
         with TestClient(backend.app) as client:
             requested = client.post(
@@ -166,8 +303,12 @@ class AccountRouteTests(unittest.TestCase):
             self.assertIn("手机号验证码服务暂未开放", requested.json()["detail"])
 
             providers = client.get("/api/auth/providers").json()
-            self.assertEqual([item["id"] for item in providers], ["wechat", "feishu"])
-            self.assertEqual(providers[1]["tier"], "team")
+            self.assertEqual(
+                [item["id"] for item in providers],
+                ["wechat", "qq", "feishu", "telegram", "whatsapp", "instagram"],
+            )
+            self.assertEqual(providers[2]["tier"], "team")
+            self.assertTrue(all(item["status"] == "not_configured" for item in providers))
 
     def test_production_sender_rejects_phone_when_sms_is_not_open(self) -> None:
         with self.assertRaisesRegex(

@@ -62,10 +62,9 @@ SERVER_ROOT = Path(__file__).resolve().parents[1]
 if str(SERVER_ROOT) not in sys.path:
     sys.path.insert(0, str(SERVER_ROOT))
 
-# The STT process is intentionally independent from the web backend, but it
-# shares the account database for direct Android requests. Importing the
-# account service here keeps point accounting identical across both entry
-# points without exposing a long-lived account session token to STT.
+# The production STT process shares the account database with the web backend.
+# Personal GPU nodes can delegate billing upstream while still validating the
+# same short-lived signed account token.
 BACKEND_SERVICE_ROOT = SERVER_ROOT / "backend-service"
 if str(BACKEND_SERVICE_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_SERVICE_ROOT))
@@ -168,6 +167,7 @@ STT_CPU_THREADS = positive_int_env("STT_CPU_THREADS", max(1, (os.cpu_count() or 
 STT_API_TOKEN = os.getenv("STT_API_TOKEN", "").strip()
 STT_REQUIRE_API_TOKEN = os.getenv("STT_REQUIRE_API_TOKEN", "0").strip().lower() in {"1", "true", "yes"}
 ACCOUNT_TOKEN_SECRET = os.getenv("ACCOUNT_TOKEN_SECRET", "").strip()
+ACCOUNT_STT_BILLING_ENABLED = boolean_env("ACCOUNT_STT_BILLING_ENABLED", True)
 ACCOUNT_DB_PATH = Path(
     os.getenv("ACCOUNT_DB_PATH", str(SERVER_ROOT / "data" / "accounts.db"))
 ).resolve()
@@ -2517,7 +2517,12 @@ def account_stt_billing_required(principal: ApiPrincipal) -> bool:
     # account principal from the public API. Keep direct helper tests and
     # anonymous local development usable, while production (which always
     # provisions this secret) remains fail-closed for account tokens.
-    return bool(ACCOUNT_TOKEN_SECRET) and not principal.is_management and principal.owner_id != "anonymous"
+    return (
+        ACCOUNT_STT_BILLING_ENABLED
+        and bool(ACCOUNT_TOKEN_SECRET)
+        and not principal.is_management
+        and principal.owner_id != "anonymous"
+    )
 
 
 async def require_account_stt_available(
@@ -4118,6 +4123,10 @@ async def health():
             "retention_days": STT_AUDIO_ARCHIVE_RETENTION_DAYS,
             "max_gb": STT_AUDIO_ARCHIVE_MAX_GB,
         },
+        "account_billing": {
+            "enabled": ACCOUNT_STT_BILLING_ENABLED,
+            "mode": "local-database" if ACCOUNT_STT_BILLING_ENABLED else "upstream-managed",
+        },
         "cloud_asr": {
             "provider": "tencent-tiered",
             "enabled": any(
@@ -4989,12 +4998,18 @@ async def transcribe_stream(websocket: WebSocket):
     await websocket.accept()
     principal = resolve_api_principal(websocket.headers.get("authorization"))
     if principal is None:
+        push_debug_event("session_rejected", reason="unauthorized")
         await websocket.send_text(json.dumps({"type": "error", "message": "Unauthorized"}))
         await websocket.close(code=1008)
         return
     try:
         await require_account_stt_available(principal)
     except HTTPException as exc:
+        push_debug_event(
+            "session_rejected",
+            reason="account_unavailable",
+            status_code=exc.status_code,
+        )
         await websocket.send_text(
             json.dumps({"type": "error", "message": str(exc.detail)}, ensure_ascii=False)
         )

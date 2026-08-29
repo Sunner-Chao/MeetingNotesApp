@@ -76,7 +76,7 @@ class AgentGatewayEngine(
 
     override fun getEngineType(): LLMEngineType = LLMEngineType.AGENT_GATEWAY
 
-    override fun getDisplayName(): String = "云端 Agent (${config.agentProvider.displayName})"
+    override fun getDisplayName(): String = "智悟云端模型 (${config.agentProvider.displayName})"
 
     override fun isAvailable(): Boolean =
         config.agentEndpoint.isNotBlank() && !config.agentAccessToken.isNullOrBlank()
@@ -225,7 +225,7 @@ private fun Response.toAgentError(responseBody: String): String {
         401 -> "Agent 访问令牌无效或已过期"
         403 -> "当前令牌没有所选 Agent 的使用权限"
         429 -> "Agent 请求额度已用尽或服务队列已满$suffix"
-        503 -> "云端 Agent 暂时不可用，请稍后重试$suffix"
+        503 -> "智悟云端模型暂时不可用，请稍后重试$suffix"
         else -> "Agent 服务请求失败（HTTP $code）$suffix"
     }
 }

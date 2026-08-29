@@ -9,6 +9,15 @@ import com.oa.automation.domain.model.AccountSessionCredentials
 import com.oa.automation.domain.model.AuthSession
 import com.oa.automation.domain.model.AuthCodeRequestResult
 import com.oa.automation.domain.model.RechargeOrder
+import com.oa.automation.domain.model.AlipayAppPayment
+import com.oa.automation.domain.model.AlipayPaymentQuery
+import com.oa.automation.domain.model.GrowthActionResult
+import com.oa.automation.domain.model.GrowthCampaignDetail
+import com.oa.automation.domain.model.GrowthOverview
+import com.oa.automation.domain.model.GrowthPrivateChannel
+import com.oa.automation.domain.model.GrowthChannelApplication
+import com.oa.automation.domain.model.GrowthRedeemResult
+import com.oa.automation.domain.model.GrowthSystemMessage
 import com.oa.automation.domain.model.SocialAuthProvider
 import com.oa.automation.domain.model.PublishedPost
 import com.oa.automation.domain.model.CommunityPostPage
@@ -720,7 +729,8 @@ class AccountApiService(
         identifier: String,
         code: String,
         username: String,
-        password: String
+        password: String,
+        referralCode: String = ""
     ): Result<AuthSession> = request(
         endpoint = endpoint,
         path = "auth/register/verify",
@@ -731,10 +741,189 @@ class AccountApiService(
                 "identifier" to identifier,
                 "code" to code,
                 "username" to username,
-                "password" to password
+                "password" to password,
+                "referral_code" to referralCode.trim().uppercase().ifBlank { null }
             )
         )
     ) { body -> gson.fromJson(body, AuthSession::class.java) }
+
+    suspend fun growthOverview(
+        endpoint: String,
+        token: String
+    ): Result<GrowthOverview> = request(
+        endpoint = endpoint,
+        path = "account/growth/overview",
+        token = token,
+        method = "GET"
+    ) { body -> gson.fromJson(body, GrowthOverview::class.java) }
+
+    suspend fun publicGrowthPrivateChannel(
+        endpoint: String
+    ): Result<GrowthPrivateChannel> = request(
+        endpoint = endpoint,
+        path = "growth/private-channel",
+        method = "GET"
+    ) { body -> gson.fromJson(body, GrowthPrivateChannel::class.java) }
+
+    suspend fun submitGrowthChannelApplication(
+        endpoint: String,
+        token: String,
+        channelId: String,
+        answers: Map<String, String>
+    ): Result<GrowthPrivateChannel> = request(
+        endpoint = endpoint,
+        path = "account/growth/private-channel/application",
+        token = token,
+        method = "POST",
+        jsonBody = gson.toJson(mapOf("channel_id" to channelId, "answers" to answers))
+    ) { body ->
+        val payload = JsonParser.parseString(body).asJsonObject
+        gson.fromJson(payload.getAsJsonObject("channel"), GrowthPrivateChannel::class.java)
+    }
+
+    suspend fun growthChannelApplication(
+        endpoint: String,
+        token: String,
+        channelId: String = "default-welfare-group"
+    ): Result<GrowthChannelApplication?> = request(
+        endpoint = endpoint,
+        path = "account/growth/private-channel/application?channel_id=${encodeQueryValue(channelId)}",
+        token = token,
+        method = "GET"
+    ) { body ->
+        val payload = JsonParser.parseString(body).asJsonObject
+        payload.get("application")?.takeUnless { it.isJsonNull }?.let {
+            gson.fromJson(it, GrowthChannelApplication::class.java)
+        }
+    }
+
+    suspend fun redeemGrowthCode(
+        endpoint: String,
+        token: String,
+        code: String
+    ): Result<GrowthRedeemResult> = request(
+        endpoint = endpoint,
+        path = "account/redeem",
+        token = token,
+        method = "POST",
+        jsonBody = gson.toJson(mapOf("code" to code.trim().uppercase()))
+    ) { body -> gson.fromJson(body, GrowthRedeemResult::class.java) }
+
+    suspend fun growthSystemMessages(
+        endpoint: String,
+        token: String
+    ): Result<List<GrowthSystemMessage>> = request(
+        endpoint = endpoint,
+        path = "account/growth/messages",
+        token = token,
+        method = "GET"
+    ) { body ->
+        gson.fromJson(
+            body,
+            object : TypeToken<List<GrowthSystemMessage>>() {}.type
+        )
+    }
+
+    suspend fun markGrowthSystemMessageRead(
+        endpoint: String,
+        token: String,
+        messageId: String
+    ): Result<Unit> = request(
+        endpoint = endpoint,
+        path = "account/growth/messages/${encodeQueryValue(messageId)}/read",
+        token = token,
+        method = "POST"
+    ) { Unit }
+
+    suspend fun growthCampaignDetail(
+        endpoint: String,
+        token: String,
+        campaignId: String
+    ): Result<GrowthCampaignDetail> = request(
+        endpoint = endpoint,
+        path = "growth/campaigns/${encodeQueryValue(campaignId)}",
+        token = token,
+        method = "GET"
+    ) { body -> gson.fromJson(body, GrowthCampaignDetail::class.java) }
+
+    suspend fun joinGrowthCampaign(
+        endpoint: String,
+        token: String,
+        campaignId: String
+    ): Result<GrowthActionResult> = growthAction(
+        endpoint, token, campaignId, "join"
+    )
+
+    suspend fun checkinGrowthCampaign(
+        endpoint: String,
+        token: String,
+        campaignId: String
+    ): Result<GrowthActionResult> = growthAction(
+        endpoint, token, campaignId, "checkin"
+    )
+
+    suspend fun drawGrowthCampaign(
+        endpoint: String,
+        token: String,
+        campaignId: String
+    ): Result<GrowthActionResult> = growthAction(
+        endpoint, token, campaignId, "draw"
+    )
+
+    suspend fun answerGrowthCampaign(
+        endpoint: String,
+        token: String,
+        campaignId: String,
+        questionKey: String,
+        answer: String
+    ): Result<GrowthActionResult> = growthAction(
+        endpoint = endpoint,
+        token = token,
+        campaignId = campaignId,
+        action = "answer",
+        body = gson.toJson(mapOf("question_key" to questionKey, "answer" to answer))
+    )
+
+    suspend fun recordGrowthChannelEvent(
+        endpoint: String,
+        token: String,
+        channelId: String,
+        eventType: String,
+        campaignId: String? = null
+    ): Result<Unit> = request(
+        endpoint = endpoint,
+        path = "growth/private-channel/events",
+        token = token,
+        method = "POST",
+        jsonBody = gson.toJson(
+            mapOf(
+                "event_type" to eventType,
+                "channel_id" to channelId,
+                "source" to "android",
+                "campaign_id" to campaignId
+            )
+        )
+    ) { Unit }
+
+    suspend fun downloadGrowthAsset(
+        endpoint: String,
+        pathOrUrl: String,
+        token: String? = null
+    ): Result<ByteArray> = withContext(Dispatchers.IO) {
+        runCatching {
+            val url = absoluteAccountUrl(endpoint, pathOrUrl)
+            val request = Request.Builder().url(url).get().apply {
+                token?.takeIf { it.isNotBlank() }?.let { header("Authorization", "Bearer $it") }
+            }.build()
+            client.newCall(request).execute().use { response ->
+                val bytes = response.body?.bytes() ?: ByteArray(0)
+                if (!response.isSuccessful) {
+                    throw IOException(response.toAccountError(bytes.toString(Charsets.UTF_8)))
+                }
+                bytes
+            }
+        }
+    }
 
     suspend fun requestAuthCode(
         endpoint: String,
@@ -801,6 +990,16 @@ class AccountApiService(
     ) { body ->
         gson.fromJson(body, object : TypeToken<List<SocialAuthProvider>>() {}.type)
     }
+
+    suspend fun exchangeSocialAuthTicket(
+        endpoint: String,
+        ticket: String
+    ): Result<AuthSession> = request(
+        endpoint = endpoint,
+        path = "auth/social/exchange",
+        method = "POST",
+        jsonBody = gson.toJson(mapOf("ticket" to ticket))
+    ) { body -> gson.fromJson(body, AuthSession::class.java) }
 
     suspend fun profile(endpoint: String, token: String): Result<AccountProfile> = request(
         endpoint = endpoint,
@@ -895,6 +1094,30 @@ class AccountApiService(
         jsonBody = gson.toJson(mapOf("plan_code" to planCode))
     ) { body -> gson.fromJson(body, RechargeOrder::class.java) }
 
+    suspend fun createAlipayPayment(
+        endpoint: String,
+        token: String,
+        orderId: String
+    ): Result<AlipayAppPayment> = request(
+        endpoint = endpoint,
+        path = "account/orders/$orderId/alipay/pay",
+        token = token,
+        method = "POST",
+        jsonBody = "{}"
+    ) { body -> gson.fromJson(body, AlipayAppPayment::class.java) }
+
+    suspend fun queryAlipayPayment(
+        endpoint: String,
+        token: String,
+        orderId: String
+    ): Result<AlipayPaymentQuery> = request(
+        endpoint = endpoint,
+        path = "account/orders/$orderId/alipay/query",
+        token = token,
+        method = "POST",
+        jsonBody = "{}"
+    ) { body -> gson.fromJson(body, AlipayPaymentQuery::class.java) }
+
     suspend fun adminOrders(
         endpoint: String,
         token: String,
@@ -988,6 +1211,27 @@ class AccountApiService(
         jsonBody = gson.toJson(mapOf("username" to username, "password" to password))
     ) { body -> gson.fromJson(body, AuthSession::class.java) }
 
+    private suspend fun growthAction(
+        endpoint: String,
+        token: String,
+        campaignId: String,
+        action: String,
+        body: String = "{}"
+    ): Result<GrowthActionResult> = request(
+        endpoint = endpoint,
+        path = "growth/campaigns/${encodeQueryValue(campaignId)}/$action",
+        token = token,
+        method = "POST",
+        jsonBody = body
+    ) { response ->
+        if (action == "join") {
+            val parsed = gson.fromJson(response, GrowthActionResult::class.java)
+            parsed.copy(message = parsed.message.ifBlank { "已加入活动" })
+        } else {
+            gson.fromJson(response, GrowthActionResult::class.java)
+        }
+    }
+
     private fun communityListPath(basePath: String, cursor: String?, limit: Int): String {
         val boundedLimit = limit.coerceIn(1, 50)
         val cursorQuery = cursor?.takeIf { it.isNotBlank() }?.let {
@@ -1023,6 +1267,13 @@ class AccountApiService(
 
     private fun encodeQueryValue(value: String): String =
         URLEncoder.encode(value, Charsets.UTF_8.name())
+
+    private fun absoluteAccountUrl(endpoint: String, pathOrUrl: String): String {
+        if (pathOrUrl.startsWith("http://") || pathOrUrl.startsWith("https://")) return pathOrUrl
+        val base = java.net.URI(endpoint.trim())
+        val origin = "${base.scheme}://${base.rawAuthority}"
+        return if (pathOrUrl.startsWith('/')) "$origin$pathOrUrl" else "$origin/$pathOrUrl"
+    }
 
     private suspend fun <T> request(
         endpoint: String,

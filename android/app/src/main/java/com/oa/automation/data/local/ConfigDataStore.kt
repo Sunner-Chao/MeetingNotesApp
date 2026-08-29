@@ -159,6 +159,7 @@ class ConfigDataStore(private val context: Context) {
         private val ACCOUNT_STT_ACCESS_TOKEN = stringPreferencesKey("account_stt_access_token")
         private val STT_USE_ACCOUNT_TOKEN = stringPreferencesKey("stt_use_account_token")
         private val SEEN_NOTIFICATION_EVENTS = stringSetPreferencesKey("seen_notification_events")
+        private val SEEN_GROWTH_CAMPAIGNS = stringSetPreferencesKey("seen_growth_campaigns")
         private val APP_THEME_MODE = stringPreferencesKey("app_theme_mode")
         private val FLOATING_BALL_ENABLED = booleanPreferencesKey("floating_ball_enabled")
         private val IGNORED_APP_UPDATE_VERSION = stringPreferencesKey("ignored_app_update_version")
@@ -920,6 +921,17 @@ class ConfigDataStore(private val context: Context) {
     suspend fun saveSeenNotificationEvents(events: Set<String>) {
         context.dataStore.edit { preferences ->
             preferences[SEEN_NOTIFICATION_EVENTS] = events
+        }
+    }
+
+    /** Campaign ids that the user has opened from the notification center. */
+    val seenGrowthCampaignIdsFlow: Flow<Set<String>> = context.dataStore.data.map { preferences ->
+        preferences[SEEN_GROWTH_CAMPAIGNS].orEmpty()
+    }
+
+    suspend fun saveSeenGrowthCampaignIds(campaignIds: Set<String>) {
+        context.dataStore.edit { preferences ->
+            preferences[SEEN_GROWTH_CAMPAIGNS] = campaignIds
         }
     }
 

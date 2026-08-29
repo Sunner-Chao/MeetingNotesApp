@@ -20,6 +20,7 @@ data class RegisterUiState(
     val identifier: String = "",
     val verificationCode: String = "",
     val username: String = "",
+    val referralCode: String = "",
     val password: String = "",
     val confirmPassword: String = "",
     val passwordVisible: Boolean = false,
@@ -46,9 +47,7 @@ class RegisterViewModel(
             accountApiService.authProviders(endpoint).onSuccess { providers ->
                 _uiState.update {
                     it.copy(
-                        authProviders = providers.filter { provider ->
-                            provider.id == "wechat" && provider.tier != "team"
-                        }
+                        authProviders = providers
                     )
                 }
             }
@@ -66,6 +65,12 @@ class RegisterViewModel(
     }
     fun updateUsername(value: String) = _uiState.update {
         it.copy(username = value, errorMessage = null)
+    }
+    fun updateReferralCode(value: String) = _uiState.update {
+        it.copy(
+            referralCode = value.uppercase().filter { char -> char.isLetterOrDigit() || char == '-' }.take(64),
+            errorMessage = null
+        )
     }
     fun updatePassword(value: String) = _uiState.update {
         it.copy(password = value, errorMessage = null)
@@ -160,7 +165,8 @@ class RegisterViewModel(
                 identifier,
                 state.verificationCode,
                 username,
-                state.password
+                state.password,
+                state.referralCode
             ).fold(::completeRegistration, ::showError)
         }
     }

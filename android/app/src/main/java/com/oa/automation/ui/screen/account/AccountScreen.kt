@@ -28,10 +28,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.AccountBox
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.CardGiftcard
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.ManageAccounts
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Payments
+import androidx.compose.material.icons.filled.ReceiptLong
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
@@ -143,6 +145,8 @@ fun AccountScreen(
     onNavigateToProfile: () -> Unit,
     onNavigateToQuotaDetails: () -> Unit,
     onNavigateToPointsPlans: () -> Unit,
+    onNavigateToRechargeOrders: () -> Unit,
+    onNavigateToInvitation: () -> Unit,
     onNavigateToUserManagement: () -> Unit,
     onNavigateToCommunityModeration: () -> Unit,
     onNavigateToSettings: () -> Unit,
@@ -235,6 +239,8 @@ fun AccountScreen(
                             isAdmin = uiState.profile?.isAdmin == true,
                             layout = layout,
                             onOpenPointsPlans = onNavigateToPointsPlans,
+                            onOpenRechargeOrders = onNavigateToRechargeOrders,
+                            onOpenInvitation = onNavigateToInvitation,
                             onOpenSettings = onNavigateToSettings,
                             onManageUsers = onNavigateToUserManagement,
                             onModerateCommunity = onNavigateToCommunityModeration
@@ -704,6 +710,8 @@ private fun AccountActionGroup(
     isAdmin: Boolean,
     layout: AccountLayoutSpec,
     onOpenPointsPlans: () -> Unit,
+    onOpenRechargeOrders: () -> Unit,
+    onOpenInvitation: () -> Unit,
     onOpenSettings: () -> Unit,
     onManageUsers: () -> Unit,
     onModerateCommunity: () -> Unit
@@ -717,10 +725,30 @@ private fun AccountActionGroup(
     ) {
         Column {
             AccountActionRow(
+                icon = Icons.Default.CardGiftcard,
+                title = "邀请好友",
+                rowHeight = layout.actionRowHeight,
+                onClick = onOpenInvitation
+            )
+            HorizontalDivider(
+                modifier = Modifier.padding(horizontal = 18.dp),
+                color = MaterialTheme.colorScheme.outlineVariant
+            )
+            AccountActionRow(
                 icon = Icons.Default.Payments,
                 title = "积分套餐",
                 rowHeight = layout.actionRowHeight,
                 onClick = onOpenPointsPlans
+            )
+            HorizontalDivider(
+                modifier = Modifier.padding(horizontal = 18.dp),
+                color = MaterialTheme.colorScheme.outlineVariant
+            )
+            AccountActionRow(
+                icon = Icons.Default.ReceiptLong,
+                title = "充值订单",
+                rowHeight = layout.actionRowHeight,
+                onClick = onOpenRechargeOrders
             )
             HorizontalDivider(
                 modifier = Modifier.padding(horizontal = 18.dp),

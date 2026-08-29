@@ -1,8 +1,5 @@
 package com.oa.automation.ui.screen.login
 
-import android.content.Intent
-import android.net.Uri
-import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -28,6 +25,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -106,6 +104,15 @@ fun RegisterScreen(
                         onNext = { focusManager.moveFocus(FocusDirection.Down) },
                         supportingText = "用户名长度不限，仅支持文字、数字和下划线",
                         layout = layout
+                    )
+                    OutlinedTextField(
+                        value = uiState.referralCode,
+                        onValueChange = viewModel::updateReferralCode,
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("邀请码（选填）") },
+                        placeholder = { Text("填写好友邀请码，双方获得积分") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp)
                     )
                     AuthIdentifierField(
                         value = uiState.identifier,
@@ -188,19 +195,7 @@ fun RegisterScreen(
                         SocialLoginSection(
                             providers = uiState.authProviders,
                             onProviderClick = { provider ->
-                            if (provider.enabled && provider.authorizationUrl.isNotBlank()) {
-                                runCatching {
-                                    context.startActivity(
-                                        Intent(Intent.ACTION_VIEW, Uri.parse(provider.authorizationUrl))
-                                    )
-                                }.onFailure {
-                                    Toast.makeText(
-                                        context,
-                                        "无法打开${provider.name}登录",
-                                        Toast.LENGTH_SHORT
-                                    ).show()
-                                }
-                            }
+                                launchSocialLogin(context, provider, uiState.referralCode)
                             },
                             layout = layout
                         )
