@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { ArrowLeft, ArrowRight, Eye, EyeOff, Mail, Server, Smartphone } from "lucide-react";
-import type { AuthCodeDelivery, RuntimeConfig } from "../types";
+import { ArrowLeft, ArrowRight, ChevronDown, Download, Eye, EyeOff, Gift, Mail, Server, Smartphone } from "lucide-react";
+import { fetchSocialAuthProviders } from "../lib/api";
+import type { AuthCodeDelivery, RuntimeConfig, SocialAuthProvider } from "../types";
 import { BrandMark } from "./BrandMark";
 
 interface AuthScreenProps {
@@ -26,12 +27,36 @@ export function AuthScreen({ config, busy, onLogin, onRequestRegistrationCode, o
   const [resendSeconds, setResendSeconds] = useState(0);
   const [showPassword, setShowPassword] = useState(false);
   const [validationError, setValidationError] = useState("");
+  const [socialProviders, setSocialProviders] = useState<SocialAuthProvider[]>([]);
+  const [socialExpanded, setSocialExpanded] = useState(false);
+  const [invitedRef, setInvitedRef] = useState("");
+
+  // Served from the same origin as the API, so a relative path always hits
+  // the current server's OTA download endpoint.
+  const apkDownloadUrl = "/api/app-update/android/apk";
 
   useEffect(() => {
     if (resendSeconds <= 0) return;
     const timer = window.setTimeout(() => setResendSeconds((current) => Math.max(0, current - 1)), 1000);
     return () => window.clearTimeout(timer);
   }, [resendSeconds]);
+
+  useEffect(() => {
+    const invitedBy = new URLSearchParams(window.location.search).get("ref")?.trim().toUpperCase();
+    if (invitedBy) {
+      setReferralCode(invitedBy);
+      setInvitedRef(invitedBy);
+      setMode("register");
+    }
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    void fetchSocialAuthProviders(config)
+      .then((providers) => { if (active) setSocialProviders(providers); })
+      .catch(() => { if (active) setSocialProviders([]); });
+    return () => { active = false; };
+  }, [config]);
 
   const runtimeConfig = (): RuntimeConfig => ({ ...config, apiBase: apiBase.trim() });
 
@@ -95,6 +120,18 @@ export function AuthScreen({ config, busy, onLogin, onRequestRegistrationCode, o
     setValidationError("");
   };
 
+  const startSocialLogin = (provider: SocialAuthProvider) => {
+    if (!provider.enabled) {
+      setValidationError(provider.unavailable_reason || `${provider.name}登录暂未开放`);
+      return;
+    }
+    const target = new URL(provider.authorization_url, window.location.origin);
+    target.searchParams.set("client", "pwa");
+    target.searchParams.set("redirect_uri", `${window.location.origin}${window.location.pathname}`);
+    if (referralCode.trim()) target.searchParams.set("ref", referralCode.trim().toUpperCase());
+    window.location.assign(target.toString());
+  };
+
   const submitLabel = busy
     ? mode === "login" ? "正在登录" : registrationStep === "details" ? "正在发送" : "正在注册"
     : mode === "login" ? "进入智悟本" : registrationStep === "details" ? "发送邮箱验证码" : "验证并创建账户";
@@ -112,6 +149,26 @@ export function AuthScreen({ config, busy, onLogin, onRequestRegistrationCode, o
           <p>智慧&nbsp;&nbsp;领悟&nbsp;&nbsp;本源</p>
           <strong>智悟本</strong>
         </div>
+
+        {invitedRef && (
+          <section className="invite-hero" aria-label="好友邀请">
+            <div className="invite-hero-copy">
+              <Gift aria-hidden="true" />
+              <div>
+                <strong>好友邀请你体验智悟本</strong>
+                <small>邀请码 {invitedRef} 已自动填写，注册后双方均可获得邀请积分</small>
+              </div>
+            </div>
+            <div className="invite-hero-actions">
+              <button type="button" className="invite-hero-primary" onClick={() => switchMode("register")}>
+                网页版立即试用
+              </button>
+              <a className="invite-hero-secondary" href={apkDownloadUrl} download>
+                <Download aria-hidden="true" /> 下载 Android 版
+              </a>
+            </div>
+          </section>
+        )}
 
         <div className="segmented auth-mode" role="group" aria-label="账户操作">
           <button className={mode === "login" ? "active" : ""} type="button" disabled={busy} onClick={() => switchMode("login")}>登录</button>
@@ -157,7 +214,7 @@ export function AuthScreen({ config, busy, onLogin, onRequestRegistrationCode, o
               {mode === "register" && (
                 <label>
                   <span>邀请码（可选）</span>
-                  <input value={referralCode} onChange={(event) => setReferralCode(event.target.value.toUpperCase())} placeholder="填写好友邀请码，双方各得 100 积分" autoComplete="off" />
+                  <input value={referralCode} onChange={(event) => setReferralCode(event.target.value.toUpperCase())} placeholder="填写好友邀请码，双方均可获得邀请积分" autoComplete="off" />
                   <small className="field-hint">没有邀请码也可以正常注册</small>
                 </label>
               )}
@@ -233,6 +290,46 @@ export function AuthScreen({ config, busy, onLogin, onRequestRegistrationCode, o
             <ArrowRight />
           </button>
         </form>
+
+        <a className="apk-download-link" href={apkDownloadUrl} download>
+          <Download aria-hidden="true" /> 下载 Android 客户端
+        </a>
+
+        {socialProviders.length > 0 && (
+          <section className="social-auth-section" aria-label="第三方登录">
+            <button
+              type="button"
+              className="social-auth-disclosure"
+              aria-expanded={socialExpanded}
+              onClick={() => setSocialExpanded((current) => !current)}
+            >
+              <span>其他登录方式</span>
+              <small>{socialProviders.some((provider) => provider.enabled)
+                ? `${socialProviders.filter((provider) => provider.enabled).length} 项可用`
+                : "平台接入中"}</small>
+              <ChevronDown aria-hidden="true" />
+            </button>
+            <div className={`social-auth-collapse${socialExpanded ? " is-open" : ""}`} aria-hidden={!socialExpanded}>
+              <div className="social-auth-grid">
+                {socialProviders.map((provider) => (
+                  <button
+                    key={provider.id}
+                    type="button"
+                    className={`social-auth-button provider-${provider.id}`}
+                    aria-disabled={!provider.enabled}
+                    title={provider.enabled ? `使用${provider.name}登录` : provider.unavailable_reason}
+                    onClick={() => startSocialLogin(provider)}
+                  >
+                    <span aria-hidden="true">
+                      <img src={`${import.meta.env.BASE_URL}assets/social/${provider.id}.${provider.id === "feishu" ? "png" : "svg"}`} alt="" />
+                    </span>
+                    <small>{provider.name}</small>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </section>
+        )}
       </section>
     </main>
   );

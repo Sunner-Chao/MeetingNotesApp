@@ -13,6 +13,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -25,8 +26,11 @@ import androidx.navigation.toRoute
 import com.oa.automation.ui.screen.account.AccountProfileScreen
 import com.oa.automation.ui.screen.account.AccountQuotaDetailsScreen
 import com.oa.automation.ui.screen.account.PointsPlansScreen
+import com.oa.automation.ui.screen.account.RechargeOrdersScreen
 import com.oa.automation.ui.screen.account.AccountUserManagementScreen
 import com.oa.automation.ui.screen.account.CommunityModerationScreen
+import com.oa.automation.ui.screen.account.GrowthCenterScreen
+import com.oa.automation.ui.screen.account.GrowthCenterSection
 import com.oa.automation.ui.screen.community.CommunityPostDetailScreen
 import com.oa.automation.ui.screen.community.CommunityCollectionDetailScreen
 import com.oa.automation.ui.screen.login.LoginScreen
@@ -52,11 +56,19 @@ private const val TRANSITION_DURATION = 400
  */
 @Composable
 fun OAAutomationNavHost(
+    socialAuthLoginVersion: Int = 0,
     openRecordingMeetingId: String? = null,
     onRecordingMeetingOpened: (String) -> Unit = {},
     modifier: Modifier = Modifier,
     navController: NavHostController = rememberNavController()
 ) {
+    LaunchedEffect(socialAuthLoginVersion) {
+        if (socialAuthLoginVersion <= 0) return@LaunchedEffect
+        navController.navigate(MainGraph) {
+            popUpTo(navController.graph.id) { inclusive = false }
+            launchSingleTop = true
+        }
+    }
     LaunchedEffect(openRecordingMeetingId) {
         val meetingId = openRecordingMeetingId?.takeIf { it.isNotBlank() } ?: return@LaunchedEffect
         navController.navigate(Recording(meetingId)) {
@@ -160,7 +172,7 @@ fun OAAutomationNavHost(
                         navController.navigate(Settings)
                     },
                     onNavigateToNotifications = {
-                        navController.navigate(Notifications)
+                        navController.navigate(Notifications())
                     },
                     onNavigateToAccountProfile = {
                         navController.navigate(AccountProfile)
@@ -170,6 +182,12 @@ fun OAAutomationNavHost(
                     },
                     onNavigateToAccountPointsPlans = {
                         navController.navigate(AccountPointsPlans)
+                    },
+                    onNavigateToAccountRechargeOrders = {
+                        navController.navigate(AccountRechargeOrders)
+                    },
+                    onNavigateToInvitation = {
+                        navController.navigate(AccountInvitation)
                     },
                     onNavigateToAccountUsers = {
                         navController.navigate(AccountUsers)
@@ -204,9 +222,11 @@ fun OAAutomationNavHost(
                 )
             }
 
-            composable<Notifications> {
+            composable<Notifications> { backStackEntry ->
+                val route: Notifications = backStackEntry.toRoute()
                 NotificationCenterScreen(
                     onNavigateBack = { navController.popBackStack() },
+                    initialTab = route.initialTab,
                     onOpenMeeting = { meetingId, hasReport ->
                         if (hasReport) {
                             navController.navigate(Report(meetingId))
@@ -230,9 +250,29 @@ fun OAAutomationNavHost(
                 )
             }
 
-            composable<AccountPointsPlans> {
+            composable<AccountPointsPlans> { entry ->
+                // Both payment screens share one ViewModel scoped to the main graph,
+                // so a payment made on either screen updates the other immediately.
+                val mainGraphEntry = remember(entry) { navController.getBackStackEntry(MainGraph) }
                 PointsPlansScreen(
-                    onNavigateBack = { navController.popBackStack() }
+                    onNavigateBack = { navController.popBackStack() },
+                    onNavigateToOrders = { navController.navigate(AccountRechargeOrders) },
+                    viewModel = koinViewModel(viewModelStoreOwner = mainGraphEntry)
+                )
+            }
+
+            composable<AccountRechargeOrders> { entry ->
+                val mainGraphEntry = remember(entry) { navController.getBackStackEntry(MainGraph) }
+                RechargeOrdersScreen(
+                    onNavigateBack = { navController.popBackStack() },
+                    viewModel = koinViewModel(viewModelStoreOwner = mainGraphEntry)
+                )
+            }
+
+            composable<AccountInvitation> {
+                GrowthCenterScreen(
+                    onNavigateBack = { navController.popBackStack() },
+                    section = GrowthCenterSection.BENEFITS
                 )
             }
 

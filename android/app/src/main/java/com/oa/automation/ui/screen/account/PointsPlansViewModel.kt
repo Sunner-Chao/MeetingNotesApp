@@ -6,6 +6,7 @@ import com.oa.automation.data.local.ConfigDataStore
 import com.oa.automation.domain.model.AccountPlan
 import com.oa.automation.domain.model.AccountProfile
 import com.oa.automation.domain.model.RechargeOrder
+import com.oa.automation.domain.model.AlipayAppPayment
 import com.oa.automation.infrastructure.account.AccountApiService
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -21,11 +22,14 @@ data class PointsPlansUiState(
     val orders: List<RechargeOrder> = emptyList(),
     val isLoading: Boolean = false,
     val processingPlanCode: String? = null,
+    val pendingPayment: AlipayAppPayment? = null,
+    /** Bumped on every submit so retries of the same order re-trigger the launcher. */
+    val paymentAttempt: Int = 0,
     val error: String? = null,
     val message: String? = null
 )
 
-/** Loads the account's point plans and submits administrator-reviewed recharge requests. */
+/** Loads point plans and coordinates server-created Alipay APP payments. */
 class PointsPlansViewModel(
     private val configDataStore: ConfigDataStore,
     private val accountApiService: AccountApiService
@@ -35,6 +39,15 @@ class PointsPlansViewModel(
 
     private var currentEndpoint = ""
     private var currentToken = ""
+
+    // One ViewModel serves both payment screens, so during a navigation
+    // transition two launchers may observe the same pending payment. This set
+    // arbitrates so the Alipay cashier opens exactly once per attempt.
+    private val launchedPaymentOrderIds = mutableSetOf<String>()
+
+    /** Returns true only for the first launcher that claims this order's payment. */
+    fun tryMarkPaymentLaunched(orderId: String): Boolean =
+        synchronized(launchedPaymentOrderIds) { launchedPaymentOrderIds.add(orderId) }
 
     init {
         viewModelScope.launch {
@@ -61,22 +74,37 @@ class PointsPlansViewModel(
 
     fun submit(planCode: String) {
         if (currentToken.isBlank() || _uiState.value.processingPlanCode != null) return
-        if (_uiState.value.orders.any { it.status.equals("pending", ignoreCase = true) }) {
-            _uiState.update { it.copy(error = "已有待确认的积分申请，请等待处理") }
-            return
-        }
         viewModelScope.launch {
             _uiState.update { it.copy(processingPlanCode = planCode, error = null, message = null) }
-            accountApiService.createOrder(currentEndpoint, currentToken, planCode).fold(
-                onSuccess = {
-                    _uiState.update {
-                        it.copy(
-                            processingPlanCode = null,
-                            message = "积分申请已提交，请等待管理员确认",
-                            error = null
-                        )
-                    }
-                    load(_uiState.value.profile)
+            val existingOrder = _uiState.value.orders.firstOrNull {
+                it.planCode == planCode && it.status.equals("pending", ignoreCase = true)
+            }
+            val orderResult = existingOrder?.let { Result.success(it) }
+                ?: accountApiService.createOrder(currentEndpoint, currentToken, planCode)
+            orderResult.fold(
+                onSuccess = { order ->
+                    accountApiService.createAlipayPayment(currentEndpoint, currentToken, order.id).fold(
+                        onSuccess = { payment ->
+                            // A fresh attempt may reuse the same order id (retry after a
+                            // lost cashier result); release the launch claim first.
+                            synchronized(launchedPaymentOrderIds) {
+                                launchedPaymentOrderIds.remove(payment.orderId)
+                            }
+                            _uiState.update {
+                                it.copy(
+                                    processingPlanCode = null,
+                                    pendingPayment = payment,
+                                    paymentAttempt = it.paymentAttempt + 1,
+                                    error = null
+                                )
+                            }
+                        },
+                        onFailure = { error ->
+                            _uiState.update {
+                                it.copy(processingPlanCode = null, error = error.message ?: "支付宝订单创建失败")
+                            }
+                        }
+                    )
                 },
                 onFailure = { error ->
                     _uiState.update {
@@ -85,6 +113,46 @@ class PointsPlansViewModel(
                             error = error.message ?: "积分申请提交失败"
                         )
                     }
+                }
+            )
+        }
+    }
+
+    fun paymentHandled() {
+        _uiState.value.pendingPayment?.let { payment ->
+            synchronized(launchedPaymentOrderIds) {
+                launchedPaymentOrderIds.remove(payment.orderId)
+            }
+        }
+        _uiState.update { it.copy(pendingPayment = null) }
+    }
+
+    fun confirmPayment(orderId: String, resultStatus: String) {
+        if (currentToken.isBlank()) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLoading = true, error = null) }
+            accountApiService.queryAlipayPayment(currentEndpoint, currentToken, orderId).fold(
+                onSuccess = { query ->
+                    val paid = query.payment.status.equals("paid", ignoreCase = true)
+                    _uiState.update {
+                        it.copy(
+                            isLoading = false,
+                            message = when {
+                                paid -> "支付成功，积分已到账"
+                                resultStatus == "6001" -> "已取消支付，订单仍可继续支付"
+                                resultStatus == "8000" -> "支付处理中，请稍后刷新确认"
+                                else -> "支付结果待确认，请稍后刷新"
+                            },
+                            error = null
+                        )
+                    }
+                    load(_uiState.value.profile)
+                },
+                onFailure = { error ->
+                    _uiState.update {
+                        it.copy(isLoading = false, error = error.message ?: "支付状态查询失败")
+                    }
+                    load(_uiState.value.profile)
                 }
             )
         }

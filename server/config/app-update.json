@@ -1,9 +1,9 @@
 {
-  "version_code": 10245,
-  "version_name": "1.2.45",
+  "version_code": 10253,
+  "version_name": "1.2.53",
   "mandatory": false,
-  "release_notes": "实装本地与腾讯云说话人分离：本地 Sherpa-ONNX 优先，失败后自动切换腾讯云；最终转写按“说话人 1、说话人 2”分段，长录音同样支持兜底。",
-  "published_at": "2026-08-26T22:01:25+08:00",
-  "sha256": "2b61004b8170cf7495e2e51e451b9978a2ea13564fd9013e37d9050121885f39",
-  "apk_filename": "ZhiWuBen-Android-10245.apk"
+  "release_notes": "支付可靠性增强：两页面共享状态、防重复调起、超时订单自动换单号可继续支付、商家账号就绪校验、异步通知拒绝日志。设置页改为单屏布局。首页通知摇铃动画。网页端邀请落地页双入口。",
+  "published_at": "2026-08-29T12:02:24+08:00",
+  "sha256": "00ed24baca23f687ae1557afd7770f7f386c922f4853b77c7e020ac8385d0615",
+  "apk_filename": "ZhiWuBen-Android-10253.apk"
 }

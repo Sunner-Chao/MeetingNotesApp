@@ -2,6 +2,7 @@ import java.awt.*
 import java.awt.image.BufferedImage
 import java.awt.geom.Ellipse2D
 import java.awt.geom.RoundRectangle2D
+import java.awt.GradientPaint
 import java.io.FileInputStream
 import java.net.URI
 import java.security.KeyStore
@@ -186,6 +187,22 @@ val debugSttRelayAddress = claudeEnv["MEETINGNOTES_STT_DEBUG_IPV4_RELAY_ADDRESS"
 val releaseSttRelayAddress = claudeEnv["MEETINGNOTES_STT_IPV4_RELAY_ADDRESS"]
     ?.takeIf { it.isNotBlank() }
     .orEmpty()
+val socialAuthScheme = providers.gradleProperty("meetingnotesSocialAuthScheme")
+    .orElse(providers.environmentVariable("MEETINGNOTES_SOCIAL_AUTH_SCHEME"))
+    .orElse("zhiwuben")
+    .get()
+val socialAuthHost = providers.gradleProperty("meetingnotesSocialAuthHost")
+    .orElse(providers.environmentVariable("MEETINGNOTES_SOCIAL_AUTH_HOST"))
+    .orElse("auth")
+    .get()
+val socialAuthPath = providers.gradleProperty("meetingnotesSocialAuthPath")
+    .orElse(providers.environmentVariable("MEETINGNOTES_SOCIAL_AUTH_PATH"))
+    .orElse("/callback")
+    .get()
+require(socialAuthScheme.matches(Regex("[a-z][a-z0-9+.-]*"))) { "Invalid social auth URI scheme" }
+require(socialAuthHost.matches(Regex("[A-Za-z0-9.-]+"))) { "Invalid social auth URI host" }
+require(socialAuthPath.startsWith("/")) { "Social auth URI path must start with /" }
+val socialAuthCallbackUri = "$socialAuthScheme://$socialAuthHost$socialAuthPath"
 
 android {
     namespace = "com.oa.automation"
@@ -195,8 +212,12 @@ android {
         applicationId = "com.oa.automation"
         minSdk = 26
         targetSdk = 34
-        versionCode = 10245
-        versionName = "1.2.45"
+        versionCode = 10253
+        versionName = "1.2.53"
+        manifestPlaceholders["socialAuthScheme"] = socialAuthScheme
+        manifestPlaceholders["socialAuthHost"] = socialAuthHost
+        manifestPlaceholders["socialAuthPath"] = socialAuthPath
+        buildConfigField("String", "SOCIAL_AUTH_CALLBACK_URI", "\"$socialAuthCallbackUri\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -479,6 +500,7 @@ android.defaultConfig {
 }
 
 dependencies {
+    implementation(files("libs/alipaysdk-android-15.8.42.aar"))
     val composeBom = platform("androidx.compose:compose-bom:2024.02.00")
     implementation(composeBom)
 
@@ -548,6 +570,47 @@ tasks.register("generateIconPngs") {
             "Launcher icon master not found: ${masterFile.absolutePath}"
         }
         val master = ImageIO.read(masterFile)
+        // The launcher brand uses the approved blue gradient consistently across
+        // adaptive, legacy and in-app icon assets.
+        val iconGradientStart = Color(0x33, 0x9A, 0xF5)
+        val iconGradientEnd = Color(0x3C, 0xAD, 0xF5)
+
+        fun gradientColor(x: Int, y: Int, width: Int, height: Int): Color {
+            val xRatio = if (width <= 1) 0.0 else x.toDouble() / (width - 1)
+            val yRatio = if (height <= 1) 0.0 else y.toDouble() / (height - 1)
+            val diagonal = ((xRatio + yRatio) / 2.0).coerceIn(0.0, 1.0)
+            // Smoothstep gives the diagonal transition a soft, arc-like feel.
+            val eased = diagonal * diagonal * (3.0 - 2.0 * diagonal)
+            return Color(
+                (iconGradientStart.red + (iconGradientEnd.red - iconGradientStart.red) * eased).toInt(),
+                (iconGradientStart.green + (iconGradientEnd.green - iconGradientStart.green) * eased).toInt(),
+                (iconGradientStart.blue + (iconGradientEnd.blue - iconGradientStart.blue) * eased).toInt()
+            )
+        }
+
+        fun recolorBrandBlue(source: BufferedImage): BufferedImage {
+            val recolored = BufferedImage(source.width, source.height, BufferedImage.TYPE_INT_ARGB)
+            for (y in 0 until source.height) {
+                for (x in 0 until source.width) {
+                    val argb = source.getRGB(x, y)
+                    val alpha = argb ushr 24 and 0xFF
+                    val red = argb ushr 16 and 0xFF
+                    val green = argb ushr 8 and 0xFF
+                    val blue = argb and 0xFF
+                    val hsb = Color.RGBtoHSB(red, green, blue, null)
+                    val isBrandBlue = hsb[0] in 0.52f..0.72f && hsb[1] >= 0.18f && hsb[2] >= 0.12f
+                    if (isBrandBlue) {
+                        val rgb = gradientColor(x, y, source.width, source.height).rgb
+                        recolored.setRGB(x, y, (alpha shl 24) or (rgb and 0x00FFFFFF))
+                    } else {
+                        recolored.setRGB(x, y, argb)
+                    }
+                }
+            }
+            return recolored
+        }
+
+        val recoloredMaster = recolorBrandBlue(master)
         val contentScale = providers.gradleProperty("launcherIconContentScale")
             .orElse(providers.environmentVariable("MEETINGNOTES_ICON_CONTENT_SCALE"))
             // Keep the logo inside the adaptive-icon safe zone so the wordmark remains legible.
@@ -573,10 +636,10 @@ tasks.register("generateIconPngs") {
         require(brandCropScale in 0.7..1.0) {
             "Brand icon crop scale must be between 0.7 and 1.0"
         }
-        val masterCropSize = (minOf(master.width, master.height) * masterCropScale).toInt()
-        val masterCropLeft = (master.width - masterCropSize) / 2
-        val masterCropTop = (master.height - masterCropSize) / 2
-        val croppedMaster = master.getSubimage(
+        val masterCropSize = (minOf(recoloredMaster.width, recoloredMaster.height) * masterCropScale).toInt()
+        val masterCropLeft = (recoloredMaster.width - masterCropSize) / 2
+        val masterCropTop = (recoloredMaster.height - masterCropSize) / 2
+        val croppedMaster = recoloredMaster.getSubimage(
             masterCropLeft,
             masterCropTop,
             masterCropSize,
@@ -592,7 +655,14 @@ tasks.register("generateIconPngs") {
         launcherGraphics.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
         launcherGraphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC)
         launcherGraphics.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY)
-        launcherGraphics.color = Color(0x47, 0x74, 0xBE)
+        launcherGraphics.paint = GradientPaint(
+            0f,
+            0f,
+            iconGradientStart,
+            launcherCanvasSize.toFloat(),
+            launcherCanvasSize.toFloat(),
+            iconGradientEnd
+        )
         launcherGraphics.fillRect(0, 0, launcherCanvasSize, launcherCanvasSize)
         val availableSize = launcherCanvasSize * contentScale
         val imageScale = minOf(availableSize / croppedMaster.width, availableSize / croppedMaster.height)
@@ -612,7 +682,14 @@ tasks.register("generateIconPngs") {
         legacyGraphics.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
         legacyGraphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC)
         legacyGraphics.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY)
-        legacyGraphics.color = Color(0x47, 0x74, 0xBE)
+        legacyGraphics.paint = GradientPaint(
+            0f,
+            0f,
+            iconGradientStart,
+            launcherCanvasSize.toFloat(),
+            launcherCanvasSize.toFloat(),
+            iconGradientEnd
+        )
         legacyGraphics.fillRect(0, 0, launcherCanvasSize, launcherCanvasSize)
         legacyGraphics.drawImage(launcherArtwork, 0, 0, null)
         legacyGraphics.dispose()

@@ -9,11 +9,14 @@ import contextlib
 import hashlib
 import hmac
 import json
+import logging
 import os
+import platform
 import re
 import shutil
 import sqlite3
 import smtplib
+import time
 import uuid
 from contextlib import asynccontextmanager, closing, contextmanager
 from datetime import datetime, timedelta, timezone
@@ -21,10 +24,11 @@ from email.message import EmailMessage
 from html import escape as html_escape
 from pathlib import Path
 from typing import Annotated, Iterator
+from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlunparse
 
 import requests
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 from starlette.responses import StreamingResponse
@@ -38,11 +42,27 @@ from agent_gateway import (
 )
 from account_service import (
     AccountDeliveryUnavailableError,
+    AccountConflictError,
     AccountError,
     AccountPrincipal,
     AccountService,
 )
-from social_auth import load_social_auth_providers
+from alipay_payment import (
+    AlipayConfigurationError,
+    AlipayGatewayError,
+    AlipayPaymentClient,
+    amount_cents as alipay_amount_cents,
+    is_paid_notification,
+    load_alipay_config,
+    notify_business_matches,
+    verify_notify_signature,
+)
+from social_auth import (
+    build_oauth_authorization_url,
+    load_social_auth_config,
+    load_social_auth_providers,
+    provider_field,
+)
 from community_api import build_community_router, build_public_community_router
 from community_service import CommunityService
 
@@ -78,6 +98,11 @@ SERVER_ROOT = Path(__file__).resolve().parent.parent
 DASHBOARD_TEMPLATE_PATH = Path(__file__).with_name("dashboard.html")
 APK_DIRECTORY_TEMPLATE_PATH = Path(__file__).with_name("apk_directory.html")
 BEIJING_TIMEZONE = timezone(timedelta(hours=8), name="Asia/Shanghai")
+PROCESS_STARTED_AT = int(time.time())
+PRIVATE_CHANNEL_MEDIA_DIR = Path(
+    _env("GROWTH_MEDIA_DIR", "./data/growth-media")
+).resolve()
+PRIVATE_CHANNEL_QR_MAX_BYTES = int(_env("GROWTH_QR_MAX_BYTES", str(4 * 1024 * 1024)))
 
 
 def _default_pwa_dist_dir() -> Path:
@@ -111,6 +136,9 @@ ACCOUNT_FREE_POINTS = int(_env("ACCOUNT_FREE_POINTS", "1000"))
 ACCOUNT_STT_POINTS_PER_MINUTE = int(_env("ACCOUNT_STT_POINTS_PER_MINUTE", "10"))
 ACCOUNT_AI_SUMMARY_POINTS = int(_env("ACCOUNT_AI_SUMMARY_POINTS", "30"))
 ACCOUNT_AI_CHAT_POINTS = int(_env("ACCOUNT_AI_CHAT_POINTS", "10"))
+ALIPAY_ENABLED = _env_bool("ALIPAY_ENABLED", False)
+ALIPAY_ENVIRONMENT = _env("ALIPAY_ENVIRONMENT", "sandbox")
+ALIPAY_NOTIFY_URL = os.getenv("ALIPAY_NOTIFY_URL", "").strip()
 ACCOUNT_AUTH_CODE_DEBUG = _env_bool("ACCOUNT_AUTH_CODE_DEBUG", False)
 ACCOUNT_AUTH_CODE_WEBHOOK_URL = os.getenv("ACCOUNT_AUTH_CODE_WEBHOOK_URL", "").strip()
 ACCOUNT_AUTH_CODE_WEBHOOK_TOKEN = os.getenv("ACCOUNT_AUTH_CODE_WEBHOOK_TOKEN", "").strip()
@@ -136,6 +164,18 @@ ACCOUNT_PROFILE_AVATAR_DATA_URL_MAX_LENGTH = max(
         )
     ),
 )
+ACCOUNT_AUTH_PUBLIC_BASE_URL = os.getenv("ACCOUNT_AUTH_PUBLIC_BASE_URL", "").strip().rstrip("/")
+ACCOUNT_AUTH_ANDROID_CALLBACK_URI = _env(
+    "ACCOUNT_AUTH_ANDROID_CALLBACK_URI", "zhiwuben://auth/callback"
+)
+ACCOUNT_AUTH_ALLOWED_REDIRECTS = tuple(
+    value.strip()
+    for value in re.split(r"[,\n]", os.getenv("ACCOUNT_AUTH_ALLOWED_REDIRECTS", ""))
+    if value.strip()
+)
+ACCOUNT_AUTH_HTTP_TIMEOUT_SEC = max(
+    5.0, float(_env("ACCOUNT_AUTH_HTTP_TIMEOUT_SEC", "20"))
+)
 AGENT_MAX_REQUEST_JSON_BYTES = max(0, int(_env("AGENT_MAX_REQUEST_JSON_BYTES", "0")))
 ACCOUNT_PLANS_PATH = Path(
     _env("ACCOUNT_PLANS_PATH", str(Path(__file__).resolve().parent.parent / "config" / "account-plans.json"))
@@ -153,9 +193,15 @@ ACCOUNT_MIGRATION_TABLES = (
     "account_plans",
     "user_entitlements",
     "account_identities",
+    "account_registration_sources",
+    "social_auth_states",
+    "social_auth_tickets",
+    "social_auth_audit",
     "user_sessions",
     "auth_verification_codes",
     "recharge_orders",
+    "alipay_transactions",
+    "alipay_notify_events",
     "account_usage_balances",
     "account_usage_events",
     "account_teams",
@@ -812,6 +858,10 @@ class AccountPasswordResetPayload(AccountAuthCodeVerifyPayload):
     new_password: str = Field(min_length=8, max_length=128)
 
 
+class SocialAuthExchangePayload(BaseModel):
+    ticket: str = Field(min_length=20, max_length=512)
+
+
 class AccountTeamMemberPayload(BaseModel):
     user_id: str = Field(min_length=1, max_length=64)
 
@@ -826,6 +876,11 @@ class AccountProfileUpdatePayload(BaseModel):
 
 class RechargeOrderCreatePayload(BaseModel):
     plan_code: str = Field(min_length=1, max_length=64)
+
+
+class AlipayRefundPayload(BaseModel):
+    refund_amount_cents: int | None = Field(default=None, ge=1)
+    reason: str = Field(default="用户申请退款", max_length=200)
 
 
 class AccountUserStatePayload(BaseModel):
@@ -866,20 +921,43 @@ class GrowthBatchPayload(BaseModel):
 
 class GrowthChannelConfigPayload(BaseModel):
     id: str = Field(default="default-welfare-group", max_length=128)
-    name: str = Field(default="智悟本福利群", max_length=80)
+    name: str = Field(default="智悟本福利7群", max_length=80)
     qr_image_url: str = Field(default="", max_length=500)
+    manager_card_image_url: str = Field(default="", max_length=500)
     join_url: str = Field(default="", max_length=500)
     short_url: str = Field(default="", max_length=500)
     slogan: str = Field(default="扫码加入福利群，每日专属兑换码、活动优先通知、客服一对一", max_length=300)
     reward_type: str = Field(default="points", max_length=30)
-    reward: dict = Field(default_factory=lambda: {"quantity": 50})
+    reward: dict = Field(default_factory=lambda: {"quantity": 200})
     valid_until: int | None = Field(default=None, ge=0)
     enabled: bool = True
+
+
+class GrowthCampaignConfigPayload(BaseModel):
+    id: str | None = Field(default=None, max_length=128)
+    title: str = Field(min_length=1, max_length=120)
+    campaign_type: str = Field(pattern="^(ranking|quiz|contest|checkin|draw)$")
+    summary: str = Field(default="", max_length=500)
+    rules: dict = Field(default_factory=dict)
+    reward_pool: dict = Field(default_factory=dict)
+    starts_at: int = Field(gt=0)
+    ends_at: int = Field(gt=0)
+    status: str = Field(default="draft", pattern="^(draft|active|running|paused)$")
 
 
 class GrowthAnswerPayload(BaseModel):
     question_key: str = Field(min_length=1, max_length=80)
     answer: str = Field(min_length=1, max_length=200)
+
+
+class GrowthChannelApplicationPayload(BaseModel):
+    channel_id: str = Field(default="default-welfare-group", min_length=1, max_length=128)
+    answers: dict = Field(default_factory=dict)
+
+
+class GrowthChannelApplicationDecisionPayload(BaseModel):
+    decision: str = Field(pattern="^(approved|rejected)$")
+    note: str = Field(default="", max_length=500)
 
 
 def normalized_account_meeting_id(value: str) -> str:
@@ -921,6 +999,10 @@ async def app_lifespan(_app: FastAPI):
 
 app = FastAPI(title="Meeting Notes Web Backend", lifespan=app_lifespan)
 
+# Payment notifications answer "fail" on any problem by design; the log is the
+# only place an operator can see WHY a notification was rejected.
+payment_logger = logging.getLogger("meetingnotes.payment")
+
 
 def is_web_request_authorized(authorization: str | None) -> bool:
     if not WEB_API_TOKEN:
@@ -951,7 +1033,7 @@ async def authenticate_web_api(request: Request, call_next):
         "/api/auth/code/request",
         "/api/auth/code/verify",
         "/api/auth/providers",
-    }
+    } or request.url.path.startswith("/api/auth/social/")
     is_user_account_path = request.url.path.startswith("/api/account/")
     is_account_admin_path = request.url.path.startswith("/api/admin/accounts/")
     is_user_stt_path = request.url.path.startswith("/api/stt/")
@@ -962,6 +1044,7 @@ async def authenticate_web_api(request: Request, call_next):
         "/api/community/"
     )
     is_public_growth_path = request.url.path in {"/api/growth/campaigns", "/api/growth/private-channel"} or request.url.path.startswith("/api/growth/private-channel/")
+    is_public_alipay_notify = request.url.path == "/api/payment/alipay/notify"
     is_growth_campaign_path = request.url.path.startswith("/api/growth/campaigns/")
     is_pwa_path = request.url.path == "/app" or request.url.path.startswith("/app/")
     if (
@@ -975,6 +1058,7 @@ async def authenticate_web_api(request: Request, call_next):
         or is_public_update_path
         or is_public_community_path
         or is_public_growth_path
+        or is_public_alipay_notify
         or is_growth_campaign_path
         or is_web_request_authorized(request.headers.get("authorization"))
     ):
@@ -1023,6 +1107,14 @@ def require_account_principal(
         ) from exc
 
 
+def optional_account_principal(
+    authorization: Annotated[str | None, Header()] = None,
+) -> AccountPrincipal | None:
+    if not authorization:
+        return None
+    return require_account_principal(authorization)
+
+
 def require_growth_admin_principal(
     authorization: Annotated[str | None, Header()] = None,
 ) -> AccountPrincipal:
@@ -1034,7 +1126,7 @@ def require_growth_admin_principal(
                 return principal
         except AccountError:
             pass
-    if is_web_request_authorized(authorization):
+    if WEB_API_TOKEN and is_web_request_authorized(authorization):
         try:
             return service.dashboard_admin_principal()
         except AccountError as exc:
@@ -1044,6 +1136,232 @@ def require_growth_admin_principal(
 
 def account_http_error(exc: AccountError) -> HTTPException:
     return HTTPException(status_code=exc.status_code, detail=str(exc))
+
+
+def _new_alipay_out_trade_no() -> str:
+    # Keep the merchant order number short and composed only of safe ASCII.
+    return f"ZW{int(time.time())}{uuid.uuid4().hex[:18]}"
+
+
+def _alipay_payload_for_storage(params: dict[str, str]) -> tuple[str, str]:
+    sanitized = {key: value for key, value in params.items() if key not in {"sign", "sign_type"}}
+    payload_json = json.dumps(sanitized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    payload_hash = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+    return payload_hash, payload_json
+
+
+def _alipay_response_status(response: dict) -> str:
+    return str(response.get("trade_status") or response.get("status") or "")
+
+
+def _alipay_gateway_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, AlipayConfigurationError):
+        return HTTPException(status_code=503, detail=str(exc))
+    if isinstance(exc, AlipayGatewayError):
+        return HTTPException(status_code=502, detail=str(exc))
+    return HTTPException(status_code=500, detail="支付宝支付处理失败")
+
+
+def _account_auth_public_base(request: Request) -> str:
+    return ACCOUNT_AUTH_PUBLIC_BASE_URL or str(request.base_url).rstrip("/")
+
+
+def _social_client_redirect(request: Request, client: str, requested: str) -> str:
+    public_base = _account_auth_public_base(request)
+    default = ACCOUNT_AUTH_ANDROID_CALLBACK_URI if client == "android" else f"{public_base}/app/"
+    candidate = requested.strip() or default
+    parsed = urlparse(candidate)
+    public = urlparse(public_base)
+    same_origin = (
+        parsed.scheme in {"http", "https"}
+        and parsed.scheme == public.scheme
+        and parsed.netloc == public.netloc
+    )
+    allowed = (ACCOUNT_AUTH_ANDROID_CALLBACK_URI, *ACCOUNT_AUTH_ALLOWED_REDIRECTS)
+    if same_origin or any(_same_redirect_target(candidate, target) for target in allowed if target):
+        return candidate
+    raise AccountError("第三方登录回调地址不在允许列表中")
+
+
+def _same_redirect_target(candidate: str, allowed: str) -> bool:
+    candidate_uri = urlparse(candidate)
+    allowed_uri = urlparse(allowed)
+    if candidate_uri.fragment or not candidate_uri.scheme or not candidate_uri.netloc:
+        return False
+    candidate_path = candidate_uri.path.rstrip("/") or "/"
+    allowed_path = allowed_uri.path.rstrip("/") or "/"
+    return (
+        candidate_uri.scheme.lower() == allowed_uri.scheme.lower()
+        and candidate_uri.netloc.lower() == allowed_uri.netloc.lower()
+        and candidate_path == allowed_path
+    )
+
+
+def _append_url_query(url: str, values: dict[str, str]) -> str:
+    parsed = urlparse(url)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query.update({key: value for key, value in values.items() if value})
+    return urlunparse(parsed._replace(query=urlencode(query)))
+
+
+def _social_callback_url(request: Request, provider: str) -> str:
+    return f"{_account_auth_public_base(request)}/api/auth/social/{provider}/callback"
+
+
+def _telegram_identity(config: dict, params: dict[str, str]) -> dict:
+    signed_fields = {
+        key: value
+        for key, value in params.items()
+        if key in {"id", "first_name", "last_name", "username", "photo_url", "auth_date"}
+    }
+    supplied_hash = params.get("hash", "")
+    if not supplied_hash or not signed_fields.get("id") or not signed_fields.get("auth_date"):
+        raise AccountError("Telegram 返回的身份信息不完整")
+    try:
+        auth_date = int(signed_fields["auth_date"])
+    except ValueError as exc:
+        raise AccountError("Telegram 登录时间无效") from exc
+    if abs(int(time.time()) - auth_date) > 10 * 60:
+        raise AccountError("Telegram 登录信息已过期")
+    data_check = "\n".join(f"{key}={signed_fields[key]}" for key in sorted(signed_fields))
+    secret_key = hashlib.sha256(str(config["bot_token"]).encode("utf-8")).digest()
+    expected = hmac.new(secret_key, data_check.encode("utf-8"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, supplied_hash):
+        raise AccountError("Telegram 登录签名校验失败")
+    display_name = " ".join(
+        value for value in (signed_fields.get("first_name", ""), signed_fields.get("last_name", "")) if value
+    ) or signed_fields.get("username", "")
+    return {"subject": signed_fields["id"], "display_name": display_name, "raw": signed_fields}
+
+
+def _oauth_identity(config: dict, code: str, callback_url: str, verifier: str) -> dict:
+    client_id_param = str(config.get("token_client_id_param", "client_id")) or "client_id"
+    client_secret_param = str(config.get("token_client_secret_param", "client_secret")) or "client_secret"
+    token_payload = {
+        str(key): str(value)
+        for key, value in config.get("token_extra_params", {}).items()
+    }
+    token_payload.update({
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": callback_url,
+        client_id_param: config["client_id"],
+        client_secret_param: config["client_secret"],
+    })
+    if verifier and bool(config.get("pkce_enabled", True)):
+        token_payload["code_verifier"] = verifier
+    request_method = requests.get if config.get("token_method") == "GET" else requests.post
+    token_body_format = str(config.get("token_body_format", "form")).lower()
+    token_response = request_method(
+        config["token_endpoint"],
+        params=token_payload if request_method is requests.get else None,
+        json=token_payload if request_method is requests.post and token_body_format == "json" else None,
+        data=token_payload if request_method is requests.post and token_body_format != "json" else None,
+        timeout=ACCOUNT_AUTH_HTTP_TIMEOUT_SEC,
+    )
+    token_response.raise_for_status()
+    token_data = _decode_social_provider_response(
+        token_response,
+        str(config.get("token_response_format", "auto")),
+    )
+    access_token = provider_field(config, "token_field", token_data)
+    if not access_token:
+        raise AccountError("第三方平台未返回访问令牌")
+
+    provisional_subject = provider_field(config, "token_subject_field", token_data)
+    subject_data: dict = {}
+    subject_endpoint = str(config.get("subject_endpoint", ""))
+    if subject_endpoint:
+        subject_params: dict[str, str] = {
+            str(key): str(value)
+            for key, value in config.get("subject_extra_params", {}).items()
+        }
+        subject_token_param = str(config.get("subject_token_param", ""))
+        if subject_token_param:
+            subject_params[subject_token_param] = access_token
+        subject_headers = {} if subject_token_param else {"Authorization": f"Bearer {access_token}"}
+        subject_method = requests.post if config.get("subject_method") == "POST" else requests.get
+        subject_response = subject_method(
+            subject_endpoint,
+            headers=subject_headers,
+            params=subject_params if subject_method is requests.get else None,
+            data=subject_params if subject_method is requests.post else None,
+            timeout=ACCOUNT_AUTH_HTTP_TIMEOUT_SEC,
+        )
+        subject_response.raise_for_status()
+        subject_data = _decode_social_provider_response(
+            subject_response,
+            str(config.get("subject_response_format", "auto")),
+        )
+        provisional_subject = provider_field(config, "subject_field", subject_data) or provisional_subject
+
+    userinfo_params: dict[str, str] = {
+        str(key): str(value)
+        for key, value in config.get("userinfo_extra_params", {}).items()
+    }
+    token_param = str(config.get("userinfo_token_param", ""))
+    if token_param:
+        userinfo_params[token_param] = access_token
+    subject_param = str(config.get("userinfo_subject_param", ""))
+    if subject_param and provisional_subject:
+        userinfo_params[subject_param] = provisional_subject
+    client_id_query_param = str(config.get("userinfo_client_id_param", ""))
+    if client_id_query_param:
+        userinfo_params[client_id_query_param] = str(config["client_id"])
+    headers = {} if token_param else {"Authorization": f"Bearer {access_token}"}
+    info_method = requests.post if config.get("userinfo_method") == "POST" else requests.get
+    info_response = info_method(
+        config["userinfo_endpoint"],
+        headers=headers,
+        params=userinfo_params if info_method is requests.get else None,
+        data=userinfo_params if info_method is requests.post else None,
+        timeout=ACCOUNT_AUTH_HTTP_TIMEOUT_SEC,
+    )
+    info_response.raise_for_status()
+    userinfo = _decode_social_provider_response(
+        info_response,
+        str(config.get("userinfo_response_format", "auto")),
+    )
+    subject = provider_field(config, "subject_field", userinfo) or provisional_subject
+    if not subject:
+        raise AccountError("第三方平台未返回用户标识")
+    return {
+        "subject": subject,
+        "display_name": provider_field(config, "display_name_field", userinfo),
+        "raw": {"provider_user": userinfo},
+    }
+
+
+def _decode_social_provider_response(response: requests.Response, response_format: str) -> dict:
+    clean_format = response_format.strip().lower() or "auto"
+    text = response.text.strip()
+    if clean_format in {"auto", "json"}:
+        try:
+            payload = response.json()
+            if isinstance(payload, dict):
+                return payload
+        except ValueError:
+            if clean_format == "json":
+                raise AccountError("第三方平台返回了无效 JSON")
+    if clean_format in {"auto", "form"}:
+        parsed = {key: values[-1] for key, values in parse_qs(text, keep_blank_values=True).items()}
+        if parsed:
+            return parsed
+        if clean_format == "form":
+            raise AccountError("第三方平台返回了无效表单数据")
+    if clean_format in {"auto", "jsonp"}:
+        left = text.find("(")
+        right = text.rfind(")")
+        if 0 <= left < right:
+            try:
+                payload = json.loads(text[left + 1:right].strip())
+                if isinstance(payload, dict):
+                    return payload
+            except json.JSONDecodeError:
+                pass
+        if clean_format == "jsonp":
+            raise AccountError("第三方平台返回了无效 JSONP")
+    raise AccountError("无法解析第三方平台响应")
 
 
 def configured_community_db_path() -> Path:
@@ -1066,6 +1384,8 @@ app.include_router(build_public_community_router(configured_community_db_path))
 
 @app.get("/", response_class=HTMLResponse)
 @app.get("/web", response_class=HTMLResponse)
+@app.get("/admin", response_class=HTMLResponse)
+@app.get("/admin/", response_class=HTMLResponse)
 def index() -> str:
     template = DASHBOARD_TEMPLATE_PATH.read_text(encoding="utf-8")
     replacements = {
@@ -1092,6 +1412,114 @@ def health() -> dict:
         "release": SERVER_RELEASE,
         "port": PORT,
         "community_write_enabled": COMMUNITY_WRITE_ENABLED,
+    }
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon() -> Response:
+    return Response(status_code=204)
+
+
+def _memory_metrics() -> tuple[int, int]:
+    meminfo_path = Path("/proc/meminfo")
+    if meminfo_path.is_file():
+        values: dict[str, int] = {}
+        for line in meminfo_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            key, separator, value = line.partition(":")
+            if separator:
+                match = re.search(r"\d+", value)
+                if match:
+                    values[key] = int(match.group()) * 1024
+        total = values.get("MemTotal", 0)
+        available = values.get("MemAvailable", values.get("MemFree", 0))
+        return total, max(0, total - available)
+    if platform.system() == "Windows":
+        try:
+            import ctypes
+
+            class MemoryStatusEx(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+
+            status = MemoryStatusEx()
+            status.dwLength = ctypes.sizeof(MemoryStatusEx)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                return int(status.ullTotalPhys), int(status.ullTotalPhys - status.ullAvailPhys)
+        except (AttributeError, OSError, ValueError):
+            pass
+    return 0, 0
+
+
+def _process_rss_bytes() -> int:
+    status_path = Path("/proc/self/status")
+    if status_path.is_file():
+        match = re.search(
+            r"^VmRSS:\s+(\d+)\s+kB$",
+            status_path.read_text(encoding="utf-8", errors="replace"),
+            re.MULTILINE,
+        )
+        if match:
+            return int(match.group(1)) * 1024
+    return 0
+
+
+@app.get("/api/admin/system/metrics")
+def admin_system_metrics(
+    principal: Annotated[AccountPrincipal, Depends(require_growth_admin_principal)],
+) -> dict:
+    configured_account_service()._require_admin(principal)
+    now = int(time.time())
+    cpu_count = max(1, os.cpu_count() or 1)
+    try:
+        load_1m, load_5m, load_15m = os.getloadavg()
+    except (AttributeError, OSError):
+        load_1m = load_5m = load_15m = 0.0
+    memory_total, memory_used = _memory_metrics()
+    disk_root = DB_PATH.parent if DB_PATH.parent.exists() else SERVER_ROOT
+    disk = shutil.disk_usage(disk_root)
+    account_db = configured_account_service().db_path
+    return {
+        "host": platform.node() or "unknown",
+        "platform": platform.platform(),
+        "cpu": {
+            "logical_cores": cpu_count,
+            "load_percent": round(min(100.0, max(0.0, load_1m / cpu_count * 100)), 1),
+            "load_1m": round(load_1m, 2),
+            "load_5m": round(load_5m, 2),
+            "load_15m": round(load_15m, 2),
+        },
+        "memory": {
+            "total_bytes": memory_total,
+            "used_bytes": memory_used,
+            "used_percent": round(memory_used / memory_total * 100, 1) if memory_total else 0,
+            "process_rss_bytes": _process_rss_bytes(),
+        },
+        "disk": {
+            "total_bytes": disk.total,
+            "used_bytes": disk.used,
+            "free_bytes": disk.free,
+            "used_percent": round(disk.used / disk.total * 100, 1) if disk.total else 0,
+        },
+        "database": {
+            "meeting_bytes": DB_PATH.stat().st_size if DB_PATH.is_file() else 0,
+            "account_bytes": account_db.stat().st_size if account_db.is_file() else 0,
+        },
+        "process": {
+            "pid": os.getpid(),
+            "started_at": PROCESS_STARTED_AT,
+            "uptime_seconds": max(0, now - PROCESS_STARTED_AT),
+        },
+        "observed_at": now,
+        "timezone": "Asia/Shanghai",
     }
 
 
@@ -1459,14 +1887,18 @@ def growth_campaign_leaderboard(campaign_id: str, limit: int = 20) -> list[dict]
 
 @app.get("/api/growth/private-channel")
 def growth_private_channel() -> dict:
-    channel = configured_account_service().private_channel()
+    channel = configured_account_service().public_private_channel()
     if channel is None:
         raise HTTPException(status_code=404, detail="暂无开放的福利群")
     return channel
 
 
 @app.get("/api/growth/private-channel/default-qr", include_in_schema=False)
-def growth_private_channel_default_qr() -> FileResponse:
+def growth_private_channel_default_qr(
+    principal: Annotated[AccountPrincipal | None, Depends(optional_account_principal)],
+) -> FileResponse:
+    if not configured_account_service().can_access_private_channel_asset("default-qr", principal):
+        raise HTTPException(status_code=403, detail="审核通过后才可查看群二维码")
     candidates = (
         SERVER_ROOT.parent / "pwa" / "public" / "assets" / "welfare-group-qr.jpg",
         SERVER_ROOT / "pwa-dist" / "assets" / "welfare-group-qr.jpg",
@@ -1477,12 +1909,72 @@ def growth_private_channel_default_qr() -> FileResponse:
     return FileResponse(image_path, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=300"})
 
 
+@app.get("/api/growth/private-channel/default-manager-card", include_in_schema=False)
+def growth_private_channel_default_manager_card() -> FileResponse:
+    candidates = (
+        SERVER_ROOT / "backend-service" / "assets" / "private-channel-manager-card.jpg",
+        SERVER_ROOT / "backend-service" / "private-channel-manager-card.jpg",
+    )
+    image_path = next((candidate for candidate in candidates if candidate.is_file()), None)
+    if image_path is None:
+        raise HTTPException(status_code=404, detail="群主名片素材不存在")
+    return FileResponse(image_path, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=300"})
+
+
+@app.get("/api/growth/private-channel/media/{filename}", include_in_schema=False)
+def growth_private_channel_media(
+    filename: str,
+    principal: Annotated[AccountPrincipal | None, Depends(optional_account_principal)],
+) -> FileResponse:
+    if not re.fullmatch(r"[a-f0-9]{32}\.(?:jpg|png|webp)", filename):
+        raise HTTPException(status_code=404, detail="二维码素材不存在")
+    if not configured_account_service().can_access_private_channel_asset(filename, principal):
+        raise HTTPException(status_code=403, detail="审核通过后才可查看群二维码素材")
+    image_path = PRIVATE_CHANNEL_MEDIA_DIR / filename
+    if not image_path.is_file():
+        raise HTTPException(status_code=404, detail="二维码素材不存在")
+    media_type = {
+        ".jpg": "image/jpeg",
+        ".png": "image/png",
+        ".webp": "image/webp",
+    }[image_path.suffix.lower()]
+    return FileResponse(
+        image_path,
+        media_type=media_type,
+        headers={"Cache-Control": "public, max-age=300"},
+    )
+
+
 @app.get("/api/account/growth/overview")
 def account_growth_overview(
     principal: Annotated[AccountPrincipal, Depends(require_account_principal)],
 ) -> dict:
     try:
         return configured_account_service().growth_overview(principal)
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+
+
+@app.get("/api/account/growth/private-channel/application")
+def account_growth_private_channel_application(
+    principal: Annotated[AccountPrincipal, Depends(require_account_principal)],
+    channel_id: str = "default-welfare-group",
+) -> dict:
+    try:
+        return configured_account_service().private_channel_application(principal, channel_id)
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+
+
+@app.post("/api/account/growth/private-channel/application")
+def submit_account_growth_private_channel_application(
+    payload: GrowthChannelApplicationPayload,
+    principal: Annotated[AccountPrincipal, Depends(require_account_principal)],
+) -> dict:
+    try:
+        return configured_account_service().submit_private_channel_application(
+            principal, payload.channel_id, payload.answers
+        )
     except AccountError as exc:
         raise account_http_error(exc) from exc
 
@@ -1505,10 +1997,34 @@ def account_redeem_history(
     return configured_account_service().redemption_history(principal)
 
 
+@app.get("/api/account/growth/messages")
+def account_growth_messages(
+    principal: Annotated[AccountPrincipal, Depends(require_account_principal)],
+    limit: int = 50,
+) -> list[dict]:
+    try:
+        return configured_account_service().system_messages(principal, limit)
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+
+
+@app.post("/api/account/growth/messages/{message_id}/read")
+def account_mark_growth_message_read(
+    message_id: str,
+    principal: Annotated[AccountPrincipal, Depends(require_account_principal)],
+) -> dict:
+    try:
+        return configured_account_service().mark_system_message_read(
+            principal, message_id
+        )
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+
+
 @app.post("/api/growth/private-channel/events")
 def growth_private_channel_event(
     payload: GrowthChannelEventPayload,
-    principal: Annotated[AccountPrincipal | None, Depends(require_account_principal)] = None,
+    principal: Annotated[AccountPrincipal | None, Depends(optional_account_principal)],
 ) -> dict:
     try:
         return configured_account_service().record_channel_event(
@@ -1556,6 +2072,65 @@ def admin_growth_batches(
         raise account_http_error(exc) from exc
 
 
+@app.get("/api/admin/growth/redemptions/{batch_id}/codes")
+def admin_growth_batch_codes(
+    batch_id: str,
+    principal: Annotated[AccountPrincipal, Depends(require_growth_admin_principal)],
+    status: str | None = None,
+    search: str = "",
+    limit: int = 200,
+    offset: int = 0,
+) -> dict:
+    try:
+        return configured_account_service().admin_list_redemption_codes(
+            principal,
+            batch_id,
+            status=status,
+            search=search,
+            limit=limit,
+            offset=offset,
+        )
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+
+
+@app.get("/api/admin/growth/campaigns")
+def admin_growth_campaigns(
+    principal: Annotated[AccountPrincipal, Depends(require_growth_admin_principal)],
+) -> list[dict]:
+    try:
+        return configured_account_service().admin_list_campaigns(principal)
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+
+
+@app.post("/api/admin/growth/campaigns")
+def admin_create_growth_campaign(
+    payload: GrowthCampaignConfigPayload,
+    principal: Annotated[AccountPrincipal, Depends(require_growth_admin_principal)],
+) -> dict:
+    try:
+        return configured_account_service().admin_create_campaign(
+            principal, payload.model_dump()
+        )
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+
+
+@app.patch("/api/admin/growth/campaigns/{campaign_id}")
+def admin_update_growth_campaign(
+    campaign_id: str,
+    payload: GrowthCampaignConfigPayload,
+    principal: Annotated[AccountPrincipal, Depends(require_growth_admin_principal)],
+) -> dict:
+    try:
+        return configured_account_service().admin_update_campaign(
+            principal, campaign_id, payload.model_dump()
+        )
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+
+
 @app.post("/api/admin/growth/campaigns/{campaign_id}/settle")
 def admin_settle_growth_campaign(campaign_id: str, principal: Annotated[AccountPrincipal, Depends(require_growth_admin_principal)]) -> dict:
     try:
@@ -1581,6 +2156,113 @@ def admin_update_growth_private_channel(
         return configured_account_service().admin_upsert_private_channel(principal, payload.model_dump())
     except AccountError as exc:
         raise account_http_error(exc) from exc
+
+
+@app.get("/api/admin/growth/private-channel/applications")
+def admin_growth_private_channel_applications(
+    principal: Annotated[AccountPrincipal, Depends(require_growth_admin_principal)],
+    status: str | None = None,
+) -> list[dict]:
+    try:
+        return configured_account_service().admin_list_private_channel_applications(
+            principal, status
+        )
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+
+
+@app.post("/api/admin/growth/private-channel/applications/{application_id}/decision")
+def admin_decide_growth_private_channel_application(
+    application_id: str,
+    payload: GrowthChannelApplicationDecisionPayload,
+    principal: Annotated[AccountPrincipal, Depends(require_growth_admin_principal)],
+) -> dict:
+    try:
+        return configured_account_service().admin_decide_private_channel_application(
+            principal, application_id, payload.decision, payload.note
+        )
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+
+
+@app.post("/api/admin/growth/private-channel/qr")
+async def admin_upload_growth_private_channel_qr(
+    file: Annotated[UploadFile, File()],
+    principal: Annotated[AccountPrincipal, Depends(require_growth_admin_principal)],
+) -> dict:
+    configured_account_service()._require_admin(principal)
+    allowed_types = {
+        "image/jpeg": ("jpg", (b"\xff\xd8\xff",)),
+        "image/png": ("png", (b"\x89PNG\r\n\x1a\n",)),
+        "image/webp": ("webp", (b"RIFF",)),
+    }
+    media_type = (file.content_type or "").lower()
+    config = allowed_types.get(media_type)
+    if config is None:
+        raise HTTPException(status_code=400, detail="仅支持 JPG、PNG 或 WebP 二维码图片")
+    try:
+        content = await file.read(PRIVATE_CHANNEL_QR_MAX_BYTES + 1)
+    finally:
+        await file.close()
+    if not content or len(content) > PRIVATE_CHANNEL_QR_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="二维码图片为空或超过大小限制")
+    extension, signatures = config
+    if not any(content.startswith(signature) for signature in signatures):
+        raise HTTPException(status_code=400, detail="二维码图片内容与文件类型不符")
+    if extension == "webp" and content[8:12] != b"WEBP":
+        raise HTTPException(status_code=400, detail="二维码 WebP 文件无效")
+    PRIVATE_CHANNEL_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+    filename = f"{uuid.uuid4().hex}.{extension}"
+    target = PRIVATE_CHANNEL_MEDIA_DIR / filename
+    temporary = target.with_suffix(target.suffix + ".tmp")
+    temporary.write_bytes(content)
+    temporary.replace(target)
+    return {
+        "status": "uploaded",
+        "qr_image_url": f"/api/growth/private-channel/media/{filename}",
+        "content_type": media_type,
+        "size": len(content),
+    }
+
+
+@app.post("/api/admin/growth/private-channel/manager-card")
+async def admin_upload_growth_private_channel_manager_card(
+    file: Annotated[UploadFile, File()],
+    principal: Annotated[AccountPrincipal, Depends(require_growth_admin_principal)],
+) -> dict:
+    configured_account_service()._require_admin(principal)
+    allowed_types = {
+        "image/jpeg": ("jpg", (b"\xff\xd8\xff",)),
+        "image/png": ("png", (b"\x89PNG\r\n\x1a\n",)),
+        "image/webp": ("webp", (b"RIFF",)),
+    }
+    media_type = (file.content_type or "").lower()
+    config = allowed_types.get(media_type)
+    if config is None:
+        raise HTTPException(status_code=400, detail="仅支持 JPG、PNG 或 WebP 名片图片")
+    try:
+        content = await file.read(PRIVATE_CHANNEL_QR_MAX_BYTES + 1)
+    finally:
+        await file.close()
+    if not content or len(content) > PRIVATE_CHANNEL_QR_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="名片图片为空或超过大小限制")
+    extension, signatures = config
+    if not any(content.startswith(signature) for signature in signatures):
+        raise HTTPException(status_code=400, detail="名片图片内容与文件类型不符")
+    if extension == "webp" and content[8:12] != b"WEBP":
+        raise HTTPException(status_code=400, detail="名片 WebP 文件无效")
+    PRIVATE_CHANNEL_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+    filename = f"{uuid.uuid4().hex}.{extension}"
+    target = PRIVATE_CHANNEL_MEDIA_DIR / filename
+    temporary = target.with_suffix(target.suffix + ".tmp")
+    temporary.write_bytes(content)
+    temporary.replace(target)
+    return {
+        "status": "uploaded",
+        "manager_card_image_url": f"/api/growth/private-channel/media/{filename}",
+        "content_type": media_type,
+        "size": len(content),
+    }
 
 
 @app.post("/api/auth/code/verify")
@@ -1610,8 +2292,115 @@ def reset_account_password(payload: AccountPasswordResetPayload) -> dict:
 
 
 @app.get("/api/auth/providers")
-def social_auth_providers() -> list[dict]:
-    return load_social_auth_providers()
+def social_auth_providers(request: Request) -> list[dict]:
+    return load_social_auth_providers(public_base_url=_account_auth_public_base(request))
+
+
+@app.get("/api/auth/social/{provider}/start")
+def start_social_auth(
+    provider: str,
+    request: Request,
+    client: str = "pwa",
+    redirect_uri: str = "",
+    ref: str = "",
+) -> RedirectResponse:
+    clean_provider = provider.strip().lower()
+    config = load_social_auth_config().get(clean_provider)
+    if config is None:
+        raise HTTPException(status_code=404, detail="不支持的第三方登录平台")
+    if not config["enabled"]:
+        raise HTTPException(status_code=503, detail=config["unavailable_reason"])
+    try:
+        client_redirect = _social_client_redirect(request, client.strip().lower(), redirect_uri)
+        state = configured_account_service().begin_social_auth(
+            clean_provider,
+            client=client.strip().lower() or "pwa",
+            redirect_uri=client_redirect,
+            referral_code=ref,
+        )
+        verifier = state["code_verifier"]
+        challenge = base64.urlsafe_b64encode(
+            hashlib.sha256(verifier.encode("utf-8")).digest()
+        ).decode("ascii").rstrip("=")
+        authorization_url = build_oauth_authorization_url(
+            config,
+            state=state["state"],
+            redirect_uri=_social_callback_url(request, clean_provider),
+            code_challenge=challenge,
+        )
+        return RedirectResponse(authorization_url, status_code=307)
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+
+
+@app.get("/api/auth/social/{provider}/callback")
+def complete_social_auth(provider: str, request: Request) -> Response:
+    clean_provider = provider.strip().lower()
+    config = load_social_auth_config().get(clean_provider)
+    if config is None:
+        raise HTTPException(status_code=404, detail="不支持的第三方登录平台")
+    params = {key: value for key, value in request.query_params.items()}
+    raw_state = params.get("state", "")
+    try:
+        state = configured_account_service().consume_social_auth_state(clean_provider, raw_state)
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+    client_redirect = str(state["redirect_uri"])
+    platform_error = params.get("error_description") or params.get("error")
+    if platform_error:
+        configured_account_service().record_social_audit(
+            clean_provider, "callback", False, str(platform_error)
+        )
+        return RedirectResponse(
+            _append_url_query(client_redirect, {"social_error": str(platform_error)[:200]}),
+            status_code=303,
+        )
+    try:
+        if config["protocol"] == "telegram":
+            identity = _telegram_identity(config, params)
+        else:
+            code = params.get("code", "").strip()
+            if not code:
+                raise AccountError("第三方平台未返回授权码")
+            identity = _oauth_identity(
+                config,
+                code,
+                _social_callback_url(request, clean_provider),
+                str(state["code_verifier"]),
+            )
+        user_id = configured_account_service().social_identity_login(
+            clean_provider,
+            identity["subject"],
+            display_name=identity["display_name"],
+            referral_code=str(state["referral_code"] or ""),
+            metadata={"provider": clean_provider, "client": state["client"]},
+        )
+        ticket = configured_account_service().issue_social_ticket(
+            user_id, clean_provider, client_redirect
+        )
+        return RedirectResponse(
+            _append_url_query(
+                client_redirect,
+                {"social_ticket": ticket, "social_provider": clean_provider},
+            ),
+            status_code=303,
+        )
+    except (AccountError, requests.RequestException, ValueError, TypeError, json.JSONDecodeError) as exc:
+        configured_account_service().record_social_audit(
+            clean_provider, "callback", False, str(exc)
+        )
+        return RedirectResponse(
+            _append_url_query(client_redirect, {"social_error": str(exc)[:200]}),
+            status_code=303,
+        )
+
+
+@app.post("/api/auth/social/exchange")
+def exchange_social_auth(payload: SocialAuthExchangePayload) -> dict:
+    try:
+        return configured_account_service().exchange_social_ticket(payload.ticket)
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
 
 
 @app.post("/api/account/logout")
@@ -1969,12 +2758,283 @@ def create_account_order(
         raise account_http_error(exc) from exc
 
 
+@app.get("/api/account/payments/alipay/status")
+def account_alipay_status(
+    principal: Annotated[AccountPrincipal, Depends(require_account_principal)],
+) -> dict:
+    del principal
+    try:
+        config = load_alipay_config()
+        return {
+            "provider": "alipay", "product": "app_pay", "enabled": config.enabled,
+            "configured": config.is_ready, "environment": config.environment,
+            "gateway": config.gateway, "notify_configured": bool(config.notify_url),
+            "notify_https": config.notify_ready,
+            "seller_configured": bool(config.seller_id or config.seller_email),
+        }
+    except AlipayConfigurationError as exc:
+        return {
+            "provider": "alipay", "product": "app_pay", "enabled": False,
+            "configured": False, "environment": ALIPAY_ENVIRONMENT,
+            "notify_configured": bool(ALIPAY_NOTIFY_URL),
+            "notify_https": ALIPAY_NOTIFY_URL.startswith("https://"), "error": str(exc),
+        }
+
+
+@app.post("/api/account/orders/{order_id}/alipay/pay")
+def create_alipay_app_payment(
+    order_id: str,
+    principal: Annotated[AccountPrincipal, Depends(require_account_principal)],
+) -> dict:
+    service = configured_account_service()
+    try:
+        config = load_alipay_config()
+        if not config.is_ready:
+            raise AlipayConfigurationError(config.unavailable_reason())
+        order = service.get_order_for_payment(principal, order_id)
+        transaction = service.create_alipay_transaction(
+            principal, order_id, out_trade_no=_new_alipay_out_trade_no(),
+            subject=f"智悟本积分套餐-{order['plan_name']}", environment=config.environment,
+        )
+        if transaction["status"] == "paid":
+            raise AccountError("该订单已完成支付")
+        order_str = AlipayPaymentClient(config).create_app_order(
+            transaction["out_trade_no"], transaction["amount_cents"], transaction["subject"]
+        )
+        service.update_alipay_transaction(transaction["out_trade_no"], status="created", last_error="")
+        return {
+            "provider": "alipay", "product": "app_pay", "environment": config.environment,
+            "order_id": order_id, "out_trade_no": transaction["out_trade_no"],
+            "amount_cents": transaction["amount_cents"], "orderStr": order_str,
+            "payment_status": "created",
+        }
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+    except (AlipayConfigurationError, AlipayGatewayError) as exc:
+        raise _alipay_gateway_http_error(exc) from exc
+
+
+@app.get("/api/account/orders/{order_id}/alipay")
+def get_alipay_payment(
+    order_id: str,
+    principal: Annotated[AccountPrincipal, Depends(require_account_principal)],
+) -> dict:
+    try:
+        return configured_account_service().alipay_transaction_for_user(principal, order_id)
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+
+
+@app.post("/api/account/orders/{order_id}/alipay/query")
+def query_alipay_payment(
+    order_id: str,
+    principal: Annotated[AccountPrincipal, Depends(require_account_principal)],
+) -> dict:
+    service = configured_account_service()
+    try:
+        config = load_alipay_config()
+        transaction = service.alipay_transaction_for_user(principal, order_id)
+        response = AlipayPaymentClient(config).query(
+            out_trade_no=transaction["out_trade_no"], trade_no=transaction.get("trade_no") or ""
+        )
+        returned_out_trade_no = str(response.get("out_trade_no") or transaction["out_trade_no"])
+        returned_trade_no = str(response.get("trade_no") or transaction.get("trade_no") or "")
+        if returned_out_trade_no != transaction["out_trade_no"]:
+            raise AlipayGatewayError("支付宝查询结果与本地订单不匹配")
+        status = _alipay_response_status(response)
+        amount = response.get("total_amount")
+        if amount is not None and alipay_amount_cents(amount) != int(transaction["amount_cents"]):
+            raise AlipayGatewayError("支付宝查询金额与本地订单不一致")
+        query_payload = {"source": "query", "out_trade_no": returned_out_trade_no,
+                         "trade_no": returned_trade_no, "trade_status": status,
+                         "total_amount": amount}
+        payload_hash, payload_json = _alipay_payload_for_storage(
+            {key: str(value or "") for key, value in query_payload.items()}
+        )
+        processed = service.process_alipay_notification(
+            out_trade_no=returned_out_trade_no, trade_no=returned_trade_no,
+            trade_status=status, notify_id="", payload_hash=payload_hash,
+            payload_json=payload_json, paid=status in {"TRADE_SUCCESS", "TRADE_FINISHED"},
+        )
+        return {"payment": service.alipay_transaction_for_user(principal, order_id),
+                "alipay": response, "processed": processed}
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+    except (AlipayConfigurationError, AlipayGatewayError, ValueError) as exc:
+        raise _alipay_gateway_http_error(exc) from exc
+
+
+@app.post("/api/payment/alipay/notify")
+async def alipay_notify(request: Request) -> Response:
+    params = {str(key): str(value) for key, value in (await request.form()).multi_items()}
+    out_trade_no = params.get("out_trade_no", "")
+    try:
+        config = load_alipay_config()
+        service = configured_account_service()
+        transaction = service.transaction_by_out_trade_no_for_notify(out_trade_no)
+        if not config.is_ready:
+            payment_logger.warning(
+                "Alipay notify rejected: gateway not ready (%s), out_trade_no=%s",
+                config.unavailable_reason(), out_trade_no,
+            )
+            return Response("fail", media_type="text/plain")
+        if not verify_notify_signature(params, config):
+            payment_logger.warning(
+                "Alipay notify rejected: invalid signature, out_trade_no=%s, notify_id=%s",
+                out_trade_no, params.get("notify_id", ""),
+            )
+            return Response("fail", media_type="text/plain")
+        if not notify_business_matches(
+            params, config=config, out_trade_no=out_trade_no,
+            amount_cents_expected=int(transaction["amount_cents"]),
+        ):
+            payment_logger.warning(
+                "Alipay notify rejected: business mismatch, out_trade_no=%s, "
+                "app_id_match=%s, amount=%s (expected_cents=%s), seller_configured=%s",
+                out_trade_no,
+                params.get("app_id") == config.app_id,
+                params.get("total_amount", ""),
+                transaction["amount_cents"],
+                bool(config.seller_id or config.seller_email),
+            )
+            return Response("fail", media_type="text/plain")
+        payload_hash, payload_json = _alipay_payload_for_storage(params)
+        service.process_alipay_notification(
+            out_trade_no=out_trade_no, trade_no=params.get("trade_no", ""),
+            trade_status=params.get("trade_status", ""), notify_id=params.get("notify_id", ""),
+            payload_hash=payload_hash, payload_json=payload_json,
+            paid=is_paid_notification(params),
+        )
+        return Response("success", media_type="text/plain")
+    except Exception:
+        payment_logger.exception(
+            "Alipay notify processing failed, out_trade_no=%s", out_trade_no
+        )
+        return Response("fail", media_type="text/plain")
+
+
+@app.post("/api/admin/accounts/orders/{order_id}/alipay/refund")
+def refund_alipay_payment(
+    order_id: str,
+    payload: AlipayRefundPayload,
+    principal: Annotated[AccountPrincipal, Depends(require_growth_admin_principal)],
+) -> dict:
+    service = configured_account_service()
+    try:
+        config = load_alipay_config()
+        transaction = service.alipay_transaction_for_admin(principal, order_id)
+        if transaction["status"] != "paid":
+            raise AccountError("仅支持对已支付订单发起退款")
+        refund_amount = int(payload.refund_amount_cents or transaction["amount_cents"])
+        if refund_amount < 1 or refund_amount > int(transaction["amount_cents"]):
+            raise AccountError("退款金额超出订单金额")
+        request_no = transaction.get("refund_request_no") or f"RF{int(time.time())}{uuid.uuid4().hex[:16]}"
+        previous_refund_amount = int(transaction.get("refund_amount_cents") or 0)
+        if request_no == transaction.get("refund_request_no") and previous_refund_amount and previous_refund_amount != refund_amount:
+            raise AccountConflictError("同一退款请求号不能更换退款金额")
+        # Reserve the idempotency key before the network call. If the process
+        # times out after Alipay accepts the request, a retry will reuse the
+        # same request number and amount instead of issuing a second refund.
+        service.update_alipay_transaction(
+            transaction["out_trade_no"], status="paid",
+            refund_request_no=request_no, refund_amount_cents=refund_amount,
+        )
+        response = AlipayPaymentClient(config).refund(
+            out_trade_no=transaction["out_trade_no"], trade_no=transaction.get("trade_no") or "",
+            refund_amount=refund_amount, out_request_no=request_no,
+        )
+        if str(response.get("code", "")) != "10000":
+            # A non-10000 response means Alipay did not accept the refund
+            # request. Keep the payment refundable and preserve the gateway
+            # reason for an operator retry with the same request number.
+            error = str(response.get("sub_msg") or response.get("msg") or "支付宝未受理退款请求")
+            service.update_alipay_transaction(
+                transaction["out_trade_no"], status="paid", last_error=error,
+            )
+            raise AlipayGatewayError(error)
+        service.update_alipay_transaction(
+            transaction["out_trade_no"], status="refund_pending",
+            refund_request_no=request_no, refund_amount_cents=refund_amount,
+        )
+        return {"order_id": order_id, "refund_request_no": request_no,
+                "refund_amount_cents": refund_amount, "alipay": response}
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+    except (AlipayConfigurationError, AlipayGatewayError) as exc:
+        raise _alipay_gateway_http_error(exc) from exc
+
+
+@app.post("/api/admin/accounts/orders/{order_id}/alipay/refund/query")
+def query_alipay_refund(
+    order_id: str,
+    principal: Annotated[AccountPrincipal, Depends(require_growth_admin_principal)],
+) -> dict:
+    service = configured_account_service()
+    try:
+        config = load_alipay_config()
+        transaction = service.alipay_transaction_for_admin(principal, order_id)
+        request_no = transaction.get("refund_request_no")
+        if not request_no:
+            raise AccountError("该订单暂无退款请求")
+        response = AlipayPaymentClient(config).refund_query(
+            out_trade_no=transaction["out_trade_no"], trade_no=transaction.get("trade_no") or "",
+            out_request_no=request_no,
+        )
+        if response.get("refund_status") == "REFUND_SUCCESS":
+            service.update_alipay_transaction(transaction["out_trade_no"], status="refunded")
+        return {"order_id": order_id,
+                "payment": service.alipay_transaction_for_admin(principal, order_id),
+                "alipay": response}
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+    except (AlipayConfigurationError, AlipayGatewayError) as exc:
+        raise _alipay_gateway_http_error(exc) from exc
+
+
+@app.post("/api/admin/accounts/orders/{order_id}/alipay/close")
+def close_alipay_payment(
+    order_id: str,
+    principal: Annotated[AccountPrincipal, Depends(require_growth_admin_principal)],
+) -> dict:
+    service = configured_account_service()
+    try:
+        config = load_alipay_config()
+        transaction = service.alipay_transaction_for_admin(principal, order_id)
+        if transaction["status"] != "created":
+            raise AccountError("仅支持关闭待支付订单")
+        response = AlipayPaymentClient(config).close(
+            out_trade_no=transaction["out_trade_no"], trade_no=transaction.get("trade_no") or ""
+        )
+        if str(response.get("code", "")) == "10000":
+            service.update_alipay_transaction(
+                transaction["out_trade_no"], status="closed", trade_status="TRADE_CLOSED"
+            )
+        return {"order_id": order_id,
+                "payment": service.alipay_transaction_for_admin(principal, order_id),
+                "alipay": response}
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+    except (AlipayConfigurationError, AlipayGatewayError) as exc:
+        raise _alipay_gateway_http_error(exc) from exc
+
+
 @app.get("/api/admin/accounts/users")
 def list_registered_users(
-    principal: Annotated[AccountPrincipal, Depends(require_account_principal)],
+    principal: Annotated[AccountPrincipal, Depends(require_growth_admin_principal)],
 ) -> list[dict]:
     try:
         return configured_account_service().admin_list_users(principal)
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+
+
+@app.get("/api/admin/accounts/social-auth-audit")
+def social_auth_audit(
+    principal: Annotated[AccountPrincipal, Depends(require_growth_admin_principal)],
+    limit: int = 200,
+) -> list[dict]:
+    try:
+        return configured_account_service().admin_social_auth_audit(principal, limit)
     except AccountError as exc:
         raise account_http_error(exc) from exc
 
@@ -1983,7 +3043,7 @@ def list_registered_users(
 def update_registered_user(
     user_id: str,
     payload: AccountUserStatePayload,
-    principal: Annotated[AccountPrincipal, Depends(require_account_principal)],
+    principal: Annotated[AccountPrincipal, Depends(require_growth_admin_principal)],
 ) -> dict:
     try:
         return configured_account_service().set_user_enabled(
@@ -1998,7 +3058,7 @@ def update_registered_user(
 @app.delete("/api/admin/accounts/users/{user_id}")
 def delete_registered_user(
     user_id: str,
-    principal: Annotated[AccountPrincipal, Depends(require_account_principal)],
+    principal: Annotated[AccountPrincipal, Depends(require_growth_admin_principal)],
 ) -> dict:
     try:
         return configured_account_service().delete_user(principal, user_id)
@@ -2008,7 +3068,7 @@ def delete_registered_user(
 
 @app.get("/api/admin/accounts/orders")
 def list_recharge_orders(
-    principal: Annotated[AccountPrincipal, Depends(require_account_principal)],
+    principal: Annotated[AccountPrincipal, Depends(require_growth_admin_principal)],
     status: str | None = None,
 ) -> list[dict]:
     try:
@@ -2020,7 +3080,7 @@ def list_recharge_orders(
 @app.post("/api/admin/accounts/orders/{order_id}/approve")
 def approve_recharge_order(
     order_id: str,
-    principal: Annotated[AccountPrincipal, Depends(require_account_principal)],
+    principal: Annotated[AccountPrincipal, Depends(require_growth_admin_principal)],
 ) -> dict:
     try:
         return configured_account_service().approve_order(principal, order_id)
@@ -2031,7 +3091,7 @@ def approve_recharge_order(
 @app.post("/api/admin/accounts/orders/{order_id}/reject")
 def reject_recharge_order(
     order_id: str,
-    principal: Annotated[AccountPrincipal, Depends(require_account_principal)],
+    principal: Annotated[AccountPrincipal, Depends(require_growth_admin_principal)],
 ) -> dict:
     try:
         return configured_account_service().reject_order(principal, order_id)

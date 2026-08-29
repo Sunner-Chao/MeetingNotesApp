@@ -8,6 +8,7 @@ import binascii
 import hashlib
 import hmac
 import json
+import os
 import re
 import secrets
 import sqlite3
@@ -18,13 +19,28 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, Iterator
+from typing import Callable, Iterator, Mapping
 
 SERVER_ROOT = Path(__file__).resolve().parents[1]
 if str(SERVER_ROOT) not in sys.path:
     sys.path.insert(0, str(SERVER_ROOT))
 
 from common.account_stt_token import issue_account_stt_token
+
+
+BEIJING_TIMEZONE = timezone(timedelta(hours=8), name="Asia/Shanghai")
+REFERRAL_REWARD_POINTS = max(0, int(os.getenv("ACCOUNT_REFERRAL_REWARD_POINTS", "300")))
+DEFAULT_PRIVATE_CHANNEL_REWARD_POINTS = 200
+SOCIAL_PROVIDERS = {"wechat", "feishu", "qq", "telegram", "whatsapp", "instagram"}
+# App-pay trades carry timeout_express=30m; rotate to a fresh out_trade_no only
+# after the gateway has certainly closed the old trade, so both trade numbers
+# can never be payable at the same time.
+ALIPAY_TRADE_ROTATE_AFTER_SEC = 35 * 60
+
+
+def beijing_day_start_epoch(timestamp: int) -> int:
+    observed = datetime.fromtimestamp(timestamp, BEIJING_TIMEZONE)
+    return int(observed.replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
 
 
 class AccountError(Exception):
@@ -217,6 +233,41 @@ class AccountService:
                     FOREIGN KEY(decided_by) REFERENCES users(id)
                 );
 
+                CREATE TABLE IF NOT EXISTS alipay_transactions (
+                    id TEXT PRIMARY KEY,
+                    order_id TEXT NOT NULL UNIQUE,
+                    user_id TEXT NOT NULL,
+                    out_trade_no TEXT NOT NULL UNIQUE,
+                    trade_no TEXT,
+                    amount_cents INTEGER NOT NULL,
+                    subject TEXT NOT NULL,
+                    environment TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('created', 'paid', 'closed', 'refund_pending', 'refunded', 'failed')),
+                    last_trade_status TEXT,
+                    notify_id TEXT,
+                    refund_request_no TEXT,
+                    refund_amount_cents INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT NOT NULL DEFAULT '',
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    paid_at INTEGER,
+                    FOREIGN KEY(order_id) REFERENCES recharge_orders(id) ON DELETE CASCADE,
+                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS alipay_notify_events (
+                    id TEXT PRIMARY KEY,
+                    notify_id TEXT UNIQUE,
+                    payload_hash TEXT NOT NULL UNIQUE,
+                    out_trade_no TEXT,
+                    trade_no TEXT,
+                    trade_status TEXT,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    processed INTEGER NOT NULL DEFAULT 0,
+                    result TEXT NOT NULL DEFAULT '',
+                    received_at INTEGER NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS account_meetings (
                     user_id TEXT NOT NULL,
                     id TEXT NOT NULL,
@@ -242,12 +293,59 @@ class AccountService:
                 CREATE TABLE IF NOT EXISTS account_identities (
                     id TEXT PRIMARY KEY,
                     user_id TEXT NOT NULL,
-                    provider TEXT NOT NULL CHECK(provider IN ('email', 'phone', 'wechat', 'feishu', 'password')),
+                    provider TEXT NOT NULL CHECK(provider IN ('email', 'phone', 'wechat', 'feishu', 'qq', 'telegram', 'whatsapp', 'instagram', 'password')),
                     subject TEXT NOT NULL,
                     verified INTEGER NOT NULL DEFAULT 0,
                     created_at INTEGER NOT NULL,
                     UNIQUE(provider, subject),
                     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS account_registration_sources (
+                    user_id TEXT PRIMARY KEY,
+                    source TEXT NOT NULL,
+                    referral_code TEXT,
+                    referrer_user_id TEXT,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at INTEGER NOT NULL,
+                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+                    FOREIGN KEY(referrer_user_id) REFERENCES users(id) ON DELETE SET NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS social_auth_states (
+                    id TEXT PRIMARY KEY,
+                    provider TEXT NOT NULL,
+                    state_hash TEXT NOT NULL UNIQUE,
+                    code_verifier TEXT NOT NULL DEFAULT '',
+                    client TEXT NOT NULL DEFAULT 'pwa',
+                    redirect_uri TEXT NOT NULL DEFAULT '',
+                    referral_code TEXT NOT NULL DEFAULT '',
+                    expires_at INTEGER NOT NULL,
+                    consumed_at INTEGER,
+                    created_at INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS social_auth_tickets (
+                    id TEXT PRIMARY KEY,
+                    ticket_hash TEXT NOT NULL UNIQUE,
+                    user_id TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    redirect_uri TEXT NOT NULL DEFAULT '',
+                    expires_at INTEGER NOT NULL,
+                    consumed_at INTEGER,
+                    created_at INTEGER NOT NULL,
+                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS social_auth_audit (
+                    id TEXT PRIMARY KEY,
+                    provider TEXT NOT NULL,
+                    event TEXT NOT NULL,
+                    user_id TEXT,
+                    success INTEGER NOT NULL DEFAULT 0,
+                    detail TEXT NOT NULL DEFAULT '',
+                    created_at INTEGER NOT NULL,
+                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS auth_verification_codes (
@@ -433,6 +531,7 @@ class AccountService:
                     id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
                     qr_image_url TEXT NOT NULL DEFAULT '',
+                    manager_card_image_url TEXT NOT NULL DEFAULT '',
                     join_url TEXT NOT NULL DEFAULT '',
                     short_url TEXT NOT NULL DEFAULT '',
                     slogan TEXT NOT NULL DEFAULT '',
@@ -443,6 +542,22 @@ class AccountService:
                     updated_by TEXT,
                     updated_at INTEGER NOT NULL,
                     FOREIGN KEY(updated_by) REFERENCES users(id) ON DELETE SET NULL
+                );
+                CREATE TABLE IF NOT EXISTS growth_channel_applications (
+                    id TEXT PRIMARY KEY,
+                    channel_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    answers_json TEXT NOT NULL DEFAULT '{}',
+                    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'approved', 'rejected')),
+                    review_note TEXT NOT NULL DEFAULT '',
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    reviewed_at INTEGER,
+                    reviewed_by TEXT,
+                    UNIQUE(channel_id, user_id),
+                    FOREIGN KEY(channel_id) REFERENCES growth_private_channels(id) ON DELETE CASCADE,
+                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+                    FOREIGN KEY(reviewed_by) REFERENCES users(id) ON DELETE SET NULL
                 );
                 CREATE TABLE IF NOT EXISTS growth_channel_events (
                     id TEXT PRIMARY KEY,
@@ -456,6 +571,27 @@ class AccountService:
                     FOREIGN KEY(channel_id) REFERENCES growth_private_channels(id) ON DELETE CASCADE,
                     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL
                 );
+                CREATE TABLE IF NOT EXISTS growth_system_messages (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT,
+                    message_type TEXT NOT NULL DEFAULT 'system',
+                    title TEXT NOT NULL,
+                    body TEXT NOT NULL DEFAULT '',
+                    campaign_id TEXT,
+                    action_path TEXT NOT NULL DEFAULT '',
+                    created_at INTEGER NOT NULL,
+                    read_at INTEGER,
+                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+                    FOREIGN KEY(campaign_id) REFERENCES growth_campaigns(id) ON DELETE SET NULL
+                );
+                CREATE TABLE IF NOT EXISTS growth_system_message_receipts (
+                    message_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    read_at INTEGER NOT NULL,
+                    PRIMARY KEY(message_id, user_id),
+                    FOREIGN KEY(message_id) REFERENCES growth_system_messages(id) ON DELETE CASCADE,
+                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+                );
 
                 CREATE INDEX IF NOT EXISTS index_sessions_user
                 ON user_sessions(user_id, expires_at DESC);
@@ -467,6 +603,14 @@ class AccountService:
                 ON account_meetings(user_id, updated_at DESC);
                 CREATE INDEX IF NOT EXISTS index_account_identities_user
                 ON account_identities(user_id, created_at ASC);
+                CREATE INDEX IF NOT EXISTS index_registration_sources_referrer
+                ON account_registration_sources(referrer_user_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS index_social_auth_states_expiry
+                ON social_auth_states(expires_at, consumed_at);
+                CREATE INDEX IF NOT EXISTS index_social_auth_tickets_expiry
+                ON social_auth_tickets(expires_at, consumed_at);
+                CREATE INDEX IF NOT EXISTS index_social_auth_audit_provider_created
+                ON social_auth_audit(provider, created_at DESC);
                 CREATE INDEX IF NOT EXISTS index_auth_codes_subject_created
                 ON auth_verification_codes(channel, subject, purpose, created_at DESC);
                 CREATE INDEX IF NOT EXISTS index_usage_events_user_created
@@ -475,16 +619,22 @@ class AccountService:
                 ON account_usage_events(user_id, meeting_id, kind, created_at DESC);
                 CREATE INDEX IF NOT EXISTS index_growth_events_channel_created
                 ON growth_channel_events(channel_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS index_growth_channel_applications_status
+                ON growth_channel_applications(channel_id, status, updated_at DESC);
                 CREATE INDEX IF NOT EXISTS index_growth_claims_user_created
                 ON growth_redemption_claims(user_id, created_at DESC);
                 CREATE INDEX IF NOT EXISTS index_growth_actions_campaign_score
                 ON growth_campaign_actions(campaign_id, score DESC, created_at ASC);
+                CREATE INDEX IF NOT EXISTS index_growth_messages_user_created
+                ON growth_system_messages(user_id, created_at DESC);
                 """
             )
             self._ensure_profile_columns(conn)
             self._ensure_billing_columns(conn)
             self._ensure_auth_code_purpose_constraint(conn)
+            self._ensure_identity_provider_constraint(conn)
             self._ensure_account_meeting_template_constraint(conn)
+            self._ensure_growth_columns(conn)
             if seed_plans:
                 self._seed_plans(conn)
             if bootstrap_admin and self.admin_password:
@@ -538,6 +688,7 @@ class AccountService:
                 (str(uuid.uuid4()), user_id, clean_username.casefold(), now),
             )
             self._ensure_usage_balance(conn, user_id, now)
+            self._record_registration_source(conn, user_id, "password", referral_code, now)
             self._initialize_growth_user(conn, user_id, now, referral_code)
             return self._create_session(conn, user_id)
 
@@ -595,6 +746,7 @@ class AccountService:
                 (str(uuid.uuid4()), user_id, clean_channel, subject, now),
             )
             self._ensure_usage_balance(conn, user_id, now)
+            self._record_registration_source(conn, user_id, clean_channel, referral_code, now)
             self._initialize_growth_user(conn, user_id, now, referral_code)
             return self._create_session(conn, user_id)
 
@@ -760,7 +912,164 @@ class AccountService:
                 (str(uuid.uuid4()), user_id, clean_channel, subject, now),
             )
             self._ensure_usage_balance(conn, user_id, now)
+            self._record_registration_source(conn, user_id, clean_channel, None, now)
             return self._create_session(conn, user_id)
+
+    def begin_social_auth(
+        self,
+        provider: str,
+        *,
+        client: str,
+        redirect_uri: str,
+        referral_code: str | None = None,
+        ttl_sec: int = 10 * 60,
+    ) -> dict:
+        clean_provider = provider.strip().lower()
+        if clean_provider not in SOCIAL_PROVIDERS:
+            raise AccountError("不支持的第三方登录平台")
+        now = int(time.time())
+        raw_state = secrets.token_urlsafe(32)
+        verifier = secrets.token_urlsafe(48)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO social_auth_states (
+                    id, provider, state_hash, code_verifier, client, redirect_uri,
+                    referral_code, expires_at, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(uuid.uuid4()), clean_provider, self._token_hash(raw_state),
+                    verifier, client[:32], redirect_uri[:1000],
+                    (referral_code or "").strip().upper()[:64], now + max(60, ttl_sec), now,
+                ),
+            )
+            conn.execute("DELETE FROM social_auth_states WHERE expires_at <= ?", (now,))
+        return {"state": raw_state, "code_verifier": verifier}
+
+    def consume_social_auth_state(self, provider: str, raw_state: str) -> dict:
+        clean_provider = provider.strip().lower()
+        if not raw_state.strip():
+            raise AccountAuthError("第三方登录状态无效")
+        now = int(time.time())
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """
+                SELECT * FROM social_auth_states
+                WHERE provider = ? AND state_hash = ? AND consumed_at IS NULL AND expires_at > ?
+                """,
+                (clean_provider, self._token_hash(raw_state), now),
+            ).fetchone()
+            if row is None:
+                raise AccountAuthError("第三方登录状态无效或已过期")
+            conn.execute(
+                "UPDATE social_auth_states SET consumed_at = ? WHERE id = ?",
+                (now, row["id"]),
+            )
+            return dict(row)
+
+    def social_identity_login(
+        self,
+        provider: str,
+        subject: str,
+        *,
+        display_name: str = "",
+        avatar_data_url: str | None = None,
+        referral_code: str | None = None,
+        metadata: Mapping[str, object] | None = None,
+    ) -> str:
+        clean_provider = provider.strip().lower()
+        clean_subject = subject.strip()[:512]
+        if clean_provider not in SOCIAL_PROVIDERS or not clean_subject:
+            raise AccountAuthError("第三方身份信息无效")
+        now = int(time.time())
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            identity = conn.execute(
+                "SELECT user_id FROM account_identities WHERE provider = ? AND subject = ?",
+                (clean_provider, clean_subject),
+            ).fetchone()
+            if identity is not None:
+                user_id = str(identity["user_id"])
+                user = conn.execute("SELECT enabled FROM users WHERE id = ?", (user_id,)).fetchone()
+                if user is None or not user["enabled"]:
+                    self._record_social_audit(conn, clean_provider, "login", user_id, False, "账号已停用", now)
+                    raise AccountAuthError("账号已停用")
+                self._record_social_audit(conn, clean_provider, "login", user_id, True, "", now)
+                return user_id
+
+            user_id = str(uuid.uuid4())
+            username_base = self._identity_username(clean_provider, clean_subject, user_id)
+            username = username_base
+            for index in range(10):
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO users (
+                            id, username, username_normalized, password_hash,
+                            password_salt, role, enabled, created_at
+                        ) VALUES (?, ?, ?, '', '', 'user', 1, ?)
+                        """,
+                        (user_id, username, username.casefold(), now),
+                    )
+                    break
+                except sqlite3.IntegrityError:
+                    username = f"{username_base[:45]}_{index + 1}"
+            else:
+                raise AccountConflictError("无法创建第三方登录账户")
+            conn.execute(
+                "INSERT INTO user_entitlements (user_id, vip_enabled, construction_logs_unlocked, quota_granted, updated_at) VALUES (?, 0, 0, ?, ?)",
+                (user_id, self.free_request_limit, now),
+            )
+            conn.execute(
+                "INSERT INTO account_identities (id, user_id, provider, subject, verified, created_at) VALUES (?, ?, ?, ?, 1, ?)",
+                (str(uuid.uuid4()), user_id, clean_provider, clean_subject, now),
+            )
+            if display_name or avatar_data_url:
+                clean_name = display_name.strip()[: self.profile_name_max_length]
+                clean_avatar = self._validate_avatar_data_url(avatar_data_url)
+                conn.execute(
+                    "UPDATE users SET display_name = ?, avatar_data_url = ? WHERE id = ?",
+                    (clean_name, clean_avatar, user_id),
+                )
+            self._ensure_usage_balance(conn, user_id, now)
+            self._record_registration_source(conn, user_id, clean_provider, referral_code, now, metadata)
+            self._initialize_growth_user(conn, user_id, now, referral_code)
+            self._record_social_audit(conn, clean_provider, "register", user_id, True, "", now)
+            return user_id
+
+    def issue_social_ticket(self, user_id: str, provider: str, redirect_uri: str, ttl_sec: int = 5 * 60) -> str:
+        raw_ticket = secrets.token_urlsafe(32)
+        now = int(time.time())
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO social_auth_tickets (
+                    id, ticket_hash, user_id, provider, redirect_uri, expires_at, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (str(uuid.uuid4()), self._token_hash(raw_ticket), user_id, provider[:32], redirect_uri[:1000], now + max(60, ttl_sec), now),
+            )
+            conn.execute("DELETE FROM social_auth_tickets WHERE expires_at <= ?", (now,))
+        return raw_ticket
+
+    def exchange_social_ticket(self, raw_ticket: str) -> dict:
+        now = int(time.time())
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM social_auth_tickets WHERE ticket_hash = ? AND consumed_at IS NULL AND expires_at > ?",
+                (self._token_hash(raw_ticket.strip()), now),
+            ).fetchone()
+            if row is None:
+                raise AccountAuthError("第三方登录票据无效或已过期")
+            conn.execute("UPDATE social_auth_tickets SET consumed_at = ? WHERE id = ?", (now, row["id"]))
+            return self._create_session(conn, row["user_id"])
+
+    def record_social_audit(self, provider: str, event: str, success: bool, detail: str = "", user_id: str | None = None) -> None:
+        with self._connect() as conn:
+            self._record_social_audit(conn, provider, event, user_id, success, detail, int(time.time()))
 
     def bind_identity(
         self,
@@ -1358,12 +1667,15 @@ class AccountService:
                 (principal.user_id,),
             ).fetchone()
             campaigns = self._campaign_rows(conn, now)
-            channel = self._private_channel(conn)
+            channel = self._private_channel(
+                conn, user_id=principal.user_id, include_qr=True
+            )
             return {
                 "referral": {
                     "code": referral["code"],
                     "successful_invites": int(referral["used_count"]),
                     "pending_rewards": int(pending["total"]),
+                    "reward_points": REFERRAL_REWARD_POINTS,
                     "share_path": f"/app/?ref={referral['code']}",
                 },
                 "rewards": {row["reward_type"]: int(row["quantity"]) for row in rewards},
@@ -1429,7 +1741,9 @@ class AccountService:
                 "quantity": quantity,
                 "message": self._reward_message(row["reward_type"], quantity),
                 "profile": self._profile(conn, principal.user_id),
-                "private_channel": self._private_channel(conn),
+                "private_channel": self._private_channel(
+                    conn, user_id=principal.user_id, include_qr=True
+                ),
             }
 
     def redemption_history(self, principal: AccountPrincipal) -> list[dict]:
@@ -1446,6 +1760,55 @@ class AccountService:
                 (principal.user_id,),
             ).fetchall()
             return [self._json_row(row, "reward_payload_json", "reward") for row in rows]
+
+    def system_messages(self, principal: AccountPrincipal, limit: int = 50) -> list[dict]:
+        with self._connect() as conn:
+            self._settle_due_campaigns(conn, int(time.time()))
+            rows = conn.execute(
+                """
+                SELECT m.id, m.message_type, m.title, m.body, m.campaign_id,
+                       m.action_path, m.created_at,
+                       COALESCE(m.read_at, r.read_at) AS read_at
+                FROM growth_system_messages m
+                LEFT JOIN growth_system_message_receipts r
+                  ON r.message_id = m.id AND r.user_id = ?
+                WHERE m.user_id IS NULL OR m.user_id = ?
+                ORDER BY m.created_at DESC, m.id DESC
+                LIMIT ?
+                """,
+                (principal.user_id, principal.user_id, max(1, min(100, limit))),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def mark_system_message_read(
+        self, principal: AccountPrincipal, message_id: str
+    ) -> dict:
+        now = int(time.time())
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id, user_id FROM growth_system_messages
+                WHERE id = ? AND (user_id IS NULL OR user_id = ?)
+                """,
+                (message_id, principal.user_id),
+            ).fetchone()
+            if row is None:
+                raise AccountNotFoundError("系统消息不存在")
+            if row["user_id"] is None:
+                conn.execute(
+                    """
+                    INSERT INTO growth_system_message_receipts (message_id, user_id, read_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(message_id, user_id) DO UPDATE SET read_at = excluded.read_at
+                    """,
+                    (message_id, principal.user_id, now),
+                )
+            else:
+                conn.execute(
+                    "UPDATE growth_system_messages SET read_at = COALESCE(read_at, ?) WHERE id = ?",
+                    (now, message_id),
+                )
+            return {"status": "read", "id": message_id, "read_at": now}
 
     def list_growth_campaigns(self) -> list[dict]:
         with self._connect() as conn:
@@ -1482,12 +1845,12 @@ class AccountService:
 
     def campaign_checkin(self, principal: AccountPrincipal, campaign_id: str) -> dict:
         now = int(time.time())
-        action_date = datetime.fromtimestamp(now, timezone.utc).astimezone(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
+        action_date = datetime.fromtimestamp(now, BEIJING_TIMEZONE).strftime("%Y-%m-%d")
         with self._connect() as conn:
             campaign = self._campaign_payload(conn, campaign_id)
             self._assert_campaign_open(campaign, now)
             self._ensure_campaign_entry(conn, campaign_id, principal.user_id, now)
-            reward = int(campaign["rules"].get("checkin_reward", 10))
+            reward = int(campaign["rules"].get("checkin_reward", 30))
             action_id = str(uuid.uuid4())
             try:
                 conn.execute(
@@ -1521,7 +1884,7 @@ class AccountService:
                 )
             except sqlite3.IntegrityError as exc:
                 raise AccountConflictError("这道题已经提交过了") from exc
-            reward = int(campaign["rules"].get("answer_reward", 20)) if correct else 0
+            reward = int(campaign["rules"].get("answer_reward", 50)) if correct else 0
             if correct:
                 self._increment_campaign_score(conn, campaign_id, principal.user_id, 1, now)
                 self._grant_growth_reward(conn, principal.user_id, "campaign_answer", action_id, "points", reward, f"campaign-answer:{campaign_id}:{principal.user_id}:{clean_key}", now)
@@ -1529,7 +1892,7 @@ class AccountService:
 
     def campaign_draw(self, principal: AccountPrincipal, campaign_id: str) -> dict:
         now = int(time.time())
-        action_date = datetime.fromtimestamp(now, timezone.utc).astimezone(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
+        action_date = datetime.fromtimestamp(now, BEIJING_TIMEZONE).strftime("%Y-%m-%d")
         with self._connect() as conn:
             campaign = self._campaign_payload(conn, campaign_id)
             self._assert_campaign_open(campaign, now)
@@ -1544,7 +1907,7 @@ class AccountService:
                 )
             except sqlite3.IntegrityError as exc:
                 raise AccountConflictError("今天已经抽过奖了") from exc
-            reward = int(campaign["rules"].get("draw_reward", 50)) if won else 0
+            reward = int(campaign["rules"].get("draw_reward", 120)) if won else 0
             if won:
                 self._increment_campaign_score(conn, campaign_id, principal.user_id, 1, now)
                 self._grant_growth_reward(conn, principal.user_id, "campaign_draw", action_id, "points", reward, f"campaign-draw:{campaign_id}:{principal.user_id}:{action_date}", now)
@@ -1562,7 +1925,195 @@ class AccountService:
 
     def private_channel(self) -> dict | None:
         with self._connect() as conn:
-            return self._private_channel(conn)
+            return self._private_channel(conn, include_qr=True)
+
+    def public_private_channel(self) -> dict | None:
+        with self._connect() as conn:
+            return self._private_channel(conn, include_qr=False)
+
+    def can_access_private_channel_asset(
+        self, filename: str, principal: AccountPrincipal | None
+    ) -> bool:
+        with self._connect() as conn:
+            manager_card = conn.execute(
+                "SELECT 1 FROM growth_private_channels WHERE enabled = 1 AND manager_card_image_url LIKE ?",
+                (f"%/{filename}",),
+            ).fetchone()
+            if manager_card is not None:
+                return True
+            if principal is None:
+                return False
+            if principal.is_admin:
+                return True
+            if filename == "default-qr":
+                row = conn.execute(
+                    "SELECT id FROM growth_private_channels WHERE id = 'default-welfare-group' AND enabled = 1"
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT id FROM growth_private_channels WHERE enabled = 1 AND qr_image_url LIKE ?",
+                    (f"%/{filename}",),
+                ).fetchone()
+            if row is None:
+                return False
+            application = conn.execute(
+                """
+                SELECT 1 FROM growth_channel_applications
+                WHERE channel_id = ? AND user_id = ? AND status = 'approved'
+                """,
+                (row["id"], principal.user_id),
+            ).fetchone()
+            return application is not None
+
+    def submit_private_channel_application(
+        self, principal: AccountPrincipal, channel_id: str, answers: dict
+    ) -> dict:
+        clean_channel_id = str(channel_id or "default-welfare-group").strip()[:128]
+        if not isinstance(answers, dict):
+            raise AccountError("请完整填写申请信息")
+        cleaned: dict[str, str] = {}
+        for key, value in answers.items():
+            clean_key = str(key).strip()[:40]
+            clean_value = str(value or "").strip()
+            if clean_key and clean_value:
+                cleaned[clean_key] = clean_value[:500]
+        required = ("name", "city", "purpose")
+        if any(not cleaned.get(key) for key in required):
+            raise AccountError("请填写姓名、所在地区和加入目的")
+        if len(json.dumps(cleaned, ensure_ascii=False)) > 8_000:
+            raise AccountError("申请信息过长")
+        now = int(time.time())
+        with self._connect() as conn:
+            channel = conn.execute(
+                "SELECT id FROM growth_private_channels WHERE id = ? AND enabled = 1",
+                (clean_channel_id,),
+            ).fetchone()
+            if channel is None:
+                raise AccountNotFoundError("福利群入口不存在")
+            existing = conn.execute(
+                "SELECT id, status FROM growth_channel_applications WHERE channel_id = ? AND user_id = ?",
+                (clean_channel_id, principal.user_id),
+            ).fetchone()
+            if existing is not None and str(existing["status"]) == "approved":
+                raise AccountConflictError("你已通过审核，无需重复申请")
+            if existing is not None and str(existing["status"]) == "pending":
+                raise AccountConflictError("你的申请正在审核中")
+            application_id = str(existing["id"]) if existing is not None else str(uuid.uuid4())
+            if existing is None:
+                conn.execute(
+                    """
+                    INSERT INTO growth_channel_applications
+                    (id, channel_id, user_id, answers_json, status, review_note, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, 'pending', '', ?, ?)
+                    """,
+                    (application_id, clean_channel_id, principal.user_id, json.dumps(cleaned, ensure_ascii=False), now, now),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE growth_channel_applications
+                    SET answers_json = ?, status = 'pending', review_note = '',
+                        updated_at = ?, reviewed_at = NULL, reviewed_by = NULL
+                    WHERE id = ?
+                    """,
+                    (json.dumps(cleaned, ensure_ascii=False), now, application_id),
+                )
+            return {
+                "application": self._channel_application_payload(
+                    conn, application_id
+                ),
+                "channel": self._private_channel(
+                    conn, channel_id=clean_channel_id, user_id=principal.user_id, include_qr=True
+                ),
+            }
+
+    def private_channel_application(
+        self, principal: AccountPrincipal, channel_id: str = "default-welfare-group"
+    ) -> dict:
+        with self._connect() as conn:
+            channel = self._private_channel(
+                conn, channel_id=channel_id, user_id=principal.user_id, include_qr=True
+            )
+            if channel is None:
+                raise AccountNotFoundError("福利群入口不存在")
+            application = conn.execute(
+                "SELECT id FROM growth_channel_applications WHERE channel_id = ? AND user_id = ?",
+                (channel_id, principal.user_id),
+            ).fetchone()
+            return {
+                "application": self._channel_application_payload(conn, application["id"])
+                if application
+                else None,
+                "channel": channel,
+            }
+
+    def admin_list_private_channel_applications(
+        self, principal: AccountPrincipal, status: str | None = None
+    ) -> list[dict]:
+        self._require_admin(principal)
+        allowed = {"pending", "approved", "rejected"}
+        clean_status = str(status or "").strip().lower()
+        if clean_status and clean_status not in allowed:
+            raise AccountError("申请状态筛选无效")
+        with self._connect() as conn:
+            where = "WHERE a.status = ?" if clean_status else ""
+            args = (clean_status,) if clean_status else ()
+            rows = conn.execute(
+                f"""
+                SELECT a.id, a.channel_id, a.user_id, a.answers_json, a.status,
+                       a.review_note, a.created_at, a.updated_at, a.reviewed_at,
+                       a.reviewed_by, c.name AS channel_name,
+                       COALESCE(NULLIF(u.display_name, ''), u.username) AS user_name,
+                       u.username
+                FROM growth_channel_applications a
+                JOIN growth_private_channels c ON c.id = a.channel_id
+                JOIN users u ON u.id = a.user_id
+                {where}
+                ORDER BY CASE a.status WHEN 'pending' THEN 0 ELSE 1 END, a.updated_at DESC
+                """,
+                args,
+            ).fetchall()
+            return [self._channel_application_payload(conn, row["id"], row) for row in rows]
+
+    def admin_decide_private_channel_application(
+        self, principal: AccountPrincipal, application_id: str, decision: str, note: str = ""
+    ) -> dict:
+        self._require_admin(principal)
+        clean_decision = str(decision or "").strip().lower()
+        if clean_decision not in {"approved", "rejected"}:
+            raise AccountError("审核结果无效")
+        now = int(time.time())
+        clean_note = str(note or "").strip()[:500]
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id, user_id, channel_id, status FROM growth_channel_applications WHERE id = ?",
+                (application_id,),
+            ).fetchone()
+            if row is None:
+                raise AccountNotFoundError("入群申请不存在")
+            conn.execute(
+                """
+                UPDATE growth_channel_applications
+                SET status = ?, review_note = ?, reviewed_at = ?, reviewed_by = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (clean_decision, clean_note, now, principal.user_id, now, application_id),
+            )
+            title = "福利群入群申请已通过" if clean_decision == "approved" else "福利群入群申请未通过"
+            body = (
+                "审核已通过，现在可以回到通知中心福利页查看群二维码。"
+                if clean_decision == "approved"
+                else f"本次申请暂未通过。{clean_note or '如有需要，可补充信息后重新申请。'}"
+            )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO growth_system_messages
+                (id, user_id, message_type, title, body, action_path, created_at)
+                VALUES (?, ?, 'private_channel_review', ?, ?, '/growth/private-channel', ?)
+                """,
+                (f"private-channel-application:{application_id}:{clean_decision}", row["user_id"], title, body, now),
+            )
+            return self._channel_application_payload(conn, application_id)
 
     def record_channel_event(
         self, event_type: str, *, channel_id: str, user_id: str | None,
@@ -1587,7 +2138,7 @@ class AccountService:
     def admin_growth_overview(self, principal: AccountPrincipal) -> dict:
         self._require_admin(principal)
         now = int(time.time())
-        day_start = now - now % 86400
+        day_start = beijing_day_start_epoch(now)
         with self._connect() as conn:
             def scalar(sql: str, args: tuple = ()) -> int:
                 return int(conn.execute(sql, args).fetchone()[0] or 0)
@@ -1648,24 +2199,237 @@ class AccountService:
             ).fetchall()
             return [self._json_row(row, "reward_payload_json", "reward") for row in rows]
 
+    def admin_list_redemption_codes(
+        self,
+        principal: AccountPrincipal,
+        batch_id: str,
+        *,
+        status: str | None = None,
+        search: str = "",
+        limit: int = 200,
+        offset: int = 0,
+    ) -> dict:
+        self._require_admin(principal)
+        allowed_statuses = {"unused", "partial", "used", "expired", "disabled"}
+        clean_status = (status or "").strip().lower()
+        if clean_status and clean_status not in allowed_statuses:
+            raise AccountError("兑换码状态筛选无效")
+        clean_search = search.strip().upper()[:64]
+        page_limit = max(1, min(500, limit))
+        page_offset = max(0, offset)
+        now = int(time.time())
+        with self._connect() as conn:
+            batch = conn.execute(
+                "SELECT id, name, enabled FROM growth_redemption_batches WHERE id = ?",
+                (batch_id,),
+            ).fetchone()
+            if batch is None:
+                raise AccountNotFoundError("兑换码批次不存在")
+            conn.execute(
+                """
+                UPDATE growth_redemption_codes
+                SET status = 'expired'
+                WHERE batch_id = ? AND expires_at IS NOT NULL AND expires_at <= ?
+                  AND disabled_at IS NULL AND used_count < max_uses
+                """,
+                (batch_id, now),
+            )
+            effective_status = """
+                CASE
+                    WHEN c.disabled_at IS NOT NULL OR b.enabled = 0 THEN 'disabled'
+                    WHEN c.expires_at IS NOT NULL AND c.expires_at <= :now THEN 'expired'
+                    WHEN c.used_count >= c.max_uses THEN 'used'
+                    WHEN c.used_count > 0 THEN 'partial'
+                    ELSE 'unused'
+                END
+            """
+            where = ["c.batch_id = :batch_id"]
+            params: dict[str, object] = {"batch_id": batch_id, "now": now}
+            if clean_status:
+                where.append(f"({effective_status}) = :status")
+                params["status"] = clean_status
+            if clean_search:
+                where.append("c.code LIKE :search")
+                params["search"] = f"%{clean_search}%"
+            where_sql = " AND ".join(where)
+            total = int(
+                conn.execute(
+                    f"SELECT COUNT(*) FROM growth_redemption_codes c JOIN growth_redemption_batches b ON b.id = c.batch_id WHERE {where_sql}",
+                    params,
+                ).fetchone()[0]
+            )
+            page_params = {**params, "limit": page_limit, "offset": page_offset}
+            rows = conn.execute(
+                f"""
+                SELECT c.id, c.code, c.used_count, c.max_uses, c.expires_at,
+                       c.created_at, c.disabled_at, ({effective_status}) AS effective_status
+                FROM growth_redemption_codes c
+                JOIN growth_redemption_batches b ON b.id = c.batch_id
+                WHERE {where_sql}
+                ORDER BY c.created_at DESC, c.code ASC
+                LIMIT :limit OFFSET :offset
+                """,
+                page_params,
+            ).fetchall()
+            counts = {item: 0 for item in sorted(allowed_statuses)}
+            for row in conn.execute(
+                f"""
+                SELECT ({effective_status}) AS effective_status, COUNT(*) AS total
+                FROM growth_redemption_codes c
+                JOIN growth_redemption_batches b ON b.id = c.batch_id
+                WHERE c.batch_id = :batch_id
+                GROUP BY effective_status
+                """,
+                {"batch_id": batch_id, "now": now},
+            ).fetchall():
+                counts[str(row["effective_status"])] = int(row["total"])
+            code_ids = [str(row["id"]) for row in rows]
+            claims_by_code: dict[str, list[dict]] = {code_id: [] for code_id in code_ids}
+            if code_ids:
+                placeholders = ",".join("?" for _ in code_ids)
+                claim_rows = conn.execute(
+                    f"""
+                    SELECT cl.id, cl.code_id, cl.user_id,
+                           COALESCE(NULLIF(u.display_name, ''), u.username) AS display_name,
+                           u.username, cl.reward_type, cl.reward_payload_json,
+                           cl.status, cl.created_at, cl.fulfilled_at
+                    FROM growth_redemption_claims cl
+                    JOIN users u ON u.id = cl.user_id
+                    WHERE cl.code_id IN ({placeholders})
+                    ORDER BY cl.created_at DESC
+                    """,
+                    code_ids,
+                ).fetchall()
+                for claim_row in claim_rows:
+                    claim = self._json_row(claim_row, "reward_payload_json", "reward")
+                    claims_by_code[str(claim["code_id"])].append(claim)
+            items = []
+            for row in rows:
+                payload = dict(row)
+                payload["status"] = payload.pop("effective_status")
+                payload["claims"] = claims_by_code.get(str(payload["id"]), [])
+                items.append(payload)
+            return {
+                "batch": dict(batch),
+                "items": items,
+                "total": total,
+                "limit": page_limit,
+                "offset": page_offset,
+                "status_counts": counts,
+            }
+
+    def admin_list_campaigns(self, principal: AccountPrincipal) -> list[dict]:
+        self._require_admin(principal)
+        now = int(time.time())
+        with self._connect() as conn:
+            self._settle_due_campaigns(conn, now)
+            rows = conn.execute(
+                """
+                SELECT c.id, c.title, c.campaign_type, c.summary, c.rules_json,
+                       c.reward_pool_json, c.starts_at, c.ends_at, c.status,
+                       c.created_at, c.settled_at,
+                       COUNT(DISTINCT e.user_id) AS participant_count
+                FROM growth_campaigns c
+                LEFT JOIN growth_campaign_entries e ON e.campaign_id = c.id
+                GROUP BY c.id
+                ORDER BY c.created_at DESC, c.starts_at DESC
+                """
+            ).fetchall()
+            result = []
+            for row in rows:
+                payload = self._json_row(row, "rules_json", "rules")
+                try:
+                    payload["reward_pool"] = json.loads(payload.pop("reward_pool_json") or "{}")
+                except (TypeError, json.JSONDecodeError):
+                    payload["reward_pool"] = {}
+                result.append(payload)
+            return result
+
+    def admin_create_campaign(self, principal: AccountPrincipal, payload: dict) -> dict:
+        self._require_admin(principal)
+        normalized = self._validated_campaign_config(payload)
+        campaign_id = str(payload.get("id") or uuid.uuid4())[:128]
+        now = int(time.time())
+        with self._connect() as conn:
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO growth_campaigns (
+                        id, title, campaign_type, summary, rules_json,
+                        reward_pool_json, starts_at, ends_at, status,
+                        created_by, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        campaign_id,
+                        normalized["title"],
+                        normalized["campaign_type"],
+                        normalized["summary"],
+                        json.dumps(normalized["rules"], ensure_ascii=False),
+                        json.dumps(normalized["reward_pool"], ensure_ascii=False),
+                        normalized["starts_at"],
+                        normalized["ends_at"],
+                        normalized["status"],
+                        principal.user_id,
+                        now,
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise AccountConflictError("活动 ID 已存在") from exc
+            return self._campaign_payload(conn, campaign_id)
+
+    def admin_update_campaign(
+        self, principal: AccountPrincipal, campaign_id: str, payload: dict
+    ) -> dict:
+        self._require_admin(principal)
+        normalized = self._validated_campaign_config(payload)
+        with self._connect() as conn:
+            existing = self._campaign_payload(conn, campaign_id)
+            if existing["status"] == "settled":
+                raise AccountConflictError("已结算活动不能修改")
+            result = conn.execute(
+                """
+                UPDATE growth_campaigns
+                SET title = ?, campaign_type = ?, summary = ?, rules_json = ?,
+                    reward_pool_json = ?, starts_at = ?, ends_at = ?, status = ?
+                WHERE id = ?
+                """,
+                (
+                    normalized["title"],
+                    normalized["campaign_type"],
+                    normalized["summary"],
+                    json.dumps(normalized["rules"], ensure_ascii=False),
+                    json.dumps(normalized["reward_pool"], ensure_ascii=False),
+                    normalized["starts_at"],
+                    normalized["ends_at"],
+                    normalized["status"],
+                    campaign_id,
+                ),
+            )
+            if result.rowcount != 1:
+                raise AccountNotFoundError("活动不存在")
+            return self._campaign_payload(conn, campaign_id)
+
     def admin_upsert_private_channel(self, principal: AccountPrincipal, payload: dict) -> dict:
         self._require_admin(principal)
         now = int(time.time())
         channel_id = str(payload.get("id") or "default-welfare-group")
+        manager_card_url = str(payload.get("manager_card_image_url") or "/api/growth/private-channel/default-manager-card")[:500]
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO growth_private_channels (id, name, qr_image_url, join_url, short_url, slogan, reward_type, reward_payload_json, valid_until, enabled, updated_by, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO growth_private_channels (id, name, qr_image_url, manager_card_image_url, join_url, short_url, slogan, reward_type, reward_payload_json, valid_until, enabled, updated_by, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET name=excluded.name, qr_image_url=excluded.qr_image_url,
+                  manager_card_image_url=excluded.manager_card_image_url,
                   join_url=excluded.join_url, short_url=excluded.short_url, slogan=excluded.slogan,
                   reward_type=excluded.reward_type, reward_payload_json=excluded.reward_payload_json,
                   valid_until=excluded.valid_until, enabled=excluded.enabled, updated_by=excluded.updated_by,
                   updated_at=excluded.updated_at
                 """,
-                (channel_id, str(payload.get("name", "智悟本福利群"))[:80], str(payload.get("qr_image_url", ""))[:500], str(payload.get("join_url", ""))[:500], str(payload.get("short_url", ""))[:500], str(payload.get("slogan", ""))[:300], str(payload.get("reward_type", "points"))[:30], json.dumps(payload.get("reward", {"quantity": 50}), ensure_ascii=False), payload.get("valid_until"), int(bool(payload.get("enabled", True))), principal.user_id, now),
+                (channel_id, str(payload.get("name", "智悟本福利7群"))[:80], str(payload.get("qr_image_url", ""))[:500], manager_card_url, str(payload.get("join_url", ""))[:500], str(payload.get("short_url", ""))[:500], str(payload.get("slogan", ""))[:300], str(payload.get("reward_type", "points"))[:30], json.dumps(payload.get("reward", {"quantity": DEFAULT_PRIVATE_CHANNEL_REWARD_POINTS}), ensure_ascii=False), payload.get("valid_until"), int(bool(payload.get("enabled", True))), principal.user_id, now),
             )
-            return self._private_channel(conn, channel_id)
+            return self._private_channel(conn, channel_id, include_qr=True)
 
     def list_plans(self) -> list[dict]:
         with self._connect() as conn:
@@ -1736,6 +2500,28 @@ class AccountService:
         with self._connect() as conn:
             rows = conn.execute("SELECT id FROM users ORDER BY created_at DESC").fetchall()
             return [self._profile(conn, row["id"]) for row in rows]
+
+    def admin_social_auth_audit(
+        self, principal: AccountPrincipal, limit: int = 200
+    ) -> list[dict]:
+        self._require_admin(principal)
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT a.id, a.provider, a.event, a.user_id, a.success,
+                       a.detail, a.created_at,
+                       COALESCE(NULLIF(u.display_name, ''), u.username) AS user_name
+                FROM social_auth_audit a
+                LEFT JOIN users u ON u.id = a.user_id
+                ORDER BY a.created_at DESC, a.id DESC
+                LIMIT ?
+                """,
+                (max(1, min(500, limit)),),
+            ).fetchall()
+            return [
+                {**dict(row), "success": bool(row["success"])}
+                for row in rows
+            ]
 
     def set_user_enabled(
         self,
@@ -1813,85 +2599,323 @@ class AccountService:
                 raise AccountNotFoundError("充值订单不存在")
             if order["status"] != "pending":
                 raise AccountConflictError("充值订单已处理")
-            current_entitlement = conn.execute(
-                "SELECT vip_expires_at FROM user_entitlements WHERE user_id = ?",
-                (order["user_id"],),
-            ).fetchone()
-            subscription_started_at = max(
-                now,
-                int(current_entitlement["vip_expires_at"] or 0) if current_entitlement else now,
-            )
-            subscription_expires_at = subscription_started_at + int(order["duration_days"]) * 24 * 60 * 60
-            conn.execute(
-                """
-                UPDATE recharge_orders
-                SET status = 'approved', decided_at = ?, decided_by = ?
-                WHERE id = ? AND status = 'pending'
-                """,
-                (now, principal.user_id, order_id),
-            )
-            conn.execute(
-                """
-                UPDATE user_entitlements
-                SET vip_enabled = 1,
-                    vip_expires_at = ?,
-                    construction_logs_unlocked = MAX(
-                        construction_logs_unlocked, ?
-                    ),
-                    quota_granted = quota_granted + ?,
-                    updated_at = ?
-                WHERE user_id = ?
-                """,
-                (
-                    subscription_expires_at,
-                    order["construction_logs_unlocked"],
-                    order["quota_amount"],
-                    now,
-                    order["user_id"],
-                ),
-            )
-            conn.execute(
-                """
-                UPDATE agent_tokens
-                SET request_limit = request_limit + ?
-                WHERE id = ?
-                """,
-                (order["quota_amount"], self._agent_token_id(order["user_id"])),
-            )
-            self._ensure_usage_balance(conn, order["user_id"], now)
-            conn.execute(
-                """
-                UPDATE account_usage_balances
-                SET included_stt_seconds = MAX(included_stt_seconds, ?),
-                    ai_credits_granted = MAX(ai_credits_granted, ?),
-                    points_granted = MAX(points_granted, ?),
-                    team_seats = MAX(team_seats, ?),
-                    updated_at = ?
-                WHERE user_id = ?
-                """,
-                (
-                    int(order["included_minutes"]) * 60,
-                    int(order["ai_credits"]),
-                    int(order["points"] or order["quota_amount"]),
-                    int(order["team_seats"]),
-                    now,
-                    order["user_id"],
-                ),
-            )
-            conn.execute(
-                """
-                UPDATE recharge_orders
-                SET subscription_started_at = ?, subscription_expires_at = ?
-                WHERE id = ?
-                """,
-                (
-                    subscription_started_at,
-                    subscription_expires_at,
-                    order_id,
-                ),
-            )
-            self._ensure_team(conn, order["user_id"], now)
+            self._approve_order_conn(conn, order, now, principal.user_id)
             return self._order(conn, order_id)
+
+    def approve_order_from_alipay(self, order_id: str) -> dict:
+        """Credit a paid order exactly once from a verified Alipay event."""
+        now = int(time.time())
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            order = conn.execute(
+                "SELECT * FROM recharge_orders WHERE id = ?", (order_id,)
+            ).fetchone()
+            if order is None:
+                raise AccountNotFoundError("充值订单不存在")
+            if order["status"] == "pending":
+                self._approve_order_conn(conn, order, now, None)
+            elif order["status"] != "approved":
+                raise AccountConflictError("充值订单当前状态不支持支付入账")
+            return self._order(conn, order_id)
+
+    def get_order_for_payment(self, principal: AccountPrincipal, order_id: str) -> dict:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT user_id, status FROM recharge_orders WHERE id = ?", (order_id,)
+            ).fetchone()
+            if row is None or row["user_id"] != principal.user_id:
+                raise AccountNotFoundError("充值订单不存在")
+            if row["status"] != "pending":
+                raise AccountConflictError("充值订单已处理，不能再次发起支付")
+            return self._order(conn, order_id)
+
+    def create_alipay_transaction(
+        self,
+        principal: AccountPrincipal,
+        order_id: str,
+        *,
+        out_trade_no: str,
+        subject: str,
+        environment: str,
+    ) -> dict:
+        order = self.get_order_for_payment(principal, order_id)
+        now = int(time.time())
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            existing = conn.execute(
+                "SELECT * FROM alipay_transactions WHERE order_id = ?", (order_id,)
+            ).fetchone()
+            if existing is not None:
+                if existing["amount_cents"] != order["amount_cents"]:
+                    raise AccountConflictError("支付金额与充值订单不一致")
+                reusable = existing["status"] == "paid" or (
+                    existing["status"] == "created"
+                    and now - int(existing["created_at"] or 0) < ALIPAY_TRADE_ROTATE_AFTER_SEC
+                )
+                if reusable:
+                    return dict(existing)
+                # The previous trade is closed, failed, or has passed the gateway
+                # timeout window: re-signing the same out_trade_no would be
+                # rejected by Alipay forever. Rotate to a fresh trade number so
+                # the order stays payable. created_at tracks the current trade
+                # attempt, which is what the reuse window above measures.
+                conn.execute(
+                    """
+                    UPDATE alipay_transactions
+                    SET out_trade_no = ?, status = 'created', trade_no = NULL,
+                        last_trade_status = NULL, notify_id = NULL,
+                        last_error = '', created_at = ?, updated_at = ?
+                    WHERE order_id = ?
+                    """,
+                    (out_trade_no, now, now, order_id),
+                )
+                return dict(
+                    conn.execute(
+                        "SELECT * FROM alipay_transactions WHERE order_id = ?", (order_id,)
+                    ).fetchone()
+                )
+            conn.execute(
+                """
+                INSERT INTO alipay_transactions (
+                    id, order_id, user_id, out_trade_no, amount_cents, subject,
+                    environment, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'created', ?, ?)
+                """,
+                (
+                    str(uuid.uuid4()),
+                    order_id,
+                    principal.user_id,
+                    out_trade_no,
+                    int(order["amount_cents"]),
+                    subject,
+                    environment,
+                    now,
+                    now,
+                ),
+            )
+            return dict(
+                conn.execute(
+                    "SELECT * FROM alipay_transactions WHERE order_id = ?", (order_id,)
+                ).fetchone()
+            )
+
+    def alipay_transaction_for_user(self, principal: AccountPrincipal, order_id: str) -> dict:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM alipay_transactions WHERE order_id = ? AND user_id = ?",
+                (order_id, principal.user_id),
+            ).fetchone()
+            if row is None:
+                raise AccountNotFoundError("支付宝支付记录不存在")
+            return dict(row)
+
+    def alipay_transaction_for_admin(self, principal: AccountPrincipal, order_id: str) -> dict:
+        self._require_admin(principal)
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM alipay_transactions WHERE order_id = ?", (order_id,)
+            ).fetchone()
+            if row is None:
+                raise AccountNotFoundError("支付宝支付记录不存在")
+            return dict(row)
+
+    def transaction_by_out_trade_no_for_notify(self, out_trade_no: str) -> dict:
+        clean = out_trade_no.strip()
+        if not clean:
+            raise AccountNotFoundError("支付宝商户订单号不存在")
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM alipay_transactions WHERE out_trade_no = ?", (clean,)
+            ).fetchone()
+            if row is None:
+                raise AccountNotFoundError("支付宝支付记录不存在")
+            return dict(row)
+
+    def update_alipay_transaction(
+        self,
+        out_trade_no: str,
+        *,
+        status: str | None = None,
+        trade_no: str | None = None,
+        trade_status: str | None = None,
+        notify_id: str | None = None,
+        last_error: str | None = None,
+        refund_request_no: str | None = None,
+        refund_amount_cents: int | None = None,
+    ) -> dict:
+        allowed = {"created", "paid", "closed", "refund_pending", "refunded", "failed"}
+        if status is not None and status not in allowed:
+            raise AccountError("支付宝支付状态无效")
+        fields: list[str] = ["updated_at = ?"]
+        values: list[object] = [int(time.time())]
+        for name, value in (
+            ("status", status),
+            ("trade_no", trade_no),
+            ("last_trade_status", trade_status),
+            ("notify_id", notify_id),
+            ("last_error", last_error),
+            ("refund_request_no", refund_request_no),
+            ("refund_amount_cents", refund_amount_cents),
+        ):
+            if value is not None:
+                fields.append(f"{name} = ?")
+                values.append(value)
+        if status == "paid":
+            fields.append("paid_at = COALESCE(paid_at, ?)")
+            values.append(int(time.time()))
+        values.append(out_trade_no)
+        with self._connect() as conn:
+            result = conn.execute(
+                f"UPDATE alipay_transactions SET {', '.join(fields)} WHERE out_trade_no = ?",
+                tuple(values),
+            )
+            if result.rowcount != 1:
+                raise AccountNotFoundError("支付宝支付记录不存在")
+            row = conn.execute(
+                "SELECT * FROM alipay_transactions WHERE out_trade_no = ?", (out_trade_no,)
+            ).fetchone()
+            return dict(row)
+
+    def process_alipay_notification(
+        self,
+        *,
+        out_trade_no: str,
+        trade_no: str,
+        trade_status: str,
+        notify_id: str,
+        payload_hash: str,
+        payload_json: str,
+        paid: bool,
+    ) -> dict:
+        now = int(time.time())
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            duplicate = conn.execute(
+                "SELECT processed, result FROM alipay_notify_events WHERE notify_id = ? OR payload_hash = ?",
+                (notify_id or None, payload_hash),
+            ).fetchone()
+            if duplicate is not None and int(duplicate["processed"]):
+                return {"duplicate": True, "result": duplicate["result"] or "success"}
+            tx = conn.execute(
+                "SELECT * FROM alipay_transactions WHERE out_trade_no = ?", (out_trade_no,)
+            ).fetchone()
+            if tx is None:
+                raise AccountNotFoundError("支付宝支付记录不存在")
+            event_id = str(uuid.uuid4())
+            conn.execute(
+                """
+                INSERT INTO alipay_notify_events (
+                    id, notify_id, payload_hash, out_trade_no, trade_no,
+                    trade_status, payload_json, processed, result, received_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, '', ?)
+                ON CONFLICT(payload_hash) DO NOTHING
+                """,
+                (event_id, notify_id or None, payload_hash, out_trade_no, trade_no, trade_status, payload_json, now),
+            )
+            # A late payment notification must never undo a refund that has
+            # already been requested or completed, nor reopen a closed order.
+            can_mark_paid = paid and tx["status"] not in {"paid", "refund_pending", "refunded", "closed"}
+            if can_mark_paid:
+                order = conn.execute(
+                    "SELECT * FROM recharge_orders WHERE id = ?", (tx["order_id"],)
+                ).fetchone()
+                if order is None:
+                    raise AccountNotFoundError("充值订单不存在")
+                if order["status"] == "pending":
+                    self._approve_order_conn(conn, order, now, None)
+                conn.execute(
+                    """
+                    UPDATE alipay_transactions
+                    SET status = 'paid', trade_no = ?, last_trade_status = ?,
+                        notify_id = ?, paid_at = COALESCE(paid_at, ?), updated_at = ?
+                    WHERE out_trade_no = ?
+                    """,
+                    (trade_no, trade_status, notify_id or None, now, now, out_trade_no),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE alipay_transactions
+                    SET trade_no = COALESCE(?, trade_no), last_trade_status = ?,
+                        notify_id = COALESCE(?, notify_id), updated_at = ?
+                    WHERE out_trade_no = ?
+                    """,
+                    (trade_no or None, trade_status, notify_id or None, now, out_trade_no),
+                )
+            conn.execute(
+                "UPDATE alipay_notify_events SET processed = 1, result = 'success' WHERE payload_hash = ?",
+                (payload_hash,),
+            )
+            return {"duplicate": False, "result": "success", "order_id": tx["order_id"]}
+
+    def _approve_order_conn(
+        self,
+        conn: sqlite3.Connection,
+        order: sqlite3.Row,
+        now: int,
+        decided_by: str | None,
+    ) -> None:
+        current_entitlement = conn.execute(
+            "SELECT vip_expires_at FROM user_entitlements WHERE user_id = ?",
+            (order["user_id"],),
+        ).fetchone()
+        subscription_started_at = max(
+            now,
+            int(current_entitlement["vip_expires_at"] or 0) if current_entitlement else now,
+        )
+        subscription_expires_at = subscription_started_at + int(order["duration_days"]) * 24 * 60 * 60
+        updated = conn.execute(
+            """
+            UPDATE recharge_orders
+            SET status = 'approved', decided_at = ?, decided_by = ?
+            WHERE id = ? AND status = 'pending'
+            """,
+            (now, decided_by, order["id"]),
+        )
+        if updated.rowcount != 1:
+            return
+        conn.execute(
+            """
+            UPDATE user_entitlements
+            SET vip_enabled = 1, vip_expires_at = ?,
+                construction_logs_unlocked = MAX(construction_logs_unlocked, ?),
+                quota_granted = quota_granted + ?, updated_at = ?
+            WHERE user_id = ?
+            """,
+            (subscription_expires_at, order["construction_logs_unlocked"], order["quota_amount"], now, order["user_id"]),
+        )
+        conn.execute(
+            "UPDATE agent_tokens SET request_limit = request_limit + ? WHERE id = ?",
+            (order["quota_amount"], self._agent_token_id(order["user_id"])),
+        )
+        # The usage row exists after initialization; this guard keeps migration-safe behavior.
+        conn.execute(
+            """
+            INSERT INTO account_usage_balances (
+                user_id, included_stt_seconds, stt_seconds_used,
+                ai_credits_granted, ai_credits_used, points_granted, points_used,
+                team_seats, period_start, period_end, updated_at
+            ) VALUES (?, 0, 0, 0, 0, 0, 0, 1, ?, ?, ?)
+            ON CONFLICT(user_id) DO NOTHING
+            """,
+            (order["user_id"], now, now + 30 * 24 * 60 * 60, now),
+        )
+        conn.execute(
+            """
+            UPDATE account_usage_balances
+            SET included_stt_seconds = MAX(included_stt_seconds, ?),
+                ai_credits_granted = MAX(ai_credits_granted, ?),
+                points_granted = MAX(points_granted, ?),
+                team_seats = MAX(team_seats, ?), updated_at = ?
+            WHERE user_id = ?
+            """,
+            (int(order["included_minutes"]) * 60, int(order["ai_credits"]), int(order["points"] or order["quota_amount"]), int(order["team_seats"]), now, order["user_id"]),
+        )
+        conn.execute(
+            "UPDATE recharge_orders SET subscription_started_at = ?, subscription_expires_at = ? WHERE id = ?",
+            (subscription_started_at, subscription_expires_at, order["id"]),
+        )
+        self._ensure_team(conn, order["user_id"], now)
 
     def reject_order(self, principal: AccountPrincipal, order_id: str) -> dict:
         self._require_admin(principal)
@@ -2219,9 +3243,33 @@ class AccountService:
         plan = self._active_plan(conn, user_id, row["role"], bool(row["vip_enabled"]))
         usage = self._usage_balance(conn, user_id)
         identities = conn.execute(
-            "SELECT provider FROM account_identities WHERE user_id = ? ORDER BY created_at ASC",
+            "SELECT provider, subject, verified, created_at FROM account_identities WHERE user_id = ? ORDER BY created_at ASC",
             (user_id,),
         ).fetchall()
+        registration = conn.execute(
+            """
+            SELECT s.source, s.referral_code, s.referrer_user_id, s.created_at,
+                   COALESCE(NULLIF(referrer.display_name, ''), referrer.username) AS referrer_name
+            FROM account_registration_sources s
+            LEFT JOIN users referrer ON referrer.id = s.referrer_user_id
+            WHERE s.user_id = ?
+            """,
+            (user_id,),
+        ).fetchone()
+        referral = conn.execute(
+            "SELECT code, enabled, used_count FROM growth_referral_codes WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+        social_identities = [
+            {
+                "provider": identity["provider"],
+                "subject": self._mask_identity(identity["provider"], identity["subject"]),
+                "verified": bool(identity["verified"]),
+                "bound_at": identity["created_at"],
+            }
+            for identity in identities
+            if identity["provider"] in SOCIAL_PROVIDERS
+        ]
         return {
             "id": row["id"],
             "username": row["username"],
@@ -2237,6 +3285,27 @@ class AccountService:
             "plan_name": plan["name"],
             "created_at": row["created_at"],
             "identity_providers": [identity["provider"] for identity in identities],
+            "social_identities": social_identities,
+            "registration_source": registration["source"] if registration is not None else "legacy",
+            "used_referral_code": registration["referral_code"] if registration is not None else None,
+            "referrer": (
+                {
+                    "user_id": registration["referrer_user_id"],
+                    "display_name": registration["referrer_name"] or "",
+                }
+                if registration is not None and registration["referrer_user_id"]
+                else None
+            ),
+            "referral": (
+                {
+                    "code": referral["code"],
+                    "enabled": bool(referral["enabled"]),
+                    "successful_invites": int(referral["used_count"]),
+                    "share_path": f"/app/?ref={referral['code']}",
+                }
+                if referral is not None
+                else None
+            ),
             "usage": usage,
             "quota": {
                 "request_limit": request_limit,
@@ -2257,6 +3326,17 @@ class AccountService:
             )
         if "avatar_data_url" not in columns:
             conn.execute("ALTER TABLE users ADD COLUMN avatar_data_url TEXT")
+
+    @staticmethod
+    def _ensure_growth_columns(conn: sqlite3.Connection) -> None:
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(growth_private_channels)").fetchall()
+        }
+        if "manager_card_image_url" not in columns:
+            conn.execute(
+                "ALTER TABLE growth_private_channels ADD COLUMN manager_card_image_url TEXT NOT NULL DEFAULT ''"
+            )
 
     def _ensure_billing_columns(self, conn: sqlite3.Connection) -> None:
         entitlement_columns = {
@@ -2365,6 +3445,37 @@ class AccountService:
             DROP TABLE auth_verification_codes_legacy;
             CREATE INDEX index_auth_codes_subject_created
             ON auth_verification_codes(channel, subject, purpose, created_at DESC);
+            """
+        )
+
+    @staticmethod
+    def _ensure_identity_provider_constraint(conn: sqlite3.Connection) -> None:
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'account_identities'"
+        ).fetchone()
+        definition = str(row["sql"] or "").casefold() if row is not None else ""
+        if "telegram" in definition and "instagram" in definition:
+            return
+        conn.executescript(
+            """
+            DROP INDEX IF EXISTS index_account_identities_user;
+            ALTER TABLE account_identities RENAME TO account_identities_legacy;
+            CREATE TABLE account_identities (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                provider TEXT NOT NULL CHECK(provider IN ('email', 'phone', 'wechat', 'feishu', 'qq', 'telegram', 'whatsapp', 'instagram', 'password')),
+                subject TEXT NOT NULL,
+                verified INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                UNIQUE(provider, subject),
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+            INSERT INTO account_identities (id, user_id, provider, subject, verified, created_at)
+            SELECT id, user_id, provider, subject, verified, created_at
+            FROM account_identities_legacy;
+            DROP TABLE account_identities_legacy;
+            CREATE INDEX index_account_identities_user
+            ON account_identities(user_id, created_at ASC);
             """
         )
 
@@ -2526,15 +3637,76 @@ class AccountService:
         if int(inviter["max_uses"]) > 0 and int(inviter["used_count"]) >= int(inviter["max_uses"]):
             raise AccountError("邀请码已达到使用上限")
         binding_id = str(uuid.uuid4())
+        source_row = conn.execute(
+            "SELECT source FROM account_registration_sources WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+        binding_source = str(source_row["source"] if source_row is not None else "register")[:64]
         conn.execute(
-            "INSERT INTO growth_referral_bindings (id, referrer_user_id, referred_user_id, code, created_at) VALUES (?, ?, ?, ?, ?)",
-            (binding_id, inviter["user_id"], user_id, clean_referral, now),
+            "INSERT INTO growth_referral_bindings (id, referrer_user_id, referred_user_id, code, source, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (binding_id, inviter["user_id"], user_id, clean_referral, binding_source, now),
         )
         conn.execute("UPDATE growth_referral_codes SET used_count = used_count + 1 WHERE user_id = ?", (inviter["user_id"],))
         # 注册绑定即记账，后续可由首次有效使用把 rewarded_at 标记为完成。
-        self._grant_growth_reward(conn, inviter["user_id"], "referral", binding_id, "points", 100, f"referral:{binding_id}:inviter", now)
-        self._grant_growth_reward(conn, user_id, "referral", binding_id, "points", 100, f"referral:{binding_id}:invitee", now)
+        self._grant_growth_reward(conn, inviter["user_id"], "referral", binding_id, "points", REFERRAL_REWARD_POINTS, f"referral:{binding_id}:inviter", now)
+        self._grant_growth_reward(conn, user_id, "referral", binding_id, "points", REFERRAL_REWARD_POINTS, f"referral:{binding_id}:invitee", now)
         conn.execute("UPDATE growth_referral_bindings SET rewarded_at = ?, qualified_at = ? WHERE id = ?", (now, now, binding_id))
+
+    def _record_registration_source(
+        self,
+        conn: sqlite3.Connection,
+        user_id: str,
+        source: str,
+        referral_code: str | None,
+        now: int,
+        metadata: Mapping[str, object] | None = None,
+    ) -> None:
+        clean_referral = (referral_code or "").strip().upper().replace(" ", "")
+        referrer = None
+        if clean_referral:
+            row = conn.execute(
+                "SELECT user_id FROM growth_referral_codes WHERE code = ?",
+                (clean_referral,),
+            ).fetchone()
+            referrer = str(row["user_id"]) if row is not None else None
+        conn.execute(
+            """
+            INSERT INTO account_registration_sources (
+                user_id, source, referral_code, referrer_user_id, metadata_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id) DO NOTHING
+            """,
+            (
+                user_id,
+                source.strip().lower()[:64] or "unknown",
+                clean_referral or None,
+                referrer,
+                json.dumps(dict(metadata or {}), ensure_ascii=False, separators=(",", ":")),
+                now,
+            ),
+        )
+
+    @staticmethod
+    def _record_social_audit(
+        conn: sqlite3.Connection,
+        provider: str,
+        event: str,
+        user_id: str | None,
+        success: bool,
+        detail: str,
+        now: int,
+    ) -> None:
+        conn.execute(
+            """
+            INSERT INTO social_auth_audit (
+                id, provider, event, user_id, success, detail, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(uuid.uuid4()), provider[:32], event[:64], user_id,
+                1 if success else 0, detail.strip()[:500], now,
+            ),
+        )
 
     def _grant_growth_reward(
         self, conn: sqlite3.Connection, user_id: str, source_type: str, source_id: str,
@@ -2636,11 +3808,61 @@ class AccountService:
                 self._grant_growth_reward(conn, row["user_id"], "campaign_rank", reward_id, "points", reward, f"campaign-settle:{reward_id}", now)
                 winners.append({"user_id": row["user_id"], "rank": index, "score": int(row["score"]), "quantity": reward})
         conn.execute("UPDATE growth_campaigns SET status = 'settled', settled_at = ? WHERE id = ?", (now, campaign_id))
+        winner_names = []
+        for winner in winners:
+            user = conn.execute(
+                "SELECT COALESCE(NULLIF(display_name, ''), username) AS display_name FROM users WHERE id = ?",
+                (winner["user_id"],),
+            ).fetchone()
+            display_name = str(user["display_name"]) if user else "获奖用户"
+            winner_names.append(f"第{winner['rank']}名 {display_name}")
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO growth_system_messages (
+                    id, user_id, message_type, title, body, campaign_id,
+                    action_path, created_at
+                ) VALUES (?, ?, 'campaign_reward', ?, ?, ?, ?, ?)
+                """,
+                (
+                    f"campaign:{campaign_id}:winner:{winner['user_id']}",
+                    winner["user_id"],
+                    f"{campaign['title']}奖励已到账",
+                    f"恭喜获得第{winner['rank']}名，{winner['quantity']} 积分已发放至账户。",
+                    campaign_id,
+                    f"/growth/campaigns/{campaign_id}",
+                    now,
+                ),
+            )
+        announcement_body = (
+            "活动已完成结算。" + ("获奖名单：" + "、".join(winner_names) if winner_names else "本期暂无获奖名单。")
+        )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO growth_system_messages (
+                id, user_id, message_type, title, body, campaign_id,
+                action_path, created_at
+            ) VALUES (?, NULL, 'campaign_announcement', ?, ?, ?, ?, ?)
+            """,
+            (
+                f"campaign:{campaign_id}:announcement",
+                f"{campaign['title']}获奖公告",
+                announcement_body,
+                campaign_id,
+                f"/growth/campaigns/{campaign_id}",
+                now,
+            ),
+        )
         return {"status": "settled", "campaign_id": campaign_id, "winners": winners}
 
     def _campaign_rows(self, conn: sqlite3.Connection, now: int) -> list[dict]:
         rows = conn.execute(
-            "SELECT id, title, campaign_type, summary, rules_json, reward_pool_json, starts_at, ends_at, status FROM growth_campaigns WHERE ends_at >= ? ORDER BY starts_at ASC LIMIT 20",
+            """
+            SELECT id, title, campaign_type, summary, rules_json,
+                   reward_pool_json, starts_at, ends_at, status
+            FROM growth_campaigns
+            WHERE status IN ('active', 'running') AND ends_at >= ?
+            ORDER BY starts_at ASC LIMIT 20
+            """,
             (now,),
         ).fetchall()
         result = []
@@ -2651,7 +3873,59 @@ class AccountService:
             result.append(payload)
         return result
 
-    def _private_channel(self, conn: sqlite3.Connection, channel_id: str | None = None) -> dict | None:
+    @staticmethod
+    def _validated_campaign_config(payload: dict) -> dict:
+        title = str(payload.get("title", "")).strip()
+        campaign_type = str(payload.get("campaign_type", "")).strip().lower()
+        summary = str(payload.get("summary", "")).strip()
+        status = str(payload.get("status", "draft")).strip().lower()
+        rules = payload.get("rules") if isinstance(payload.get("rules"), dict) else {}
+        reward_pool = (
+            payload.get("reward_pool")
+            if isinstance(payload.get("reward_pool"), dict)
+            else {}
+        )
+        try:
+            starts_at = int(payload.get("starts_at", 0))
+            ends_at = int(payload.get("ends_at", 0))
+        except (TypeError, ValueError) as exc:
+            raise AccountError("活动时间配置无效") from exc
+        if not title or len(title) > 120:
+            raise AccountError("活动标题长度需为 1 至 120 个字符")
+        if campaign_type not in {"ranking", "quiz", "contest", "checkin", "draw"}:
+            raise AccountError("活动类型无效")
+        if len(summary) > 500:
+            raise AccountError("活动说明不能超过 500 个字符")
+        if status not in {"draft", "active", "running", "paused"}:
+            raise AccountError("活动状态无效")
+        if starts_at <= 0 or ends_at <= starts_at:
+            raise AccountError("活动结束时间必须晚于开始时间")
+        try:
+            encoded_rules = json.dumps(rules, ensure_ascii=False)
+            encoded_rewards = json.dumps(reward_pool, ensure_ascii=False)
+        except (TypeError, ValueError) as exc:
+            raise AccountError("活动规则必须为可序列化对象") from exc
+        if len(encoded_rules) > 20_000 or len(encoded_rewards) > 10_000:
+            raise AccountError("活动规则或奖励池内容过大")
+        return {
+            "title": title,
+            "campaign_type": campaign_type,
+            "summary": summary,
+            "rules": rules,
+            "reward_pool": reward_pool,
+            "starts_at": starts_at,
+            "ends_at": ends_at,
+            "status": status,
+        }
+
+    def _private_channel(
+        self,
+        conn: sqlite3.Connection,
+        channel_id: str | None = None,
+        *,
+        user_id: str | None = None,
+        include_qr: bool = False,
+    ) -> dict | None:
         row = conn.execute(
             "SELECT * FROM growth_private_channels WHERE id = ? AND enabled = 1" if channel_id else "SELECT * FROM growth_private_channels WHERE enabled = 1 ORDER BY updated_at DESC LIMIT 1",
             (channel_id,) if channel_id else (),
@@ -2663,24 +3937,108 @@ class AccountService:
         if payload.get("qr_image_url") == "/app/assets/welfare-group-qr.jpg":
             payload["qr_image_url"] = "/api/growth/private-channel/default-qr"
         payload["reward"] = json.loads(payload.pop("reward_payload_json") or "{}")
+        application = None
+        if user_id:
+            application_row = conn.execute(
+                "SELECT id FROM growth_channel_applications WHERE channel_id = ? AND user_id = ?",
+                (payload["id"], user_id),
+            ).fetchone()
+            if application_row:
+                application = self._channel_application_payload(conn, application_row["id"])
+        payload["application"] = application
+        payload["requires_application"] = True
+        if (user_id and (application is None or application.get("status") != "approved")) or (
+            not include_qr
+        ):
+            payload["qr_image_url"] = ""
+            payload["join_url"] = ""
+            payload["short_url"] = ""
+        return payload
+
+    @staticmethod
+    def _channel_application_payload(
+        conn: sqlite3.Connection,
+        application_id: str,
+        row: sqlite3.Row | None = None,
+    ) -> dict:
+        row = row or conn.execute(
+            """
+            SELECT a.*, c.name AS channel_name,
+                   COALESCE(NULLIF(u.display_name, ''), u.username) AS user_name,
+                   u.username
+            FROM growth_channel_applications a
+            JOIN growth_private_channels c ON c.id = a.channel_id
+            JOIN users u ON u.id = a.user_id
+            WHERE a.id = ?
+            """,
+            (application_id,),
+        ).fetchone()
+        if row is None:
+            return {}
+        payload = dict(row)
+        try:
+            payload["answers"] = json.loads(payload.pop("answers_json") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            payload["answers"] = {}
         return payload
 
     @staticmethod
     def _ensure_growth_defaults(conn: sqlite3.Connection) -> None:
         now = int(time.time())
         conn.execute(
-            "INSERT INTO growth_private_channels (id, name, qr_image_url, slogan, reward_type, reward_payload_json, updated_at) VALUES ('default-welfare-group', '智悟本福利群', '/api/growth/private-channel/default-qr', '扫码加入福利群，每日专属兑换码、活动优先通知、客服一对一', 'points', '{\"quantity\":50}', ?) ON CONFLICT(id) DO NOTHING",
+            "INSERT INTO growth_private_channels (id, name, qr_image_url, manager_card_image_url, slogan, reward_type, reward_payload_json, updated_at) VALUES ('default-welfare-group', '智悟本福利7群', '/api/growth/private-channel/default-qr', '/api/growth/private-channel/default-manager-card', '添加群主后提交申请，审核通过即可加入福利群', 'points', '{\"quantity\":200}', ?) ON CONFLICT(id) DO NOTHING",
+            (now,),
+        )
+        conn.execute(
+            "UPDATE growth_private_channels SET manager_card_image_url = '/api/growth/private-channel/default-manager-card' WHERE id = 'default-welfare-group' AND (manager_card_image_url IS NULL OR manager_card_image_url = '')"
+        )
+        conn.execute(
+            "UPDATE growth_private_channels SET name = '智悟本福利7群', updated_at = ? WHERE id = 'default-welfare-group' AND name = '智悟本福利群'",
+            (now,),
+        )
+        conn.execute(
+            "UPDATE growth_private_channels SET reward_payload_json = '{\"quantity\":200}', updated_at = ? WHERE id = 'default-welfare-group' AND reward_payload_json = '{\"quantity\":50}'",
             (now,),
         )
         samples = (
-            ("invitation-ranking", "邀请好友得积分排行赛", "ranking", "邀请好友注册，双方各得 100 积分，前 20 名额外获得兑换码。", {"checkin_reward": 10}, {"ranks": {"1": 1000, "2": 600, "3": 300}}),
-            ("daily-quiz", "每日答题兑好礼", "quiz", "每天完成 3 道题，答对即可获得积分并参与周榜。", {"checkin_reward": 10, "answer_reward": 20, "questions": [{"key": "q1", "question": "浙江省省会是哪里？", "options": ["杭州", "宁波", "温州"], "answer": "杭州"}, {"key": "q2", "question": "每天完成记录后最重要的动作是什么？", "options": ["复盘", "删除", "跳过"], "answer": "复盘"}]}, {"ranks": {"1": 500, "2": 300, "3": 100}}),
-            ("zhejiang-study", "浙江研学创作挑战", "contest", "记录一次浙江本地研学见闻，优秀作品可获得积分奖励。", {"checkin_reward": 20, "draw_reward": 80, "win_probability": 2000}, {"ranks": {"1": 800, "2": 500, "3": 300}}),
+            (
+                "invitation-ranking", "邀请好友得积分排行赛", "ranking",
+                "邀请好友注册，双方各得 300 积分，前 20 名额外获得兑换码。",
+                {"checkin_reward": 30}, {"ranks": {"1": 2000, "2": 1200, "3": 600}},
+                {"checkin_reward": 10}, {"ranks": {"1": 1000, "2": 600, "3": 300}},
+            ),
+            (
+                "daily-quiz", "每日答题兑好礼", "quiz",
+                "每天完成答题，答对即可获得积分并参与周榜。",
+                {"checkin_reward": 30, "answer_reward": 50, "questions": [{"key": "q1", "question": "浙江省省会是哪里？", "options": ["杭州", "宁波", "温州"], "answer": "杭州"}, {"key": "q2", "question": "每天完成记录后最重要的动作是什么？", "options": ["复盘", "删除", "跳过"], "answer": "复盘"}]},
+                {"ranks": {"1": 1000, "2": 600, "3": 300}},
+                {"checkin_reward": 10, "answer_reward": 20, "questions": [{"key": "q1", "question": "浙江省省会是哪里？", "options": ["杭州", "宁波", "温州"], "answer": "杭州"}, {"key": "q2", "question": "每天完成记录后最重要的动作是什么？", "options": ["复盘", "删除", "跳过"], "answer": "复盘"}]},
+                {"ranks": {"1": 500, "2": 300, "3": 100}},
+            ),
+            (
+                "zhejiang-study", "浙江研学创作挑战", "contest",
+                "记录一次浙江本地研学见闻，优秀作品可获得积分奖励。",
+                {"checkin_reward": 50, "draw_reward": 200, "win_probability": 2000},
+                {"ranks": {"1": 1500, "2": 1000, "3": 600}},
+                {"checkin_reward": 20, "draw_reward": 80, "win_probability": 2000},
+                {"ranks": {"1": 800, "2": 500, "3": 300}},
+            ),
         )
-        for campaign_id, title, campaign_type, summary, rules, reward_pool in samples:
+        for campaign_id, title, campaign_type, summary, rules, reward_pool, old_rules, old_reward_pool in samples:
             conn.execute(
                 "INSERT INTO growth_campaigns (id, title, campaign_type, summary, rules_json, reward_pool_json, starts_at, ends_at, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?) ON CONFLICT(id) DO NOTHING",
                 (campaign_id, title, campaign_type, summary, json.dumps(rules, ensure_ascii=False), json.dumps(reward_pool, ensure_ascii=False), now, now + 30 * 86400, now),
+            )
+            conn.execute(
+                "UPDATE growth_campaigns SET summary = ?, rules_json = ?, reward_pool_json = ? WHERE id = ? AND rules_json = ? AND reward_pool_json = ?",
+                (
+                    summary,
+                    json.dumps(rules, ensure_ascii=False),
+                    json.dumps(reward_pool, ensure_ascii=False),
+                    campaign_id,
+                    json.dumps(old_rules, ensure_ascii=False),
+                    json.dumps(old_reward_pool, ensure_ascii=False),
+                ),
             )
 
     def _ensure_team(self, conn: sqlite3.Connection, owner_user_id: str, now: int) -> sqlite3.Row:
@@ -2947,8 +4305,11 @@ class AccountService:
     def _identity_username(channel: str, subject: str, user_id: str) -> str:
         if channel == "phone":
             return f"用户{subject[-4:]}_{user_id[:6]}"
-        local = re.sub(r"[^A-Za-z0-9_]", "_", subject.split("@", 1)[0])[:12]
-        return f"{local or 'email'}_{user_id[:8]}"
+        if channel == "email":
+            local = re.sub(r"[^A-Za-z0-9_]", "_", subject.split("@", 1)[0])[:12]
+            return f"{local or 'email'}_{user_id[:8]}"
+        provider = re.sub(r"[^A-Za-z0-9_]", "_", channel)[:12] or "social"
+        return f"{provider}_{user_id[:8]}"
 
     @staticmethod
     def _password_hash(password: str, salt: bytes) -> str:
