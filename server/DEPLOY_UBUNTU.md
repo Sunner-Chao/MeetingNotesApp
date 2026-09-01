@@ -147,7 +147,7 @@ sudo -u meetingnotes /opt/meetingnotes-stt/current-venv/bin/python \
 
 审批文件由两名不同审核人确认后，先不带 `--apply` 验证库存和备份摘要；只有维护窗口已设置 `COMMUNITY_WRITE_ENABLED=false`、请求 ID 已人工核对且恢复/备份证据仍有效时，才允许执行 `--apply`。工具会在 `community-media-purge-receipts/` 保存不含媒体路径的清除收据。该 JSON 流程本身不提供密码学身份认证，生产环境必须由外部工单或 IAM 记录审核人身份，不能只靠本地 root 编辑 reviewer 字段。
 
-Backend 控制台进程监听 `127.0.0.1:8090`，由 Nginx HTTPS 反向代理提供公网访问。当前公网地址为 `https://118.25.43.185/web`。SSH 隧道仍可用于本机维护：
+Backend 控制台进程监听 `127.0.0.1:8090`，由 Nginx HTTPS 反向代理提供公网访问。当前兼容地址为 `https://118.25.43.185/web`，统一域名管理员入口为 `https://lstwin.space/admin/`，用户端入口为 `https://lstwin.space/app/`；Windows Caddy 通过 WireGuard 回源 Web/API，同时保留本地 STT 的 `/health` 与 `/ws/transcribe-stream`。SSH 隧道仍可用于本机维护：
 
 ```powershell
 ssh -F NUL -i $HOME\.ssh\meetingnotes_stt_118_25_43_185 `
@@ -225,7 +225,7 @@ sudo bash /opt/meetingnotes-stt/current/scripts/rollback-native.sh
 ## 10. 公网访问
 
 - 云安全组需要放行 STT 端口；`-OpenFirewall` 只处理 Ubuntu UFW，不能修改云厂商安全组。
-- Backend 绑定 `127.0.0.1:8090`；当前远端由 Nginx 在 443 端口提供 `https://118.25.43.185/web`。
+- Backend 绑定 `127.0.0.1:8090`；远端 Nginx 在 443 端口提供 IP 兼容入口和 `lstwin.space` IPv4 回源，Windows Caddy 通过 WireGuard 提供 IPv6 用户端 `https://lstwin.space/app/`、管理员端 `https://lstwin.space/admin/` 与同源 API。
 - STT 的转写、WebSocket、模型切换和调试接口都要求 Bearer Token。
 - `/health` 和 `/ready` 匿名开放，便于探活。
 - 当前 IP HTTPS 证书已通过续期演练；正式使用仍建议配置独立域名，并将 Android STT 迁移到 HTTPS/WSS。

@@ -17,6 +17,7 @@ import com.oa.automation.domain.model.Transcript
 import com.oa.automation.domain.repository.MeetingRepository
 import com.oa.automation.infrastructure.background.BackgroundTaskScheduler
 import com.oa.automation.infrastructure.audio.MeetingAudioAssembler
+import com.oa.automation.infrastructure.stt.StreamingTranscriptSegment
 import com.oa.automation.ui.MainActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -337,15 +338,35 @@ class RecordingService : Service() {
             // Persist the final streaming text before checking cloud access.
             // Guests must be able to reopen the record, export its local audio,
             // and continue report generation after signing in.
-            meetingRepository.saveTranscript(
-                Transcript(
-                    id = UUID.randomUUID().toString(),
-                    meetingId = stopped.meetingId,
-                    journeyStageId = if (autoGenerateReport) journeyStageId else null,
-                    content = transcriptText,
-                    endTimeMs = stopped.durationMs
-                )
-            ).getOrThrow()
+            val segmentOffsetMs = (meeting.durationMs - stopped.durationMs).coerceAtLeast(0L)
+            val structuredSegments = stopped.speakerSegments
+                .toPersistableSpeakerSegments(stopped.durationMs)
+            if (structuredSegments.isNotEmpty()) {
+                structuredSegments.forEach { segment ->
+                    val speakerId = segment.speaker ?: return@forEach
+                    meetingRepository.saveTranscript(
+                        Transcript(
+                            id = UUID.randomUUID().toString(),
+                            meetingId = stopped.meetingId,
+                            journeyStageId = if (autoGenerateReport) journeyStageId else null,
+                            speakerName = "说话人 ${speakerId + 1}",
+                            content = segment.text,
+                            startTimeMs = segmentOffsetMs + (segment.startSeconds * 1_000).toLong(),
+                            endTimeMs = segmentOffsetMs + (segment.endSeconds * 1_000).toLong()
+                        )
+                    ).getOrThrow()
+                }
+            } else {
+                meetingRepository.saveTranscript(
+                    Transcript(
+                        id = UUID.randomUUID().toString(),
+                        meetingId = stopped.meetingId,
+                        journeyStageId = if (autoGenerateReport) journeyStageId else null,
+                        content = transcriptText,
+                        endTimeMs = stopped.durationMs
+                    )
+                ).getOrThrow()
+            }
 
             if (stopped.requiresLogin) {
                 recordingController.updatePostProcessingStatus(
@@ -505,4 +526,43 @@ class RecordingService : Service() {
         const val EXTRA_GENERATE_REPORT_ON_STOP = "generate_report_on_stop"
         const val AUTH_REQUIRED_MESSAGE = "登录后即可上传转写，本地录音不会丢失"
     }
+}
+
+private fun List<StreamingTranscriptSegment>.toPersistableSpeakerSegments(
+    recordingDurationMs: Long
+): List<StreamingTranscriptSegment> =
+    asSequence()
+        .filter { it.speaker != null && it.text.isNotBlank() }
+        .sortedBy { it.startSeconds }
+        .fold(mutableListOf<StreamingTranscriptSegment>()) { grouped, next ->
+            val previous = grouped.lastOrNull()
+            if (
+                previous != null &&
+                previous.speaker == next.speaker &&
+                next.startSeconds - previous.endSeconds <= 1.5f
+            ) {
+                grouped[grouped.lastIndex] = previous.copy(
+                    endSeconds = maxOf(previous.endSeconds, next.endSeconds),
+                    text = mergeTranscriptContent(previous.text, next.text)
+                )
+            } else {
+                grouped += next
+            }
+            grouped
+        }
+        .map { segment ->
+            segment.copy(
+                startSeconds = segment.startSeconds.coerceAtLeast(0f),
+                endSeconds = segment.endSeconds
+                    .coerceAtLeast(segment.startSeconds)
+                    .coerceAtMost(recordingDurationMs / 1_000f)
+            )
+        }
+        .filter { it.endSeconds > it.startSeconds }
+        .toList()
+
+private fun mergeTranscriptContent(existing: String, incoming: String): String = when {
+    existing.contains(incoming) -> existing
+    incoming.contains(existing) -> incoming
+    else -> "$existing $incoming".trim()
 }

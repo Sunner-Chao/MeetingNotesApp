@@ -87,3 +87,19 @@ export async function shareAudio(meeting: Meeting): Promise<void> {
   }
   downloadBlob(file, file.name);
 }
+
+export async function shareImages(meeting: Meeting): Promise<void> {
+  if (meeting.images.length === 0) throw new Error("当前会议没有图片");
+  const files = meeting.images.map((image, index) => new File(
+    [image.blob],
+    image.name || `${meeting.title}-${index + 1}`,
+    { type: image.type || image.blob.type || "image/jpeg" }
+  ));
+  if (navigator.share && navigator.canShare?.({ files })) {
+    await navigator.share({ title: `${meeting.title} · 影像集锦`, files });
+    return;
+  }
+  files.forEach((file, index) => {
+    window.setTimeout(() => downloadBlob(file, file.name), index * 140);
+  });
+}

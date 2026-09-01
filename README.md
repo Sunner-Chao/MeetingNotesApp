@@ -6,10 +6,10 @@
 
 | 组件 | 当前口径 | 发布方式 |
 |---|---|---|
-| Android | `1.2.19`（`versionCode 10219`） | 服务器 OTA，应用登录或回到前台时检查 |
-| Backend / STT | 仓库候选基线 `1.2.18`；生产部署基线独立记录 | Ubuntu 原生 Python 3.11 + systemd |
-| PWA | 轻享版，同源 `/app/` 发布 | 浏览器安装到桌面 |
-| iOS | SwiftUI 基础客户端 | Xcode / PWA 轻享版 |
+| Android | `1.2.56`（`versionCode 10256`） | 服务器 OTA，应用登录或回到前台时检查 |
+| Backend / STT | `1.2.56`（发布 ID 由部署脚本生成） | Ubuntu 原生 Python 3.11 + systemd |
+| 用户端 Web | 标准 HTTPS Web，同源 `/app/` 发布 | 浏览器直接访问 |
+| iOS | SwiftUI 基础客户端 | Xcode / 用户端 Web |
 
 Android 正式发布必须使用固定签名 Release APK。服务器 OTA 通道只保留最新版本和紧邻的一个旧版本，更新元数据与 APK 原子发布，并通过 SHA-256 校验后交给系统安装器。
 
@@ -18,7 +18,7 @@ Android 正式发布必须使用固定签名 Release APK。服务器 OTA 通道�
 ```mermaid
 flowchart TB
   U["用户层<br/>Free · VIP · 管理员 · 跨端用户"]
-  C["终端层<br/>Android · PWA · iOS"]
+  C["终端层<br/>Android · 用户端 Web · iOS"]
   B["业务能力层<br/>会议工作台 · 录音转写 · 图文标记 · 纪要研学 · 账户社区"]
   S["平台服务层<br/>Backend · STT · Agent / 模型运行时 · OTA"]
   D["数据与治理底座<br/>Room · IndexedDB · SQLite · 媒体归档 · 动态配置 · 审计与运维"]
@@ -28,12 +28,12 @@ flowchart TB
 ### 客户端
 
 - **Android 主客户端**：完整录音、实时 STT、最终转写、图文标记、四类会议、研学分段、纪要生成、Word/PDF 导出、账户会员和 OTA。
-- **PWA 轻享版**：认证、浏览器录音、文本/音频导入、最终转写、纪要、导出分享、IndexedDB 离线恢复和账户会议同步；后台录音受浏览器策略限制。
+- **用户端 Web**：认证、浏览器录音、实时转录预览、文本/音频导入、最终转写、纪要、导出分享、账户会议同步和社区内容工作台；采用标准 HTTPS Web 架构，不依赖 Service Worker 或安装到主屏幕；后台录音受浏览器策略限制。
 - **iOS 基础客户端**：SwiftUI、AVAudioRecorder、账户会话、最终 STT、Agent 纪要和运行时设置；能力覆盖仍低于 Android。
 
 ### 服务端
 
-- **Backend Service**：账户注册/登录、Free 10 次试用、VIP 套餐、订单审批、短期 STT/Agent 凭证、账户隔离、社区能力、PWA 同源 API 和 Android OTA。
+- **Backend Service**：账户注册/登录、Free 10 次试用、VIP 套餐、订单审批、短期 STT/Agent 凭证、账户隔离、社区能力、用户端 Web 同源 API 和 Android OTA。
 - **STT Service**：Faster-Whisper 本地模型、腾讯云混合 ASR、实时 WebSocket、文件识别、长音频动态分块、会话隔离、并发队列和音频归档。
 - **Agent 网关**：服务端受控调用 Codex CLI / Claude CLI；客户端只保存运行时用户配置，不持有服务管理长期密钥。
 - **数据与运维**：SQLite 业务数据、本地媒体归档、systemd、Nginx、健康检查、日志、备份恢复和版本回滚。
@@ -60,7 +60,7 @@ flowchart TB
 |---|---|---|
 | Android | [`android/`](android/) | Kotlin、Jetpack Compose、Room v15、WorkManager |
 | Server | [`server/`](server/) | FastAPI、Faster-Whisper、腾讯云 ASR、systemd 部署 |
-| PWA | [`pwa/`](pwa/) | React/Vite，同源轻享版 |
+| 用户端 Web | [`pwa/`](pwa/) | React/Vite 标准 Web，暂保留目录名以兼容部署脚本 |
 | iOS | [`ios/`](ios/) | SwiftUI 基础客户端 |
 | 设计系统 | [`design-system/`](design-system/) | 页面与组件视觉基线 |
 | 架构文档 | [`docs/architecture/`](docs/architecture/) | 仓库内架构、发布和验证记录 |
@@ -77,7 +77,7 @@ cd android
 
 要求 JDK 17、Android SDK 34。正式签名配置位于用户私有目录 `${user.home}/.meetingnotes/signing.properties`，不提交 Git；公开 SHA-256 指纹登记在 `android/signing-fingerprints.properties`。
 
-### PWA
+### 用户端 Web
 
 ```powershell
 cd pwa

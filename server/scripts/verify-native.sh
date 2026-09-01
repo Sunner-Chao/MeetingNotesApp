@@ -13,6 +13,15 @@ PORT="$(sed -n 's/^STT_PORT=//p' "$CONFIG_FILE" | tail -n1)"
 PORT="${PORT:-8888}"
 CURRENT="$(readlink -f "$APP_ROOT/current")"
 
+ACCOUNT_MEDIA_DIR_VALUE="$(sed -n 's/^ACCOUNT_MEDIA_DIR=//p' "$CONFIG_FILE" | tail -n1)"
+[[ -n "$ACCOUNT_MEDIA_DIR_VALUE" && "$ACCOUNT_MEDIA_DIR_VALUE" == "$STATE_ROOT/"* ]] || {
+  echo "ACCOUNT_MEDIA_DIR must be inside the managed persistent state root." >&2
+  exit 1
+}
+[[ -d "$ACCOUNT_MEDIA_DIR_VALUE" ]] || {
+  echo "Missing account media directory: ${ACCOUNT_MEDIA_DIR_VALUE}" >&2
+  exit 1
+}
 (cd "$STATE_ROOT/models" && sha256sum -c "$CURRENT/model-manifest.sha256")
 "$APP_ROOT/current-venv/bin/python" -m pip check
 systemctl is-enabled meetingnotes-stt.service

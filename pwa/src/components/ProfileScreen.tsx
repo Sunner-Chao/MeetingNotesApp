@@ -1,4 +1,4 @@
-import { Bot, Check, Copy, Download, Gift, LogOut, Save, Server, Share2, UserRound, Users } from "lucide-react";
+import { Bot, Check, Copy, Gift, LogOut, Save, Server, Share2, UserRound, Users } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { AccountProfile, GrowthOverview, RuntimeConfig } from "../types";
 import { BrandMark } from "./BrandMark";
@@ -9,8 +9,6 @@ interface ProfileScreenProps {
   config: RuntimeConfig;
   online: boolean;
   cloudState: "idle" | "syncing" | "synced" | "pending";
-  installAvailable: boolean;
-  onInstall: () => void;
   onSaveProfile: (displayName: string, avatarDataUrl?: string | null) => Promise<void>;
   onSaveConfig: (config: RuntimeConfig) => void;
   onLogout: () => void;
@@ -37,8 +35,6 @@ export function ProfileScreen({
   config,
   online,
   cloudState,
-  installAvailable,
-  onInstall,
   onSaveProfile,
   onSaveConfig,
   onLogout,
@@ -182,7 +178,6 @@ export function ProfileScreen({
       </section>
 
       <section className="profile-actions">
-        {installAvailable && <button className="secondary-button" onClick={onInstall}><Download /> 安装智悟本</button>}
         <button className="ghost-button danger-copy" onClick={onLogout}><LogOut /> 退出账户</button>
       </section>
     </div>

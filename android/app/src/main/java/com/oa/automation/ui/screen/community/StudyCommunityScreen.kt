@@ -152,7 +152,8 @@ fun StudyCommunityScreen(
                     onOpenFilters = { showFilters = true },
                     onOpenActivities = { showActivities = true },
                     onRefresh = viewModel::refresh,
-                    onLoadMore = viewModel::loadMore
+                    onLoadMore = viewModel::loadMore,
+                    onSelectTab = viewModel::selectTab
                 )
             }
         }
@@ -317,7 +318,8 @@ private fun StudyCommunityFeed(
     onOpenFilters: () -> Unit,
     onOpenActivities: () -> Unit,
     onRefresh: () -> Unit,
-    onLoadMore: () -> Unit
+    onLoadMore: () -> Unit,
+    onSelectTab: (CommunityTab) -> Unit
 ) {
     val posts = when (state.tab) {
         CommunityTab.DISCOVER -> state.publicPosts
@@ -328,6 +330,24 @@ private fun StudyCommunityFeed(
         CommunityTab.DISCOVER -> state.publicPosts.isEmpty()
         CommunityTab.SAVED -> state.savedPosts.isEmpty() && state.savedCollections.isEmpty()
         CommunityTab.MINE -> state.myPosts.isEmpty() && publishingState.posts.isEmpty()
+    }
+
+    if (state.tab == CommunityTab.DISCOVER) {
+        CommunityDiscoverHome(
+            modifier = modifier,
+            state = state,
+            onOpenPost = onOpenPost,
+            onOpenCollection = onOpenCollection,
+            onQueryChange = onQueryChange,
+            onTopicSelect = onTopicSelect,
+            onSearch = onSearch,
+            onOpenFilters = onOpenFilters,
+            onOpenActivities = onOpenActivities,
+            onLoadMore = onLoadMore,
+            onRefresh = onRefresh,
+            onSelectTab = onSelectTab
+        )
+        return
     }
 
     LazyVerticalStaggeredGrid(
@@ -482,6 +502,450 @@ internal fun visibleRemoteCommunityPosts(
 ): List<MyCommunityPost> {
     val representedRemoteIds = localPosts.mapNotNull { it.sync?.remotePostId }.toSet()
     return remotePosts.filterNot { it.id in representedRemoteIds }
+}
+
+/**
+ * A calmer, editorial discover surface for the community. The publishing and saved tabs keep
+ * their operational layouts; only discovery gets the destination-first presentation shown in
+ * the product reference.
+ */
+@Composable
+private fun CommunityDiscoverHome(
+    modifier: Modifier,
+    state: CommunityUiState,
+    onOpenPost: (String) -> Unit,
+    onOpenCollection: (String) -> Unit,
+    onQueryChange: (String) -> Unit,
+    onTopicSelect: (String) -> Unit,
+    onSearch: () -> Unit,
+    onOpenFilters: () -> Unit,
+    onOpenActivities: () -> Unit,
+    onLoadMore: () -> Unit,
+    onRefresh: () -> Unit,
+    onSelectTab: (CommunityTab) -> Unit
+) {
+    val posts = state.publicPosts
+    val heroPost = posts.firstOrNull { it.media.isNotEmpty() } ?: posts.firstOrNull()
+    val inspirationPosts = posts.take(2)
+    val feedPosts = if (posts.size > 2) posts.drop(2) else posts
+    val route = state.collections.firstOrNull()
+    val activity = MockStudyCommunityData.activityNotices.firstOrNull()
+
+    LazyColumn(
+        modifier = modifier.fillMaxWidth(),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(18.dp)
+    ) {
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(verticalAlignment = Alignment.Bottom) {
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            "今天，去哪里学？",
+                            style = MaterialTheme.typography.headlineMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            "从一场真实的在地观察开始",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    if (state.isLoading) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    }
+                }
+                CommunitySearchSurface(
+                    query = state.searchQuery,
+                    activeFilterCount = activeCommunityFilterCount(state),
+                    onQueryChange = onQueryChange,
+                    onSearch = onSearch,
+                    onOpenFilters = onOpenFilters
+                )
+            }
+        }
+
+        heroPost?.let { post ->
+            item {
+                CommunityDiscoverHero(
+                    post = post,
+                    mediaBaseUrl = state.mediaBaseUrl,
+                    onClick = { onOpenPost(post.id) }
+                )
+            }
+        }
+
+        item {
+            CommunityDiscoverQuickActions(
+                onFindDestination = onOpenFilters,
+                onViewRoutes = {
+                    route?.let { onOpenCollection(it.id) } ?: onOpenFilters()
+                },
+                onWriteNote = { onSelectTab(CommunityTab.MINE) }
+            )
+        }
+
+        if (state.facets.tags.isNotEmpty()) {
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CommunityDiscoverSectionHeader("热门主题", null)
+                    CommunityTopicStrip(
+                        topics = communityQuickTopics(state),
+                        selected = state.tagFilter,
+                        onSelected = onTopicSelect
+                    )
+                }
+            }
+        }
+
+        route?.let { collection ->
+            item {
+                CommunityDiscoverSectionHeader(
+                    title = "为你规划",
+                    actionLabel = "查看全部",
+                    onAction = { onOpenCollection(collection.id) }
+                )
+            }
+            item {
+                CommunityDiscoverRouteCard(
+                    collection = collection,
+                    mediaBaseUrl = state.mediaBaseUrl,
+                    onClick = { onOpenCollection(collection.id) }
+                )
+            }
+        }
+
+        if (inspirationPosts.isNotEmpty()) {
+            item {
+                CommunityDiscoverSectionHeader(
+                    "附近的灵感",
+                    state.destinationFilter.ifBlank {
+                        inspirationPosts.firstOrNull()?.destination?.ifBlank { "杭州" } ?: "杭州"
+                    }
+                )
+            }
+            item {
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    inspirationPosts.forEach { post ->
+                        CommunityDiscoverInspirationCard(
+                            post = post,
+                            mediaBaseUrl = state.mediaBaseUrl,
+                            modifier = Modifier.weight(1f),
+                            onClick = { onOpenPost(post.id) }
+                        )
+                    }
+                    if (inspirationPosts.size == 1) Spacer(Modifier.weight(1f))
+                }
+            }
+        }
+
+        activity?.let { notice ->
+            item {
+                CommunityDiscoverSectionHeader(
+                    title = "近期活动",
+                    actionLabel = "查看全部",
+                    onAction = onOpenActivities
+                )
+            }
+            item { CommunityDiscoverActivityCard(notice = notice, onClick = onOpenActivities) }
+        }
+
+        if (state.isShowingSampleContent) {
+            item { CommunityPublicReferenceStrip(onOpenPost = onOpenPost) }
+        }
+
+        if (state.error != null && posts.isNotEmpty()) {
+            item { StudyCommunityInlineError(state.error, onRefresh) }
+        }
+
+        when {
+            state.isLoading && posts.isEmpty() -> item { CommunityLoadingState() }
+            posts.isEmpty() -> item {
+                StudyCommunityEmptyState(tab = CommunityTab.DISCOVER, error = state.error, onRefresh = onRefresh)
+            }
+            else -> {
+                item {
+                    CommunityDiscoverSectionHeader(
+                        title = "同行见闻",
+                        actionLabel = "${posts.size} 篇",
+                        onAction = null
+                    )
+                }
+                items(feedPosts, key = { "discover-${it.id}" }) { post ->
+                    StudyPostCard(
+                        post = post,
+                        mediaBaseUrl = state.mediaBaseUrl,
+                        onClick = { onOpenPost(post.id) }
+                    )
+                }
+                val hasMore = state.nextPublicCursor != null
+                if (hasMore) {
+                    item {
+                        TextButton(
+                            onClick = onLoadMore,
+                            enabled = !state.isLoadingMore,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            if (state.isLoadingMore) {
+                                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                                Spacer(Modifier.width(8.dp))
+                            }
+                            Text(if (state.isLoadingMore) "加载中" else "加载更多见闻")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CommunityDiscoverSectionHeader(
+    title: String,
+    actionLabel: String?,
+    onAction: (() -> Unit)? = null
+) {
+    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.weight(1f))
+        if (actionLabel != null) {
+            if (onAction != null) {
+                TextButton(onClick = onAction, contentPadding = PaddingValues(horizontal = 2.dp)) {
+                    Text(actionLabel)
+                    Icon(Icons.Default.ChevronRight, contentDescription = null, modifier = Modifier.size(17.dp))
+                }
+            } else {
+                Text(actionLabel, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+@Composable
+private fun CommunityDiscoverHero(
+    post: PublicCommunityPost,
+    mediaBaseUrl: String,
+    onClick: () -> Unit
+) {
+    val media = post.media.firstOrNull()
+    Surface(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth().height(218.dp),
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.primaryContainer
+    ) {
+        Box {
+            if (media != null) {
+                StudyCommunityImage(
+                    url = resolveCommunityMediaUrl(mediaBaseUrl, media.thumbnailUrl),
+                    contentDescription = "${post.title}推荐封面",
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.primaryContainer))
+            }
+            Surface(
+                modifier = Modifier.align(Alignment.TopEnd).padding(12.dp),
+                shape = RoundedCornerShape(20.dp),
+                color = Color.White.copy(alpha = 0.94f)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(Icons.Default.Explore, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
+                    Text("推荐研学地", style = MaterialTheme.typography.labelMedium, color = Color(0xFF19324D), fontWeight = FontWeight.SemiBold)
+                }
+            }
+            Surface(
+                modifier = Modifier.align(Alignment.BottomStart).fillMaxWidth(),
+                color = Color.Black.copy(alpha = 0.66f)
+            ) {
+                Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 13.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        post.title,
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        listOfNotNull(post.destination.takeIf(String::isNotBlank), post.curationNote.takeIf(String::isNotBlank) ?: post.stages.firstOrNull())
+                            .joinToString(" · "),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.White.copy(alpha = 0.86f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+    }
+}
+
+private data class DiscoverAction(
+    val icon: androidx.compose.ui.graphics.vector.ImageVector,
+    val label: String,
+    val hint: String,
+    val tint: Color,
+    val onClick: () -> Unit
+)
+
+@Composable
+private fun CommunityDiscoverQuickActions(
+    onFindDestination: () -> Unit,
+    onViewRoutes: () -> Unit,
+    onWriteNote: () -> Unit
+) {
+    val actions = listOf(
+        DiscoverAction(Icons.Default.LocationOn, "找目的地", "发现研学地", MaterialTheme.colorScheme.secondary, onFindDestination),
+        DiscoverAction(Icons.Default.Explore, "看学习路线", "精选路线推荐", MaterialTheme.colorScheme.primary, onViewRoutes),
+        DiscoverAction(Icons.Default.AutoStories, "记一篇见闻", "记录你的观察", MaterialTheme.colorScheme.tertiary, onWriteNote)
+    )
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = if (LocalAppIsDarkTheme.current) 0.78f else 0.96f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
+    ) {
+        Row(modifier = Modifier.padding(vertical = 13.dp)) {
+            actions.forEachIndexed { index, action ->
+                if (index > 0) {
+                    Box(Modifier.width(1.dp).height(42.dp).background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)))
+                }
+                Column(
+                    modifier = Modifier.weight(1f).clip(RoundedCornerShape(6.dp)).clickable(onClick = action.onClick).padding(horizontal = 4.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Icon(action.icon, contentDescription = action.label, modifier = Modifier.size(25.dp), tint = action.tint)
+                    Text(action.label, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                    Text(action.hint, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CommunityDiscoverRouteCard(
+    collection: CommunityCollection,
+    mediaBaseUrl: String,
+    onClick: () -> Unit
+) {
+    Surface(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = if (LocalAppIsDarkTheme.current) 0.78f else 0.96f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
+    ) {
+        Row(modifier = Modifier.height(142.dp)) {
+            Box(modifier = Modifier.width(118.dp).fillMaxSize()) {
+                if (collection.coverThumbnailUrl.isNotBlank()) {
+                    StudyCommunityImage(
+                        url = resolveCommunityMediaUrl(mediaBaseUrl, collection.coverThumbnailUrl),
+                        contentDescription = "${collection.title}路线封面",
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.primaryContainer)) {
+                        Icon(Icons.Default.Explore, contentDescription = null, modifier = Modifier.align(Alignment.Center).size(30.dp), tint = MaterialTheme.colorScheme.primary)
+                    }
+                }
+            }
+            Column(modifier = Modifier.weight(1f).padding(horizontal = 14.dp, vertical = 13.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                Text(collection.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(collection.destination.ifBlank { collection.theme.ifBlank { "研学路线" } }, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                    val previews = collection.previewPosts.take(3)
+                    previews.forEachIndexed { index, preview ->
+                        if (index > 0) Box(Modifier.width(18.dp).height(1.dp).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)))
+                        Text(preview.title, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                    }
+                }
+                Spacer(Modifier.weight(1f))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("${collection.postCount.coerceAtLeast(collection.visiblePostCount)} 篇见闻", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.weight(1f))
+                    Text("查看路线", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+                    Icon(Icons.Default.ChevronRight, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CommunityDiscoverInspirationCard(
+    post: PublicCommunityPost,
+    mediaBaseUrl: String,
+    modifier: Modifier,
+    onClick: () -> Unit
+) {
+    Surface(
+        onClick = onClick,
+        modifier = modifier,
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+    ) {
+        Box(modifier = Modifier.fillMaxWidth().height(176.dp)) {
+            val media = post.media.firstOrNull()
+            if (media != null) {
+                StudyCommunityImage(
+                    url = resolveCommunityMediaUrl(mediaBaseUrl, media.thumbnailUrl),
+                    contentDescription = "${post.title}灵感图片",
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.primaryContainer))
+            }
+            Surface(modifier = Modifier.align(Alignment.BottomStart).fillMaxWidth(), color = Color.Black.copy(alpha = 0.64f)) {
+                Column(modifier = Modifier.padding(horizontal = 11.dp, vertical = 9.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(post.title, style = MaterialTheme.typography.labelLarge, color = Color.White, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(
+                        listOfNotNull(post.destination.takeIf(String::isNotBlank), post.tags.firstOrNull()).joinToString(" · "),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White.copy(alpha = 0.82f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CommunityDiscoverActivityCard(
+    notice: CommunityActivityNotice,
+    onClick: () -> Unit
+) {
+    Surface(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = if (LocalAppIsDarkTheme.current) 0.78f else 0.96f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
+    ) {
+        Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.8f)) {
+                Column(modifier = Modifier.size(width = 52.dp, height = 60.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                    Icon(Icons.Default.CalendarMonth, contentDescription = null, modifier = Modifier.size(19.dp), tint = MaterialTheme.colorScheme.secondary)
+                    Text("活动", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSecondaryContainer)
+                }
+            }
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(notice.title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("${notice.dateLabel} · ${notice.locationLabel}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(notice.priceLabel, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+            }
+            Icon(Icons.Default.ChevronRight, contentDescription = "查看活动", modifier = Modifier.size(22.dp), tint = MaterialTheme.colorScheme.primary)
+        }
+    }
 }
 
 private fun openExternalUri(

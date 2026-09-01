@@ -105,6 +105,19 @@ class PwaRouteTests(unittest.TestCase):
         self.assertEqual(asset.headers["cache-control"], "public, max-age=31536000, immutable")
         self.assertEqual(missing_asset.status_code, 404)
 
+    def test_web_entrypoints_have_separate_user_and_admin_roles(self) -> None:
+        with TestClient(backend.app) as client:
+            root = client.get("/", follow_redirects=False)
+            legacy_admin = client.get("/web", follow_redirects=False)
+            stt_deep_link = client.get("/admin/stt/", follow_redirects=False)
+
+        self.assertEqual(root.status_code, 307)
+        self.assertEqual(root.headers["location"], "/app/")
+        self.assertEqual(legacy_admin.status_code, 308)
+        self.assertEqual(legacy_admin.headers["location"], "/admin/")
+        self.assertEqual(stt_deep_link.status_code, 307)
+        self.assertEqual(stt_deep_link.headers["location"], "/admin/#services")
+
     def test_stt_proxy_requires_account_authentication(self) -> None:
         with TestClient(backend.app) as client:
             response = client.post(

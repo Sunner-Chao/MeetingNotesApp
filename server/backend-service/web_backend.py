@@ -24,7 +24,7 @@ from email.message import EmailMessage
 from html import escape as html_escape
 from pathlib import Path
 from typing import Annotated, Iterator
-from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qs, parse_qsl, unquote, urlencode, urlparse, urlunparse
 
 import requests
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
@@ -81,6 +81,8 @@ HOST = _env("WEB_BACKEND_HOST", "0.0.0.0")
 PORT = int(_env("WEB_BACKEND_PORT", "8090"))
 DB_PATH = Path(_env("WEB_BACKEND_DB_PATH", "./data/meeting_notes.db")).resolve()
 ACCOUNT_DB_PATH = Path(_env("ACCOUNT_DB_PATH", "./data/accounts.db")).resolve()
+ACCOUNT_MEDIA_DIR = Path(_env("ACCOUNT_MEDIA_DIR", "./data/account-media")).resolve()
+ACCOUNT_MEDIA_MAX_BYTES = max(1, int(_env("ACCOUNT_MEDIA_MAX_BYTES", str(12 * 1024 * 1024))))
 COMMUNITY_DB_PATH = Path(
     _env("COMMUNITY_DB_PATH", str(ACCOUNT_DB_PATH))
 ).resolve()
@@ -207,6 +209,7 @@ ACCOUNT_MIGRATION_TABLES = (
     "account_teams",
     "account_team_members",
     "account_meetings",
+    "account_meeting_images",
     "account_meeting_tombstones",
     "agent_tokens",
     "agent_tasks",
@@ -897,6 +900,25 @@ class AccountMeetingPayload(BaseModel):
     report: str = ""
 
 
+def normalized_account_image_id(value: str) -> str:
+    clean = value.strip().lower()
+    if not re.fullmatch(r"[a-f0-9-]{16,64}", clean):
+        raise HTTPException(status_code=400, detail="图片 ID 格式无效")
+    return clean
+
+
+def account_media_path(user_id: str, meeting_id: str, image_id: str) -> Path:
+    # IDs are validated before reaching this helper; resolve and contain the
+    # path anyway so a future caller cannot escape the media root.
+    target = ACCOUNT_MEDIA_DIR / user_id / meeting_id / f"{image_id}.bin"
+    resolved = target.resolve()
+    try:
+        resolved.relative_to(ACCOUNT_MEDIA_DIR.resolve())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="媒体路径无效") from exc
+    return resolved
+
+
 class GrowthRedeemPayload(BaseModel):
     code: str = Field(min_length=4, max_length=64)
 
@@ -969,6 +991,7 @@ def normalized_account_meeting_id(value: str) -> str:
 @asynccontextmanager
 async def app_lifespan(_app: FastAPI):
     init_db()
+    ACCOUNT_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
     account_db_path = ACCOUNT_SERVICE.db_path if ACCOUNT_SERVICE is not None else AGENT_GATEWAY.db_path
     AGENT_GATEWAY.initialize()
     if ACCOUNT_SERVICE is not None:
@@ -1046,10 +1069,11 @@ async def authenticate_web_api(request: Request, call_next):
     is_public_growth_path = request.url.path in {"/api/growth/campaigns", "/api/growth/private-channel"} or request.url.path.startswith("/api/growth/private-channel/")
     is_public_alipay_notify = request.url.path == "/api/payment/alipay/notify"
     is_growth_campaign_path = request.url.path.startswith("/api/growth/campaigns/")
-    is_pwa_path = request.url.path == "/app" or request.url.path.startswith("/app/")
+    is_user_web_path = request.url.path == "/app" or request.url.path.startswith("/app/")
     if (
-        request.url.path == "/health"
-        or is_pwa_path
+        request.url.path == "/"
+        or request.url.path == "/health"
+        or is_user_web_path
         or is_agent_path
         or is_public_account_path
         or is_user_account_path
@@ -1382,8 +1406,24 @@ app.include_router(build_community_router(configured_community_db_path, require_
 app.include_router(build_public_community_router(configured_community_db_path))
 
 
-@app.get("/", response_class=HTMLResponse)
-@app.get("/web", response_class=HTMLResponse)
+@app.get("/", include_in_schema=False)
+def public_root_redirect() -> RedirectResponse:
+    """Keep the host root focused on the user-facing Web application."""
+    return RedirectResponse(url="/app/", status_code=307)
+
+
+@app.get("/web", include_in_schema=False)
+def legacy_admin_redirect() -> RedirectResponse:
+    """Preserve the former Backend dashboard URL during the domain migration."""
+    return RedirectResponse(url="/admin/", status_code=308)
+
+
+@app.get("/admin/stt/", include_in_schema=False)
+def admin_stt_redirect() -> RedirectResponse:
+    """Expose a stable deep link for the STT section in the unified admin console."""
+    return RedirectResponse(url="/admin/#services", status_code=307)
+
+
 @app.get("/admin", response_class=HTMLResponse)
 @app.get("/admin/", response_class=HTMLResponse)
 def index() -> str:
@@ -2527,6 +2567,109 @@ def upsert_account_meeting(
         )
     except AccountError as exc:
         raise account_http_error(exc) from exc
+
+
+@app.get("/api/account/meetings/{meeting_id}/images")
+def list_account_meeting_images(
+    meeting_id: str,
+    principal: Annotated[AccountPrincipal, Depends(require_account_principal)],
+) -> list[dict]:
+    clean_meeting_id = normalized_account_meeting_id(meeting_id)
+    try:
+        return configured_account_service().list_meeting_images(principal, clean_meeting_id)
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+
+
+@app.put("/api/account/meetings/{meeting_id}/images/{image_id}")
+async def upload_account_meeting_image(
+    meeting_id: str,
+    image_id: str,
+    file: Annotated[UploadFile, File()],
+    principal: Annotated[AccountPrincipal, Depends(require_account_principal)],
+    x_image_name: Annotated[str | None, Header(alias="X-Image-Name")] = None,
+    x_image_updated_at: Annotated[str | None, Header(alias="X-Image-Updated-At")] = None,
+) -> dict:
+    clean_meeting_id = normalized_account_meeting_id(meeting_id)
+    clean_image_id = normalized_account_image_id(image_id)
+    content_type = (file.content_type or "application/octet-stream").lower()
+    if not content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="会议附件必须是图片")
+    try:
+        content = await file.read(ACCOUNT_MEDIA_MAX_BYTES + 1)
+    finally:
+        await file.close()
+    if not content:
+        raise HTTPException(status_code=400, detail="图片内容为空")
+    if len(content) > ACCOUNT_MEDIA_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="图片超过大小限制")
+    try:
+        updated_at = max(0, int(x_image_updated_at or "0"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="图片更新时间无效") from exc
+    target = account_media_path(principal.user_id, clean_meeting_id, clean_image_id)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_suffix(".part")
+    temporary.write_bytes(content)
+    temporary.replace(target)
+    try:
+        metadata = configured_account_service().upsert_meeting_image(
+            principal,
+            clean_meeting_id,
+            clean_image_id,
+            filename=unquote(x_image_name or file.filename or clean_image_id)[:255],
+            content_type=content_type,
+            bytes_count=len(content),
+            updated_at=updated_at or int(time.time() * 1000),
+        )
+        return {**metadata, "download_path": f"/api/account/meetings/{clean_meeting_id}/images/{clean_image_id}"}
+    except AccountError as exc:
+        with contextlib.suppress(OSError):
+            target.unlink()
+        raise account_http_error(exc) from exc
+
+
+@app.get("/api/account/meetings/{meeting_id}/images/{image_id}")
+def download_account_meeting_image(
+    meeting_id: str,
+    image_id: str,
+    principal: Annotated[AccountPrincipal, Depends(require_account_principal)],
+) -> FileResponse:
+    clean_meeting_id = normalized_account_meeting_id(meeting_id)
+    clean_image_id = normalized_account_image_id(image_id)
+    try:
+        items = configured_account_service().list_meeting_images(principal, clean_meeting_id)
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+    metadata = next((item for item in items if item["image_id"] == clean_image_id), None)
+    if metadata is None:
+        raise HTTPException(status_code=404, detail="图片不存在")
+    target = account_media_path(principal.user_id, clean_meeting_id, clean_image_id)
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="图片文件不存在")
+    return FileResponse(
+        target,
+        media_type=str(metadata.get("content_type") or "application/octet-stream"),
+        filename=str(metadata.get("filename") or clean_image_id),
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
+
+
+@app.delete("/api/account/meetings/{meeting_id}/images/{image_id}")
+def delete_account_meeting_image(
+    meeting_id: str,
+    image_id: str,
+    principal: Annotated[AccountPrincipal, Depends(require_account_principal)],
+) -> dict:
+    clean_meeting_id = normalized_account_meeting_id(meeting_id)
+    clean_image_id = normalized_account_image_id(image_id)
+    try:
+        result = configured_account_service().delete_meeting_image(principal, clean_meeting_id, clean_image_id)
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+    with contextlib.suppress(OSError):
+        account_media_path(principal.user_id, clean_meeting_id, clean_image_id).unlink()
+    return result
 
 
 @app.delete("/api/account/meetings/{meeting_id}")

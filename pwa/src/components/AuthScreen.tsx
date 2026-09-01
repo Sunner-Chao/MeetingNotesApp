@@ -126,7 +126,7 @@ export function AuthScreen({ config, busy, onLogin, onRequestRegistrationCode, o
       return;
     }
     const target = new URL(provider.authorization_url, window.location.origin);
-    target.searchParams.set("client", "pwa");
+    target.searchParams.set("client", "web");
     target.searchParams.set("redirect_uri", `${window.location.origin}${window.location.pathname}`);
     if (referralCode.trim()) target.searchParams.set("ref", referralCode.trim().toUpperCase());
     window.location.assign(target.toString());

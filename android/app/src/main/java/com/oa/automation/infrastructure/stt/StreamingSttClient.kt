@@ -267,15 +267,37 @@ class StreamingSttClient internal constructor(
                         "partial" -> {
                             val committedText = SimplifiedChineseText.normalize(message.committedText.orEmpty())
                             val previewText = SimplifiedChineseText.normalize(message.previewText.orEmpty())
-                            val textValue = SimplifiedChineseText.normalize(message.text.orEmpty())
+                            val segments = message.segments.orEmpty().mapNotNull { segment ->
+                                val segmentText = SimplifiedChineseText.normalize(segment.text.orEmpty()).trim()
+                                if (segmentText.isBlank()) {
+                                    null
+                                } else {
+                                    StreamingTranscriptSegment(
+                                        startSeconds = segment.start?.coerceAtLeast(0f) ?: 0f,
+                                        endSeconds = (segment.end ?: segment.start ?: 0f).coerceAtLeast(0f),
+                                        text = segmentText,
+                                        speaker = segment.speaker ?: segment.speakerId,
+                                        committed = segment.committed ?: false
+                                    )
+                                }
+                            }
+                            val structuredText = formatStreamingSpeakerPreview(segments)
+                            val textValue = structuredText.ifBlank {
+                                SimplifiedChineseText.normalize(message.text.orEmpty())
                                 .ifBlank { listOf(committedText, previewText).filter { it.isNotBlank() }.joinToString(" ") }
-                            if (textValue.isNotBlank() || committedText.isNotBlank() || previewText.isNotBlank()) {
+                            }
+                            val displayCommitted = if (structuredText.isNotBlank()) structuredText else committedText
+                            val displayPreview = if (structuredText.isNotBlank()) "" else previewText
+                            if (textValue.isNotBlank() || displayCommitted.isNotBlank() || displayPreview.isNotBlank()) {
                                 onPartialText(
                                     StreamingTranscriptUpdate(
                                         text = textValue,
-                                        committedText = committedText,
-                                        previewText = previewText,
-                                        sessionId = serverSessionId.orEmpty()
+                                        committedText = displayCommitted,
+                                        previewText = displayPreview,
+                                        sessionId = serverSessionId.orEmpty(),
+                                        segments = segments,
+                                        diarizationEnabled = message.diarization?.enabled ?: false,
+                                        diarizationActive = message.diarization?.active ?: segments.any { it.speaker != null }
                                     )
                                 )
                             }
@@ -782,7 +804,23 @@ class StreamingSttClient internal constructor(
         @SerializedName("session_id") val sessionId: String? = null,
         @SerializedName("stream_provider") val streamProvider: String? = null,
         val language: String? = null,
-        val message: String? = null
+        val message: String? = null,
+        val segments: List<StreamSegment>? = null,
+        val diarization: StreamDiarization? = null
+    )
+
+    private data class StreamSegment(
+        val start: Float? = null,
+        val end: Float? = null,
+        val text: String? = null,
+        val speaker: Int? = null,
+        @SerializedName("speaker_id") val speakerId: Int? = null,
+        val committed: Boolean? = null
+    )
+
+    private data class StreamDiarization(
+        val enabled: Boolean? = null,
+        val active: Boolean? = null
     )
 
     private data class PendingProviderSwitch(
@@ -808,5 +846,45 @@ data class StreamingTranscriptUpdate(
     val text: String,
     val committedText: String,
     val previewText: String,
-    val sessionId: String = ""
+    val sessionId: String = "",
+    val segments: List<StreamingTranscriptSegment> = emptyList(),
+    val diarizationEnabled: Boolean = false,
+    val diarizationActive: Boolean = false
 )
+
+data class StreamingTranscriptSegment(
+    val startSeconds: Float,
+    val endSeconds: Float,
+    val text: String,
+    val speaker: Int? = null,
+    val committed: Boolean = false
+)
+
+private fun formatStreamingSpeakerPreview(segments: List<StreamingTranscriptSegment>): String {
+    if (segments.none { it.speaker != null }) return ""
+    val labels = linkedMapOf<Int, Int>()
+    return segments
+        .sortedBy { it.startSeconds }
+        .groupByConsecutive { it.speaker }
+        .mapNotNull { group ->
+            val speaker = group.first().speaker ?: return@mapNotNull null
+            val displaySpeaker = labels.getOrPut(speaker) { labels.size + 1 }
+            val content = group.joinToString(" ") { it.text }.trim()
+            content.takeIf { it.isNotBlank() }?.let { "说话人 $displaySpeaker：$it" }
+        }
+        .joinToString("\n")
+}
+
+private fun <T, K> List<T>.groupByConsecutive(keySelector: (T) -> K): List<List<T>> {
+    if (isEmpty()) return emptyList()
+    val groups = mutableListOf<MutableList<T>>()
+    forEach { item ->
+        val current = groups.lastOrNull()
+        if (current == null || keySelector(current.last()) != keySelector(item)) {
+            groups += mutableListOf(item)
+        } else {
+            current += item
+        }
+    }
+    return groups
+}

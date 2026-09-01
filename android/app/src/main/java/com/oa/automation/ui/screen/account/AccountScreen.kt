@@ -28,8 +28,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.AccountBox
 import androidx.compose.material.icons.filled.ChevronRight
-import androidx.compose.material.icons.filled.CardGiftcard
 import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.ManageAccounts
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Payments
@@ -725,8 +725,8 @@ private fun AccountActionGroup(
     ) {
         Column {
             AccountActionRow(
-                icon = Icons.Default.CardGiftcard,
-                title = "邀请好友",
+                icon = Icons.Default.Groups,
+                title = "福利群",
                 rowHeight = layout.actionRowHeight,
                 onClick = onOpenInvitation
             )

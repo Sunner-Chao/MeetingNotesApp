@@ -814,8 +814,10 @@ def diarize_wav_segments(path: Path) -> list[dict[str, Any]]:
     return turns
 
 
-def attach_local_speakers(path: Path, rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    turns = diarize_wav_segments(path)
+def attach_speaker_turns(
+    rows: list[dict[str, Any]],
+    turns: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     if not turns:
         return rows, {"enabled": True, "provider": "local", "active": False, "error": speaker_diarizer_error}
     enriched: list[dict[str, Any]] = []
@@ -838,6 +840,91 @@ def attach_local_speakers(path: Path, rows: list[dict[str, Any]]) -> tuple[list[
         "speaker_count": len({row["speaker"] for row in enriched}),
         "turn_count": len(turns),
     }
+
+
+def attach_local_speakers(path: Path, rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    return attach_speaker_turns(rows, diarize_wav_segments(path))
+
+
+def diarize_pcm_segments(
+    pcm_bytes: bytes,
+    sample_rate: int,
+    channels: int,
+) -> list[dict[str, Any]]:
+    """Diarize one rolling PCM window without a second audio conversion pass."""
+    diarizer = _load_local_speaker_diarizer()
+    if diarizer is None or not pcm_bytes:
+        return []
+    if sample_rate != int(diarizer.sample_rate):
+        raise ValueError(f"speaker diarization expects {diarizer.sample_rate} Hz audio")
+    samples = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+    if channels > 1:
+        samples = samples.reshape(-1, channels).mean(axis=1)
+    with speaker_diarizer_lock:
+        result = diarizer.process(samples)
+    return [
+        {"start": float(segment.start), "end": float(segment.end), "speaker": int(segment.speaker)}
+        for segment in result.sort_by_start_time()
+        if float(segment.end) - float(segment.start) >= STT_SPEAKER_DIARIZATION_MIN_TURN_SEC
+    ]
+
+
+def align_stream_speaker_rows(
+    rows: list[dict[str, Any]],
+    previous_rows: list[dict[str, Any]],
+    next_speaker: int,
+) -> tuple[list[dict[str, Any]], int]:
+    """Keep rolling-window cluster ids stable by matching overlapping turns."""
+    local_labels = list(dict.fromkeys(row.get("speaker") for row in rows if row.get("speaker") is not None))
+    scores: dict[object, dict[int, float]] = {label: {} for label in local_labels}
+    for row in rows:
+        label = row.get("speaker")
+        if label is None:
+            continue
+        start = float(row.get("start") or 0.0)
+        end = max(start, float(row.get("end") or start))
+        for previous in previous_rows:
+            previous_speaker = previous.get("speaker")
+            if previous_speaker is None:
+                continue
+            previous_start = float(previous.get("start") or 0.0)
+            previous_end = max(previous_start, float(previous.get("end") or previous_start))
+            overlap = max(0.0, min(end, previous_end) - max(start, previous_start))
+            if overlap > 0:
+                stable_id = int(previous_speaker)
+                scores[label][stable_id] = scores[label].get(stable_id, 0.0) + overlap
+
+    mapping: dict[object, int] = {}
+    claimed: set[int] = set()
+    for label in sorted(local_labels, key=lambda value: max(scores[value].values(), default=0.0), reverse=True):
+        candidates = sorted(scores[label].items(), key=lambda item: item[1], reverse=True)
+        matched = next((speaker for speaker, score in candidates if score > 0 and speaker not in claimed), None)
+        if matched is None:
+            matched = next_speaker
+            next_speaker += 1
+        mapping[label] = matched
+        claimed.add(matched)
+    return [
+        {**row, "speaker": mapping.get(row.get("speaker"), row.get("speaker"))}
+        for row in rows
+    ], next_speaker
+
+
+def merge_stream_speaker_history(
+    previous_rows: list[dict[str, Any]],
+    incoming_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not incoming_rows:
+        return previous_rows[-80:]
+    incoming_start = min(float(row.get("start") or 0.0) for row in incoming_rows)
+    incoming_end = max(float(row.get("end") or incoming_start) for row in incoming_rows)
+    retained = [
+        row
+        for row in previous_rows
+        if float(row.get("end") or 0.0) <= incoming_start
+        or float(row.get("start") or 0.0) >= incoming_end
+    ]
+    return sorted([*retained, *incoming_rows], key=lambda row: float(row.get("start") or 0.0))[-80:]
 
 
 def parse_tencent_flash_response(
@@ -1382,6 +1469,7 @@ def build_tencent_realtime_request(
     voice_id: str,
     tier: str | None = None,
     language: str = "zh",
+    speaker_diarization: bool = False,
     timestamp: int | None = None,
     nonce: int | None = None,
 ) -> tuple[str, str]:
@@ -1407,6 +1495,8 @@ def build_tencent_realtime_request(
         "voice_id": voice_id,
         "word_info": "0",
     }
+    if speaker_diarization:
+        params["speaker_diarization"] = "1"
     query = urlencode(sorted(params.items()))
     request_url = f"{TENCENT_REALTIME_ASR_BASE_URL}/{quote(TENCENT_ASR_APP_ID, safe='')}?{query}"
     parsed = urlparse(request_url)
@@ -1423,8 +1513,10 @@ def build_tencent_realtime_request(
 @dataclass
 class TencentRealtimeTranscriptState:
     stable_sentences: dict[int, str] = field(default_factory=dict)
+    stable_segments: dict[int, dict[str, Any]] = field(default_factory=dict)
     preview_index: int | None = None
     preview_text: str = ""
+    preview_segment: dict[str, Any] | None = None
     final: bool = False
 
     def apply(self, payload: dict[str, Any]) -> tuple[str, str, bool]:
@@ -1438,21 +1530,50 @@ class TencentRealtimeTranscriptState:
             slice_type = int(result.get("slice_type", -1))
             index = int(result.get("index", 0))
             text = normalize_preview_text(str(result.get("voice_text_str") or ""))
+            speaker = result.get("speaker_id", result.get("speaker"))
+            start_ms = result.get("start_time", result.get("start", 0))
+            end_ms = result.get("end_time", result.get("end", start_ms))
+            try:
+                start_ms = float(start_ms or 0)
+                end_ms = max(start_ms, float(end_ms or start_ms))
+            except (TypeError, ValueError):
+                start_ms = 0.0
+                end_ms = 0.0
+            segment = {
+                "start": start_ms / 1000.0,
+                "end": end_ms / 1000.0,
+                "text": text,
+                "speaker": speaker,
+            }
             if slice_type == 2:
                 if text:
                     self.stable_sentences[index] = text
+                    if speaker is not None:
+                        self.stable_segments[index] = segment
                 if self.preview_index == index:
                     self.preview_index = None
                     self.preview_text = ""
+                    self.preview_segment = None
             elif slice_type in {0, 1}:
                 self.preview_index = index
                 self.preview_text = text
+                self.preview_segment = segment if text and speaker is not None else None
 
         self.final = self.final or int(payload.get("final", 0)) == 1
         committed = normalize_preview_text(
             " ".join(self.stable_sentences[index] for index in sorted(self.stable_sentences))
         )
         return committed, self.preview_text, self.final
+
+    def speaker_segments(self) -> list[dict[str, Any]]:
+        segments = [
+            segment
+            for index, segment in sorted(self.stable_segments.items())
+            if str(segment.get("text") or "").strip()
+        ]
+        if self.preview_segment is not None:
+            segments.append(self.preview_segment)
+        return segments
 
 
 def sanitize_upstream_error(error: Exception | str) -> str:
@@ -2147,11 +2268,13 @@ class TencentRealtimeBridge:
         *,
         tier: str,
         language: str = "zh",
+        speaker_diarization: bool = False,
     ):
         self.on_update = on_update
         self.on_failure = on_failure
         self.tier = tier
         self.language = normalize_stt_language(language)
+        self.speaker_diarization = bool(speaker_diarization)
         self.voice_id = uuid4().hex
         self.connection = None
         self.sender_task: asyncio.Task | None = None
@@ -2180,6 +2303,7 @@ class TencentRealtimeBridge:
             voice_id=self.voice_id,
             tier=self.tier,
             language=self.language,
+            speaker_diarization=self.speaker_diarization,
         )
         try:
             self.connection = await asyncio.wait_for(
@@ -2295,7 +2419,7 @@ class TencentRealtimeBridge:
                     raise ValueError("Tencent realtime ASR returned invalid JSON")
                 committed, preview, final = state.apply(payload)
                 if committed or preview:
-                    await self.on_update(committed, preview)
+                    await self.on_update(committed, preview, state.speaker_segments())
                 if final:
                     break
         except Exception as exc:
@@ -4996,7 +5120,22 @@ async def audio_archive_delete(
 @app.websocket("/ws/transcribe-stream")
 async def transcribe_stream(websocket: WebSocket):
     await websocket.accept()
-    principal = resolve_api_principal(websocket.headers.get("authorization"))
+    # Browser WebSocket clients cannot set arbitrary Authorization headers. They
+    # authenticate with a one-time first message instead, keeping short-lived
+    # account tokens out of proxy access logs. Native clients and management
+    # tooling continue to use the bearer-header path.
+    authorization = websocket.headers.get("authorization")
+    principal = resolve_api_principal(authorization)
+    if principal is None and not authorization:
+        try:
+            auth_message = await asyncio.wait_for(websocket.receive_text(), timeout=5.0)
+            auth_payload = json.loads(auth_message)
+            if auth_payload.get("event") == "authenticate":
+                query_token = str(auth_payload.get("access_token") or "").strip()
+                authorization = f"Bearer {query_token}" if query_token else None
+                principal = resolve_api_principal(authorization)
+        except (asyncio.TimeoutError, WebSocketDisconnect, ValueError, TypeError, AttributeError):
+            principal = None
     if principal is None:
         push_debug_event("session_rejected", reason="unauthorized")
         await websocket.send_text(json.dumps({"type": "error", "message": "Unauthorized"}))
@@ -5067,6 +5206,14 @@ async def transcribe_stream(websocket: WebSocket):
     session_stable_frames = STREAM_STABLE_FRAMES
     session_reject_fallback_threshold = STREAM_REJECT_FALLBACK_THRESHOLD
     min_bytes = int(sample_rate * channels * 2 * session_min_audio_sec)
+    speaker_history: list[dict[str, Any]] = []
+    next_speaker_id = 0
+    speaker_diarization_metadata: dict[str, Any] = {
+        "enabled": False,
+        "provider": "local-sherpa-onnx",
+        "active": False,
+    }
+    last_speaker_signature: tuple[tuple[object, ...], ...] = ()
     push_debug_event("session_open", session_id=session_id)
 
     def ensure_wave_writer():
@@ -5078,7 +5225,11 @@ async def transcribe_stream(websocket: WebSocket):
             wave_writer.setframerate(sample_rate)
         return wave_writer
 
-    async def send_tencent_update(next_committed_text: str, next_preview_text: str) -> None:
+    async def send_tencent_update(
+        next_committed_text: str,
+        next_preview_text: str,
+        next_segments: list[dict[str, Any]] | None = None,
+    ) -> None:
         if stream_stopped:
             return
         display_text = normalize_preview_text(
@@ -5091,6 +5242,7 @@ async def transcribe_stream(websocket: WebSocket):
             text=display_text,
             committed_text=next_committed_text,
             preview_text=next_preview_text,
+            segments=next_segments or [],
         )
         await websocket.send_text(
             json.dumps(
@@ -5100,6 +5252,27 @@ async def transcribe_stream(websocket: WebSocket):
                     "language": language,
                     "committed_text": next_committed_text,
                     "preview_text": next_preview_text,
+                    "segments": next_segments or [],
+                    "speaker": (
+                        next_segments[-1].get("speaker")
+                        if next_segments
+                        else None
+                    ),
+                    "diarization": {
+                        "enabled": bool(stream_recording.speaker_diarization),
+                        "provider": "tencent-cloud",
+                        "active": bool(
+                            next_segments
+                            and any(item.get("speaker") is not None for item in next_segments)
+                        ),
+                        "speaker_count": len(
+                            {
+                                str(item.get("speaker"))
+                                for item in (next_segments or [])
+                                if item.get("speaker") is not None
+                            }
+                        ),
+                    },
                 },
                 ensure_ascii=False,
             )
@@ -5136,6 +5309,8 @@ async def transcribe_stream(websocket: WebSocket):
         nonlocal last_sent_text, last_window_text, committed_text, active_preview_text
         nonlocal previous_preview_candidate, last_payload
         nonlocal last_processed_size, min_bytes, stream_stopped
+        nonlocal speaker_history, next_speaker_id, speaker_diarization_metadata
+        nonlocal last_speaker_signature
         rejected_streak = 0
         inference_failure_streak = 0
         loop = asyncio.get_event_loop()
@@ -5395,18 +5570,99 @@ async def transcribe_stream(websocket: WebSocket):
                 if fallback_preview:
                     active_preview_text = fallback_preview
 
+            # Diarize only the short rolling inference window. The local
+            # Sherpa model is CPU-bound, so keep it off the event loop and
+            # align its local cluster ids with the previous window.
+            if stream_recording.speaker_diarization and accepted_segments:
+                bytes_per_second = sample_rate * channels * 2
+                snapshot_start_seconds = snapshot_start_total / bytes_per_second
+                window_rows = [
+                    {
+                        **segment,
+                        "start": snapshot_start_seconds + float(segment.get("start") or 0.0),
+                        "end": snapshot_start_seconds + float(segment.get("end") or segment.get("start") or 0.0),
+                    }
+                    for segment in accepted_segments
+                    if str(segment.get("text") or "").strip()
+                ]
+                try:
+                    local_turns = await asyncio.to_thread(
+                        diarize_pcm_segments,
+                        snapshot,
+                        sample_rate,
+                        channels,
+                    )
+                    shifted_turns = [
+                        {
+                            **turn,
+                            "start": snapshot_start_seconds + float(turn.get("start") or 0.0),
+                            "end": snapshot_start_seconds + float(turn.get("end") or turn.get("start") or 0.0),
+                        }
+                        for turn in local_turns
+                    ]
+                    diarized_rows, metadata = attach_speaker_turns(window_rows, shifted_turns)
+                    if metadata.get("active"):
+                        diarized_rows, next_speaker_id = align_stream_speaker_rows(
+                            diarized_rows,
+                            speaker_history,
+                            next_speaker_id,
+                        )
+                        speaker_history = merge_stream_speaker_history(
+                            speaker_history,
+                            diarized_rows,
+                        )
+                        speaker_diarization_metadata = {
+                            **metadata,
+                            "enabled": True,
+                            "provider": "local-sherpa-onnx",
+                        }
+                    elif not speaker_history:
+                        speaker_diarization_metadata = {
+                            **metadata,
+                            "enabled": True,
+                        }
+                except Exception as exc:
+                    speaker_diarization_metadata = {
+                        "enabled": True,
+                        "provider": "local-sherpa-onnx",
+                        "active": bool(speaker_history),
+                        "speaker_count": len(
+                            {row.get("speaker") for row in speaker_history}
+                        ),
+                        "error": sanitize_upstream_error(exc),
+                    }
+                    push_debug_event(
+                        "speaker_diarization_error",
+                        session_id=session_id,
+                        error=sanitize_upstream_error(exc),
+                    )
+
             wire_committed_text = committed_text
             wire_preview_text = active_preview_text
             if revisable_preview:
                 wire_committed_text = ""
                 wire_preview_text = merge_transcript_text(committed_text, active_preview_text)
             payload = (wire_committed_text, wire_preview_text)
-            if payload == last_payload or (not committed_text and not active_preview_text):
-                continue
-            last_payload = payload
             display_text = normalize_preview_text(
                 " ".join(part for part in payload if part)
             )
+            wire_segments = list(speaker_history)
+            speaker_signature = tuple(
+                (
+                    round(float(row.get("start") or 0.0), 3),
+                    round(float(row.get("end") or 0.0), 3),
+                    str(row.get("speaker")),
+                    str(row.get("text") or ""),
+                )
+                for row in wire_segments
+            )
+            if (
+                payload == last_payload
+                and speaker_signature == last_speaker_signature
+            ) or (not committed_text and not active_preview_text and not wire_segments):
+                continue
+            last_payload = payload
+            last_speaker_signature = speaker_signature
             push_debug_event(
                 "partial",
                 session_id=session_id,
@@ -5422,6 +5678,8 @@ async def transcribe_stream(websocket: WebSocket):
                 preview_mode=preview_mode,
                 preview_similarity=round(preview_similarity, 3),
                 accepted_segments=accepted_segments,
+                speaker_segments=wire_segments,
+                diarization=speaker_diarization_metadata,
             )
             await websocket.send_text(
                 json.dumps(
@@ -5431,6 +5689,13 @@ async def transcribe_stream(websocket: WebSocket):
                         "language": result["language"],
                         "committed_text": wire_committed_text,
                         "preview_text": wire_preview_text,
+                        "segments": wire_segments,
+                        "speaker": (
+                            wire_segments[-1].get("speaker")
+                            if wire_segments
+                            else None
+                        ),
+                        "diarization": speaker_diarization_metadata,
                     },
                     ensure_ascii=False
                 )
@@ -5546,6 +5811,7 @@ async def transcribe_stream(websocket: WebSocket):
                                     handle_tencent_failure,
                                     tier=requested_tier,
                                     language=language,
+                                    speaker_diarization=stream_recording.speaker_diarization,
                                 )
                                 await tencent_bridge.start()
                             except Exception as exc:
@@ -5621,6 +5887,7 @@ async def transcribe_stream(websocket: WebSocket):
                                 handle_tencent_failure,
                                 tier=requested_tier,
                                 language=requested_language,
+                                speaker_diarization=stream_recording.speaker_diarization,
                             )
                             await next_bridge.start()
                         except Exception as exc:
@@ -5719,6 +5986,7 @@ async def transcribe_stream(websocket: WebSocket):
                                 handle_tencent_failure,
                                 tier=requested_tier,
                                 language=language,
+                                speaker_diarization=stream_recording.speaker_diarization,
                             )
                             await next_bridge.start()
                         except Exception as exc:

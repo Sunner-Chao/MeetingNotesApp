@@ -138,7 +138,7 @@ if (-not (Test-Path -LiteralPath $Installer -PathType Leaf)) {
     throw "Missing installer: $Installer"
 }
 if (-not (Test-Path -LiteralPath $PwaPackage -PathType Leaf)) {
-    throw "Missing PWA package: $PwaPackage"
+    throw "Missing user Web package: $PwaPackage"
 }
 if (-not (Get-Command "npm" -ErrorAction SilentlyContinue)) {
     throw "Required command is unavailable: npm"
@@ -182,16 +182,16 @@ $AppUpdateManifestForUpload = $AppUpdateConfig
 
 New-Item -ItemType Directory -Path $TempRoot | Out-Null
 try {
-    Write-Host "[1/7] Building PWA"
+    Write-Host "[1/7] Building user Web"
     Push-Location $PwaProject
     try {
         & npm run build
-        if ($LASTEXITCODE -ne 0) { throw "PWA build failed with exit code $LASTEXITCODE" }
+        if ($LASTEXITCODE -ne 0) { throw "User Web build failed with exit code $LASTEXITCODE" }
     } finally {
         Pop-Location
     }
     if (-not (Test-Path -LiteralPath (Join-Path $PwaDist "index.html") -PathType Leaf)) {
-        throw "PWA build did not produce dist/index.html"
+        throw "User Web build did not produce dist/index.html"
     }
     $PwaBundle = Join-Path $TempRoot "pwa-dist"
     Copy-Item -LiteralPath $PwaDist -Destination $PwaBundle -Recurse
@@ -217,7 +217,7 @@ try {
         )
     }
 
-    Write-Host "[2/7] Packaging Server and PWA $ReleaseId"
+    Write-Host "[2/7] Packaging Server and user Web $ReleaseId"
     $tarArgs = @(
         "-czf", $Archive,
         "--exclude=./.env",
@@ -360,7 +360,7 @@ try {
     $State | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $ServerRoot ".deployment-state.json") -Encoding utf8
 
     & ssh @sshArgs $Target "rm -f $RemoteArchive $RemoteInstaller $RemoteModels $RemoteConfig $RemoteAndroidApk $RemoteAppUpdateManifest"
-    Write-Host "[OK] Release $ReleaseId is synchronized; PWA is packaged at /app/"
+    Write-Host "[OK] Release $ReleaseId is synchronized; user Web is packaged at /app/"
 } finally {
     if (Test-Path -LiteralPath $TempRoot) {
         Remove-Item -LiteralPath $TempRoot -Recurse -Force

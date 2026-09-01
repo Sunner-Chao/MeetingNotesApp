@@ -22,6 +22,28 @@ const session = {
   }
 };
 
+const visualMeeting = {
+  id: "visual-meeting-1",
+  title: "良渚博物院研学记录",
+  templateKey: "project",
+  createdAt: 1_724_000_000_000,
+  updatedAt: 1_724_000_000_000,
+  durationSeconds: 720,
+  transcript: "现场观察：水利遗址与城市文明。",
+  report: "## 研学收获\n良渚古城的水利系统体现了早期城市治理能力。",
+  images: []
+};
+const visualMeetingCloud = {
+  id: visualMeeting.id,
+  title: visualMeeting.title,
+  template_key: visualMeeting.templateKey,
+  created_at: visualMeeting.createdAt,
+  updated_at: visualMeeting.updatedAt,
+  duration_seconds: visualMeeting.durationSeconds,
+  transcript: visualMeeting.transcript,
+  report: visualMeeting.report
+};
+
 function silentWav(sampleCount = 1600) {
   const buffer = Buffer.alloc(44 + sampleCount * 2);
   buffer.write("RIFF", 0);
@@ -75,7 +97,7 @@ async function installSession(page) {
   await page.route("**/api/account/meetings**", async (route) => {
     const request = route.request();
     if (request.method() === "GET") {
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ meetings: [], deleted: [] }) });
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ meetings: [visualMeetingCloud], deleted: [] }) });
       return;
     }
     if (request.method() === "PUT") {
@@ -85,6 +107,13 @@ async function installSession(page) {
       return;
     }
     await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
+  });
+  await page.route("**/api/account/meetings/*/images*", async (route) => {
+    if (route.request().method() === "GET") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([]) });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ image_id: "visual-image", filename: "现场.jpg", content_type: "image/jpeg", updated_at: Date.now() }) });
   });
   await page.route("**/api/stt/audio-archive*", (route) => route.fulfill({
     status: 200,
@@ -100,6 +129,79 @@ async function installSession(page) {
       expires_at: session.expires_at,
       user: session.user
     })
+  }));
+  await page.route("**/api/account/growth/overview*", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({
+      referral: { code: "VISUAL01", successful_invites: 2, pending_rewards: 0, reward_points: 100 },
+      rewards: { points: 100 },
+      campaigns: [],
+      private_channel: null
+    })
+  }));
+  await page.route("**/api/account/growth/messages*", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify([])
+  }));
+  await page.route("**/api/growth/campaigns/*", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({
+      id: "visual-campaign",
+      title: "视觉检查活动",
+      campaign_type: "checkin",
+      summary: "视觉检查用活动数据",
+      rules: {},
+      reward_pool: {},
+      starts_at: 1_700_000_000,
+      ends_at: 1_900_000_000,
+      status: "active",
+      joined: false,
+      my_score: 0,
+      my_rank: null,
+      actions: [],
+      leaderboard: []
+    })
+  }));
+  await page.route("**/api/community/posts**", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ items: [], next_cursor: null, facets: { destinations: [], tags: [], pois: [] } })
+  }));
+  await page.route("**/api/community/posts/*", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ items: [] })
+  }));
+  await page.route("**/api/account/community/posts**", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ items: [], next_cursor: null })
+  }));
+  await page.route("**/api/account/community/drafts*", async (route) => {
+    const request = route.request();
+    const payload = request.postDataJSON?.() || {};
+    const post = {
+      id: "visual-post-1",
+      client_snapshot_id: payload.client_snapshot_id || "web-visual-meeting-1",
+      journey_id: payload.journey_id || "web-journey-visual-meeting-1",
+      journey_edition_id: payload.journey_edition_id || "web-edition-visual-meeting-1",
+      source_edition_version: 1,
+      title: payload.title || "良渚博物院研学记录",
+      content: payload.content || visualMeeting.report,
+      status: "private_draft",
+      moderation_status: "not_submitted",
+      review: { status: "not_submitted", reason: "" },
+      media: []
+    };
+    await route.fulfill({ status: request.method() === "POST" ? 201 : 200, contentType: "application/json", body: JSON.stringify(post) });
+  });
+  await page.route("**/api/account/community/posts/*/publish", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ id: "visual-post-1", title: "良渚博物院研学记录", content: visualMeeting.report, status: "published", moderation_status: "pending", review: { status: "pending", reason: "" }, media: [] })
   }));
   await page.route("**/api/stt/transcribe", (route) => route.fulfill({
     status: 200,
@@ -137,6 +239,19 @@ try {
   await desktopPage.getByRole("heading", { name: "林项目，开始记录" }).waitFor();
   await assertLayout(desktopPage, "desktop home");
   await desktopPage.screenshot({ path: resolve(outputDir, "desktop-home.png"), fullPage: true });
+  await desktopPage.locator(".desktop-rail").getByRole("button", { name: "社区" }).click();
+  await desktopPage.getByRole("heading", { name: "社区" }).waitFor();
+  await assertLayout(desktopPage, "desktop community");
+  await desktopPage.screenshot({ path: resolve(outputDir, "desktop-community.png"), fullPage: true });
+  await desktopPage.locator(".community-header").getByRole("button", { name: "我的" }).click();
+  await desktopPage.getByText("还没有社区内容", { exact: true }).waitFor();
+  await desktopPage.locator(".community-header").getByRole("button", { name: "创建内容" }).click();
+  await desktopPage.getByRole("heading", { name: "创建内容" }).waitFor();
+  await desktopPage.getByText(/已载入会议正文.*与纪要/).waitFor();
+  await desktopPage.screenshot({ path: resolve(outputDir, "desktop-community-composer.png"), fullPage: true });
+  await desktopPage.getByRole("button", { name: "关闭" }).click();
+  await assertLayout(desktopPage, "desktop community mine");
+  await desktopPage.screenshot({ path: resolve(outputDir, "desktop-community-mine.png"), fullPage: true });
   await desktopPage.locator(".desktop-rail").getByRole("button", { name: "我的" }).click();
   await desktopPage.getByRole("heading", { name: "我的" }).waitFor();
   await desktopPage.getByText("880 积分", { exact: true }).waitFor();
@@ -150,7 +265,7 @@ try {
   const assertMobileAuthErrors = trackErrors(mobileAuthPage, "iPhone registration");
   await mobileAuthPage.goto(baseUrl, { waitUntil: "domcontentloaded" });
   await mobileAuthPage.getByRole("button", { name: "注册" }).click();
-  await mobileAuthPage.getByText("用户名 + 邮箱", { exact: true }).waitFor();
+  await mobileAuthPage.getByText("邮箱注册", { exact: true }).waitFor();
   await assertLayout(mobileAuthPage, "iPhone registration");
   await mobileAuthPage.screenshot({ path: resolve(outputDir, "iphone-registration.png"), fullPage: true });
   assertMobileAuthErrors();
@@ -190,6 +305,13 @@ try {
   await mobilePage.evaluate(() => window.scrollTo(0, 0));
   await assertLayout(mobilePage, "iPhone workspace");
   await mobilePage.screenshot({ path: resolve(outputDir, "iphone-workspace.png"), fullPage: true });
+  await mobilePage.getByRole("button", { name: "返回" }).click();
+  await mobilePage.getByRole("button", { name: "社区" }).click();
+  await mobilePage.getByRole("heading", { name: "社区" }).waitFor();
+  await mobilePage.locator(".community-header").getByRole("button", { name: "创建内容" }).click();
+  await mobilePage.getByRole("heading", { name: "创建内容" }).waitFor();
+  await assertLayout(mobilePage, "iPhone community composer");
+  await mobilePage.screenshot({ path: resolve(outputDir, "iphone-community-composer.png"), fullPage: true });
   assertMobileErrors();
   await mobileContext.close();
 } finally {

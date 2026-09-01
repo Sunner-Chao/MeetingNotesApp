@@ -1,4 +1,4 @@
-import type { AccountProfile, AuthCodeDelivery, AuthSession, GrowthCampaignDetail, GrowthOverview, Meeting, PrivateChannel, RuntimeConfig, SocialAuthProvider } from "../types";
+import type { AccountProfile, AuthCodeDelivery, AuthSession, GrowthCampaignDetail, GrowthOverview, Meeting, MeetingImage, OwnerCommunityPost, PrivateChannel, PublicCommunityComment, PublicCommunityPost, RuntimeConfig, SocialAuthProvider, SystemMessage } from "../types";
 import { templateFor } from "../templates";
 
 interface SessionRefreshResponse {
@@ -131,6 +131,186 @@ export async function fetchGrowthOverview(config: RuntimeConfig, session: AuthSe
   return jsonRequest<GrowthOverview>(apiUrl(config, "/api/account/growth/overview"), { headers: { Authorization: `Bearer ${session.access_token}` } });
 }
 
+export async function fetchSystemMessages(config: RuntimeConfig, session: AuthSession, limit = 50): Promise<SystemMessage[]> {
+  return jsonRequest<SystemMessage[]>(apiUrl(config, `/api/account/growth/messages?limit=${limit}`), {
+    headers: { Authorization: `Bearer ${session.access_token}` }
+  });
+}
+
+export async function markSystemMessageRead(config: RuntimeConfig, session: AuthSession, messageId: string): Promise<void> {
+  await jsonRequest(apiUrl(config, `/api/account/growth/messages/${encodeURIComponent(messageId)}/read`), {
+    method: "POST",
+    headers: { Authorization: `Bearer ${session.access_token}` }
+  });
+}
+
+export async function fetchPublicCommunityPosts(
+  config: RuntimeConfig,
+  options: { query?: string; destination?: string; hasMedia?: boolean } = {}
+): Promise<{ items: PublicCommunityPost[]; next_cursor?: string | null; facets?: { destinations?: string[]; tags?: string[]; pois?: string[] } }> {
+  const params = new URLSearchParams();
+  if (options.query?.trim()) params.set("q", options.query.trim());
+  if (options.destination?.trim()) params.set("destination", options.destination.trim());
+  if (options.hasMedia) params.set("has_media", "true");
+  const path = `/api/community/posts${params.size ? `?${params.toString()}` : ""}`;
+  return jsonRequest(apiUrl(config, path), { headers: undefined });
+}
+
+export async function fetchMyCommunityPosts(
+  config: RuntimeConfig,
+  session: AuthSession,
+  limit = 50
+): Promise<{ items: OwnerCommunityPost[]; next_cursor?: string | null }> {
+  return jsonRequest<{ items: OwnerCommunityPost[]; next_cursor?: string | null }>(
+    apiUrl(config, `/api/account/community/posts?limit=${Math.min(50, Math.max(1, limit))}`),
+    { headers: { Authorization: `Bearer ${session.access_token}` } }
+  );
+}
+
+export interface CommunityDraftPayload {
+  client_snapshot_id: string;
+  journey_id: string;
+  journey_edition_id: string;
+  source_edition_version: number;
+  title: string;
+  content: string;
+  ai_assisted: boolean;
+  redacted_coordinate_count: number;
+  privacy_reviewed: boolean;
+  rights_confirmed: boolean;
+  destination?: string;
+  travel_date?: string;
+  travel_days?: number;
+  stage_titles?: string[];
+  tags?: string[];
+  pois?: string[];
+}
+
+export async function createCommunityDraft(
+  config: RuntimeConfig,
+  session: AuthSession,
+  payload: CommunityDraftPayload
+): Promise<OwnerCommunityPost> {
+  return jsonRequest<OwnerCommunityPost>(apiUrl(config, "/api/account/community/drafts"), {
+    method: "POST",
+    headers: { Authorization: `Bearer ${session.access_token}`, "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function updateCommunityDraft(
+  config: RuntimeConfig,
+  session: AuthSession,
+  postId: string,
+  payload: CommunityDraftPayload
+): Promise<OwnerCommunityPost> {
+  return jsonRequest<OwnerCommunityPost>(apiUrl(config, `/api/account/community/drafts/${encodeURIComponent(postId)}`), {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${session.access_token}`, "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+}
+
+export interface CommunityMediaManifestPayload {
+  client_media_id: string;
+  display_name: string;
+  mime_type: string;
+  original_bytes: number;
+  original_sha256: string;
+  thumbnail_bytes: number;
+  thumbnail_sha256: string;
+}
+
+export interface CommunityMediaManifest extends CommunityMediaManifestPayload {
+  id: string;
+  original_total_bytes: number;
+  original_received_bytes: number;
+  thumbnail_total_bytes: number;
+  thumbnail_received_bytes: number;
+  status: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export async function createCommunityMediaManifest(
+  config: RuntimeConfig,
+  session: AuthSession,
+  postId: string,
+  payload: CommunityMediaManifestPayload
+): Promise<CommunityMediaManifest> {
+  return jsonRequest<CommunityMediaManifest>(apiUrl(config, `/api/account/community/posts/${encodeURIComponent(postId)}/media`), {
+    method: "POST",
+    headers: { Authorization: `Bearer ${session.access_token}`, "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function sha256Hex(data: Blob): Promise<string> {
+  if (!globalThis.crypto?.subtle) throw new Error("当前浏览器不支持图片校验，请使用 HTTPS 重新打开");
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", await data.arrayBuffer());
+  return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join("");
+}
+
+export async function uploadCommunityMediaVariant(
+  config: RuntimeConfig,
+  session: AuthSession,
+  postId: string,
+  mediaId: string,
+  variant: "original" | "thumbnail",
+  blob: Blob,
+  receivedBytes = 0,
+  onProgress?: (percent: number) => void
+): Promise<CommunityMediaManifest> {
+  const chunkSize = 512 * 1024;
+  let offset = Math.max(0, Math.min(receivedBytes, blob.size));
+  while (offset < blob.size) {
+    const endExclusive = Math.min(blob.size, offset + chunkSize);
+    const chunk = blob.slice(offset, endExclusive);
+    const chunkHash = await sha256Hex(chunk);
+    const response = await fetch(apiUrl(config, `/api/account/community/posts/${encodeURIComponent(postId)}/media/${encodeURIComponent(mediaId)}/${variant}`), {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${session.access_token}`,
+        "Content-Range": `bytes ${offset}-${endExclusive - 1}/${blob.size}`,
+        "X-Chunk-SHA256": chunkHash
+      },
+      body: chunk
+    });
+    if (!response.ok) throw new Error(await errorMessage(response));
+    const manifest = await response.json() as CommunityMediaManifest;
+    offset = variant === "original" ? manifest.original_received_bytes : manifest.thumbnail_received_bytes;
+    onProgress?.(Math.round((offset / blob.size) * 100));
+  }
+  const mediaPage = await jsonRequest<{ items: CommunityMediaManifest[] }>(apiUrl(config, `/api/account/community/posts/${encodeURIComponent(postId)}/media`), {
+    headers: { Authorization: `Bearer ${session.access_token}` }
+  });
+  const current = mediaPage.items.find((item) => item.id === mediaId || item.client_media_id === mediaId);
+  if (!current) throw new Error("图片清单已创建，但服务端未返回资源状态");
+  return current;
+}
+
+export async function publishMyCommunityPost(config: RuntimeConfig, session: AuthSession, postId: string): Promise<OwnerCommunityPost> {
+  return jsonRequest<OwnerCommunityPost>(apiUrl(config, `/api/account/community/posts/${encodeURIComponent(postId)}/publish`), {
+    method: "POST",
+    headers: { Authorization: `Bearer ${session.access_token}` }
+  });
+}
+
+export async function withdrawMyCommunityPost(config: RuntimeConfig, session: AuthSession, postId: string): Promise<OwnerCommunityPost> {
+  return jsonRequest<OwnerCommunityPost>(apiUrl(config, `/api/account/community/posts/${encodeURIComponent(postId)}/withdraw`), {
+    method: "POST",
+    headers: { Authorization: `Bearer ${session.access_token}` }
+  });
+}
+
+export async function fetchPublicCommunityPost(config: RuntimeConfig, postId: string): Promise<PublicCommunityPost> {
+  return jsonRequest<PublicCommunityPost>(apiUrl(config, `/api/community/posts/${encodeURIComponent(postId)}`), {});
+}
+
+export async function fetchPublicCommunityComments(config: RuntimeConfig, postId: string): Promise<{ items: PublicCommunityComment[] }> {
+  return jsonRequest<{ items: PublicCommunityComment[] }>(apiUrl(config, `/api/community/posts/${encodeURIComponent(postId)}/comments`), {});
+}
+
 export async function redeemGrowthCode(config: RuntimeConfig, session: AuthSession, code: string): Promise<{ message: string; profile: AccountProfile; private_channel?: PrivateChannel | null }> {
   return jsonRequest(apiUrl(config, "/api/account/redeem"), {
     method: "POST", headers: { Authorization: `Bearer ${session.access_token}`, "Content-Type": "application/json" }, body: JSON.stringify({ code })
@@ -184,6 +364,50 @@ export async function fetchCloudMeetings(
   session: AuthSession
 ): Promise<CloudMeetingSnapshot> {
   return jsonRequest<CloudMeetingSnapshot>(apiUrl(config, "/api/account/meetings"), {
+    headers: { Authorization: `Bearer ${session.access_token}` }
+  });
+}
+
+interface CloudMeetingImage {
+  image_id: string;
+  filename: string;
+  content_type: string;
+  bytes: number;
+  updated_at: number;
+  download_path?: string;
+}
+
+export async function listCloudMeetingImages(config: RuntimeConfig, session: AuthSession, meetingId: string): Promise<CloudMeetingImage[]> {
+  return jsonRequest<CloudMeetingImage[]>(apiUrl(config, `/api/account/meetings/${encodeURIComponent(meetingId)}/images`), {
+    headers: { Authorization: `Bearer ${session.access_token}` }
+  });
+}
+
+export async function uploadCloudMeetingImage(config: RuntimeConfig, session: AuthSession, meetingId: string, image: MeetingImage): Promise<CloudMeetingImage> {
+  const form = new FormData();
+  form.append("file", image.blob, image.name);
+  return jsonRequest<CloudMeetingImage>(apiUrl(config, `/api/account/meetings/${encodeURIComponent(meetingId)}/images/${encodeURIComponent(image.id)}`), {
+    method: "PUT",
+    headers: {
+      Authorization: `Bearer ${session.access_token}`,
+      "X-Image-Name": encodeURIComponent(image.name),
+      "X-Image-Updated-At": String(image.updatedAt || Date.now())
+    },
+    body: form
+  });
+}
+
+export async function downloadCloudMeetingImage(config: RuntimeConfig, session: AuthSession, meetingId: string, image: CloudMeetingImage): Promise<Blob> {
+  const response = await fetch(apiUrl(config, `/api/account/meetings/${encodeURIComponent(meetingId)}/images/${encodeURIComponent(image.image_id)}`), {
+    headers: { Authorization: `Bearer ${session.access_token}` }
+  });
+  if (!response.ok) throw new Error(await errorMessage(response));
+  return response.blob();
+}
+
+export async function deleteCloudMeetingImage(config: RuntimeConfig, session: AuthSession, meetingId: string, imageId: string): Promise<void> {
+  await jsonRequest(apiUrl(config, `/api/account/meetings/${encodeURIComponent(meetingId)}/images/${encodeURIComponent(imageId)}`), {
+    method: "DELETE",
     headers: { Authorization: `Bearer ${session.access_token}` }
   });
 }

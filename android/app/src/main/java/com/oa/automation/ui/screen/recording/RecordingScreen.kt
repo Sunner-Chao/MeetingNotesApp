@@ -96,6 +96,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -114,7 +115,10 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.FileProvider
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.oa.automation.domain.model.MeetingAttachment
 import com.oa.automation.domain.model.PresetReportTemplate
 import com.oa.automation.domain.model.STTEngineType
@@ -188,8 +192,28 @@ fun RecordingScreen(
     var pendingImageImportMarkerId by rememberSaveable(meetingId) { mutableStateOf<String?>(null) }
     var markerMediaChooserVisible by rememberSaveable(meetingId) { mutableStateOf(false) }
     var markerMediaChooserMarkerId by rememberSaveable(meetingId) { mutableStateOf<String?>(null) }
+    var showBackgroundRecordingNotice by rememberSaveable(meetingId) { mutableStateOf(false) }
+    var backgroundRecordingNoticePending by rememberSaveable(meetingId) { mutableStateOf(false) }
     var launchActionConsumed by rememberSaveable(meetingId, launchAction) {
         mutableStateOf(false)
+    }
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    DisposableEffect(lifecycleOwner, viewModel, meetingId) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP) {
+                val recording = viewModel.uiState.value
+                if (recording.isRecording || recording.isRecordingActionPending || recording.isFinalizingRecording) {
+                    backgroundRecordingNoticePending = true
+                }
+            } else if (event == Lifecycle.Event.ON_RESUME && backgroundRecordingNoticePending) {
+                val recording = viewModel.uiState.value
+                showBackgroundRecordingNotice = recording.isRecording || recording.isRecordingActionPending || recording.isFinalizingRecording
+                backgroundRecordingNoticePending = false
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     val locationPermissionLauncher = rememberLauncherForActivityResult(
@@ -408,6 +432,18 @@ fun RecordingScreen(
         uiState.copy(inputMode = InputMode.IMPORT)
     } else {
         uiState
+    }
+
+    if (showBackgroundRecordingNotice && (uiState.isRecording || uiState.isRecordingActionPending || uiState.isFinalizingRecording)) {
+        AlertDialog(
+            onDismissRequest = { showBackgroundRecordingNotice = false },
+            title = { Text("录音已在后台继续") },
+            text = { Text("离开应用期间，录音与实时转写由后台服务保持。返回后可以继续暂停、结束或查看已保存内容。") },
+            confirmButton = {
+                TextButton(onClick = { showBackgroundRecordingNotice = false }) { Text("知道了") }
+            },
+            shape = RoundedCornerShape(18.dp)
+        )
     }
 
     RecordingReferenceScaffold(

@@ -20,6 +20,7 @@ import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -51,7 +52,6 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -85,6 +85,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -192,7 +193,7 @@ fun GrowthCenterScreen(
                 TopAppBar(
                     title = {
                         Text(
-                            if (section == GrowthCenterSection.BENEFITS) "邀请好友" else "活动与福利",
+                             if (section == GrowthCenterSection.BENEFITS) "福利群" else "活动与福利",
                             fontWeight = FontWeight.Bold
                         )
                     },
@@ -229,7 +230,7 @@ fun GrowthCenterScreen(
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(
                             if (section == GrowthCenterSection.BENEFITS) {
-                                "邀请信息暂不可用"
+                                "福利群暂不可用"
                             } else {
                                 "活动与福利暂不可用"
                             },
@@ -245,7 +246,39 @@ fun GrowthCenterScreen(
                 // cover a null overview, so no early return is needed here.
                 val overview = overviewState
                 val canUseAccountFeatures = uiState.isAuthenticated
-                LazyColumn(
+                if (section == GrowthCenterSection.BENEFITS) {
+                    CompactBenefitsContent(
+                        modifier = Modifier.fillMaxSize().padding(paddingValues),
+                        channel = overview.privateChannel,
+                        qrImageBytes = uiState.qrImageBytes,
+                        managerCardImageBytes = uiState.managerCardImageBytes,
+                        canApply = canUseAccountFeatures,
+                        onQrShown = { overview.privateChannel?.let { viewModel.recordChannelEvent(it.id, "open_qr") } },
+                        onPreviewQr = {
+                            previewManagerCard = false
+                            showAssetPreview = true
+                        },
+                        onSaveQr = { requestAssetSave(false) },
+                        onPreviewManagerCard = {
+                            previewManagerCard = true
+                            showAssetPreview = true
+                        },
+                        onSaveManagerCard = { requestAssetSave(true) },
+                        onApply = { showApplicationSheet = true },
+                        onOpenLink = {
+                            overview.privateChannel?.let { channel ->
+                                openUrl(context, channel.joinUrl.ifBlank { channel.shortUrl })
+                                viewModel.recordChannelEvent(channel.id, "click")
+                            }
+                        },
+                        onCopyLink = {
+                            overview.privateChannel?.let { channel ->
+                                copyText(context, "福利群链接", channel.joinUrl.ifBlank { channel.shortUrl })
+                                viewModel.recordChannelEvent(channel.id, "copy_link")
+                            }
+                        }
+                    )
+                } else LazyColumn(
                     modifier = Modifier.fillMaxSize().padding(paddingValues),
                     contentPadding = PaddingValues(
                         horizontal = 16.dp,
@@ -406,6 +439,59 @@ fun GrowthCenterScreen(
                 showApplicationSheet = false
             }
         )
+    }
+}
+
+@Composable
+private fun CompactBenefitsContent(
+    modifier: Modifier,
+    channel: GrowthPrivateChannel?,
+    qrImageBytes: ByteArray?,
+    managerCardImageBytes: ByteArray?,
+    canApply: Boolean,
+    onQrShown: () -> Unit,
+    onPreviewQr: () -> Unit,
+    onSaveQr: () -> Unit,
+    onPreviewManagerCard: () -> Unit,
+    onSaveManagerCard: () -> Unit,
+    onApply: () -> Unit,
+    onOpenLink: () -> Unit,
+    onCopyLink: () -> Unit
+) {
+    BoxWithConstraints(modifier = modifier) {
+        val cardHeight = when {
+            maxHeight < 620.dp -> 220.dp
+            maxHeight < 760.dp -> 280.dp
+            else -> 320.dp
+        }
+        if (channel == null) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("福利群暂不可用", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        } else {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(7.dp)
+            ) {
+                PrivateChannelPanel(
+                    channel = channel,
+                    qrImageBytes = qrImageBytes,
+                    managerCardImageBytes = managerCardImageBytes,
+                    canApply = canApply,
+                    onQrShown = onQrShown,
+                    onPreviewQr = onPreviewQr,
+                    onSaveQr = onSaveQr,
+                    onPreviewManagerCard = onPreviewManagerCard,
+                    onSaveManagerCard = onSaveManagerCard,
+                    onApply = onApply,
+                    onOpenLink = onOpenLink,
+                    onCopyLink = onCopyLink,
+                    compactCardHeight = cardHeight
+                )
+            }
+        }
     }
 }
 
@@ -648,7 +734,8 @@ private fun PrivateChannelPanel(
     onSaveManagerCard: () -> Unit,
     onApply: () -> Unit,
     onOpenLink: () -> Unit,
-    onCopyLink: () -> Unit
+    onCopyLink: () -> Unit,
+    compactCardHeight: androidx.compose.ui.unit.Dp? = null
 ) {
     val qrBitmap = remember(qrImageBytes) {
         qrImageBytes?.let { bytes ->
@@ -667,132 +754,157 @@ private fun PrivateChannelPanel(
     val application = channel.application
     val applicationStatus = application?.status.orEmpty()
     val approved = applicationStatus == "approved" && qrBitmap != null
-    Surface(
+    Column(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
-        color = Color(0xFFF1FAF5),
-        shadowElevation = 1.dp
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                Surface(shape = RoundedCornerShape(50), color = WelfareGreen.copy(alpha = 0.12f)) {
-                    Text(
-                        if (approved) "已通过审核 · 福利群" else "先联系群主 · 审核入群",
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                        color = WelfareGreen,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-                Text(channel.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text("群主名片", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 Text(
-                    channel.slogan.ifBlank { "添加群主，交流后填写申请；审核通过即可查看入群二维码" },
+                    when (applicationStatus) {
+                        "pending" -> "申请审核中"
+                        "approved" -> "审核已通过"
+                        "rejected" -> "需要补充申请信息"
+                        else -> "扫码添加企业微信"
+                    },
                     style = MaterialTheme.typography.bodySmall,
-                    color = Color(0xFF53665D)
+                    color = if (applicationStatus == "approved") WelfareGreen else MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
             Surface(
-                onClick = onPreviewManagerCard,
-                enabled = managerCardBitmap != null,
-                modifier = Modifier.fillMaxWidth().height(220.dp),
-                shape = RoundedCornerShape(10.dp),
-                color = Color.White
+                shape = RoundedCornerShape(50),
+                color = if (approved) WelfareGreen.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant
             ) {
-                if (managerCardBitmap != null) {
+                Text(
+                    if (approved) "已通过" else "先联系群主",
+                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                    color = if (approved) WelfareGreen else MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        }
+        Surface(
+            onClick = onPreviewManagerCard,
+            enabled = managerCardBitmap != null,
+            modifier = if (compactCardHeight != null) {
+                Modifier.fillMaxWidth().height(compactCardHeight)
+            } else {
+                Modifier.fillMaxWidth().aspectRatio(1068f / 1666f)
+            },
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surface,
+            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+        ) {
+            if (managerCardBitmap != null) {
+                if (compactCardHeight != null) {
                     Image(
                         bitmap = managerCardBitmap,
                         contentDescription = "群主企业微信名片，点击放大",
-                        modifier = Modifier.fillMaxSize().padding(4.dp)
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
                     )
                 } else {
-                    Box(contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
-                    }
-                }
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    (when (applicationStatus) {
-                        "pending" -> "申请审核中，审核通过后会通知你"
-                        "approved" -> "审核已通过，可查看下方入群二维码"
-                        "rejected" -> "申请需要补充信息，可重新提交"
-                        else -> "请先添加群主，充分交流后填写入群申请"
-                    } + if (applicationStatus == "rejected" && !application?.reviewNote.isNullOrBlank()) {
-                        "\n审核备注：${application?.reviewNote}"
-                    } else ""),
-                    modifier = Modifier.weight(1f),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (applicationStatus == "approved") WelfareGreen else Color(0xFF53665D)
-                )
-                IconButton(onClick = onPreviewManagerCard, enabled = managerCardBitmap != null) {
-                    Icon(Icons.Default.ZoomIn, contentDescription = "放大查看群主名片")
-                }
-                IconButton(onClick = onSaveManagerCard, enabled = managerCardBitmap != null) {
-                    Icon(Icons.Default.Download, contentDescription = "保存群主名片到相册")
-                }
-            }
-            if (applicationStatus != "approved") {
-                Button(
-                    onClick = onApply,
-                    enabled = canApply && applicationStatus != "pending",
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(8.dp)
-                ) {
-                    Text(
-                        when {
-                            !canApply -> "登录后申请入群"
-                            applicationStatus == "rejected" -> "补充信息并重新申请"
-                            else -> "填写申请，联系群主"
-                        }
+                    Image(
+                        bitmap = managerCardBitmap,
+                        contentDescription = "群主企业微信名片，点击放大",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.FillBounds
                     )
                 }
             } else {
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(10.dp),
-                    color = Color.White
+                Box(contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+                }
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                if (applicationStatus == "rejected" && !application?.reviewNote.isNullOrBlank()) {
+                    "审核备注：${application?.reviewNote}"
+                } else {
+                    when (applicationStatus) {
+                        "pending" -> "审核通过后即可查看入群二维码"
+                        "approved" -> "入群二维码已解锁"
+                        else -> "添加群主后填写申请"
+                    }
+                },
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodySmall,
+                color = if (applicationStatus == "approved") WelfareGreen else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            IconButton(onClick = onSaveManagerCard, enabled = managerCardBitmap != null) {
+                Icon(Icons.Default.Download, contentDescription = "保存群主名片到相册")
+            }
+        }
+        if (applicationStatus != "approved") {
+            Button(
+                onClick = onApply,
+                enabled = canApply && applicationStatus != "pending",
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Text(
+                    when {
+                        !canApply -> "登录后申请入群"
+                        applicationStatus == "rejected" -> "补充信息并重新申请"
+                        else -> "填写申请，联系群主"
+                    }
+                )
+            }
+        } else {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant
+            ) {
+                Row(
+                    modifier = Modifier.padding(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Row(
-                        modifier = Modifier.padding(10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    Surface(
+                        onClick = onPreviewQr,
+                        enabled = qrBitmap != null,
+                        modifier = Modifier.size(if (compactCardHeight != null) 64.dp else 86.dp),
+                        shape = RoundedCornerShape(6.dp),
+                        color = Color.White
                     ) {
-                        Surface(
-                            onClick = onPreviewQr,
-                            enabled = qrBitmap != null,
-                            modifier = Modifier.size(86.dp),
-                            shape = RoundedCornerShape(6.dp),
-                            color = Color.White
-                        ) {
-                            if (qrBitmap != null) {
-                                Image(
-                                    bitmap = qrBitmap,
-                                    contentDescription = "智悟本福利7群二维码",
-                                    modifier = Modifier.fillMaxSize().padding(4.dp)
-                                )
-                            } else {
-                                Box(contentAlignment = Alignment.Center) {
-                                    CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                                }
+                        if (qrBitmap != null) {
+                            Image(
+                                bitmap = qrBitmap,
+                                contentDescription = "智悟本福利7群二维码",
+                                modifier = Modifier.fillMaxSize().padding(4.dp)
+                            )
+                        } else {
+                            Box(contentAlignment = Alignment.Center) {
+                                CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
                             }
                         }
-                        Column(Modifier.weight(1f)) {
-                            Text("入群二维码", fontWeight = FontWeight.SemiBold)
-                            Text("入群即送 ${channel.reward.quantity} 积分", style = MaterialTheme.typography.bodySmall, color = WelfareGreen)
-                        }
-                        IconButton(onClick = onSaveQr, enabled = qrBitmap != null) {
-                            Icon(Icons.Default.Download, contentDescription = "保存群二维码到相册")
-                        }
+                    }
+                    Column(Modifier.weight(1f)) {
+                        Text("入群二维码", fontWeight = FontWeight.SemiBold)
+                        Text("入群即送 ${channel.reward.quantity} 积分", style = MaterialTheme.typography.bodySmall, color = WelfareGreen)
+                    }
+                    IconButton(onClick = onSaveQr, enabled = qrBitmap != null) {
+                        Icon(Icons.Default.Download, contentDescription = "保存群二维码到相册")
                     }
                 }
-                if (hasLink) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                        Button(onClick = onOpenLink, shape = RoundedCornerShape(8.dp), contentPadding = PaddingValues(horizontal = 12.dp)) {
-                            Text("打开入群链接")
-                        }
-                        IconButton(onClick = onCopyLink) {
-                            Icon(Icons.Default.ContentCopy, contentDescription = "复制入群链接")
-                        }
+            }
+            if (hasLink) {
+                Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                    Button(onClick = onOpenLink, shape = RoundedCornerShape(8.dp), contentPadding = PaddingValues(horizontal = 12.dp)) {
+                        Text("打开入群链接")
+                    }
+                    IconButton(onClick = onCopyLink) {
+                        Icon(Icons.Default.ContentCopy, contentDescription = "复制入群链接")
                     }
                 }
             }

@@ -2,6 +2,73 @@ export type TemplateKey = "project" | "administrative" | "brainstorming" | "insp
 export type AgentProvider = "codex-cli" | "claude-cli";
 export type ReasoningEffort = "low" | "medium" | "high";
 
+export interface PublicCommunityMedia {
+  id: string;
+  thumbnail_url: string;
+  content_url: string;
+  mime_type: string;
+}
+
+export interface PublicCommunityPost {
+  id: string;
+  title: string;
+  content: string;
+  published_at: number;
+  author_label: string;
+  media: PublicCommunityMedia[];
+  destination: string;
+  travel_date: string;
+  travel_days: number;
+  stages: string[];
+  tags: string[];
+  pois: string[];
+  like_count: number;
+  comment_count: number;
+  curation_note: string;
+}
+
+export interface OwnerCommunityPost {
+  id: string;
+  client_snapshot_id: string;
+  journey_id: string;
+  journey_edition_id: string;
+  source_edition_version: number;
+  title: string;
+  content: string;
+  privacy_reviewed?: boolean;
+  rights_confirmed?: boolean;
+  status: string;
+  moderation_status: string;
+  created_at: number;
+  updated_at: number;
+  published_at?: number | null;
+  withdrawn_at?: number | null;
+  destination?: string;
+  travel_date?: string;
+  travel_days?: number;
+  stages?: string[];
+  tags?: string[];
+  pois?: string[];
+  review: { status: string; reason: string; reviewed_at?: number | null };
+  media: Array<{
+    id: string;
+    client_media_id: string;
+    display_name: string;
+    mime_type: string;
+    status: string;
+    created_at: number;
+    updated_at: number;
+  }>;
+}
+
+export interface PublicCommunityComment {
+  id: string;
+  post_id: string;
+  content: string;
+  author_label: string;
+  created_at: number;
+}
+
 export interface AccountQuota {
   request_limit: number;
   requests_used: number;
@@ -76,6 +143,17 @@ export interface GrowthOverview {
   private_channel?: PrivateChannel | null;
 }
 
+export interface SystemMessage {
+  id: string;
+  message_type: string;
+  title: string;
+  body: string;
+  campaign_id?: string | null;
+  action_path: string;
+  created_at: number;
+  read_at?: number | null;
+}
+
 export interface AuthSession {
   access_token: string;
   agent_access_token: string;
@@ -108,6 +186,7 @@ export interface MeetingImage {
   name: string;
   type: string;
   blob: Blob;
+  updatedAt?: number;
 }
 
 export interface Meeting {
@@ -123,6 +202,7 @@ export interface Meeting {
   audioName?: string;
   audioType?: string;
   images: MeetingImage[];
+  deletedImageIds?: string[];
 }
 
 export interface MeetingTemplate {

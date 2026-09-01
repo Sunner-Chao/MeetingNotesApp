@@ -29,10 +29,17 @@ class CommunityRecoveryTests(unittest.TestCase):
         backup_script = (SERVER_DIR / "scripts" / "backup-native.sh").read_text(encoding="utf-8")
         restore_script = (SERVER_DIR / "scripts" / "restore-native.sh").read_text(encoding="utf-8")
         self.assertIn('backend/community-media', backup_script)
+        self.assertIn('backend/account-media', backup_script)
+        self.assertIn('backend/accounts.db', backup_script)
         self.assertIn('--write-manifest "$MANIFEST_PATH"', backup_script)
         self.assertIn('community-media-manifest.json', backup_script)
         self.assertIn('--manifest "$MEDIA_MANIFEST"', restore_script)
         self.assertIn('Community media backup is incomplete', restore_script)
+
+        install_script = (SERVER_DIR / "scripts" / "install-native.sh").read_text(encoding="utf-8")
+        self.assertIn('STATE_ROOT/backend/account-media', install_script)
+        self.assertIn('"$CURRENT_ACCOUNT_MEDIA_DIR" != "$STATE_ROOT/"*', install_script)
+        self.assertIn('set_env_value ACCOUNT_MEDIA_DIR "$STATE_ROOT/backend/account-media"', install_script)
 
     @staticmethod
     def _png_bytes(note: str) -> bytes:

@@ -186,6 +186,23 @@ def build_community_router(
         except CommunityError as exc:
             raise community_http_error(exc) from exc
 
+    @router.put("/drafts/{post_id}")
+    @router.patch("/drafts/{post_id}")
+    def update_community_draft(
+        post_id: str,
+        payload: CommunityDraftPayload,
+        principal: Any = Depends(account_principal_dependency),
+    ) -> dict:
+        ensure_user_writes_enabled()
+        try:
+            return service().update_private_draft(
+                principal.user_id,
+                post_id,
+                CommunityDraftInput(**payload.model_dump()),
+            )
+        except CommunityError as exc:
+            raise community_http_error(exc) from exc
+
     @router.get("/posts")
     def list_my_community_posts(
         cursor: str | None = None,

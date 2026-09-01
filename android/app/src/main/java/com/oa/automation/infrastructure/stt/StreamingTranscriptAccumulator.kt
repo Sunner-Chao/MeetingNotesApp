@@ -9,6 +9,8 @@ internal class StreamingTranscriptAccumulator {
     private var latestText = ""
     private var committedText = ""
     private var previewText = ""
+    private val preservedSegments = mutableListOf<StreamingTranscriptSegment>()
+    private val currentSegments = mutableListOf<StreamingTranscriptSegment>()
 
     @Synchronized
     fun reset() {
@@ -17,6 +19,8 @@ internal class StreamingTranscriptAccumulator {
         latestText = ""
         committedText = ""
         previewText = ""
+        preservedSegments.clear()
+        currentSegments.clear()
     }
 
     @Synchronized
@@ -26,7 +30,11 @@ internal class StreamingTranscriptAccumulator {
         val incomingPreview = normalizeStreamingTranscript(update.previewText)
         val incomingSessionId = update.sessionId.trim()
         val incomingSessionText = sessionText(incomingText, incomingCommitted, incomingPreview)
-        if (incomingSessionText.isBlank()) return snapshotLocked()
+        val incomingSegments = update.segments
+            .asSequence()
+            .mapNotNull(::normalizeSegment)
+            .toList()
+        if (incomingSessionText.isBlank() && incomingSegments.isEmpty()) return snapshotLocked()
 
         val previousSessionText = sessionText(latestText, committedText, previewText)
         val sessionChanged = currentSessionId.isNotBlank() &&
@@ -34,6 +42,8 @@ internal class StreamingTranscriptAccumulator {
             currentSessionId != incomingSessionId
         if (sessionChanged) {
             preservedText = mergeStreamingTranscriptText(preservedText, previousSessionText)
+            preservedSegments += currentSegments
+            currentSegments.clear()
             latestText = ""
             committedText = ""
             previewText = ""
@@ -45,17 +55,82 @@ internal class StreamingTranscriptAccumulator {
         latestText = incomingText
         committedText = incomingCommitted
         previewText = incomingPreview
+        if (incomingSegments.isNotEmpty()) {
+            mergeSegments(currentSegments, incomingSegments)
+        }
         return snapshotLocked()
     }
 
     @Synchronized
     fun snapshot(): String = snapshotLocked()
 
+    /** Speaker rows are persisted independently of the revisable display text. */
+    @Synchronized
+    fun snapshotSegments(): List<StreamingTranscriptSegment> =
+        mergeAdjacentSegments(preservedSegments + currentSegments)
+
     private fun snapshotLocked(): String = mergeStreamingTranscriptText(
         preservedText,
         sessionText(latestText, committedText, previewText)
     )
 }
+
+private fun normalizeSegment(segment: StreamingTranscriptSegment): StreamingTranscriptSegment? {
+    val text = normalizeStreamingTranscript(segment.text)
+    if (text.isBlank() || segment.speaker == null) return null
+    val start = segment.startSeconds.coerceAtLeast(0f)
+    val end = segment.endSeconds.coerceAtLeast(start)
+    return segment.copy(startSeconds = start, endSeconds = end, text = text)
+}
+
+private fun mergeSegments(
+    target: MutableList<StreamingTranscriptSegment>,
+    incoming: List<StreamingTranscriptSegment>
+) {
+    incoming.forEach { next ->
+        target.removeAll { existing -> shouldReplaceSegment(existing, next) }
+        target += next
+    }
+    target.sortBy { it.startSeconds }
+    while (target.size > 160) target.removeAt(0)
+}
+
+private fun shouldReplaceSegment(
+    existing: StreamingTranscriptSegment,
+    next: StreamingTranscriptSegment
+): Boolean {
+    val overlap = minOf(existing.endSeconds, next.endSeconds) -
+        maxOf(existing.startSeconds, next.startSeconds)
+    if (overlap <= 0f) return false
+    val shorterDuration = minOf(
+        (existing.endSeconds - existing.startSeconds).coerceAtLeast(0.1f),
+        (next.endSeconds - next.startSeconds).coerceAtLeast(0.1f)
+    )
+    return overlap / shorterDuration >= 0.6f ||
+        kotlin.math.abs(existing.startSeconds - next.startSeconds) < 0.35f
+}
+
+private fun mergeAdjacentSegments(
+    segments: List<StreamingTranscriptSegment>
+): List<StreamingTranscriptSegment> = segments
+    .sortedBy { it.startSeconds }
+    .fold(mutableListOf()) { grouped, next ->
+        val previous = grouped.lastOrNull()
+        if (
+            previous != null &&
+            previous.speaker == next.speaker &&
+            next.startSeconds - previous.endSeconds <= 1.5f
+        ) {
+            grouped[grouped.lastIndex] = previous.copy(
+                endSeconds = maxOf(previous.endSeconds, next.endSeconds),
+                text = mergeStreamingTranscriptText(previous.text, next.text),
+                committed = previous.committed && next.committed
+            )
+        } else {
+            grouped += next
+        }
+        grouped
+    }
 
 private fun sessionText(text: String, committedText: String, previewText: String): String =
     listOf(committedText, previewText)

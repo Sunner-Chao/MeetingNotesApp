@@ -81,7 +81,7 @@ class BackendDatabaseTests(unittest.TestCase):
     def test_dashboard_is_rendered_from_template_with_runtime_values(self) -> None:
         html = backend.index()
 
-        self.assertIn("MeetingNotesApp | 运维控制台", html)
+        self.assertIn("智悟本 | 管理端 Web", html)
         self.assertIn(f"Version {backend.SERVER_VERSION}", html)
         self.assertIn(f"127.0.0.1:{backend.PORT}", html)
         self.assertNotIn("__VERSION__", html)

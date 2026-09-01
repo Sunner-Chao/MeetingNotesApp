@@ -66,10 +66,12 @@ class AccountRouteTests(unittest.TestCase):
         self.previous_web_api_token = backend.WEB_API_TOKEN
         self.previous_web_api_username = backend.WEB_API_USERNAME
         self.previous_growth_media_dir = backend.PRIVATE_CHANNEL_MEDIA_DIR
+        self.previous_account_media_dir = backend.ACCOUNT_MEDIA_DIR
         backend.DB_PATH = self.db_path
         backend.WEB_API_TOKEN = "web-dashboard-secret"
         backend.WEB_API_USERNAME = "dashboard-admin"
         backend.PRIVATE_CHANNEL_MEDIA_DIR = root / "growth-media"
+        backend.ACCOUNT_MEDIA_DIR = root / "account-media"
         backend.AGENT_GATEWAY = AgentGateway(
             db_path=self.db_path,
             work_root=root / "tasks",
@@ -91,6 +93,7 @@ class AccountRouteTests(unittest.TestCase):
         backend.WEB_API_TOKEN = self.previous_web_api_token
         backend.WEB_API_USERNAME = self.previous_web_api_username
         backend.PRIVATE_CHANNEL_MEDIA_DIR = self.previous_growth_media_dir
+        backend.ACCOUNT_MEDIA_DIR = self.previous_account_media_dir
         self.temp_dir.cleanup()
 
     def register_with_email(self, client: TestClient, username: str):
@@ -293,6 +296,24 @@ class AccountRouteTests(unittest.TestCase):
             )
             self.assertEqual(invalid_token_event.status_code, 401)
 
+    def test_system_messages_are_scoped_and_support_read_receipts(self) -> None:
+        with TestClient(backend.app) as client:
+            registered = self.register_with_email(client, "message_user").json()
+            headers = {"Authorization": f"Bearer {registered['access_token']}"}
+            message_id = "route-system-message"
+            with backend.ACCOUNT_SERVICE._connect() as conn:
+                conn.execute(
+                    "INSERT INTO growth_system_messages (id, user_id, message_type, title, body, action_path, created_at) VALUES (?, NULL, 'system', ?, ?, '', ?)",
+                    (message_id, "系统维护通知", "本条通知用于路由回归测试", int(time.time())),
+                )
+            messages = client.get("/api/account/growth/messages", headers=headers)
+            self.assertEqual(messages.status_code, 200)
+            self.assertFalse(messages.json()[0]["read_at"])
+            marked = client.post(f"/api/account/growth/messages/{message_id}/read", headers=headers)
+            self.assertEqual(marked.status_code, 200)
+            refreshed = client.get("/api/account/growth/messages", headers=headers).json()
+            self.assertIsNotNone(refreshed[0]["read_at"])
+
     def test_code_auth_and_provider_discovery_use_mobile_first_policy(self) -> None:
         with TestClient(backend.app) as client:
             requested = client.post(
@@ -393,6 +414,18 @@ class AccountRouteTests(unittest.TestCase):
             self.assertEqual(created.status_code, 200)
             self.assertEqual(created.json()["transcript"], "第一版转写")
             self.assertEqual(created.json()["template_key"], "inspection")
+            uploaded_image = client.put(
+                f"/api/account/meetings/{meeting_id}/images/550e8400-e29b-41d4-a716-446655440000",
+                headers={**first_headers, "X-Image-Name": "onsite.png", "X-Image-Updated-At": str(now)},
+                files={"file": ("onsite.png", io.BytesIO(b"\x89PNG\r\n\x1a\nimage"), "image/png")},
+            )
+            self.assertEqual(uploaded_image.status_code, 200, uploaded_image.text)
+            image_path = uploaded_image.json()["download_path"]
+            self.assertEqual(client.get(image_path, headers=first_headers).status_code, 200)
+            self.assertEqual(client.get(image_path, headers=second_headers).status_code, 404)
+            image_list = client.get(f"/api/account/meetings/{meeting_id}/images", headers=first_headers)
+            self.assertEqual(image_list.status_code, 200)
+            self.assertEqual(image_list.json()[0]["filename"], "onsite.png")
             owner_snapshot = client.get("/api/account/meetings", headers=first_headers).json()
             self.assertEqual([item["id"] for item in owner_snapshot["meetings"]], [meeting_id])
             self.assertEqual(
@@ -448,6 +481,7 @@ class AccountRouteTests(unittest.TestCase):
             )
             self.assertEqual(cleared.status_code, 200)
             self.assertEqual(cleared.json()["deleted"], 1)
+            self.assertEqual(client.get(image_path, headers=first_headers).status_code, 404)
 
 
 if __name__ == "__main__":

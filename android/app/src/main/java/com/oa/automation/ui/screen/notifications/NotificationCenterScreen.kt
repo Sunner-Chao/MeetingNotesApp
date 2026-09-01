@@ -1,6 +1,5 @@
 package com.oa.automation.ui.screen.notifications
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,9 +21,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DoneAll
-import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.LocalActivity
-import androidx.compose.material.icons.filled.NotificationsNone
 import androidx.compose.material.icons.filled.PendingActions
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Card
@@ -47,7 +44,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -74,7 +70,7 @@ private val NotificationGreen = Color(0xFF087A55)
 private enum class NotificationCenterTab(val route: String, val label: String) {
     MESSAGES("messages", "通知"),
     ACTIVITIES("activities", "活动"),
-    BENEFITS("benefits", "福利");
+    BENEFITS("benefits", "福利群");
 
     companion object {
         fun fromRoute(value: String): NotificationCenterTab =
@@ -105,7 +101,6 @@ fun NotificationCenterScreen(
     val activeCampaigns = growthState.overview?.campaigns.orEmpty().filter {
         it.status == "active" || it.status == "running"
     }
-    val unreadCampaigns = activeCampaigns.filter { it.id !in growthState.seenCampaignIds }
     val unreadSystemMessages = growthState.systemMessages.filter { it.readAt == null }
     val unreadMeetings = uiState.meetings.filterNot { item ->
         meetingNotificationId(item) in uiState.seenNotificationEvents
@@ -118,7 +113,7 @@ fun NotificationCenterScreen(
         selectedFilter == NotificationFilter.ALL ||
             meetingNotificationId(item) !in uiState.seenNotificationEvents
     }
-    val activityUnreadCount = unreadCampaigns.size
+    val activityUnreadCount = activeCampaigns.count { it.id !in growthState.seenCampaignIds }
 
     LaunchedEffect(selectedTab, activeCampaigns.map { it.id }) {
         if (selectedTab == NotificationCenterTab.ACTIVITIES) {
@@ -172,13 +167,6 @@ fun NotificationCenterScreen(
                     activityUnreadCount = activityUnreadCount,
                     onSelected = { selectedTab = it }
                 )
-                // The welfare-group entry stays pinned right under the tabs so it is
-                // reachable without digging into the 福利 tab.
-                if (selectedTab != NotificationCenterTab.BENEFITS) {
-                    WelfareGroupPinnedBanner(
-                        onClick = { selectedTab = NotificationCenterTab.BENEFITS }
-                    )
-                }
                 when (selectedTab) {
                     NotificationCenterTab.MESSAGES -> LazyColumn(
                         modifier = Modifier.fillMaxSize(),
@@ -190,7 +178,20 @@ fun NotificationCenterScreen(
                         ),
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        item { NotificationSummary(unreadCount = messageUnreadCount) }
+                        if (visibleMeetings.isNotEmpty()) {
+                            item { NotificationSectionTitle("会议动态") }
+                            items(visibleMeetings, key = { meetingNotificationId(it) }) { item ->
+                                val isUnread = meetingNotificationId(item) !in uiState.seenNotificationEvents
+                                NotificationRow(
+                                    item = item,
+                                    isUnread = isUnread,
+                                    onClick = {
+                                        viewModel.markNotificationRead(item.meeting.id, item.hasReport)
+                                        onOpenMeeting(item.meeting.id, item.hasReport)
+                                    }
+                                )
+                            }
+                        }
                         item {
                             NotificationFilterBar(
                                 selected = selectedFilter,
@@ -209,20 +210,6 @@ fun NotificationCenterScreen(
                                             growthViewModel.openCampaign(item.campaignId)
                                             selectedTab = NotificationCenterTab.ACTIVITIES
                                         }
-                                    }
-                                )
-                            }
-                        }
-                        if (visibleMeetings.isNotEmpty()) {
-                            item { NotificationSectionTitle("会议动态") }
-                            items(visibleMeetings, key = { meetingNotificationId(it) }) { item ->
-                                val isUnread = meetingNotificationId(item) !in uiState.seenNotificationEvents
-                                NotificationRow(
-                                    item = item,
-                                    isUnread = isUnread,
-                                    onClick = {
-                                        viewModel.markNotificationRead(item.meeting.id, item.hasReport)
-                                        onOpenMeeting(item.meeting.id, item.hasReport)
                                     }
                                 )
                             }
@@ -252,53 +239,6 @@ fun NotificationCenterScreen(
                     )
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun WelfareGroupPinnedBanner(onClick: () -> Unit) {
-    Surface(
-        onClick = onClick,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = FirebaseUiTokens.ScreenPadding)
-            .padding(top = 10.dp),
-        shape = RoundedCornerShape(14.dp),
-        color = BrandBlue.copy(alpha = 0.10f),
-        border = androidx.compose.foundation.BorderStroke(1.dp, BrandBlue.copy(alpha = 0.35f))
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Icon(
-                imageVector = Icons.Default.Groups,
-                contentDescription = null,
-                tint = BrandBlue,
-                modifier = Modifier.size(22.dp)
-            )
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "智悟本福利群",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Text(
-                    text = "联系群主审核入群，领取活动福利",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-            Icon(
-                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                contentDescription = "打开福利群",
-                tint = BrandBlue
-            )
         }
     }
 }
@@ -409,41 +349,6 @@ private fun GrowthSystemMessageRow(item: GrowthSystemMessage, onClick: () -> Uni
                 contentDescription = "查看活动",
                 tint = MaterialTheme.colorScheme.outline
             )
-        }
-    }
-}
-
-@Composable
-private fun NotificationSummary(unreadCount: Int) {
-    Surface(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), color = Color.Transparent) {
-        Box(
-            modifier = Modifier.background(
-                Brush.horizontalGradient(listOf(Color(0xFF065B71), Color(0xFF087A55)))
-            )
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 16.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(
-                        if (unreadCount > 0) "$unreadCount 条通知待查看" else "通知已全部处理",
-                        color = Color.White,
-                        fontSize = 19.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        "系统通知与会议进展按时间更新",
-                        color = Color.White.copy(alpha = 0.72f),
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
-                Surface(modifier = Modifier.size(42.dp), shape = CircleShape, color = Color.White.copy(alpha = 0.14f)) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(Icons.Default.NotificationsNone, contentDescription = null, tint = Color.White)
-                    }
-                }
-            }
         }
     }
 }

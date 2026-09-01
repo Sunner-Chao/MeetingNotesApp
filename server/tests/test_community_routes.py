@@ -112,11 +112,33 @@ class CommunityRouteTests(unittest.TestCase):
                 ).status_code,
                 200,
             )
+            updated = client.put(
+                f"/api/account/community/drafts/{post_id}",
+                headers=headers,
+                json={
+                    **self.payload(),
+                    "title": "更新后的研学路线记录",
+                    "destination": "杭州",
+                    "travel_date": "2026-08-31",
+                    "travel_days": 1,
+                    "tags": ["历史", "城市观察"],
+                },
+            )
+            self.assertEqual(updated.status_code, 200)
+            self.assertEqual(updated.json()["title"], "更新后的研学路线记录")
+            self.assertEqual(updated.json()["destination"], "杭州")
+            self.assertEqual(updated.json()["tags"], ["历史", "城市观察"])
             published = client.post(
                 f"/api/account/community/posts/{post_id}/publish",
                 headers=headers,
             )
             self.assertEqual(published.json()["status"], "published")
+            locked = client.put(
+                f"/api/account/community/drafts/{post_id}",
+                headers=headers,
+                json={**self.payload(), "title": "不应覆盖已提交内容"},
+            )
+            self.assertEqual(locked.status_code, 409)
             withdrawn = client.post(
                 f"/api/account/community/posts/{post_id}/withdraw",
                 headers=headers,

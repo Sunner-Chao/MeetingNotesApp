@@ -1,12 +1,11 @@
-import { FileAudio, FileText, Gift, Mic, Plus, Sparkles } from "lucide-react";
+import { FileAudio, FileText, Mic, Plus, Sparkles } from "lucide-react";
 import { useRef } from "react";
 import { MEETING_TEMPLATES } from "../templates";
-import type { AccountProfile, GrowthOverview, Meeting, TemplateKey } from "../types";
+import type { AccountProfile, Meeting, TemplateKey } from "../types";
 import { formatMeetingDate } from "../lib/format";
 
 interface HomeScreenProps {
   profile: AccountProfile;
-  growth?: GrowthOverview;
   meetings: Meeting[];
   selectedTemplate: TemplateKey;
   onTemplateChange: (key: TemplateKey) => void;
@@ -14,12 +13,10 @@ interface HomeScreenProps {
   onImportAudio: (file: File) => void;
   onOpenMeeting: (meeting: Meeting) => void;
   onOpenHistory: () => void;
-  onOpenCampaign: (campaignId: string) => void;
 }
 
 export function HomeScreen({
   profile,
-  growth,
   meetings,
   selectedTemplate,
   onTemplateChange,
@@ -27,13 +24,11 @@ export function HomeScreen({
   onImportAudio,
   onOpenMeeting,
   onOpenHistory,
-  onOpenCampaign
 }: HomeScreenProps) {
   const audioInput = useRef<HTMLInputElement>(null);
   const displayName = profile.display_name.trim() || profile.username;
   const pointsRemaining = profile.usage?.points_remaining;
   const recent = meetings.slice(0, 4);
-  const featured = growth?.campaigns?.[0];
 
   return (
     <div className="screen home-screen">
@@ -43,8 +38,6 @@ export function HomeScreen({
         </div>
         <div className="plan-chip">{pointsRemaining === undefined ? "积分账户" : `${pointsRemaining.toLocaleString()} 积分`}</div>
       </header>
-
-      {featured && <section className="growth-announcement"><span className="announcement-mark"><Gift /></span><span><strong>本周福利 · {featured.title}</strong><small>{featured.summary}</small></span><button className="text-button" onClick={() => onOpenCampaign(featured.id)}>查看活动</button></section>}
 
       <section className="quick-actions" aria-label="创建会议">
         <button className="quick-action primary-action" onClick={() => onCreate("record")}>
@@ -72,8 +65,6 @@ export function HomeScreen({
           }}
         />
       </section>
-
-      {growth?.campaigns?.length ? <section className="home-campaign-list"><div className="section-heading"><div><Gift /><h2>近期活动</h2></div><span className="notice-badge">{growth.campaigns.length}</span></div>{growth.campaigns.slice(0, 3).map((campaign) => <button className="home-campaign-row" key={campaign.id} onClick={() => onOpenCampaign(campaign.id)}><span><strong>{campaign.title}</strong><small>{campaign.summary}</small></span><span className="campaign-arrow">›</span></button>)}</section> : null}
 
       <section className="template-section">
         <div className="section-heading">

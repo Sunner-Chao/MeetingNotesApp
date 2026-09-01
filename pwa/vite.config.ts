@@ -1,43 +1,16 @@
 import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
-import { VitePWA } from "vite-plugin-pwa";
 
 export default defineConfig(({ mode }) => {
-  const env = loadEnv(mode, process.cwd(), "PWA_");
-  const backendTarget = env.PWA_DEV_BACKEND_URL || "http://127.0.0.1:8090";
-  const requestedPort = Number(env.PWA_DEV_PORT || "4173");
+  // This is a conventional Web build. PWA_* remains as a compatibility prefix
+  // for existing local environments while new setups can use WEB_*.
+  const env = { ...loadEnv(mode, process.cwd(), "PWA_"), ...loadEnv(mode, process.cwd(), "WEB_") };
+  const backendTarget = env.WEB_DEV_BACKEND_URL || env.PWA_DEV_BACKEND_URL || "http://127.0.0.1:8090";
+  const requestedPort = Number(env.WEB_DEV_PORT || env.PWA_DEV_PORT || "4173");
 
   return {
     base: "/app/",
-    plugins: [
-      react(),
-      VitePWA({
-        registerType: "autoUpdate",
-        includeAssets: ["icons/apple-touch-icon.png"],
-        manifest: {
-          name: "智悟本轻享版",
-          short_name: "智悟本",
-          description: "录音转写、会议整理与小Woo智能纪要",
-          lang: "zh-CN",
-          theme_color: "#0f7a50",
-          background_color: "#f5f7f6",
-          display: "standalone",
-          orientation: "portrait-primary",
-          scope: "/app/",
-          start_url: "/app/",
-          icons: [
-            { src: "icons/icon-192.png", sizes: "192x192", type: "image/png" },
-            { src: "icons/icon-512.png", sizes: "512x512", type: "image/png" },
-            { src: "icons/icon-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" }
-          ]
-        },
-        workbox: {
-          navigateFallback: "/app/index.html",
-          navigateFallbackDenylist: [/^\/api\//],
-          runtimeCaching: []
-        }
-      })
-    ],
+    plugins: [react()],
     server: {
       host: true,
       port: Number.isFinite(requestedPort) ? requestedPort : 4173,

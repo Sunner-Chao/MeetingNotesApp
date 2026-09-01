@@ -1,9 +1,13 @@
 import type { AuthSession, Meeting, RuntimeConfig } from "../types";
 import {
   CloudMeetingDeletedError,
+  downloadCloudMeetingImage,
   deleteCloudMeeting,
+  deleteCloudMeetingImage,
   fetchCloudMeetings,
+  listCloudMeetingImages,
   saveCloudMeeting,
+  uploadCloudMeetingImage,
   type CloudMeeting
 } from "./api";
 import {
@@ -25,10 +29,47 @@ function fromCloud(remote: CloudMeeting, local?: Meeting): Meeting {
     transcript: remote.transcript,
     report: remote.report,
     images: local?.images ?? [],
+    deletedImageIds: local?.deletedImageIds ?? [],
     audio: local?.audio,
     audioName: local?.audioName,
     audioType: local?.audioType
   };
+}
+
+async function synchronizeMeetingImages(
+  config: RuntimeConfig,
+  session: AuthSession,
+  meeting: Meeting
+): Promise<Meeting> {
+  const remote = await listCloudMeetingImages(config, session, meeting.id);
+  const remoteById = new Map(remote.map((image) => [image.image_id, image]));
+  const localById = new Map(meeting.images.map((image) => [image.id, image]));
+  const imagesById = new Map(meeting.images.map((image) => [image.id, image]));
+
+  for (const image of meeting.images) {
+    const remoteImage = remoteById.get(image.id);
+    if (!remoteImage || (image.updatedAt || 0) > remoteImage.updated_at) {
+      await uploadCloudMeetingImage(config, session, meeting.id, image);
+    }
+  }
+  for (const remoteImage of remote) {
+    if (meeting.deletedImageIds?.includes(remoteImage.image_id)) {
+      await deleteCloudMeetingImage(config, session, meeting.id, remoteImage.image_id);
+      continue;
+    }
+    const localImage = localById.get(remoteImage.image_id);
+    if (localImage && (localImage.updatedAt || 0) >= remoteImage.updated_at) continue;
+    const blob = await downloadCloudMeetingImage(config, session, meeting.id, remoteImage);
+    imagesById.set(remoteImage.image_id, {
+      id: remoteImage.image_id,
+      name: remoteImage.filename,
+      type: remoteImage.content_type,
+      blob,
+      updatedAt: remoteImage.updated_at
+    });
+  }
+  const images = [...imagesById.values()].filter((image) => !meeting.deletedImageIds?.includes(image.id));
+  return images.length === meeting.images.length ? meeting : { ...meeting, images };
 }
 
 async function removeLocalMeeting(meetingId: string, accountId: string): Promise<void> {
@@ -78,5 +119,15 @@ export async function synchronizeCloudMeetings(
   }
 
   for (const cloud of remote.values()) await saveMeeting(fromCloud(cloud), accountId);
-  return listMeetings(accountId);
+  const synchronized = await listMeetings(accountId);
+  const withImages: Meeting[] = [];
+  for (const meeting of synchronized) {
+    const enriched = await synchronizeMeetingImages(config, session, meeting);
+    const cleaned = enriched.deletedImageIds?.length
+      ? { ...enriched, deletedImageIds: undefined }
+      : enriched;
+    if (cleaned !== meeting) await saveMeeting(cleaned, accountId);
+    withImages.push(cleaned);
+  }
+  return withImages;
 }

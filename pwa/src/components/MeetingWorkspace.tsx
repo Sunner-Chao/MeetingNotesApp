@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { downloadArchivedAudio, generateReport, listArchivedAudio, transcribeAudio, type ArchivedAudio } from "../lib/api";
-import { exportDocx, printPdf, renderMarkdown, shareAudio, shareReport } from "../lib/export";
+import { exportDocx, printPdf, renderMarkdown, shareAudio, shareImages, shareReport } from "../lib/export";
 import { audioExtension, formatDuration, safeFilename } from "../lib/format";
 import { MEETING_TEMPLATES, templateFor } from "../templates";
 import type { AuthSession, Meeting, MeetingImage, ProcessingStage, RuntimeConfig, TemplateKey } from "../types";
@@ -135,7 +135,11 @@ export function MeetingWorkspace({
     });
     onNotify("会议音频已保存，正在生成最终转写", "success");
     void runTranscription(completedMeeting);
-  }, [onNotify, runTranscription, update]));
+  }, [onNotify, runTranscription, update]), {
+    config,
+    sttAccessToken: session.stt_access_token,
+    contextHint: meeting.title
+  });
 
   useEffect(() => {
     if (autoStartedRef.current) return;
@@ -192,7 +196,8 @@ export function MeetingWorkspace({
       id: crypto.randomUUID(),
       name: file.name,
       type: file.type,
-      blob: file
+      blob: file,
+      updatedAt: Date.now()
     }));
     update({ images: [...meeting.images, ...additions] });
   };
@@ -250,6 +255,12 @@ export function MeetingWorkspace({
               )}
             </div>
             {recorder.backgroundRisk && <div className="risk-banner">录音期间页面曾进入后台，请结束后检查音频完整性。</div>}
+            {recorder.isRecording && recorder.liveStatus !== "idle" && (
+              <div className={`live-preview ${recorder.liveStatus === "error" ? "error" : ""}`} aria-live="polite">
+                <div className="live-preview-heading"><span className="live-preview-dot" /><strong>{recorder.liveStatus === "connected" ? "实时转录" : recorder.liveStatus === "connecting" ? "正在连接实时转录" : "实时转录暂时不可用"}</strong></div>
+                <p>{recorder.liveTranscript || (recorder.liveStatus === "connected" ? "正在等待语音内容..." : "录音不会中断，结束后仍会生成完整转写")}</p>
+              </div>
+            )}
             {meeting.audio && !recorder.isRecording && <audio className="audio-player" controls preload="metadata" src={audioUrl} />}
             {!meeting.audio && archivedAudio.length > 0 && !recorder.isRecording && (
               <div className="cloud-audio-row">
@@ -268,9 +279,18 @@ export function MeetingWorkspace({
           <input ref={imageInput} hidden multiple type="file" accept="image/*" onChange={(event) => { if (event.target.files) addImages(event.target.files); event.currentTarget.value = ""; }} />
 
           {meeting.images.length > 0 && (
-            <div className="image-strip">
-              {meeting.images.map((image) => <ImagePreview key={image.id} image={image} onDelete={() => update({ images: meeting.images.filter((item) => item.id !== image.id) })} />)}
-            </div>
+            <section className="meeting-images-section">
+              <div className="section-heading">
+                <div><ImagePlus /><h2>会议图片</h2><span>{meeting.images.length} 张</span></div>
+                <button className="text-button" onClick={() => void withErrorToast(() => shareImages(meeting))}><Download /> 导出图片</button>
+              </div>
+              <div className="image-strip">
+                {meeting.images.map((image) => <ImagePreview key={image.id} image={image} onDelete={() => update({
+                  images: meeting.images.filter((item) => item.id !== image.id),
+                  deletedImageIds: [...new Set([...(meeting.deletedImageIds || []), image.id])]
+                })} />)}
+              </div>
+            </section>
           )}
 
           {meeting.audio && !recorder.isRecording && (

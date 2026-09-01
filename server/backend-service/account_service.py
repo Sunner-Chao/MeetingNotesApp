@@ -290,6 +290,18 @@ class AccountService:
                     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
                 );
 
+                CREATE TABLE IF NOT EXISTS account_meeting_images (
+                    user_id TEXT NOT NULL,
+                    meeting_id TEXT NOT NULL,
+                    image_id TEXT NOT NULL,
+                    filename TEXT NOT NULL,
+                    content_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+                    bytes INTEGER NOT NULL DEFAULT 0,
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY(user_id, meeting_id, image_id),
+                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+                );
+
                 CREATE TABLE IF NOT EXISTS account_identities (
                     id TEXT PRIMARY KEY,
                     user_id TEXT NOT NULL,
@@ -601,6 +613,8 @@ class AccountService:
                 ON recharge_orders(status, created_at ASC);
                 CREATE INDEX IF NOT EXISTS index_account_meetings_user_updated
                 ON account_meetings(user_id, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS index_account_meeting_images_user_meeting
+                ON account_meeting_images(user_id, meeting_id, updated_at DESC);
                 CREATE INDEX IF NOT EXISTS index_account_identities_user
                 ON account_identities(user_id, created_at ASC);
                 CREATE INDEX IF NOT EXISTS index_registration_sources_referrer
@@ -1455,6 +1469,10 @@ class AccountService:
                 "DELETE FROM account_meetings WHERE user_id = ? AND id = ?",
                 (principal.user_id, meeting_id),
             )
+            conn.execute(
+                "DELETE FROM account_meeting_images WHERE user_id = ? AND meeting_id = ?",
+                (principal.user_id, meeting_id),
+            )
         return {
             "status": "deleted",
             "meeting_id": meeting_id,
@@ -1482,7 +1500,94 @@ class AccountService:
                 "DELETE FROM account_meetings WHERE user_id = ?",
                 (principal.user_id,),
             )
+            conn.execute(
+                "DELETE FROM account_meeting_images WHERE user_id = ?",
+                (principal.user_id,),
+            )
         return {"status": "cleared", "deleted": len(rows), "deleted_at": effective_deleted_at}
+
+    def list_meeting_images(self, principal: AccountPrincipal, meeting_id: str) -> list[dict]:
+        with self._connect() as conn:
+            meeting = conn.execute(
+                "SELECT 1 FROM account_meetings WHERE user_id = ? AND id = ?",
+                (principal.user_id, meeting_id),
+            ).fetchone()
+            if meeting is None:
+                raise AccountNotFoundError("会议不存在")
+            rows = conn.execute(
+                """
+                SELECT image_id, filename, content_type, bytes, updated_at
+                FROM account_meeting_images
+                WHERE user_id = ? AND meeting_id = ?
+                ORDER BY updated_at ASC, image_id ASC
+                """,
+                (principal.user_id, meeting_id),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def upsert_meeting_image(
+        self,
+        principal: AccountPrincipal,
+        meeting_id: str,
+        image_id: str,
+        *,
+        filename: str,
+        content_type: str,
+        bytes_count: int,
+        updated_at: int,
+    ) -> dict:
+        with self._connect() as conn:
+            meeting = conn.execute(
+                "SELECT 1 FROM account_meetings WHERE user_id = ? AND id = ?",
+                (principal.user_id, meeting_id),
+            ).fetchone()
+            if meeting is None:
+                raise AccountNotFoundError("会议不存在")
+            conn.execute(
+                """
+                INSERT INTO account_meeting_images (
+                    user_id, meeting_id, image_id, filename, content_type, bytes, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, meeting_id, image_id) DO UPDATE SET
+                    filename = excluded.filename,
+                    content_type = excluded.content_type,
+                    bytes = excluded.bytes,
+                    updated_at = excluded.updated_at
+                WHERE excluded.updated_at >= account_meeting_images.updated_at
+                """,
+                (
+                    principal.user_id,
+                    meeting_id,
+                    image_id,
+                    filename[:255],
+                    content_type[:120] or "application/octet-stream",
+                    max(0, int(bytes_count)),
+                    max(0, int(updated_at)),
+                ),
+            )
+            row = conn.execute(
+                """
+                SELECT image_id, filename, content_type, bytes, updated_at
+                FROM account_meeting_images
+                WHERE user_id = ? AND meeting_id = ? AND image_id = ?
+                """,
+                (principal.user_id, meeting_id, image_id),
+            ).fetchone()
+            if row is None:
+                raise AccountNotFoundError("图片不存在")
+            return dict(row)
+
+    def delete_meeting_image(
+        self, principal: AccountPrincipal, meeting_id: str, image_id: str
+    ) -> dict:
+        with self._connect() as conn:
+            result = conn.execute(
+                "DELETE FROM account_meeting_images WHERE user_id = ? AND meeting_id = ? AND image_id = ?",
+                (principal.user_id, meeting_id, image_id),
+            )
+            if result.rowcount == 0:
+                raise AccountNotFoundError("图片不存在")
+        return {"status": "deleted", "image_id": image_id}
 
     @staticmethod
     def canonical_stt_usage_key(

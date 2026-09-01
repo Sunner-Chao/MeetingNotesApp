@@ -651,6 +651,52 @@ class CommunityService:
             self._replace_post_index(conn, post_id, normalized, now)
             return self._post_payload(row), True
 
+    def update_private_draft(
+        self,
+        user_id: str,
+        post_id: str,
+        snapshot: CommunityDraftInput,
+    ) -> dict:
+        """Update an owner's private draft while preserving its identity and media."""
+        clean_user_id = self._validated_id(user_id, "user_id")
+        clean_post_id = self._validated_id(post_id, "post_id")
+        normalized = self._validated_snapshot(snapshot)
+        request_hash = self._request_hash(normalized)
+        now = int(time.time() * 1000)
+        with self._connect() as conn:
+            existing = self._owned_post(conn, clean_user_id, clean_post_id)
+            if existing["status"] != "private_draft":
+                raise CommunityConflictError("已提交审核的内容不能继续编辑")
+            conn.execute(
+                """
+                UPDATE community_posts
+                SET client_snapshot_id = ?, journey_id = ?, journey_edition_id = ?,
+                    source_edition_version = ?, title = ?, content = ?, ai_assisted = ?,
+                    redacted_coordinate_count = ?, privacy_reviewed = ?, rights_confirmed = ?,
+                    request_hash = ?, updated_at = ?
+                WHERE id = ? AND user_id = ? AND status = 'private_draft'
+                """,
+                (
+                    normalized["client_snapshot_id"],
+                    normalized["journey_id"],
+                    normalized["journey_edition_id"],
+                    normalized["source_edition_version"],
+                    normalized["title"],
+                    normalized["content"],
+                    normalized["ai_assisted"],
+                    normalized["redacted_coordinate_count"],
+                    normalized["privacy_reviewed"],
+                    normalized["rights_confirmed"],
+                    request_hash,
+                    now,
+                    clean_post_id,
+                    clean_user_id,
+                ),
+            )
+            self._replace_post_index(conn, clean_post_id, normalized, now)
+            row = self._owned_post(conn, clean_user_id, clean_post_id)
+            return self._owner_post_payload(conn, row)
+
     def get_post(self, user_id: str, post_id: str) -> dict:
         with self._connect() as conn:
             post = self._post_payload(self._owned_post(conn, user_id, post_id))
@@ -2874,6 +2920,7 @@ class CommunityService:
 
     def _owner_post_payload(self, conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
         payload = self._post_payload(row)
+        payload.update(self._public_index_payload(conn, payload["id"]))
         payload["media"] = self._owner_media_payloads(conn, payload["id"])
         return payload
 

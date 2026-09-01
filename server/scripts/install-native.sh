@@ -108,7 +108,7 @@ if ! id "$APP_USER" >/dev/null 2>&1; then
 fi
 
 install -d -m 0755 "$APP_ROOT" "$APP_ROOT/releases" "$APP_ROOT/venvs"
-install -d -o "$APP_USER" -g "$APP_GROUP" -m 0750 "$STATE_ROOT" "$STATE_ROOT/models" "$STATE_ROOT/tmp" "$STATE_ROOT/backend" "$STATE_ROOT/logs" "$STATE_ROOT/data" "$STATE_ROOT/downloads"
+install -d -o "$APP_USER" -g "$APP_GROUP" -m 0750 "$STATE_ROOT" "$STATE_ROOT/models" "$STATE_ROOT/tmp" "$STATE_ROOT/backend" "$STATE_ROOT/backend/account-media" "$STATE_ROOT/logs" "$STATE_ROOT/data" "$STATE_ROOT/downloads"
 install -d -o "$APP_USER" -g "$APP_GROUP" -m 0700 "$STATE_ROOT/agent-tasks" "$STATE_ROOT/audio-archive" "$STATE_ROOT/.codex" "$STATE_ROOT/.claude"
 install -d -m 0750 "$CONFIG_ROOT" "$BACKUP_ROOT"
 
@@ -290,6 +290,16 @@ if ! grep -Eq '^ACCOUNT_FREE_PLAN_CODE=.+$' "$CONFIG_FILE"; then
 fi
 if ! grep -Eq '^ACCOUNT_DB_PATH=.+$' "$CONFIG_FILE"; then
   set_env_value ACCOUNT_DB_PATH "$STATE_ROOT/backend/accounts.db"
+fi
+# Account images are user data and must never resolve inside an immutable release.
+# Preserve an explicitly configured directory only when it is inside the managed
+# persistent root; migrate relative, release-local, and external paths to state.
+CURRENT_ACCOUNT_MEDIA_DIR="$(sed -n 's/^ACCOUNT_MEDIA_DIR=//p' "$CONFIG_FILE" | tail -n1)"
+if [[ -z "$CURRENT_ACCOUNT_MEDIA_DIR" || "$CURRENT_ACCOUNT_MEDIA_DIR" != "$STATE_ROOT/"* ]]; then
+  set_env_value ACCOUNT_MEDIA_DIR "$STATE_ROOT/backend/account-media"
+fi
+if ! grep -Eq '^ACCOUNT_MEDIA_MAX_BYTES=.+$' "$CONFIG_FILE"; then
+  set_env_value ACCOUNT_MEDIA_MAX_BYTES "$((12 * 1024 * 1024))"
 fi
 CURRENT_ACCOUNT_FREE_PLAN_NAME="$(sed -n 's/^ACCOUNT_FREE_PLAN_NAME=//p' "$CONFIG_FILE" | tail -n1)"
 if [[ -z "$CURRENT_ACCOUNT_FREE_PLAN_NAME" || "$CURRENT_ACCOUNT_FREE_PLAN_NAME" == "Free" ]]; then

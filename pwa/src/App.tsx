@@ -1,20 +1,21 @@
-import { Share, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppShell, type AppTab } from "./components/AppShell";
 import { AuthScreen } from "./components/AuthScreen";
 import { BrandMark } from "./components/BrandMark";
 import { ConfirmDialog } from "./components/ConfirmDialog";
+import { CommunityScreen } from "./components/CommunityScreen";
 import { HistoryScreen } from "./components/HistoryScreen";
 import { HomeScreen } from "./components/HomeScreen";
 import { MeetingWorkspace } from "./components/MeetingWorkspace";
+import { NotificationScreen } from "./components/NotificationScreen";
 import { ProfileScreen } from "./components/ProfileScreen";
 import { GrowthCampaignDialog } from "./components/GrowthCampaignDialog";
 import { Toast, type ToastState } from "./components/Toast";
-import { exchangeSocialAuthTicket, fetchGrowthOverview, login, redeemGrowthCode, refreshSession, requestRegistrationCode, updateProfile, verifyEmailRegistration } from "./lib/api";
+import { exchangeSocialAuthTicket, fetchGrowthOverview, fetchSystemMessages, login, markSystemMessageRead, redeemGrowthCode, refreshSession, requestRegistrationCode, updateProfile, verifyEmailRegistration } from "./lib/api";
 import { claimLegacyGuestData, clearMeetings, deleteMeetingRecord, listMeetings, recoverInterruptedRecordings, saveMeeting } from "./lib/db";
 import { synchronizeCloudMeetings } from "./lib/cloudSync";
 import { audioExtension } from "./lib/format";
-import type { AuthCodeDelivery, AuthSession, GrowthOverview, Meeting, RuntimeConfig, TemplateKey } from "./types";
+import type { AuthCodeDelivery, AuthSession, GrowthOverview, Meeting, RuntimeConfig, SystemMessage, TemplateKey } from "./types";
 
 const CONFIG_KEY = "zhiwuben.pwa.config";
 const SESSION_KEY = "zhiwuben.pwa.session";
@@ -66,6 +67,7 @@ export default function App() {
   const [selectedMeetingId, setSelectedMeetingId] = useState<string>();
   const [selectedCampaignId, setSelectedCampaignId] = useState<string>();
   const [growth, setGrowth] = useState<GrowthOverview>();
+  const [systemMessages, setSystemMessages] = useState<SystemMessage[]>([]);
   const [startMode, setStartMode] = useState<"record" | "text" | "transcribe">();
   const [tab, setTab] = useState<AppTab>("home");
   const [busy, setBusy] = useState(false);
@@ -74,8 +76,6 @@ export default function App() {
   const [cloudState, setCloudState] = useState<"idle" | "syncing" | "synced" | "pending">("idle");
   const [toast, setToast] = useState<ToastState>();
   const [confirm, setConfirm] = useState<{ kind: "delete"; meeting: Meeting } | { kind: "clear" }>();
-  const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent>();
-  const [showIosInstall, setShowIosInstall] = useState(false);
   const toastTimer = useRef<number>();
   const cloudSyncTimer = useRef<number>();
   const cloudSyncRunning = useRef(false);
@@ -89,8 +89,6 @@ export default function App() {
   configRef.current = config;
   onlineRef.current = online;
   const selectedMeeting = useMemo(() => meetings.find((meeting) => meeting.id === selectedMeetingId), [meetings, selectedMeetingId]);
-  const standalone = window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
-  const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
 
   const notify = useCallback((message: string, kind: ToastState["kind"] = "success") => {
     if (toastTimer.current) window.clearTimeout(toastTimer.current);
@@ -165,17 +163,11 @@ export default function App() {
   useEffect(() => {
     const onOnline = () => setOnline(true);
     const onOffline = () => setOnline(false);
-    const onInstallPrompt = (event: Event) => {
-      event.preventDefault();
-      setInstallPrompt(event as BeforeInstallPromptEvent);
-    };
     window.addEventListener("online", onOnline);
     window.addEventListener("offline", onOffline);
-    window.addEventListener("beforeinstallprompt", onInstallPrompt);
     return () => {
       window.removeEventListener("online", onOnline);
       window.removeEventListener("offline", onOffline);
-      window.removeEventListener("beforeinstallprompt", onInstallPrompt);
     };
   }, []);
 
@@ -283,8 +275,14 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (!session) { setGrowth(undefined); return; }
-    void fetchGrowthOverview(config, session).then(setGrowth).catch(() => undefined);
+    if (!session) { setGrowth(undefined); setSystemMessages([]); return; }
+    void Promise.all([
+      fetchGrowthOverview(config, session),
+      fetchSystemMessages(config, session)
+    ]).then(([nextGrowth, nextMessages]) => {
+      setGrowth(nextGrowth);
+      setSystemMessages(nextMessages);
+    }).catch(() => undefined);
   }, [config, session]);
 
   const refreshGrowth = useCallback(async () => {
@@ -292,6 +290,7 @@ export default function App() {
     if (!active) return;
     const latest = await fetchGrowthOverview(configRef.current, active);
     setGrowth(latest);
+    setSystemMessages(await fetchSystemMessages(configRef.current, active));
     setSession(await refreshSession(configRef.current, active));
   }, []);
 
@@ -359,16 +358,6 @@ export default function App() {
     if (onlineRef.current) void syncCloud();
   };
 
-  const install = async () => {
-    if (installPrompt) {
-      await installPrompt.prompt();
-      await installPrompt.userChoice;
-      setInstallPrompt(undefined);
-      return;
-    }
-    if (isIos && !standalone) setShowIosInstall(true);
-  };
-
   if (!ready) {
     return <main className="loading-screen"><BrandMark size={76} /><span>智悟本</span></main>;
   }
@@ -397,11 +386,10 @@ export default function App() {
 
   return (
     <>
-      <AppShell tab={tab} onTabChange={setTab}>
+      <AppShell tab={tab} onTabChange={setTab} notificationCount={systemMessages.filter((message) => !message.read_at).length}>
         {tab === "home" && (
           <HomeScreen
             profile={session.user}
-            growth={growth}
             meetings={meetings}
             selectedTemplate={config.defaultTemplate}
             onTemplateChange={(defaultTemplate) => setConfig((current) => ({ ...current, defaultTemplate }))}
@@ -409,7 +397,6 @@ export default function App() {
             onImportAudio={importAudio}
             onOpenMeeting={(meeting) => { setStartMode(undefined); setSelectedMeetingId(meeting.id); }}
             onOpenHistory={() => setTab("history")}
-            onOpenCampaign={(campaignId) => setSelectedCampaignId(campaignId)}
           />
         )}
         {tab === "history" && (
@@ -421,6 +408,31 @@ export default function App() {
             onClear={() => setConfirm({ kind: "clear" })}
           />
         )}
+        {tab === "community" && <CommunityScreen config={config} session={session} meetings={meetings} onNotify={notify} />}
+        {tab === "notifications" && (
+          <NotificationScreen
+            growth={growth}
+            messages={systemMessages}
+            onOpenCampaign={(campaignId) => setSelectedCampaignId(campaignId)}
+            onMarkRead={async (messageId) => {
+              try {
+                await markSystemMessageRead(config, session, messageId);
+                setSystemMessages((current) => current.map((message) => message.id === messageId ? { ...message, read_at: Date.now() } : message));
+              } catch (error) {
+                notify(error instanceof Error ? error.message : "通知状态更新失败", "error");
+              }
+            }}
+            onMarkAllRead={async () => {
+              const unread = systemMessages.filter((message) => !message.read_at);
+              try {
+                await Promise.all(unread.map((message) => markSystemMessageRead(config, session, message.id)));
+                setSystemMessages((current) => current.map((message) => message.read_at ? message : { ...message, read_at: Date.now() }));
+              } catch (error) {
+                notify(error instanceof Error ? error.message : "通知状态更新失败", "error");
+              }
+            }}
+          />
+        )}
         {tab === "profile" && (
           <ProfileScreen
             profile={session.user}
@@ -428,8 +440,6 @@ export default function App() {
             config={config}
             online={online}
             cloudState={cloudState}
-            installAvailable={!standalone && (Boolean(installPrompt) || isIos)}
-            onInstall={() => void install()}
             onSaveProfile={async (displayName, avatarDataUrl) => {
               try {
                 const user = await updateProfile(config, session, displayName, avatarDataUrl);
@@ -473,16 +483,6 @@ export default function App() {
 
       {selectedCampaignId && <GrowthCampaignDialog campaignId={selectedCampaignId} config={config} session={session} onClose={() => setSelectedCampaignId(undefined)} onChanged={refreshGrowth} onNotify={notify} />}
 
-      {showIosInstall && (
-        <div className="dialog-backdrop" onMouseDown={() => setShowIosInstall(false)}>
-          <section className="install-dialog" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
-            <button className="icon-button dialog-close" onClick={() => setShowIosInstall(false)} title="关闭"><X /></button>
-            <Share />
-            <h2>安装智悟本</h2>
-            <ol><li>点击 Safari 底部的分享按钮</li><li>选择“添加到主屏幕”</li><li>确认名称并点击“添加”</li></ol>
-          </section>
-        </div>
-      )}
       <Toast toast={toast} onClose={() => setToast(undefined)} />
     </>
   );

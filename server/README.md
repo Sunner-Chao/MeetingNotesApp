@@ -2,7 +2,7 @@
 
 ## 当前发布
 
-- 仓库候选基线：`1.2.18`；生产部署基线以部署状态和服务端配置为准
+- 当前生产发布：`1.2.56`（发布 ID 以 `server/.deployment-state.json` 与远端 systemd 为准）
 - 生产部署：Ubuntu 原生 Python 3.11 + systemd
 - 目标主机：4 核、4 GB 内存、无 GPU、5 Mbps 带宽
 - 默认范围：STT 为核心组件；Backend Service 可选，当前远端实例已启用
@@ -47,8 +47,9 @@
 - 私有 Agent API 使用独立 Bearer Token、按令牌配额、提供方权限、有效期和停用控制。
 - Agent 请求支持 Codex CLI、Claude CLI、任意数量图片附件（默认不设张数上限，仍受单图/总上传字节保护）、单任务执行和最多 8 个排队任务。
 - Android 默认使用 Codex；Codex 与 Claude 推理强度可在 Android 服务设置中分别调整，服务端默认均为 `medium`。
-- 实时 PCM 会在 Server 同步归档，正常停止后直接就地生成 beam=5 最终稿；连接异常时 Android 自动回退完整文件上传。
+- 实时 PCM 会在 Server 同步归档，正常停止后直接就地生成 beam=5 最终稿；连接异常时 Android 自动回退完整文件上传。浏览器用户端通过 WSS 连接后发送一次性鉴权消息建立同一实时预览链路（令牌不出现在 URL 或代理访问日志），原生客户端继续使用 Bearer 头。
 - Android 已接入账户、短期凭证、Agent 和额度 API；会议正文数据仍以本地 Room 为采集过程可信源，完整会议成果云同步仍在演进。
+- Web 会议图片归档到 `ACCOUNT_MEDIA_DIR`，按用户和会议隔离；部署备份必须同时覆盖该目录与 `ACCOUNT_DB_PATH`。
 - Agent transcript/chat 字符数和请求 JSON 字节数使用独立环境变量；`0` 表示不设置应用层硬上限。
 
 ## 生产架构
@@ -177,7 +178,10 @@ Windows 本机启动：
 server\stt-service\start-windows-local.bat
 ```
 
-本机管理入口为 `https://lstwin.space/admin/`，由 Caddy 反向代理至 `127.0.0.1:8888`。`lstwin.space` 使用 AliDNS DNS-01 自动续期的 Let’s Encrypt 公网证书，证书和 ACME 账户只保存在用户私有目录；管理账号从私有环境文件读取，不写入仓库。`lstwin.cloud` 的权威 DNS 位于 DNSPod，当前独立使用本机已信任的 Caddy 本地 CA，避免两个 DNS 服务商的证书生命周期互相阻塞。
+Windows 本机 Caddy 继续承载 `lstwin.space` 的 IPv6 TLS 入口和本地 STT WebSocket；统一 Web/API/管理路径通过 WireGuard HTTPS 回源到 Backend VPS `10.77.0.1:443`。`/health` 与 `/ws/transcribe-stream` 保持本地 STT 语义，用户端 Web 使用 `/app/`，管理端使用 `/admin/`，API 使用 `/api/`。`lstwin.space` 使用 AliDNS DNS-01 自动续期的 Let’s Encrypt 公网证书，证书和 ACME 账户只保存在用户私有目录；管理账号从私有环境文件读取，不写入仓库。`lstwin.cloud` 仍按原链路运行。
+
+> [!note] Web 入口迁移（2026-08-31）
+> 统一域名已切换：`https://lstwin.space/app/` 为用户端 Web，`https://lstwin.space/admin/` 为 Backend 管理端，`https://lstwin.space/api/` 为同源 API；`https://118.25.43.185/app/` 与 `/web` 保留为兼容入口。Windows Caddy 通过 WireGuard 回源 Web/API，`/health` 和 `/ws/transcribe-stream` 仍保留本地 STT 兼容语义。
 
 AVD 数据面使用 `http://10.0.2.2:8888` 访问 Windows Host；真机使用 Windows 工作站的局域网地址。正式 Android 包不内置 Caddy 私有 CA。长录音由服务端按重叠窗口分段并顺序去重合并，上传总上限默认 1 GiB。
 

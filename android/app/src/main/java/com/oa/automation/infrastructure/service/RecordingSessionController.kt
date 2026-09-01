@@ -8,6 +8,7 @@ import com.oa.automation.infrastructure.stt.StreamingSttProvider
 import com.oa.automation.infrastructure.account.AccountSessionSynchronizer
 import com.oa.automation.infrastructure.stt.StreamingTranscriptUpdate
 import com.oa.automation.infrastructure.stt.StreamingTranscriptAccumulator
+import com.oa.automation.infrastructure.stt.StreamingTranscriptSegment
 import com.oa.automation.infrastructure.stt.CloudSTTEngine
 import com.oa.automation.infrastructure.stt.buildSttContextHint
 import com.oa.automation.infrastructure.stt.CLOUD_STREAM_READY_STATUS
@@ -84,6 +85,7 @@ data class RecordingStopResult(
     val audioFile: File,
     val streamSessionId: String?,
     val transcriptText: String,
+    val speakerSegments: List<StreamingTranscriptSegment>,
     val durationMs: Long,
     val requiresLogin: Boolean
 )
@@ -381,6 +383,7 @@ class RecordingSessionController(
             streamingPreviewActive = false
             automaticCloudFallbackAttempted = false
             val transcriptText = transcriptAccumulator.snapshot()
+            val speakerSegments = transcriptAccumulator.snapshotSegments()
             smoothedAudioLevel = 0f
             pendingStopMeetingId = null
             require(audioFile.isFile && audioFile.length() > 0L) { "录音文件为空" }
@@ -405,6 +408,7 @@ class RecordingSessionController(
                 audioFile,
                 streamSessionId,
                 transcriptText,
+                speakerSegments,
                 durationMs,
                 requiresLogin = !accountAccessEnabled
             )
@@ -470,6 +474,7 @@ class RecordingSessionController(
                 streamingPreviewActive = false
                 automaticCloudFallbackAttempted = false
                 val transcriptText = transcriptAccumulator.snapshot()
+                val speakerSegments = transcriptAccumulator.snapshotSegments()
                 val durationMs = current.durationSecondsAt(SystemClock.elapsedRealtime()) * 1_000L
                 smoothedAudioLevel = 0f
                 pendingStopMeetingId = null
@@ -494,6 +499,7 @@ class RecordingSessionController(
                     audioFile = audioFile,
                     streamSessionId = streamSessionId,
                     transcriptText = transcriptText,
+                    speakerSegments = speakerSegments,
                     durationMs = durationMs,
                     requiresLogin = !accountAccessEnabled
                 )

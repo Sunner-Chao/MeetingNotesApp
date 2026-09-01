@@ -61,6 +61,24 @@ PY
   if [[ -d "$MEDIA_ROOT" ]]; then
     cp -a "$MEDIA_ROOT/." "$STAGE/var/lib/meetingnotes-stt/backend/community-media/"
   fi
+  ACCOUNT_MEDIA_ROOT="$STATE_ROOT/backend/account-media"
+  if [[ -d "$ACCOUNT_MEDIA_ROOT" ]]; then
+    cp -a "$ACCOUNT_MEDIA_ROOT/." "$STAGE/var/lib/meetingnotes-stt/backend/account-media/"
+  fi
+  if [[ -f "$STATE_ROOT/backend/accounts.db" ]]; then
+    python3.11 - "$STATE_ROOT/backend/accounts.db" "$STAGE/var/lib/meetingnotes-stt/backend/accounts.db" <<'PY'
+import sqlite3
+import sys
+
+source = sqlite3.connect(sys.argv[1], timeout=30)
+target = sqlite3.connect(sys.argv[2])
+try:
+    source.backup(target)
+finally:
+    target.close()
+    source.close()
+PY
+  fi
   python3.11 "$APP_ROOT/current/scripts/verify_community_backup.py" \
     "$STAGE/var/lib/meetingnotes-stt/backend/meeting_notes.db" \
     --media-root "$STAGE/var/lib/meetingnotes-stt/backend/community-media" \
