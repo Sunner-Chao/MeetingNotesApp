@@ -26,4 +26,15 @@ class MeetingModePromptTest {
         assertTrue(prompt.contains("昨日完成 / 今日计划 / 阻塞"))
         assertTrue(prompt.contains("严格区分完成与计划时态"))
     }
+
+    @Test
+    fun directivePromptRequestsObservableSignalsWithoutEmotionClaims() {
+        val prompt = ReportPromptTemplates.buildUserPrompt(
+            transcript = "请各组周五前提交进度。",
+            template = ReportTemplateConfig(selectedName = "宣贯·落实会", content = "宣贯模板")
+        )
+
+        assertTrue(prompt.contains("可观察互动信号"))
+        assertTrue(prompt.contains("不使用“愤怒、焦虑、抵触、缺乏诚意”等情绪、意图或人格结论"))
+    }
 }

@@ -193,6 +193,23 @@ object ReportPromptTemplates {
             "保留模板的标题层级、表格和章节结构。"
         }
         val meetingMode = MeetingMode.fromTemplateName(template.selectedName)
+        val interactionSignalRule = if (meetingMode in setOf(
+                MeetingMode.DIRECTIVE,
+                MeetingMode.PROGRESS,
+                MeetingMode.CO_CREATE,
+                MeetingMode.NEGOTIATION,
+                MeetingMode.RETROSPECTIVE,
+                MeetingMode.STANDUP
+            )
+        ) {
+            """
+                可观察互动信号（如有证据）：
+                - 单独列出有时间轴或发言人依据的语速变化、长停顿、打断、沉默、重复强调等现象。
+                - 不使用“愤怒、焦虑、抵触、缺乏诚意”等情绪、意图或人格结论；无法核对时写“待确认”。
+            """.trimIndent()
+        } else {
+            ""
+        }
         val scenarioRule = when (meetingMode) {
             MeetingMode.GENERAL -> """
                 通用会议智能适配：
@@ -257,6 +274,8 @@ object ReportPromptTemplates {
 5. 当内容适合用表格展示时（如工程量清单、材料清单、人员分工、进度对比等），必须使用 Markdown 表格输出，使信息更清晰直观。
 
 $scenarioRule
+
+$interactionSignalRule
 
 模板「${template.selectedName}」：
 ```markdown
