@@ -7,7 +7,8 @@ data class ProductEntryPolicy(
     val showCommunityTab: Boolean,
     val showSocialAccountActions: Boolean,
     val showGrowthNotifications: Boolean,
-    val showStudyJourneyTemplate: Boolean
+    val showStudyJourneyTemplate: Boolean,
+    val showProjectWorkspace: Boolean
 ) {
     /** Keep old study records readable, while hiding the child-product template for new work. */
     fun shouldShowMeetingTemplate(templateName: String, preserveSelectedLegacy: Boolean = false): Boolean {
@@ -25,13 +26,15 @@ data class ProductEntryPolicy(
                 showCommunityTab = true,
                 showSocialAccountActions = true,
                 showGrowthNotifications = true,
-                showStudyJourneyTemplate = true
+                showStudyJourneyTemplate = true,
+                showProjectWorkspace = false
             )
             ProductEdition.LIGHT_ENJOY -> ProductEntryPolicy(
                 showCommunityTab = false,
                 showSocialAccountActions = false,
                 showGrowthNotifications = false,
-                showStudyJourneyTemplate = false
+                showStudyJourneyTemplate = false,
+                showProjectWorkspace = true
             )
         }
     }

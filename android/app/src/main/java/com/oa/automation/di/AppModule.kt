@@ -67,6 +67,7 @@ import com.oa.automation.ui.screen.login.ForgotPasswordViewModel
 import com.oa.automation.ui.screen.login.RegisterViewModel
 import com.oa.automation.ui.screen.recording.RecordingViewModel
 import com.oa.automation.ui.screen.report.ReportViewModel
+import com.oa.automation.ui.screen.project.ProjectViewModel
 import com.oa.automation.ui.screen.settings.SettingsViewModel
 import org.koin.android.ext.koin.androidContext
 import org.koin.androidx.viewmodel.dsl.viewModel
@@ -180,5 +181,6 @@ val appModule = module {
     viewModel { CommunityCollectionDetailViewModel(get(), get()) }
     viewModel { RecordingViewModel(get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), androidContext()) }
     viewModel { ReportViewModel(get(), get(), get(), get(), get(), get(), get(), get()) }
+    viewModel { ProjectViewModel(get(), get()) }
     viewModel { SettingsViewModel(get(), get(), get(), if (BuildConfig.DEBUG) get() else null) }
 }

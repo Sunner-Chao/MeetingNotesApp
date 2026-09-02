@@ -54,6 +54,9 @@ object AccountUsers
 object AccountCommunityModeration
 
 @Serializable
+object ProjectWorkspace
+
+@Serializable
 data class CommunityPost(val postId: String)
 
 @Serializable

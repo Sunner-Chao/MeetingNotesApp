@@ -41,6 +41,7 @@ import com.oa.automation.ui.screen.main.MainWorkspaceScreen
 import com.oa.automation.ui.screen.notifications.NotificationCenterScreen
 import com.oa.automation.ui.screen.recording.RecordingScreen
 import com.oa.automation.ui.screen.report.ReportScreen
+import com.oa.automation.ui.screen.project.ProjectScreen
 import com.oa.automation.ui.screen.settings.SettingsScreen
 import com.oa.automation.ui.screen.splash.SplashScreen
 import com.oa.automation.domain.model.ProductEdition
@@ -197,6 +198,9 @@ fun OAAutomationNavHost(
                     onNavigateToCommunityModeration = {
                         navController.navigate(AccountCommunityModeration)
                     },
+                    onNavigateToProjects = {
+                        navController.navigate(ProjectWorkspace)
+                    },
                     onNavigateToCommunityPost = { postId ->
                         navController.navigate(CommunityPost(postId))
                     },
@@ -289,6 +293,10 @@ fun OAAutomationNavHost(
                 CommunityModerationScreen(
                     onNavigateBack = { navController.popBackStack() }
                 )
+            }
+
+            composable<ProjectWorkspace> {
+                ProjectScreen(onNavigateBack = { navController.popBackStack() })
             }
 
             composable<CommunityPost> { backStackEntry ->

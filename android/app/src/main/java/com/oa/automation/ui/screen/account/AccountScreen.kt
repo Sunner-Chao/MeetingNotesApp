@@ -29,6 +29,7 @@ import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.AccountBox
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.ManageAccounts
 import androidx.compose.material.icons.filled.Memory
@@ -149,10 +150,12 @@ fun AccountScreen(
     onNavigateToInvitation: () -> Unit,
     onNavigateToUserManagement: () -> Unit,
     onNavigateToCommunityModeration: () -> Unit,
+    onNavigateToProjects: () -> Unit = {},
     onNavigateToSettings: () -> Unit,
     onLogout: () -> Unit,
     onLogin: () -> Unit,
     showSocialActions: Boolean = true,
+    showProjectWorkspace: Boolean = false,
     viewModel: AccountViewModel = koinViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -245,7 +248,9 @@ fun AccountScreen(
                             onOpenSettings = onNavigateToSettings,
                             onManageUsers = onNavigateToUserManagement,
                             onModerateCommunity = onNavigateToCommunityModeration,
-                            showSocialActions = showSocialActions
+                            showSocialActions = showSocialActions,
+                            showProjectWorkspace = showProjectWorkspace,
+                            onOpenProjects = onNavigateToProjects
                         )
                         Spacer(modifier = Modifier.height(12.dp))
                     }
@@ -717,7 +722,9 @@ private fun AccountActionGroup(
     onOpenSettings: () -> Unit,
     onManageUsers: () -> Unit,
     onModerateCommunity: () -> Unit,
-    showSocialActions: Boolean
+    showSocialActions: Boolean,
+    showProjectWorkspace: Boolean,
+    onOpenProjects: () -> Unit
 ) {
     Surface(
         modifier = Modifier
@@ -727,6 +734,18 @@ private fun AccountActionGroup(
         color = MaterialTheme.colorScheme.surface
     ) {
         Column {
+            if (showProjectWorkspace) {
+                AccountActionRow(
+                    icon = Icons.Default.FolderOpen,
+                    title = "项目",
+                    rowHeight = layout.actionRowHeight,
+                    onClick = onOpenProjects
+                )
+                HorizontalDivider(
+                    modifier = Modifier.padding(horizontal = 18.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant
+                )
+            }
             if (showSocialActions) {
                 AccountActionRow(
                     icon = Icons.Default.Groups,

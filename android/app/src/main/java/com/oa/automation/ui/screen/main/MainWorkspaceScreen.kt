@@ -65,6 +65,7 @@ fun MainWorkspaceScreen(
     onNavigateToInvitation: () -> Unit,
     onNavigateToAccountUsers: () -> Unit,
     onNavigateToCommunityModeration: () -> Unit,
+    onNavigateToProjects: () -> Unit,
     onNavigateToCommunityPost: (String) -> Unit,
     onNavigateToCommunityCollection: (String) -> Unit,
     onLogout: () -> Unit,
@@ -127,7 +128,9 @@ fun MainWorkspaceScreen(
                             onNavigateToInvitation = onNavigateToInvitation,
                             onNavigateToUserManagement = onNavigateToAccountUsers,
                             onNavigateToCommunityModeration = onNavigateToCommunityModeration,
+                            onNavigateToProjects = onNavigateToProjects,
                             showSocialActions = entryPolicy.showSocialAccountActions,
+                            showProjectWorkspace = entryPolicy.showProjectWorkspace,
                             onNavigateToSettings = onNavigateToSettings,
                             onLogout = onLogout,
                             onLogin = onLogin
