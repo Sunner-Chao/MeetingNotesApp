@@ -4,6 +4,7 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
@@ -136,6 +137,7 @@ internal fun TemplateWorkflowExplainer(
             WorkflowStepRail(
                 steps = workflow.steps,
                 selectedStep = selectedStep,
+                reducedMotion = reducedMotion,
                 raisedColor = raisedColor,
                 inkColor = inkColor,
                 mutedColor = mutedColor,
@@ -223,6 +225,7 @@ internal fun TemplateWorkflowExplainer(
 private fun WorkflowStepRail(
     steps: List<TemplateWorkflowStep>,
     selectedStep: Int,
+    reducedMotion: Boolean,
     raisedColor: Color,
     inkColor: Color,
     mutedColor: Color,
@@ -273,12 +276,12 @@ private fun WorkflowStepRail(
                 val selected = index == selectedStep
                 val scale by animateFloatAsState(
                     targetValue = if (selected) 1.06f else 1f,
-                    animationSpec = tween(180, easing = FastOutSlowInEasing),
+                    animationSpec = if (reducedMotion) snap() else tween(180, easing = FastOutSlowInEasing),
                     label = "workflowNodeScale"
                 )
                 val nodeColor by animateColorAsState(
                     targetValue = if (selected) accentColor else raisedColor,
-                    animationSpec = tween(180, easing = FastOutSlowInEasing),
+                    animationSpec = if (reducedMotion) snap() else tween(180, easing = FastOutSlowInEasing),
                     label = "workflowNodeColor"
                 )
                 Column(
