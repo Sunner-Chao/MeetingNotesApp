@@ -1069,6 +1069,19 @@ private fun VoiceRecordingContent(
             cardHeight = layout.templateCardHeight,
             onSelectTemplate = onSelectTemplate
         )
+        if (!uiState.isRecording && !uiState.isTranscribing && !uiState.isGeneratingReport &&
+            !uiState.selectedRecordingTemplateName.isNullOrBlank()
+        ) {
+            TemplateWorkflowExplainer(
+                templateName = uiState.selectedRecordingTemplateName.orEmpty(),
+                surfaceColor = RecordingSurface,
+                raisedColor = RecordingSurfaceRaised,
+                inkColor = RecordingInk,
+                mutedColor = RecordingMuted,
+                accentColor = RecordingPurple,
+                borderColor = RecordingBorder
+            )
+        }
         AnimatedVisibility(
             visible = uiState.error != null,
             enter = fadeIn(),
@@ -1167,6 +1180,19 @@ private fun ImportRecordingContent(
             cardHeight = layout.templateCardHeight,
             onSelectTemplate = onSelectTemplate
         )
+        if (!uiState.isRecording && !uiState.isTranscribing && !uiState.isGeneratingReport &&
+            !uiState.selectedRecordingTemplateName.isNullOrBlank()
+        ) {
+            TemplateWorkflowExplainer(
+                templateName = uiState.selectedRecordingTemplateName.orEmpty(),
+                surfaceColor = RecordingSurface,
+                raisedColor = RecordingSurfaceRaised,
+                inkColor = RecordingInk,
+                mutedColor = RecordingMuted,
+                accentColor = RecordingPurple,
+                borderColor = RecordingBorder
+            )
+        }
         AnimatedVisibility(visible = uiState.error != null) {
             uiState.error?.let { CompactErrorBanner(error = it, onDismiss = onDismissError) }
         }

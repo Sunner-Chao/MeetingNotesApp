@@ -1,5 +1,6 @@
 package com.oa.automation.ui.screen.recording
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -10,6 +11,8 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -314,6 +317,23 @@ internal fun SiriRecorderContent(
                 palette = palette,
                 onSelectTemplate = onSelectTemplate
             )
+            AnimatedVisibility(
+                visible = !uiState.isRecording && !uiState.isTranscribing &&
+                    !uiState.isGeneratingReport &&
+                    !uiState.selectedRecordingTemplateName.isNullOrBlank(),
+                enter = fadeIn(animationSpec = tween(180)),
+                exit = fadeOut(animationSpec = tween(120))
+            ) {
+                TemplateWorkflowExplainer(
+                    templateName = uiState.selectedRecordingTemplateName.orEmpty(),
+                    surfaceColor = palette.card,
+                    raisedColor = palette.control,
+                    inkColor = palette.text,
+                    mutedColor = palette.muted,
+                    accentColor = palette.cyan,
+                    borderColor = palette.border
+                )
+            }
             Spacer(Modifier.height(10.dp))
             SiriTranscriptCard(
                 transcript = uiState.liveTranscript,
