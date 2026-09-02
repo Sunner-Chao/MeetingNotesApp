@@ -218,6 +218,7 @@ android {
         manifestPlaceholders["socialAuthHost"] = socialAuthHost
         manifestPlaceholders["socialAuthPath"] = socialAuthPath
         buildConfigField("String", "SOCIAL_AUTH_CALLBACK_URI", "\"$socialAuthCallbackUri\"")
+        buildConfigField("String", "PRODUCT_EDITION", "\"light-enjoy\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

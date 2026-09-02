@@ -106,11 +106,13 @@ import com.oa.automation.domain.model.MeetingOrigin
 import com.oa.automation.domain.model.PresetReportTemplate
 import com.oa.automation.domain.model.ScheduledMeeting
 import com.oa.automation.domain.model.displayTitle
+import com.oa.automation.domain.model.ProductEdition
 import com.oa.automation.ui.component.AppLauncherIcon
 import com.oa.automation.ui.component.FirebaseUiTokens
 import com.oa.automation.ui.component.MeetingCard
 import com.oa.automation.ui.component.ZhiWuScreenBackground
 import com.oa.automation.ui.screen.account.GrowthCenterViewModel
+import com.oa.automation.ui.navigation.ProductEntryPolicy
 import com.oa.automation.ui.theme.BrandBlue
 import com.oa.automation.ui.theme.LocalAppIsDarkTheme
 import com.oa.automation.infrastructure.notification.requestNotificationPermissionIfNeeded
@@ -236,8 +238,10 @@ fun HomeScreen(
     onNavigateToReport: (String) -> Unit = {},
     onNavigateToNotifications: () -> Unit,
     viewModel: HomeViewModel = koinViewModel(),
-    growthViewModel: GrowthCenterViewModel = koinViewModel()
+    growthViewModel: GrowthCenterViewModel = koinViewModel(),
+    productEdition: ProductEdition = ProductEdition.current
 ) {
+    val entryPolicy = remember(productEdition) { ProductEntryPolicy.forEdition(productEdition) }
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val growthState by growthViewModel.uiState.collectAsStateWithLifecycle()
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -374,12 +378,16 @@ fun HomeScreen(
                             )
                     ) {
                         HomeHeader(
-                            showNotificationDot = uiState.hasUnreadNotifications ||
-                                growthState.systemMessages.any { it.readAt == null } ||
-                                growthState.overview?.campaigns.orEmpty().any { campaign ->
-                                    campaign.id !in growthState.seenCampaignIds &&
-                                        (campaign.status == "active" || campaign.status == "running")
-                                },
+                            showNotificationDot = if (entryPolicy.showGrowthNotifications) {
+                                uiState.hasUnreadNotifications ||
+                                    growthState.systemMessages.any { it.readAt == null } ||
+                                    growthState.overview?.campaigns.orEmpty().any { campaign ->
+                                        campaign.id !in growthState.seenCampaignIds &&
+                                            (campaign.status == "active" || campaign.status == "running")
+                                    }
+                            } else {
+                                uiState.hasUnreadNotifications
+                            },
                             onNavigateToNotifications = onNavigateToNotifications,
                             layout = layout
                         )

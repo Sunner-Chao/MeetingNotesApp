@@ -43,6 +43,7 @@ import com.oa.automation.ui.screen.recording.RecordingScreen
 import com.oa.automation.ui.screen.report.ReportScreen
 import com.oa.automation.ui.screen.settings.SettingsScreen
 import com.oa.automation.ui.screen.splash.SplashScreen
+import com.oa.automation.domain.model.ProductEdition
 import org.koin.androidx.compose.koinViewModel
 
 private const val TRANSITION_DURATION = 400
@@ -162,6 +163,7 @@ fun OAAutomationNavHost(
 
             composable<Home> {
                 MainWorkspaceScreen(
+                    productEdition = ProductEdition.current,
                     onNavigateToRecording = { meetingId, action ->
                         navController.navigate(Recording(meetingId, action.name))
                     },
@@ -227,6 +229,7 @@ fun OAAutomationNavHost(
                 NotificationCenterScreen(
                     onNavigateBack = { navController.popBackStack() },
                     initialTab = route.initialTab,
+                    productEdition = ProductEdition.current,
                     onOpenMeeting = { meetingId, hasReport ->
                         if (hasReport) {
                             navController.navigate(Report(meetingId))

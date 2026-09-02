@@ -40,6 +40,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -51,8 +52,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.oa.automation.domain.model.GrowthSystemMessage
+import com.oa.automation.domain.model.ProductEdition
 import com.oa.automation.ui.component.FirebaseUiTokens
 import com.oa.automation.ui.component.ZhiWuScreenBackground
+import com.oa.automation.ui.navigation.ProductEntryPolicy
 import com.oa.automation.ui.screen.account.GrowthCenterViewModel
 import com.oa.automation.ui.screen.account.GrowthCenterScreen
 import com.oa.automation.ui.screen.account.GrowthCenterSection
@@ -89,31 +92,57 @@ fun NotificationCenterScreen(
     onOpenMeeting: (String, Boolean) -> Unit,
     initialTab: String = "messages",
     viewModel: HomeViewModel = koinViewModel(),
-    growthViewModel: GrowthCenterViewModel = koinViewModel()
+    growthViewModel: GrowthCenterViewModel = koinViewModel(),
+    productEdition: ProductEdition = ProductEdition.current
 ) {
+    val entryPolicy = remember(productEdition) { ProductEntryPolicy.forEdition(productEdition) }
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val growthState by growthViewModel.uiState.collectAsStateWithLifecycle()
     var selectedFilter by rememberSaveable { mutableStateOf(NotificationFilter.ALL) }
-    var selectedTab by rememberSaveable(initialTab) {
-        mutableStateOf(NotificationCenterTab.fromRoute(initialTab))
+    var selectedTab by rememberSaveable(initialTab, productEdition) {
+        mutableStateOf(
+            if (entryPolicy.showGrowthNotifications) {
+                NotificationCenterTab.fromRoute(initialTab)
+            } else {
+                NotificationCenterTab.MESSAGES
+            }
+        )
     }
 
-    val activeCampaigns = growthState.overview?.campaigns.orEmpty().filter {
-        it.status == "active" || it.status == "running"
+    val activeCampaigns = if (entryPolicy.showGrowthNotifications) {
+        growthState.overview?.campaigns.orEmpty().filter {
+            it.status == "active" || it.status == "running"
+        }
+    } else {
+        emptyList()
     }
-    val unreadSystemMessages = growthState.systemMessages.filter { it.readAt == null }
+    val unreadSystemMessages = if (entryPolicy.showGrowthNotifications) {
+        growthState.systemMessages.filter { it.readAt == null }
+    } else {
+        emptyList()
+    }
     val unreadMeetings = uiState.meetings.filterNot { item ->
         meetingNotificationId(item) in uiState.seenNotificationEvents
     }
     val messageUnreadCount = unreadSystemMessages.size + unreadMeetings.size
-    val visibleSystemMessages = growthState.systemMessages.filter { item ->
-        selectedFilter == NotificationFilter.ALL || item.readAt == null
+    val visibleSystemMessages = if (entryPolicy.showGrowthNotifications) {
+        growthState.systemMessages.filter { item ->
+            selectedFilter == NotificationFilter.ALL || item.readAt == null
+        }
+    } else {
+        emptyList()
     }
     val visibleMeetings = uiState.meetings.take(20).filter { item ->
         selectedFilter == NotificationFilter.ALL ||
             meetingNotificationId(item) !in uiState.seenNotificationEvents
     }
     val activityUnreadCount = activeCampaigns.count { it.id !in growthState.seenCampaignIds }
+
+    LaunchedEffect(entryPolicy.showGrowthNotifications, selectedTab) {
+        if (!entryPolicy.showGrowthNotifications && selectedTab != NotificationCenterTab.MESSAGES) {
+            selectedTab = NotificationCenterTab.MESSAGES
+        }
+    }
 
     LaunchedEffect(selectedTab, activeCampaigns.map { it.id }) {
         if (selectedTab == NotificationCenterTab.ACTIVITIES) {
@@ -162,11 +191,13 @@ fun NotificationCenterScreen(
             Column(
                 modifier = Modifier.fillMaxSize().padding(padding)
             ) {
-                NotificationCenterTabs(
-                    selected = selectedTab,
-                    activityUnreadCount = activityUnreadCount,
-                    onSelected = { selectedTab = it }
-                )
+                if (entryPolicy.showGrowthNotifications) {
+                    NotificationCenterTabs(
+                        selected = selectedTab,
+                        activityUnreadCount = activityUnreadCount,
+                        onSelected = { selectedTab = it }
+                    )
+                }
                 when (selectedTab) {
                     NotificationCenterTab.MESSAGES -> LazyColumn(
                         modifier = Modifier.fillMaxSize(),
@@ -206,7 +237,7 @@ fun NotificationCenterScreen(
                                     item = item,
                                     onClick = {
                                         growthViewModel.markSystemMessagesRead(listOf(item.id))
-                                        if (!item.campaignId.isNullOrBlank()) {
+                                        if (entryPolicy.showGrowthNotifications && !item.campaignId.isNullOrBlank()) {
                                             growthViewModel.openCampaign(item.campaignId)
                                             selectedTab = NotificationCenterTab.ACTIVITIES
                                         }
@@ -222,7 +253,11 @@ fun NotificationCenterScreen(
                                     } else {
                                         "暂无通知"
                                     },
-                                    subtitle = "新的会议结果和活动通知会显示在这里"
+                                    subtitle = if (entryPolicy.showGrowthNotifications) {
+                                        "新的会议结果和活动通知会显示在这里"
+                                    } else {
+                                        "新的会议结果会显示在这里"
+                                    }
                                 )
                             }
                         }

@@ -152,6 +152,7 @@ fun AccountScreen(
     onNavigateToSettings: () -> Unit,
     onLogout: () -> Unit,
     onLogin: () -> Unit,
+    showSocialActions: Boolean = true,
     viewModel: AccountViewModel = koinViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -243,7 +244,8 @@ fun AccountScreen(
                             onOpenInvitation = onNavigateToInvitation,
                             onOpenSettings = onNavigateToSettings,
                             onManageUsers = onNavigateToUserManagement,
-                            onModerateCommunity = onNavigateToCommunityModeration
+                            onModerateCommunity = onNavigateToCommunityModeration,
+                            showSocialActions = showSocialActions
                         )
                         Spacer(modifier = Modifier.height(12.dp))
                     }
@@ -714,7 +716,8 @@ private fun AccountActionGroup(
     onOpenInvitation: () -> Unit,
     onOpenSettings: () -> Unit,
     onManageUsers: () -> Unit,
-    onModerateCommunity: () -> Unit
+    onModerateCommunity: () -> Unit,
+    showSocialActions: Boolean
 ) {
     Surface(
         modifier = Modifier
@@ -724,16 +727,18 @@ private fun AccountActionGroup(
         color = MaterialTheme.colorScheme.surface
     ) {
         Column {
-            AccountActionRow(
-                icon = Icons.Default.Groups,
-                title = "福利群",
-                rowHeight = layout.actionRowHeight,
-                onClick = onOpenInvitation
-            )
-            HorizontalDivider(
-                modifier = Modifier.padding(horizontal = 18.dp),
-                color = MaterialTheme.colorScheme.outlineVariant
-            )
+            if (showSocialActions) {
+                AccountActionRow(
+                    icon = Icons.Default.Groups,
+                    title = "福利群",
+                    rowHeight = layout.actionRowHeight,
+                    onClick = onOpenInvitation
+                )
+                HorizontalDivider(
+                    modifier = Modifier.padding(horizontal = 18.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant
+                )
+            }
             AccountActionRow(
                 icon = Icons.Default.Payments,
                 title = "积分套餐",
@@ -771,16 +776,18 @@ private fun AccountActionGroup(
                     rowHeight = layout.actionRowHeight,
                     onClick = onManageUsers
                 )
-                HorizontalDivider(
-                    modifier = Modifier.padding(horizontal = 18.dp),
-                    color = MaterialTheme.colorScheme.outlineVariant
-                )
-                AccountActionRow(
-                    icon = Icons.Default.Security,
-                    title = "社区审核",
-                    rowHeight = layout.actionRowHeight,
-                    onClick = onModerateCommunity
-                )
+                if (showSocialActions) {
+                    HorizontalDivider(
+                        modifier = Modifier.padding(horizontal = 18.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant
+                    )
+                    AccountActionRow(
+                        icon = Icons.Default.Security,
+                        title = "社区审核",
+                        rowHeight = layout.actionRowHeight,
+                        onClick = onModerateCommunity
+                    )
+                }
             }
         }
     }

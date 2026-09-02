@@ -30,7 +30,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
@@ -41,6 +43,8 @@ import com.oa.automation.ui.screen.community.StudyCommunityScreen
 import com.oa.automation.ui.screen.home.HomeLaunchAction
 import com.oa.automation.ui.screen.home.HomeScreen
 import com.oa.automation.ui.theme.BrandBlue
+import com.oa.automation.domain.model.ProductEdition
+import com.oa.automation.ui.navigation.ProductEntryPolicy
 
 private enum class MainDestination {
     HOME,
@@ -64,10 +68,18 @@ fun MainWorkspaceScreen(
     onNavigateToCommunityPost: (String) -> Unit,
     onNavigateToCommunityCollection: (String) -> Unit,
     onLogout: () -> Unit,
-    onLogin: () -> Unit
+    onLogin: () -> Unit,
+    productEdition: ProductEdition = ProductEdition.current
 ) {
+    val entryPolicy = remember(productEdition) { ProductEntryPolicy.forEdition(productEdition) }
     var destination by rememberSaveable { mutableStateOf(MainDestination.HOME) }
     val stateHolder = rememberSaveableStateHolder()
+
+    LaunchedEffect(entryPolicy.showCommunityTab) {
+        if (!entryPolicy.showCommunityTab && destination == MainDestination.COMMUNITY) {
+            destination = MainDestination.HOME
+        }
+    }
 
     BackHandler(enabled = destination != MainDestination.HOME) {
         destination = MainDestination.HOME
@@ -78,6 +90,7 @@ fun MainWorkspaceScreen(
         bottomBar = {
             MainNavigationBar(
                 selected = destination,
+                showCommunity = entryPolicy.showCommunityTab,
                 onSelect = { destination = it }
             )
         }
@@ -97,7 +110,8 @@ fun MainWorkspaceScreen(
                         MainDestination.HOME -> HomeScreen(
                             onNavigateToRecording = onNavigateToRecording,
                             onNavigateToReport = onNavigateToReport,
-                            onNavigateToNotifications = onNavigateToNotifications
+                            onNavigateToNotifications = onNavigateToNotifications,
+                            productEdition = productEdition
                         )
 
                         MainDestination.COMMUNITY -> StudyCommunityScreen(
@@ -113,6 +127,7 @@ fun MainWorkspaceScreen(
                             onNavigateToInvitation = onNavigateToInvitation,
                             onNavigateToUserManagement = onNavigateToAccountUsers,
                             onNavigateToCommunityModeration = onNavigateToCommunityModeration,
+                            showSocialActions = entryPolicy.showSocialAccountActions,
                             onNavigateToSettings = onNavigateToSettings,
                             onLogout = onLogout,
                             onLogin = onLogin
@@ -127,6 +142,7 @@ fun MainWorkspaceScreen(
 @Composable
 private fun MainNavigationBar(
     selected: MainDestination,
+    showCommunity: Boolean,
     onSelect: (MainDestination) -> Unit
 ) {
     val selectedTint = if (selected == MainDestination.HOME) BrandBlue else MaterialTheme.colorScheme.primary
@@ -150,25 +166,27 @@ private fun MainNavigationBar(
                 indicatorColor = Color.Transparent
             )
         )
-        NavigationBarItem(
-            selected = selected == MainDestination.COMMUNITY,
-            onClick = { onSelect(MainDestination.COMMUNITY) },
-            icon = {
-                Icon(
-                    if (selected == MainDestination.COMMUNITY) Icons.Filled.Explore else Icons.Outlined.Explore,
-                    contentDescription = null,
-                    modifier = Modifier.size(30.dp)
+        if (showCommunity) {
+            NavigationBarItem(
+                selected = selected == MainDestination.COMMUNITY,
+                onClick = { onSelect(MainDestination.COMMUNITY) },
+                icon = {
+                    Icon(
+                        if (selected == MainDestination.COMMUNITY) Icons.Filled.Explore else Icons.Outlined.Explore,
+                        contentDescription = null,
+                        modifier = Modifier.size(30.dp)
+                    )
+                },
+                label = { Text("社区") },
+                colors = NavigationBarItemDefaults.colors(
+                    selectedIconColor = selectedTint,
+                    selectedTextColor = selectedTint,
+                    unselectedIconColor = unselectedTint,
+                    unselectedTextColor = unselectedTint,
+                    indicatorColor = Color.Transparent
                 )
-            },
-            label = { Text("社区") },
-            colors = NavigationBarItemDefaults.colors(
-                selectedIconColor = selectedTint,
-                selectedTextColor = selectedTint,
-                unselectedIconColor = unselectedTint,
-                unselectedTextColor = unselectedTint,
-                indicatorColor = Color.Transparent
             )
-        )
+        }
         NavigationBarItem(
             selected = selected == MainDestination.ACCOUNT,
             onClick = { onSelect(MainDestination.ACCOUNT) },
