@@ -9,8 +9,10 @@ class ReportImagePlacementPolicyTest {
     @Test
     fun projectManagementImagesAreAlwaysAppendedWithSignInAppendix() {
         assertFalse(shouldInlineReportImage("项目管理"))
+        assertFalse(shouldInlineReportImage("推演·进度会"))
         assertFalse(shouldInlineReportImage("孔爵项目表格"))
         assertEquals("会议影像资料与签到表", reportImageAppendixTitle("项目管理"))
+        assertEquals("会议影像资料与签到表", reportImageAppendixTitle("推演·进度会"))
     }
 
     @Test

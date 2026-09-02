@@ -4,6 +4,7 @@ import android.content.Context
 import com.oa.automation.domain.model.ForumParticipant
 import com.oa.automation.domain.model.MeetingAttachment
 import com.oa.automation.domain.model.Report
+import com.oa.automation.domain.model.MeetingMode
 import com.oa.automation.domain.model.isForumMeetingTemplate
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
@@ -17,7 +18,8 @@ import java.util.zip.ZipOutputStream
 import kotlin.math.roundToLong
 
 private fun String.usesProjectManagementDocxTemplate(): Boolean =
-    this == "项目管理" || (contains("孔爵") && contains("表格"))
+    MeetingMode.fromTemplateName(this) == MeetingMode.PROGRESS ||
+        contains("孔爵") && contains("表格")
 
 private fun String.usesStudyReportStyle(): Boolean =
     contains("研学") || contains("参观考察") || contains("游记") || contains("文旅")

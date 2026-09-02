@@ -16,6 +16,7 @@ import android.util.Base64
 import com.oa.automation.domain.model.ForumParticipant
 import com.oa.automation.domain.model.MeetingAttachment
 import com.oa.automation.domain.model.Report
+import com.oa.automation.domain.model.MeetingMode
 import com.oa.automation.domain.model.isForumMeetingTemplate
 import java.io.File
 import java.io.FileOutputStream
@@ -24,7 +25,8 @@ private fun String.usesStudyReportStyle(): Boolean =
     contains("研学") || contains("参观考察") || contains("游记") || contains("文旅")
 
 private fun String.usesProjectManagementReportStyle(): Boolean =
-    trim() == "项目管理" || contains("孔爵") && contains("表格")
+    MeetingMode.fromTemplateName(this) == MeetingMode.PROGRESS ||
+        contains("孔爵") && contains("表格")
 
 /** Image ordering contract shared by PDF and UI preview/export tests. */
 internal fun shouldInlineReportImage(templateName: String): Boolean =
