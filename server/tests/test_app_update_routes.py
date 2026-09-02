@@ -56,6 +56,9 @@ class AppUpdateRouteTests(unittest.TestCase):
             apk_response = client.get("/api/app-update/android/apk/10210")
             self.assertEqual(apk_response.status_code, 200)
             self.assertEqual(apk_response.content, b"apk-bytes")
+            legacy_apk_response = client.get("/api/app-update/android/apk")
+            self.assertEqual(legacy_apk_response.status_code, 200)
+            self.assertEqual(legacy_apk_response.content, b"apk-bytes")
 
     def test_versioned_artifact_remains_available_after_next_release(self) -> None:
         previous_apk = backend.APP_UPDATE_ANDROID_APK_PATH.parent / "ZhiWuBen-Android-10210.apk"
@@ -187,6 +190,25 @@ class AppUpdateRouteTests(unittest.TestCase):
             apk_response = client.get("/api/app-update/android/light/apk/10259")
             self.assertEqual(apk_response.status_code, 200)
             self.assertEqual(apk_response.content, b"light-apk")
+            directory_redirect = client.get(
+                "/api/app-update/android/light/apk",
+                follow_redirects=False,
+            )
+            self.assertEqual(directory_redirect.status_code, 308)
+            self.assertEqual(
+                directory_redirect.headers["location"],
+                "/api/app-update/android/light/apk/",
+            )
+            directory_response = client.get("/api/app-update/android/light/apk/")
+            self.assertEqual(directory_response.status_code, 200)
+            self.assertTrue(
+                directory_response.headers["content-type"].startswith("text/html")
+            )
+            self.assertIn("ZhiWuBen-Android-10259.apk", directory_response.text)
+            self.assertIn(
+                'href="http://testserver/api/app-update/android/light/apk/10259"',
+                directory_response.text,
+            )
             social_response = client.get("/api/app-update/android")
             self.assertEqual(social_response.status_code, 204)
 

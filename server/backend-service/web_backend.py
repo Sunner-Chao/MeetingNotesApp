@@ -1861,15 +1861,9 @@ def android_app_update_download(version_code: int) -> FileResponse:
     return android_app_update_file_response(Path(artifact["path"]))
 
 
-@app.get("/api/app-update/android/light/apk", name="android_app_update_light_download_legacy")
-def android_app_update_light_download_legacy() -> FileResponse:
-    configured = configured_android_app_update_with_artifact(
-        APP_UPDATE_LIGHT_CONFIG_PATH,
-        APP_UPDATE_LIGHT_ANDROID_APK_PATH,
-    )
-    if configured is None:
-        raise HTTPException(status_code=404, detail="Light Enjoy Android update package is not published")
-    return android_app_update_file_response(configured[1])
+@app.get("/api/app-update/android/light/apk", name="android_app_update_light_directory_redirect")
+def android_app_update_light_directory_redirect() -> RedirectResponse:
+    return RedirectResponse(url="/api/app-update/android/light/apk/", status_code=308)
 
 
 @app.get(
