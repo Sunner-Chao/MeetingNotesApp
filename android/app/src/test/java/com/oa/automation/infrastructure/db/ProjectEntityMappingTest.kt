@@ -6,6 +6,7 @@ import com.oa.automation.domain.model.ProjectMeetingLink
 import com.oa.automation.domain.model.ProjectRiskRef
 import com.oa.automation.domain.model.ProjectTaskRef
 import com.oa.automation.domain.model.ProjectAggregateSnapshot
+import com.oa.automation.domain.model.buildProjectAggregateSnapshot
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -32,5 +33,31 @@ class ProjectEntityMappingTest {
     fun aggregateSnapshotRoundTripsAsRebuildableReadModel() {
         val snapshot = ProjectAggregateSnapshot("s1", "p1", 3, 4, 1, 2)
         assertEquals(snapshot, snapshot.toEntity().toDomain())
+    }
+
+    @Test
+    fun aggregateBuilderCountsOnlyActiveLinksAndOpenItems() {
+        val snapshot = buildProjectAggregateSnapshot(
+            snapshotId = "s1",
+            projectId = "p1",
+            meetingLinks = listOf(
+                ProjectMeetingLink("p1", "m1"),
+                ProjectMeetingLink("p1", "m2", removedAt = 12L)
+            ),
+            tasks = listOf(
+                ProjectTaskRef("t1", "p1", "m1", "r1", "1", "open"),
+                ProjectTaskRef("t2", "p1", "m1", "r1", "2", "done", completed = true)
+            ),
+            risks = listOf(
+                ProjectRiskRef("r1", "p1", "m1", "r1", "1", "open", status = "开放"),
+                ProjectRiskRef("r2", "p1", "m1", "r1", "2", "closed", status = "已关闭")
+            ),
+            decisions = listOf(
+                ProjectDecisionRef("d1", "p1", "m1", "r1", "1", "pending"),
+                ProjectDecisionRef("d2", "p1", "m1", "r1", "2", "confirmed", confirmed = true)
+            ),
+            generatedAt = 99L
+        )
+        assertEquals(ProjectAggregateSnapshot("s1", "p1", 1, 1, 1, 1, 99L), snapshot)
     }
 }
