@@ -75,3 +75,14 @@ data class ProjectDecisionRef(
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = createdAt
 )
+
+/** Rebuildable read model for a project overview; never a replacement for source refs. */
+data class ProjectAggregateSnapshot(
+    val id: String,
+    val projectId: String,
+    val sourceMeetingCount: Int,
+    val openTaskCount: Int,
+    val openRiskCount: Int,
+    val pendingDecisionCount: Int,
+    val generatedAt: Long = System.currentTimeMillis()
+)

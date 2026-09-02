@@ -5,6 +5,7 @@ import com.oa.automation.domain.model.ProjectDecisionRef
 import com.oa.automation.domain.model.ProjectMeetingLink
 import com.oa.automation.domain.model.ProjectRiskRef
 import com.oa.automation.domain.model.ProjectTaskRef
+import com.oa.automation.domain.model.ProjectAggregateSnapshot
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -25,5 +26,11 @@ class ProjectEntityMappingTest {
         assertEquals(task, task.toEntity().toDomain())
         assertEquals(risk, risk.toEntity().toDomain())
         assertEquals(decision, decision.toEntity().toDomain())
+    }
+
+    @Test
+    fun aggregateSnapshotRoundTripsAsRebuildableReadModel() {
+        val snapshot = ProjectAggregateSnapshot("s1", "p1", 3, 4, 1, 2)
+        assertEquals(snapshot, snapshot.toEntity().toDomain())
     }
 }

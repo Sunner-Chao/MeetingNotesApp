@@ -5,6 +5,7 @@ import com.oa.automation.domain.model.ProjectDecisionRef
 import com.oa.automation.domain.model.ProjectMeetingLink
 import com.oa.automation.domain.model.ProjectRiskRef
 import com.oa.automation.domain.model.ProjectTaskRef
+import com.oa.automation.domain.model.ProjectAggregateSnapshot
 import kotlinx.coroutines.flow.Flow
 
 interface ProjectRepository {
@@ -21,4 +22,6 @@ interface ProjectRepository {
     fun observeRisks(projectId: String): Flow<List<ProjectRiskRef>>
     suspend fun saveDecision(ref: ProjectDecisionRef): Result<ProjectDecisionRef>
     fun observeDecisions(projectId: String): Flow<List<ProjectDecisionRef>>
+    fun observeLatestSnapshot(projectId: String): Flow<ProjectAggregateSnapshot?>
+    suspend fun saveSnapshot(snapshot: ProjectAggregateSnapshot): Result<ProjectAggregateSnapshot>
 }

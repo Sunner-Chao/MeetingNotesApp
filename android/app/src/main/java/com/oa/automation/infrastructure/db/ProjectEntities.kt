@@ -10,6 +10,7 @@ import com.oa.automation.domain.model.ProjectMeetingLink
 import com.oa.automation.domain.model.ProjectRiskRef
 import com.oa.automation.domain.model.ProjectStatus
 import com.oa.automation.domain.model.ProjectTaskRef
+import com.oa.automation.domain.model.ProjectAggregateSnapshot
 
 @Entity(tableName = "projects")
 data class ProjectEntity(
@@ -136,6 +137,28 @@ data class ProjectDecisionRefEntity(
     val updatedAt: Long
 )
 
+@Entity(
+    tableName = "project_aggregate_snapshots",
+    foreignKeys = [
+        ForeignKey(
+            entity = ProjectEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["projectId"],
+            onDelete = ForeignKey.CASCADE
+        )
+    ],
+    indices = [Index("projectId"), Index(value = ["projectId", "generatedAt"])]
+)
+data class ProjectAggregateSnapshotEntity(
+    @PrimaryKey val id: String,
+    val projectId: String,
+    val sourceMeetingCount: Int,
+    val openTaskCount: Int,
+    val openRiskCount: Int,
+    val pendingDecisionCount: Int,
+    val generatedAt: Long
+)
+
 fun ProjectEntity.toDomain() = Project(
     id = id,
     name = name,
@@ -187,4 +210,14 @@ fun ProjectDecisionRefEntity.toDomain() = ProjectDecisionRef(
 fun ProjectDecisionRef.toEntity() = ProjectDecisionRefEntity(
     id, projectId, sourceMeetingId, sourceReportId, sourceKey, content,
     confirmed, manuallyEdited, createdAt, updatedAt
+)
+
+fun ProjectAggregateSnapshotEntity.toDomain() = ProjectAggregateSnapshot(
+    id, projectId, sourceMeetingCount, openTaskCount, openRiskCount,
+    pendingDecisionCount, generatedAt
+)
+
+fun ProjectAggregateSnapshot.toEntity() = ProjectAggregateSnapshotEntity(
+    id, projectId, sourceMeetingCount, openTaskCount, openRiskCount,
+    pendingDecisionCount, generatedAt
 )

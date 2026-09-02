@@ -26,9 +26,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ProjectMeetingLinkEntity::class,
         ProjectTaskRefEntity::class,
         ProjectRiskRefEntity::class,
-        ProjectDecisionRefEntity::class
+        ProjectDecisionRefEntity::class,
+        ProjectAggregateSnapshotEntity::class
     ],
-    version = 23,
+    version = 24,
     exportSchema = false
 )
 @TypeConverters(DbConverters::class)
@@ -598,6 +599,28 @@ abstract class AppDatabase : RoomDatabase() {
                 )
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_project_decision_refs_projectId ON project_decision_refs(projectId)")
                 db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_project_decision_refs_projectId_sourceReportId_sourceKey ON project_decision_refs(projectId, sourceReportId, sourceKey)")
+            }
+        }
+
+        val MIGRATION_23_24 = object : Migration(23, 24) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS project_aggregate_snapshots (
+                        id TEXT NOT NULL,
+                        projectId TEXT NOT NULL,
+                        sourceMeetingCount INTEGER NOT NULL,
+                        openTaskCount INTEGER NOT NULL,
+                        openRiskCount INTEGER NOT NULL,
+                        pendingDecisionCount INTEGER NOT NULL,
+                        generatedAt INTEGER NOT NULL,
+                        PRIMARY KEY(id),
+                        FOREIGN KEY(projectId) REFERENCES projects(id) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_project_aggregate_snapshots_projectId ON project_aggregate_snapshots(projectId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_project_aggregate_snapshots_projectId_generatedAt ON project_aggregate_snapshots(projectId, generatedAt)")
             }
         }
     }

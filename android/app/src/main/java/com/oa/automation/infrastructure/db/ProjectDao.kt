@@ -45,4 +45,10 @@ interface ProjectDao {
 
     @Upsert
     suspend fun upsertDecisionRef(entity: ProjectDecisionRefEntity)
+
+    @Query("SELECT * FROM project_aggregate_snapshots WHERE projectId = :projectId ORDER BY generatedAt DESC LIMIT 1")
+    fun observeLatestSnapshot(projectId: String): Flow<ProjectAggregateSnapshotEntity?>
+
+    @Upsert
+    suspend fun upsertAggregateSnapshot(entity: ProjectAggregateSnapshotEntity)
 }

@@ -5,6 +5,7 @@ import com.oa.automation.domain.model.ProjectDecisionRef
 import com.oa.automation.domain.model.ProjectMeetingLink
 import com.oa.automation.domain.model.ProjectRiskRef
 import com.oa.automation.domain.model.ProjectTaskRef
+import com.oa.automation.domain.model.ProjectAggregateSnapshot
 import com.oa.automation.domain.repository.ProjectRepository
 import com.oa.automation.infrastructure.db.ProjectDao
 import com.oa.automation.infrastructure.db.toDomain
@@ -71,4 +72,13 @@ class ProjectRepositoryImpl(private val dao: ProjectDao) : ProjectRepository {
 
     override fun observeDecisions(projectId: String): Flow<List<ProjectDecisionRef>> =
         dao.observeDecisionRefs(projectId).map { list -> list.map { it.toDomain() } }
+
+    override fun observeLatestSnapshot(projectId: String): Flow<ProjectAggregateSnapshot?> =
+        dao.observeLatestSnapshot(projectId).map { it?.toDomain() }
+
+    override suspend fun saveSnapshot(snapshot: ProjectAggregateSnapshot): Result<ProjectAggregateSnapshot> = runCatching {
+        require(snapshot.projectId.isNotBlank()) { "Project id must not be blank" }
+        dao.upsertAggregateSnapshot(snapshot.toEntity())
+        snapshot
+    }
 }
