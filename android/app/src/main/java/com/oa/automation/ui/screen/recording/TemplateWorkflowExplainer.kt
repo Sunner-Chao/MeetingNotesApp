@@ -48,6 +48,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -254,7 +255,10 @@ private fun WorkflowStepRail(
                         .width(66.dp)
                         .graphicsLayer { scaleX = scale; scaleY = scale }
                         .clip(RoundedCornerShape(8.dp))
-                        .clickable(onClick = { onStepSelected(index) })
+                        .clickable(
+                            role = Role.Button,
+                            onClick = { onStepSelected(index) }
+                        )
                         .padding(vertical = 1.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
@@ -270,7 +274,7 @@ private fun WorkflowStepRail(
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
                                 imageVector = workflowIcon(step.iconKey),
-                                contentDescription = step.title,
+                                contentDescription = null,
                                 tint = if (selected) Color.White else inkColor,
                                 modifier = Modifier.size(14.dp)
                             )
