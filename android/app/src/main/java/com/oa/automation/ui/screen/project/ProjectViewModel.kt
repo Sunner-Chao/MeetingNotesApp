@@ -132,7 +132,8 @@ class ProjectViewModel(
         val project = _uiState.value.selectedProject ?: return
         val state = _uiState.value
         val snapshot = buildProjectAggregateSnapshot(
-            snapshotId = "${project.id}-${System.currentTimeMillis()}",
+            // Keep one rebuildable read model per project instead of appending history rows.
+            snapshotId = project.id,
             projectId = project.id,
             meetingLinks = state.meetingLinks,
             tasks = state.tasks,
