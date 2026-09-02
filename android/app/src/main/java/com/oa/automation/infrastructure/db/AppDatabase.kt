@@ -21,9 +21,14 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         JourneyEditionEntity::class,
         PublishedPostEntity::class,
         CommunitySyncOutboxEntity::class,
-        PublishedPostMediaEntity::class
+        PublishedPostMediaEntity::class,
+        ProjectEntity::class,
+        ProjectMeetingLinkEntity::class,
+        ProjectTaskRefEntity::class,
+        ProjectRiskRefEntity::class,
+        ProjectDecisionRefEntity::class
     ],
-    version = 22,
+    version = 23,
     exportSchema = false
 )
 @TypeConverters(DbConverters::class)
@@ -37,6 +42,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun publishedPostDao(): PublishedPostDao
     abstract fun communitySyncOutboxDao(): CommunitySyncOutboxDao
     abstract fun publishedPostMediaDao(): PublishedPostMediaDao
+    abstract fun projectDao(): ProjectDao
 
     companion object {
         val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -494,6 +500,104 @@ abstract class AppDatabase : RoomDatabase() {
         val MIGRATION_21_22 = object : Migration(21, 22) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE reports ADD COLUMN hiddenWorkspaceBlocks TEXT NOT NULL DEFAULT '[]'")
+            }
+        }
+
+        val MIGRATION_22_23 = object : Migration(22, 23) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS projects (
+                        id TEXT NOT NULL,
+                        name TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        updatedAt INTEGER NOT NULL,
+                        archivedAt INTEGER,
+                        deletedAt INTEGER,
+                        PRIMARY KEY(id)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS project_meeting_links (
+                        projectId TEXT NOT NULL,
+                        meetingId TEXT NOT NULL,
+                        linkedAt INTEGER NOT NULL,
+                        removedAt INTEGER,
+                        PRIMARY KEY(projectId, meetingId),
+                        FOREIGN KEY(projectId) REFERENCES projects(id) ON UPDATE NO ACTION ON DELETE CASCADE,
+                        FOREIGN KEY(meetingId) REFERENCES meetings(id) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_project_meeting_links_projectId ON project_meeting_links(projectId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_project_meeting_links_meetingId ON project_meeting_links(meetingId)")
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS project_task_refs (
+                        id TEXT NOT NULL,
+                        projectId TEXT NOT NULL,
+                        sourceMeetingId TEXT NOT NULL,
+                        sourceReportId TEXT NOT NULL,
+                        sourceKey TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        assignee TEXT,
+                        due TEXT,
+                        priority TEXT,
+                        completed INTEGER NOT NULL,
+                        manuallyEdited INTEGER NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        updatedAt INTEGER NOT NULL,
+                        PRIMARY KEY(id),
+                        FOREIGN KEY(projectId) REFERENCES projects(id) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_project_task_refs_projectId ON project_task_refs(projectId)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_project_task_refs_projectId_sourceReportId_sourceKey ON project_task_refs(projectId, sourceReportId, sourceKey)")
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS project_risk_refs (
+                        id TEXT NOT NULL,
+                        projectId TEXT NOT NULL,
+                        sourceMeetingId TEXT NOT NULL,
+                        sourceReportId TEXT NOT NULL,
+                        sourceKey TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        detail TEXT,
+                        status TEXT,
+                        manuallyEdited INTEGER NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        updatedAt INTEGER NOT NULL,
+                        PRIMARY KEY(id),
+                        FOREIGN KEY(projectId) REFERENCES projects(id) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_project_risk_refs_projectId ON project_risk_refs(projectId)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_project_risk_refs_projectId_sourceReportId_sourceKey ON project_risk_refs(projectId, sourceReportId, sourceKey)")
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS project_decision_refs (
+                        id TEXT NOT NULL,
+                        projectId TEXT NOT NULL,
+                        sourceMeetingId TEXT NOT NULL,
+                        sourceReportId TEXT NOT NULL,
+                        sourceKey TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        confirmed INTEGER NOT NULL,
+                        manuallyEdited INTEGER NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        updatedAt INTEGER NOT NULL,
+                        PRIMARY KEY(id),
+                        FOREIGN KEY(projectId) REFERENCES projects(id) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_project_decision_refs_projectId ON project_decision_refs(projectId)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_project_decision_refs_projectId_sourceReportId_sourceKey ON project_decision_refs(projectId, sourceReportId, sourceKey)")
             }
         }
     }

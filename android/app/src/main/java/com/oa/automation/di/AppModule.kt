@@ -15,6 +15,7 @@ import com.oa.automation.domain.repository.MeetingRepository
 import com.oa.automation.domain.repository.ReportRepository
 import com.oa.automation.domain.repository.ScheduledMeetingRepository
 import com.oa.automation.domain.repository.StageDraftRepository
+import com.oa.automation.domain.repository.ProjectRepository
 import com.oa.automation.infrastructure.audio.AudioRecorder
 import com.oa.automation.infrastructure.audio.MeetingAudioArchiveService
 import com.oa.automation.infrastructure.audio.MeetingAudioAssembler
@@ -44,6 +45,7 @@ import com.oa.automation.infrastructure.repository.PublishedPostRepositoryImpl
 import com.oa.automation.infrastructure.repository.ReportRepositoryImpl
 import com.oa.automation.infrastructure.repository.ScheduledMeetingRepositoryImpl
 import com.oa.automation.infrastructure.repository.StageDraftRepositoryImpl
+import com.oa.automation.infrastructure.repository.ProjectRepositoryImpl
 import com.oa.automation.infrastructure.repository.CommunitySyncRepositoryImpl
 import com.oa.automation.application.usecase.GenerateStageDraftUseCase
 import com.oa.automation.infrastructure.service.RecordingSessionController
@@ -99,6 +101,7 @@ val appModule = module {
             .addMigrations(AppDatabase.MIGRATION_19_20)
             .addMigrations(AppDatabase.MIGRATION_20_21)
             .addMigrations(AppDatabase.MIGRATION_21_22)
+            .addMigrations(AppDatabase.MIGRATION_22_23)
             .build()
     }
     single { get<AppDatabase>().meetingDao() }
@@ -110,6 +113,7 @@ val appModule = module {
     single { get<AppDatabase>().publishedPostDao() }
     single { get<AppDatabase>().communitySyncOutboxDao() }
     single { get<AppDatabase>().publishedPostMediaDao() }
+    single { get<AppDatabase>().projectDao() }
 
     // Infrastructure
     single<MeetingRepository> { MeetingRepositoryImpl(get()) }
@@ -117,6 +121,7 @@ val appModule = module {
     single<StageDraftRepository> { StageDraftRepositoryImpl(get()) }
     single<JourneyEditionRepository> { JourneyEditionRepositoryImpl(get()) }
     single<PublishedPostRepository> { PublishedPostRepositoryImpl(get()) }
+    single<ProjectRepository> { ProjectRepositoryImpl(get()) }
     single<CommunitySyncEnqueuer> { CommunitySyncScheduler(androidContext()) }
     single<com.oa.automation.domain.repository.CommunitySyncRepository> {
         CommunitySyncRepositoryImpl(get(), get(), get())
