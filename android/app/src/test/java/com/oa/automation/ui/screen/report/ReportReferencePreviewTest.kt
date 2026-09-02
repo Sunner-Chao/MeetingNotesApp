@@ -53,4 +53,16 @@ class ReportReferencePreviewTest {
         assertTrue(preview.contains("小孙"))
         assertTrue(preview.contains("发送纪要"))
     }
+
+    @Test
+    fun structuredPreviewIncludesTaskPriority() {
+        val preview = reportPreviewDocument(
+            Report(
+                meetingId = "priority",
+                tasks = listOf(Task("完成复核", "小孙", "周五", priority = "高"))
+            )
+        )
+
+        assertTrue(preview.contains("高"))
+    }
 }

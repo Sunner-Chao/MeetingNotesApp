@@ -720,7 +720,8 @@ class ReportViewModel(
             report.tasks.forEach { task ->
                 val assignee = task.assignee ?: "无"
                 val due = task.due ?: "无"
-                sb.appendLine("- ${task.content} | $assignee | $due")
+                val priority = task.priority ?: "未提及"
+                sb.appendLine("- ${task.content} | $assignee | $due | $priority")
             }
             sb.appendLine()
         }

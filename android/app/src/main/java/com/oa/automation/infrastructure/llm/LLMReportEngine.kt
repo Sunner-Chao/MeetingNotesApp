@@ -108,7 +108,8 @@ data class ReportData(
 data class TaskData(
     val content: String,
     val assignee: String? = null,
-    val due: String? = null
+    val due: String? = null,
+    val priority: String? = null
 )
 
 /**
@@ -155,7 +156,7 @@ object ReportPromptTemplates {
 1. 会议概述（一段话总结）
 2. 关键要点（5-8条）
 3. 决策事项（如有）
-4. 待办任务（如有，格式：任务内容 | 负责人 | 截止时间）
+4. 待办任务（如有，格式：任务内容 | 负责人 | 截止时间 | 优先级；未提及时写“未提及”）
 5. 行动项（如有）"""
 
     const val USER_PROMPT_TEMPLATE_ACTION = """请根据以下会议记录，输出“行动项驱动”的会议纪要：

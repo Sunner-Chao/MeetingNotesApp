@@ -1248,7 +1248,8 @@ private fun StructuredReportContent(report: Report) {
                             Text(
                                 text = listOfNotNull(
                                     task.assignee?.let { "负责人: $it" },
-                                    task.due?.let { "截止: $it" }
+                                    task.due?.let { "截止: $it" },
+                                    task.priority?.let { "优先级: $it" }
                                 ).joinToString(" | "),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant

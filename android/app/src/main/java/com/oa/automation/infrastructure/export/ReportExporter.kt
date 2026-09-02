@@ -91,7 +91,8 @@ object ReportExporter {
                     val checkbox = if (task.completed) "[x]" else "[ ]"
                     val meta = listOfNotNull(
                         task.assignee?.let { "负责人: $it" },
-                        task.due?.let { "截止: $it" }
+                        task.due?.let { "截止: $it" },
+                        task.priority?.let { "优先级: $it" }
                     ).joinToString(" | ")
                     appendLine("- $checkbox ${task.content}")
                     if (meta.isNotEmpty()) {
@@ -155,7 +156,8 @@ object ReportExporter {
                     val status = if (task.completed) "[完成]" else "[待办]"
                     val meta = listOfNotNull(
                         task.assignee?.let { "负责人: $it" },
-                        task.due?.let { "截止: $it" }
+                        task.due?.let { "截止: $it" },
+                        task.priority?.let { "优先级: $it" }
                     ).joinToString(", ")
                     appendLine("  - $status ${task.content}")
                     if (meta.isNotEmpty()) {
@@ -837,13 +839,14 @@ object ReportExporter {
             if (report.tasks.isNotEmpty()) {
                 yPosition = drawText("待办任务", headingPaint, minimumFollowingSpace = 40f)
                 drawTable(buildList {
-                    add(listOf("事项", "负责人", "截止时间", "状态"))
+                    add(listOf("事项", "负责人", "截止时间", "优先级", "状态"))
                     report.tasks.forEach { task ->
                         add(
                             listOf(
                                 task.content,
                                 task.assignee.orEmpty(),
                                 task.due.orEmpty(),
+                                task.priority.orEmpty(),
                                 if (task.completed) "已完成" else "待办"
                             )
                         )

@@ -250,7 +250,8 @@ class OllamaEngine(
                 parts.size >= 3 -> TaskData(
                     content = parts[0].replace("^\\d+[.、]\\s*".toRegex(), ""),
                     assignee = parts[1].takeIf { it.isNotBlank() && it != "无" },
-                    due = parts[2].takeIf { it.isNotBlank() && it != "无" }
+                    due = parts[2].takeIf { it.isNotBlank() && it != "无" },
+                    priority = parts.getOrNull(3)?.takeIf { it.isNotBlank() && it != "无" }
                 )
                 parts.size >= 1 -> TaskData(
                     content = parts[0].replace("^\\d+[.、]\\s*".toRegex(), "")

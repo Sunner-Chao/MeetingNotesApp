@@ -473,9 +473,9 @@ internal class DocxPackageWriter(
         if (report.tasks.isNotEmpty()) {
             add(ParagraphBlock("4. 行动项跟踪表", "Heading1"))
             add(TableBlock(buildList {
-                add(listOf("事项", "负责人", "截止时间", "状态"))
+                add(listOf("事项", "负责人", "截止时间", "优先级", "状态"))
                 report.tasks.forEach { task ->
-                    add(listOf(task.content, task.assignee.orEmpty(), task.due.orEmpty(), if (task.completed) "已完成" else "待执行"))
+                    add(listOf(task.content, task.assignee.orEmpty(), task.due.orEmpty(), task.priority.orEmpty(), if (task.completed) "已完成" else "待执行"))
                 }
             }))
         }

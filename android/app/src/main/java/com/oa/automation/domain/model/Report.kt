@@ -21,9 +21,10 @@ object ReportWorkspaceBlocks {
     const val AUDIO = "audio"
     const val IMAGES = "images"
     const val REPORT = "report"
+    const val RISKS = "risks"
     const val TRANSCRIPT = "transcript"
 
-    val DEFAULT_ORDER = listOf(PARTICIPANTS, AUDIO, IMAGES, REPORT, TRANSCRIPT)
+    val DEFAULT_ORDER = listOf(PARTICIPANTS, AUDIO, IMAGES, REPORT, RISKS, TRANSCRIPT)
 }
 
 fun normalizeReportWorkspaceOrder(
@@ -35,5 +36,7 @@ data class Task(
     val content: String,
     val assignee: String? = null,
     val due: String? = null,
-    val completed: Boolean = false
+    val completed: Boolean = false,
+    /** Optional priority parsed from the fourth task-table column. */
+    val priority: String? = null
 )

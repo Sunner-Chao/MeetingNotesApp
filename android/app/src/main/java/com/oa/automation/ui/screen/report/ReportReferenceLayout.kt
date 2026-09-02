@@ -64,6 +64,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.TaskAlt
 import androidx.compose.material.icons.filled.Timeline
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -117,6 +118,8 @@ import com.oa.automation.domain.model.JourneyStageStatus
 import com.oa.automation.domain.model.PresetReportTemplate
 import com.oa.automation.domain.model.Report
 import com.oa.automation.domain.model.ReportWorkspaceBlocks
+import com.oa.automation.domain.model.RiskItem
+import com.oa.automation.domain.model.extractRiskItems
 import com.oa.automation.domain.model.normalizeReportWorkspaceOrder
 import com.oa.automation.domain.model.ReportTitleResolver
 import com.oa.automation.domain.model.isForumMeetingTemplate
@@ -330,6 +333,7 @@ internal fun ReportReferenceContent(
         templateName.contains("文旅") ||
         uiState.journeyStages.isNotEmpty()
     val isForumReport = templateName.isForumMeetingTemplate()
+    val riskItems = remember(report.rawContent) { extractRiskItems(report.rawContent) }
     var showTemplatePreview by remember { mutableStateOf(false) }
     var previewTemplate by remember { mutableStateOf<PresetReportTemplate?>(null) }
 
@@ -412,6 +416,7 @@ internal fun ReportReferenceContent(
                         report = report,
                         uiState = uiState,
                         isForumReport = isForumReport,
+                        riskItems = riskItems,
                         metrics = metrics,
                         onDeleteAttachment = onDeleteAttachment,
                         onAddImages = onAddImages,
@@ -446,6 +451,7 @@ private fun StructuredReportWorkspace(
     report: Report,
     uiState: ReportUiState,
     isForumReport: Boolean,
+    riskItems: List<RiskItem>,
     metrics: ReferenceMetrics,
     onDeleteAttachment: (MeetingAttachment) -> Unit,
     onAddImages: () -> Unit,
@@ -467,6 +473,7 @@ private fun StructuredReportWorkspace(
         if (uiState.showTranscript && uiState.transcriptText.isNotBlank()) {
             add(ReportWorkspaceBlocks.TRANSCRIPT)
         }
+        if (riskItems.isNotEmpty()) add(ReportWorkspaceBlocks.RISKS)
     }
     val persisted = report.workspaceBlockOrder
     var order by remember(report.id, persisted, available) {
@@ -517,6 +524,7 @@ private fun StructuredReportWorkspace(
                             height = metrics.reportHeight,
                             onPreviewFullReport = onPreviewFullReport
                         )
+                        ReportWorkspaceBlocks.RISKS -> ReferenceRiskCard(riskItems)
                         ReportWorkspaceBlocks.TRANSCRIPT -> ReferenceTranscriptCard(
                             text = uiState.transcriptText,
                             onCollapse = onToggleTranscript,
@@ -524,6 +532,56 @@ private fun StructuredReportWorkspace(
                         )
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReferenceRiskCard(items: List<RiskItem>) {
+    ReferenceGlassCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 118.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Default.Warning, null, tint = ReferencePink, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(7.dp))
+            Text("风险与阻塞", color = ReferenceInk, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.weight(1f))
+            Text("${items.size} 项", color = ReferenceMuted, fontSize = 10.sp)
+        }
+        Column(
+            modifier = Modifier.padding(top = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            items.take(8).forEach { item ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Surface(
+                        modifier = Modifier.padding(top = 4.dp).size(6.dp),
+                        shape = CircleShape,
+                        color = ReferencePink
+                    ) {}
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(item.content, color = ReferenceInk, fontSize = 12.sp, lineHeight = 17.sp)
+                        val meta = listOfNotNull(item.detail, item.status)
+                            .filter(String::isNotBlank)
+                            .joinToString(" · ")
+                        if (meta.isNotBlank()) {
+                            Text(meta, color = ReferenceMuted, fontSize = 10.sp, lineHeight = 14.sp)
+                        }
+                    }
+                }
+            }
+            if (items.size > 8) {
+                Text("其余 ${items.size - 8} 项可在完整纪要中查看", color = ReferenceMuted, fontSize = 10.sp)
             }
         }
     }
@@ -2021,7 +2079,7 @@ internal fun reportPreviewDocument(report: Report): String {
                 appendLine("待办任务")
                 report.tasks.forEachIndexed { index, task ->
                     val state = if (task.completed) "已完成" else "待办"
-                    appendLine("（${index + 1}）${task.content.cleanReportText()} · ${task.assignee.orEmpty()} · ${task.due.orEmpty()} · $state")
+                    appendLine("（${index + 1}）${task.content.cleanReportText()} · ${task.assignee.orEmpty()} · ${task.due.orEmpty()} · ${task.priority.orEmpty()} · $state")
                 }
             }
             if (report.actionItems.isNotEmpty()) {

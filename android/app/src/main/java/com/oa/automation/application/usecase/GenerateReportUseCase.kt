@@ -58,7 +58,8 @@ class GenerateReportUseCase(
                 Task(
                     content = taskData.content,
                     assignee = taskData.assignee,
-                    due = taskData.due
+                    due = taskData.due,
+                    priority = taskData.priority
                 )
             }
 
