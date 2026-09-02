@@ -170,6 +170,11 @@ ACCOUNT_AUTH_PUBLIC_BASE_URL = os.getenv("ACCOUNT_AUTH_PUBLIC_BASE_URL", "").str
 ACCOUNT_AUTH_ANDROID_CALLBACK_URI = _env(
     "ACCOUNT_AUTH_ANDROID_CALLBACK_URI", "zhiwuben://auth/callback"
 )
+ACCOUNT_AUTH_ANDROID_CALLBACK_URIS = tuple(
+    value.strip()
+    for value in re.split(r"[,\n]", os.getenv("ACCOUNT_AUTH_ANDROID_CALLBACK_URIS", ""))
+    if value.strip()
+)
 ACCOUNT_AUTH_ALLOWED_REDIRECTS = tuple(
     value.strip()
     for value in re.split(r"[,\n]", os.getenv("ACCOUNT_AUTH_ALLOWED_REDIRECTS", ""))
@@ -1201,7 +1206,11 @@ def _social_client_redirect(request: Request, client: str, requested: str) -> st
         and parsed.scheme == public.scheme
         and parsed.netloc == public.netloc
     )
-    allowed = (ACCOUNT_AUTH_ANDROID_CALLBACK_URI, *ACCOUNT_AUTH_ALLOWED_REDIRECTS)
+    allowed = (
+        ACCOUNT_AUTH_ANDROID_CALLBACK_URI,
+        *ACCOUNT_AUTH_ANDROID_CALLBACK_URIS,
+        *ACCOUNT_AUTH_ALLOWED_REDIRECTS,
+    )
     if same_origin or any(_same_redirect_target(candidate, target) for target in allowed if target):
         return candidate
     raise AccountError("第三方登录回调地址不在允许列表中")

@@ -40,6 +40,24 @@ class AccountRouteTests(unittest.TestCase):
             )
         )
 
+    def test_product_callback_allowlist_accepts_configured_light_callback(self) -> None:
+        previous_callbacks = backend.ACCOUNT_AUTH_ANDROID_CALLBACK_URIS
+        backend.ACCOUNT_AUTH_ANDROID_CALLBACK_URIS = (
+            "zhiwuben-light://auth/callback",
+        )
+        try:
+            request = type("RequestStub", (), {"base_url": "https://lstwin.space/"})()
+            self.assertEqual(
+                backend._social_client_redirect(
+                    request,
+                    "android",
+                    "zhiwuben-light://auth/callback?source=android",
+                ),
+                "zhiwuben-light://auth/callback?source=android",
+            )
+        finally:
+            backend.ACCOUNT_AUTH_ANDROID_CALLBACK_URIS = previous_callbacks
+
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         root = Path(self.temp_dir.name)

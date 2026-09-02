@@ -187,9 +187,16 @@ val debugSttRelayAddress = claudeEnv["MEETINGNOTES_STT_DEBUG_IPV4_RELAY_ADDRESS"
 val releaseSttRelayAddress = claudeEnv["MEETINGNOTES_STT_IPV4_RELAY_ADDRESS"]
     ?.takeIf { it.isNotBlank() }
     .orEmpty()
+val productEdition = providers.gradleProperty("meetingnotesProductEdition")
+    .orElse(providers.environmentVariable("MEETINGNOTES_PRODUCT_EDITION"))
+    .orElse("light-enjoy")
+    .get()
+    .trim()
+    .lowercase()
+    .also { require(it in setOf("light-enjoy", "social")) { "Unsupported product edition: $it" } }
 val socialAuthScheme = providers.gradleProperty("meetingnotesSocialAuthScheme")
     .orElse(providers.environmentVariable("MEETINGNOTES_SOCIAL_AUTH_SCHEME"))
-    .orElse("zhiwuben")
+    .orElse(if (productEdition == "light-enjoy") "zhiwuben-light" else "zhiwuben")
     .get()
 val socialAuthHost = providers.gradleProperty("meetingnotesSocialAuthHost")
     .orElse(providers.environmentVariable("MEETINGNOTES_SOCIAL_AUTH_HOST"))
@@ -203,6 +210,11 @@ require(socialAuthScheme.matches(Regex("[a-z][a-z0-9+.-]*"))) { "Invalid social 
 require(socialAuthHost.matches(Regex("[A-Za-z0-9.-]+"))) { "Invalid social auth URI host" }
 require(socialAuthPath.startsWith("/")) { "Social auth URI path must start with /" }
 val socialAuthCallbackUri = "$socialAuthScheme://$socialAuthHost$socialAuthPath"
+val productApplicationId = if (productEdition == "social") {
+    "com.oa.automation"
+} else {
+    "com.oa.automation.light"
+}
 
 android {
     namespace = "com.oa.automation"
@@ -211,16 +223,17 @@ android {
     defaultConfig {
         // Light Enjoy is a separate installable product; the social edition
         // keeps the original application id on its frozen maintenance branch.
-        applicationId = "com.oa.automation.light"
+        applicationId = productApplicationId
         minSdk = 26
         targetSdk = 34
         versionCode = 10258
         versionName = "1.2.58"
+        manifestPlaceholders["appLabel"] = if (productEdition == "social") "智悟本" else "智悟本轻享版"
         manifestPlaceholders["socialAuthScheme"] = socialAuthScheme
         manifestPlaceholders["socialAuthHost"] = socialAuthHost
         manifestPlaceholders["socialAuthPath"] = socialAuthPath
         buildConfigField("String", "SOCIAL_AUTH_CALLBACK_URI", "\"$socialAuthCallbackUri\"")
-        buildConfigField("String", "PRODUCT_EDITION", "\"light-enjoy\"")
+        buildConfigField("String", "PRODUCT_EDITION", "\"$productEdition\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
