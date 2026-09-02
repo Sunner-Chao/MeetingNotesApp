@@ -1290,7 +1290,7 @@ private fun ReferenceImagesCard(
                 Icon(Icons.Default.AddPhotoAlternate, "从相册选择", tint = ReferenceInk, modifier = Modifier.size(17.dp))
             }
             Text(
-                text = "查看全部  ›",
+                text = "查看全部图片  ›",
                 color = if (attachments.isEmpty()) ReferenceMuted.copy(alpha = .55f) else ReferenceMuted,
                 fontSize = 10.sp,
                 modifier = Modifier.clickable(enabled = attachments.isNotEmpty()) { galleryIndex = 0 }
