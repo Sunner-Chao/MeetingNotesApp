@@ -37,6 +37,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
@@ -63,6 +64,9 @@ import kotlin.math.sin
 @Composable
 internal fun TemplateWorkflowExplainer(
     templateName: String,
+    reducedMotion: Boolean = false,
+    hasBeenSeen: Boolean = false,
+    onViewed: (String) -> Unit = {},
     modifier: Modifier = Modifier,
     surfaceColor: Color = MaterialTheme.colorScheme.surface,
     raisedColor: Color = MaterialTheme.colorScheme.surfaceVariant,
@@ -75,6 +79,10 @@ internal fun TemplateWorkflowExplainer(
     var selectedStep by remember(templateName) { mutableIntStateOf(0) }
     val currentStep = workflow.steps.getOrNull(selectedStep) ?: workflow.steps.first()
     val selectedLabel = "查看第 ${selectedStep + 1} 步"
+
+    LaunchedEffect(workflow.templateName) {
+        if (!hasBeenSeen) onViewed(workflow.templateName)
+    }
 
     Surface(
         modifier = modifier
@@ -111,7 +119,7 @@ internal fun TemplateWorkflowExplainer(
                     modifier = Modifier.weight(1f)
                 )
                 Text(
-                    text = "点击节点看细节",
+                    text = if (hasBeenSeen) "点击节点看细节" else "首次了解 · 点击节点",
                     color = mutedColor,
                     fontSize = 9.sp,
                     maxLines = 1
@@ -135,7 +143,44 @@ internal fun TemplateWorkflowExplainer(
                 borderColor = borderColor,
                 onStepSelected = { selectedStep = it }
             )
-            AnimatedContent(
+            if (reducedMotion) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(7.dp),
+                        color = accentColor.copy(alpha = 0.12f)
+                    ) {
+                        Text(
+                            text = selectedLabel,
+                            color = accentColor,
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp)
+                        )
+                    }
+                    Spacer(Modifier.width(7.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = currentStep.detail,
+                            color = inkColor,
+                            fontSize = 10.sp,
+                            lineHeight = 13.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = "AI关注：${workflow.aiFocus}",
+                            color = mutedColor,
+                            fontSize = 9.sp,
+                            lineHeight = 12.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            } else AnimatedContent(
                 targetState = currentStep,
                 label = "workflowStepDetail"
             ) { step ->
@@ -157,22 +202,8 @@ internal fun TemplateWorkflowExplainer(
                     }
                     Spacer(Modifier.width(7.dp))
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = step.detail,
-                            color = inkColor,
-                            fontSize = 10.sp,
-                            lineHeight = 13.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = "AI关注：${workflow.aiFocus}",
-                            color = mutedColor,
-                            fontSize = 9.sp,
-                            lineHeight = 12.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                        Text(step.detail, color = inkColor, fontSize = 10.sp, lineHeight = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text("AI关注：${workflow.aiFocus}", color = mutedColor, fontSize = 9.sp, lineHeight = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
             }

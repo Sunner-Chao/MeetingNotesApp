@@ -104,7 +104,8 @@ data class LLMConfig(
 data class AppConfig(
     val sttConfig: STTConfig = STTConfig.DEFAULT,
     val llmConfig: LLMConfig = LLMConfig.DEFAULT,
-    val reportTemplateConfig: ReportTemplateConfig = ReportTemplateConfig()
+    val reportTemplateConfig: ReportTemplateConfig = ReportTemplateConfig(),
+    val templateWorkflowPreferences: TemplateWorkflowPreferences = TemplateWorkflowPreferences.DEFAULT
 ) {
     companion object {
         val DEFAULT = AppConfig()

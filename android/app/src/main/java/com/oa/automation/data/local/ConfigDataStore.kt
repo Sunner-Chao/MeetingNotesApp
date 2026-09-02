@@ -29,6 +29,7 @@ import com.oa.automation.domain.model.STTConfig
 import com.oa.automation.domain.model.STTEngineType
 import com.oa.automation.domain.model.STTLanguage
 import com.oa.automation.domain.model.TencentAsrTier
+import com.oa.automation.domain.model.TemplateWorkflowPreferences
 import com.oa.automation.domain.model.isDevelopmentOnlySttEndpoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -151,6 +152,8 @@ class ConfigDataStore(private val context: Context) {
         private val REPORT_TEMPLATE_NAME = stringPreferencesKey("report_template_name")
         private val REPORT_TEMPLATE_CONTENT = stringPreferencesKey("report_template_content")
         private val REPORT_TEMPLATE_IS_CUSTOM = stringPreferencesKey("report_template_is_custom")
+        private val TEMPLATE_WORKFLOW_REDUCED_MOTION = booleanPreferencesKey("template_workflow_reduced_motion")
+        private val TEMPLATE_WORKFLOW_SEEN = stringSetPreferencesKey("template_workflow_seen")
         private val STT_DEFAULT_ENDPOINT_MIGRATED = stringPreferencesKey("stt_default_endpoint_migrated")
         private val DEFAULT_PROFILE_VERSION = stringPreferencesKey("default_profile_version")
         private val LOGGED_IN_USERNAME = stringPreferencesKey("logged_in_username")
@@ -396,7 +399,18 @@ class ConfigDataStore(private val context: Context) {
                 selectedName = templateName,
                 content = templateContent,
                 isCustom = savedTemplateIsCustom
+            ),
+            templateWorkflowPreferences = TemplateWorkflowPreferences(
+                reducedMotion = preferences[TEMPLATE_WORKFLOW_REDUCED_MOTION] ?: false,
+                seenTemplateNames = preferences[TEMPLATE_WORKFLOW_SEEN] ?: emptySet()
             )
+        )
+    }
+
+    val templateWorkflowPreferencesFlow: Flow<TemplateWorkflowPreferences> = context.dataStore.data.map { preferences ->
+        TemplateWorkflowPreferences(
+            reducedMotion = preferences[TEMPLATE_WORKFLOW_REDUCED_MOTION] ?: false,
+            seenTemplateNames = preferences[TEMPLATE_WORKFLOW_SEEN] ?: emptySet()
         )
     }
 
@@ -882,6 +896,20 @@ class ConfigDataStore(private val context: Context) {
                 preferences[REPORT_TEMPLATE_CONTENT] = defaultTemplate.content
             }
             preferences[REPORT_TEMPLATE_IS_CUSTOM] = false.toString()
+        }
+    }
+
+    suspend fun updateTemplateWorkflowReducedMotion(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[TEMPLATE_WORKFLOW_REDUCED_MOTION] = enabled
+        }
+    }
+
+    suspend fun markTemplateWorkflowSeen(templateName: String) {
+        val normalized = templateName.trim()
+        if (normalized.isBlank()) return
+        context.dataStore.edit { preferences ->
+            preferences[TEMPLATE_WORKFLOW_SEEN] = (preferences[TEMPLATE_WORKFLOW_SEEN] ?: emptySet()) + normalized
         }
     }
 

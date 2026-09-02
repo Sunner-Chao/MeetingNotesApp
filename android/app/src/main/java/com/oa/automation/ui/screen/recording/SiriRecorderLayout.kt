@@ -186,6 +186,9 @@ internal fun SiriRecorderContent(
     onShareAudio: (ArchivedMeetingAudio) -> Unit,
     onSttEngineSelected: (STTEngineType) -> Unit,
     onSelectTemplate: (PresetReportTemplate) -> Unit,
+    templateWorkflowReducedMotion: Boolean,
+    templateWorkflowSeen: Set<String>,
+    onTemplateWorkflowSeen: (String) -> Unit,
     onStartRecording: () -> Unit,
     onTogglePause: () -> Unit,
     onAddMarker: () -> Unit,
@@ -326,6 +329,9 @@ internal fun SiriRecorderContent(
             ) {
                 TemplateWorkflowExplainer(
                     templateName = uiState.selectedRecordingTemplateName.orEmpty(),
+                    reducedMotion = templateWorkflowReducedMotion,
+                    hasBeenSeen = uiState.selectedRecordingTemplateName.orEmpty() in templateWorkflowSeen,
+                    onViewed = onTemplateWorkflowSeen,
                     surfaceColor = palette.card,
                     raisedColor = palette.control,
                     inkColor = palette.text,

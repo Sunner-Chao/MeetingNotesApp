@@ -29,6 +29,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.BrightnessAuto
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Error
@@ -251,6 +252,10 @@ fun SettingsScreen(
                             FloatingBallRow(
                                 enabled = uiState.floatingBallEnabled,
                                 onChange = viewModel::updateFloatingBallEnabled
+                            )
+                            TemplateWorkflowMotionRow(
+                                reducedMotion = uiState.templateWorkflowReducedMotion,
+                                onChange = viewModel::updateTemplateWorkflowReducedMotion
                             )
                             Spacer(modifier = Modifier.weight(1f))
                             if (BuildConfig.DEBUG) {
@@ -1004,6 +1009,63 @@ private fun FloatingBallRow(
                         onChange(turnedOn)
                     }
                 },
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = Color.White,
+                    checkedTrackColor = palette.blue,
+                    uncheckedThumbColor = if (palette.isDark) SettingsMutedText else Color(0xFF7A849B),
+                    uncheckedTrackColor = if (palette.isDark) Color(0xFF343B52) else Color(0xFFD8DEEB),
+                    uncheckedBorderColor = Color.Transparent
+                )
+            )
+        }
+    }
+}
+
+@Composable
+private fun TemplateWorkflowMotionRow(
+    reducedMotion: Boolean,
+    onChange: (Boolean) -> Unit
+) {
+    val palette = LocalSettingsPalette.current
+    SettingsCard(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .background(palette.pillFill),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.AutoAwesome,
+                    contentDescription = null,
+                    tint = palette.blue,
+                    modifier = Modifier.size(19.dp)
+                )
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "模板流程动效",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = SettingsText
+                )
+                Text(
+                    text = if (reducedMotion) "已减少节点切换动画" else "录音前展示流程节点和轻量动画",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = SettingsMutedText,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Switch(
+                checked = reducedMotion,
+                modifier = Modifier.scale(0.8f),
+                onCheckedChange = onChange,
                 colors = SwitchDefaults.colors(
                     checkedThumbColor = Color.White,
                     checkedTrackColor = palette.blue,

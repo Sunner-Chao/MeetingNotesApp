@@ -118,6 +118,8 @@ data class RecordingUiState(
     val presetTemplates: List<PresetReportTemplate> = emptyList(),
     val reportTemplate: ReportTemplateConfig = ReportTemplateConfig(),
     val selectedRecordingTemplateName: String? = null,
+    val templateWorkflowReducedMotion: Boolean = false,
+    val templateWorkflowSeen: Set<String> = emptySet(),
     val journey: Journey? = null,
     val currentJourneyStage: JourneyStage? = null,
     val latestSavedJourneyStage: JourneyStage? = null,
@@ -621,7 +623,9 @@ class RecordingViewModel(
                         sttEngineLabel = actualEngine.displayName,
                         sttEngineType = actualEngine,
                         sttLanguage = config.sttConfig.language,
-                        agentProvider = config.llmConfig.agentProvider
+                        agentProvider = config.llmConfig.agentProvider,
+                        templateWorkflowReducedMotion = config.templateWorkflowPreferences.reducedMotion,
+                        templateWorkflowSeen = config.templateWorkflowPreferences.seenTemplateNames
                     )
                 }
             }
@@ -3149,6 +3153,20 @@ class RecordingViewModel(
                     }
             }
         }
+    }
+
+    fun markTemplateWorkflowSeen(templateName: String) {
+        val normalized = templateName.trim()
+        if (normalized.isBlank()) return
+        _uiState.update { state ->
+            state.copy(templateWorkflowSeen = state.templateWorkflowSeen + normalized)
+        }
+        viewModelScope.launch { configDataStore.markTemplateWorkflowSeen(normalized) }
+    }
+
+    fun setTemplateWorkflowReducedMotion(enabled: Boolean) {
+        _uiState.update { it.copy(templateWorkflowReducedMotion = enabled) }
+        viewModelScope.launch { configDataStore.updateTemplateWorkflowReducedMotion(enabled) }
     }
 
     fun updateReportTemplateContent(content: String) {

@@ -62,6 +62,7 @@ data class SettingsUiState(
     val discoveredServers: List<DiscoveredSTTServer> = emptyList(),
     val themeMode: AppThemeMode = AppThemeMode.SYSTEM,
     val floatingBallEnabled: Boolean = false,
+    val templateWorkflowReducedMotion: Boolean = false,
     val isCheckingUpdate: Boolean = false,
     val isDownloadingUpdate: Boolean = false,
     val updateProgress: Int? = null,
@@ -97,6 +98,13 @@ class SettingsViewModel(
                 _uiState.value = _uiState.value.copy(floatingBallEnabled = enabled)
             }
         }
+        viewModelScope.launch {
+            configDataStore.templateWorkflowPreferencesFlow.collect { preferences ->
+                _uiState.value = _uiState.value.copy(
+                    templateWorkflowReducedMotion = preferences.reducedMotion
+                )
+            }
+        }
     }
 
     fun updateThemeMode(mode: AppThemeMode) {
@@ -105,6 +113,10 @@ class SettingsViewModel(
 
     fun updateFloatingBallEnabled(enabled: Boolean) {
         viewModelScope.launch { configDataStore.updateFloatingBallEnabled(enabled) }
+    }
+
+    fun updateTemplateWorkflowReducedMotion(enabled: Boolean) {
+        viewModelScope.launch { configDataStore.updateTemplateWorkflowReducedMotion(enabled) }
     }
 
     fun checkForAppUpdate() {
