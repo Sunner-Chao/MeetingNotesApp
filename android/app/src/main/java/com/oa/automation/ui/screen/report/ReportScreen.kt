@@ -50,6 +50,7 @@ import androidx.compose.ui.unit.sp
 import com.oa.automation.domain.model.ExportFormat
 import com.oa.automation.domain.model.MeetingAttachment
 import com.oa.automation.domain.model.PresetReportTemplate
+import com.oa.automation.domain.model.ProductEdition
 import com.oa.automation.domain.model.Report
 import com.oa.automation.domain.model.reportDocumentKind
 import com.oa.automation.infrastructure.export.ReportExporter
@@ -60,6 +61,7 @@ import com.oa.automation.infrastructure.audio.ArchivedMeetingAudio
 import com.oa.automation.ui.location.ImageLocationPermission
 import com.oa.automation.ui.location.MeetingGalleryPermission
 import com.oa.automation.ui.component.ProcessingStatusRow
+import com.oa.automation.ui.navigation.ProductEntryPolicy
 import java.io.File
 import java.text.SimpleDateFormat
 import java.time.Instant
@@ -78,6 +80,21 @@ fun ReportScreen(
     viewModel: ReportViewModel = koinViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val productPolicy = remember { ProductEntryPolicy.forEdition(ProductEdition.current) }
+    val presentationUiState = remember(uiState, productPolicy) {
+        val selectedName = uiState.report?.templateName
+            ?.takeIf(String::isNotBlank)
+            ?: uiState.reportTemplate.selectedName
+        val templates = uiState.presetTemplates.filter { template ->
+            productPolicy.shouldShowMeetingTemplate(
+                templateName = template.name,
+                preserveSelectedLegacy = template.name == selectedName &&
+                    uiState.report != null
+            )
+        }
+        if (templates.size == uiState.presetTemplates.size) uiState
+        else uiState.copy(presetTemplates = templates)
+    }
     val context = LocalContext.current
     val exportScope = rememberCoroutineScope()
     var showExportMenu by remember { mutableStateOf(false) }
@@ -400,7 +417,7 @@ fun ReportScreen(
                 uiState.report != null -> {
                     Column(modifier = Modifier.fillMaxSize()) {
                         ReportReferenceContent(
-                            uiState = uiState,
+                            uiState = presentationUiState,
                             onToggleTranscript = viewModel::toggleTranscript,
                             onExportTranscript = {
                                 exportTranscript(context, uiState.transcriptText, documentTitle)

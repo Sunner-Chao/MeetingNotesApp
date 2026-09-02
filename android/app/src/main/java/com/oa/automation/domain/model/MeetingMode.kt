@@ -30,7 +30,9 @@ enum class MeetingMode(
                 normalized == RETROSPECTIVE.templateName -> RETROSPECTIVE
                 normalized == STANDUP.templateName -> STANDUP
                 normalized == FORUM.templateName -> FORUM
-                normalized == STUDY.templateName -> STUDY
+                normalized == STUDY.templateName ||
+                    normalized.contains("参观考察") ||
+                    normalized.contains("游记") -> STUDY
                 else -> GENERAL
             }
         }

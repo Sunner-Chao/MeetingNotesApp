@@ -9,6 +9,7 @@ class MeetingModeTest {
         assertEquals(MeetingMode.DIRECTIVE, MeetingMode.fromTemplateName("行政会议"))
         assertEquals(MeetingMode.PROGRESS, MeetingMode.fromTemplateName("项目管理"))
         assertEquals(MeetingMode.CO_CREATE, MeetingMode.fromTemplateName("头脑风暴"))
+        assertEquals(MeetingMode.STUDY, MeetingMode.fromTemplateName("参观考察（游记）"))
     }
 
     @Test

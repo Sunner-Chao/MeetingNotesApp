@@ -110,6 +110,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.view.WindowCompat
 import com.oa.automation.domain.model.MeetingAttachment
+import com.oa.automation.domain.model.MeetingMode
 import com.oa.automation.domain.model.ForumParticipant
 import com.oa.automation.domain.model.JourneyStage
 import com.oa.automation.domain.model.JourneyStageStatus
@@ -2033,7 +2034,7 @@ internal fun reportPreviewDocument(report: Report): String {
         }.trim()
     }
 
-    val source = if (report.templateName.trim() == "项目管理" ||
+    val source = if (MeetingMode.fromTemplateName(report.templateName) == MeetingMode.PROGRESS ||
         (report.templateName.contains("孔爵") && report.templateName.contains("表格"))
     ) {
         ReportDocumentFormatter.normalizeProjectManagementSections(report.rawContent)

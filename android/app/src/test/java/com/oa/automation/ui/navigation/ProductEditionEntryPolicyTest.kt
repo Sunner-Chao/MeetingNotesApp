@@ -15,6 +15,7 @@ class ProductEditionEntryPolicyTest {
         assertFalse(policy.showGrowthNotifications)
         assertFalse(policy.showStudyJourneyTemplate)
         assertFalse(policy.shouldShowMeetingTemplate("研学考察"))
+        assertTrue(policy.shouldShowMeetingTemplate("研学考察", preserveSelectedLegacy = true))
         assertTrue(policy.shouldShowMeetingTemplate("项目管理"))
     }
 
