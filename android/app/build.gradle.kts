@@ -209,7 +209,9 @@ android {
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.oa.automation"
+        // Light Enjoy is a separate installable product; the social edition
+        // keeps the original application id on its frozen maintenance branch.
+        applicationId = "com.oa.automation.light"
         minSdk = 26
         targetSdk = 34
         versionCode = 10258
