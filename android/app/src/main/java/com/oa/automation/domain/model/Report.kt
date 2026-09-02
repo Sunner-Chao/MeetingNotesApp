@@ -11,8 +11,25 @@ data class Report(
     val participants: List<ForumParticipant> = emptyList(),
     val rawContent: String = "",
     val templateName: String = "",
+    /** Stable ids for the report workspace blocks, persisted with the report. */
+    val workspaceBlockOrder: List<String> = emptyList(),
     val generatedAt: Long = System.currentTimeMillis()
 )
+
+object ReportWorkspaceBlocks {
+    const val PARTICIPANTS = "participants"
+    const val AUDIO = "audio"
+    const val IMAGES = "images"
+    const val REPORT = "report"
+    const val TRANSCRIPT = "transcript"
+
+    val DEFAULT_ORDER = listOf(PARTICIPANTS, AUDIO, IMAGES, REPORT, TRANSCRIPT)
+}
+
+fun normalizeReportWorkspaceOrder(
+    order: List<String>,
+    available: List<String> = ReportWorkspaceBlocks.DEFAULT_ORDER
+): List<String> = order.distinct().filter { it in available } + available.filterNot { it in order }
 
 data class Task(
     val content: String,

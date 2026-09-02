@@ -328,10 +328,7 @@ fun OAAutomationNavHost(
                 val route: Report = backStackEntry.toRoute()
                 ReportScreen(
                     meetingId = route.meetingId,
-                    onNavigateBack = { navController.popBackStack() },
-                    onContinueRecording = { id ->
-                        navController.navigate(Recording(id))
-                    }
+                    onNavigateBack = { navController.popBackStack() }
                 )
             }
         }

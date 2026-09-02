@@ -599,21 +599,41 @@ private fun ValuePill(label: String, value: String, onClick: () -> Unit) {
 }
 
 @Composable
-private fun CompactToggleRow(title: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+private fun CompactToggleRow(
+    title: String,
+    subtitle: String? = null,
+    checked: Boolean,
+    onChange: (Boolean) -> Unit
+) {
     val palette = LocalSettingsPalette.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(36.dp),
+            .height(if (subtitle.isNullOrBlank()) 36.dp else 48.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(
-            text = title,
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.Medium,
-            color = SettingsText,
-            modifier = Modifier.weight(1f)
-        )
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                color = SettingsText,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            subtitle?.takeIf { it.isNotBlank() }?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = SettingsMutedText,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
         Switch(
             checked = checked,
             onCheckedChange = onChange,
@@ -652,11 +672,13 @@ private fun SttOverviewCard(
             ValuePill(label = "当前引擎", value = config.engineType.displayName, onClick = onOpenDetail)
             CompactToggleRow(
                 title = "语音增强",
+                subtitle = "默认开启 · 降噪与音量优化",
                 checked = config.audioEnhancementEnabled,
                 onChange = onAudioEnhancementChange
             )
             CompactToggleRow(
                 title = "说话人分离",
+                subtitle = "实时按发言人整理",
                 checked = config.speakerDiarizationEnabled,
                 onChange = onSpeakerDiarizationChange
             )

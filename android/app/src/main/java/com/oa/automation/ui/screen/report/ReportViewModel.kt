@@ -9,11 +9,15 @@ import com.oa.automation.domain.model.ForumParticipant
 import com.oa.automation.domain.model.MeetingAttachment
 import com.oa.automation.domain.model.JourneyStage
 import com.oa.automation.domain.model.Report
+import com.oa.automation.domain.model.ReportWorkspaceBlocks
+import com.oa.automation.domain.model.normalizeReportWorkspaceOrder
 import com.oa.automation.domain.model.ReportTitleResolver
 import com.oa.automation.domain.model.ReportTemplateConfig
 import com.oa.automation.domain.model.Transcript
 import com.oa.automation.domain.model.extractForumParticipants
 import com.oa.automation.domain.model.isForumMeetingTemplate
+import com.oa.automation.domain.model.canonicalMeetingTranscripts
+import com.oa.automation.domain.model.renderedContent
 import com.oa.automation.domain.repository.MeetingRepository
 import com.oa.automation.domain.repository.JourneyRepository
 import com.oa.automation.domain.repository.ReportRepository
@@ -94,7 +98,7 @@ internal fun journeyStageTranscriptMap(transcripts: List<Transcript>): Map<Strin
             SimplifiedChineseText.normalize(
                 stageTranscripts
                     .sortedWith(compareBy<Transcript> { it.startTimeMs }.thenBy { it.createdAt })
-                    .joinToString("\n") { it.content }
+                    .joinToString("\n") { it.renderedContent() }
             )
         }
 
@@ -182,7 +186,7 @@ class ReportViewModel(
             val transcripts = meetingRepository.findTranscriptsByMeetingId(meetingId).getOrNull().orEmpty()
             forumSpeakerNames = transcripts.mapNotNull { it.speakerName }
             val transcriptText = SimplifiedChineseText.normalize(
-                transcripts.joinToString("\n") { it.content }
+                transcripts.canonicalMeetingTranscripts().joinToString("\n") { it.renderedContent() }
             )
             _uiState.value = _uiState.value.copy(
                 transcriptText = transcriptText,
@@ -623,6 +627,19 @@ class ReportViewModel(
                         message = "保存失败: ${error.message}"
                     )
                 }
+        }
+    }
+
+    fun updateWorkspaceBlockOrder(order: List<String>) {
+        val report = _uiState.value.report ?: return
+        val normalized = normalizeReportWorkspaceOrder(order)
+        if (normalized.isEmpty()) return
+        val updated = report.copy(workspaceBlockOrder = normalized)
+        _uiState.update { it.copy(report = updated, hasUnsavedChanges = true) }
+        viewModelScope.launch {
+            reportRepository.save(updated).onFailure { error ->
+                _uiState.update { it.copy(message = "纪要布局保存失败: ${error.message}") }
+            }
         }
     }
 

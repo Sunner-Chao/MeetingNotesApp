@@ -338,7 +338,7 @@ class RecordingService : Service() {
             // Persist the final streaming text before checking cloud access.
             // Guests must be able to reopen the record, export its local audio,
             // and continue report generation after signing in.
-            val segmentOffsetMs = (meeting.durationMs - stopped.durationMs).coerceAtLeast(0L)
+            val segmentOffsetMs = meeting.durationMs.coerceAtLeast(0L)
             val structuredSegments = stopped.speakerSegments
                 .toPersistableSpeakerSegments(stopped.durationMs)
             if (structuredSegments.isNotEmpty()) {
@@ -363,7 +363,8 @@ class RecordingService : Service() {
                         meetingId = stopped.meetingId,
                         journeyStageId = if (autoGenerateReport) journeyStageId else null,
                         content = transcriptText,
-                        endTimeMs = stopped.durationMs
+                        startTimeMs = segmentOffsetMs,
+                        endTimeMs = segmentOffsetMs + stopped.durationMs
                     )
                 ).getOrThrow()
             }

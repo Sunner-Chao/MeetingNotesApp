@@ -49,10 +49,154 @@ class StreamingTranscriptAccumulatorTest {
         )
     }
 
-    private fun update(text: String, sessionId: String) = StreamingTranscriptUpdate(
+    @Test
+    fun `speaker segments replace overlapping revisions and render labeled rows`() {
+        val accumulator = StreamingTranscriptAccumulator()
+
+        accumulator.update(
+            update(
+                text = "",
+                sessionId = "session-a",
+                segments = listOf(
+                    segment(0f, 2f, "先介绍行程", speaker = 0),
+                    segment(2f, 4f, "补充注意事项", speaker = 1)
+                )
+            )
+        )
+        accumulator.update(
+            update(
+                text = "",
+                sessionId = "session-a",
+                segments = listOf(
+                    segment(0f, 2.2f, "先介绍行程和安排", speaker = 0),
+                    segment(2.2f, 4f, "补充注意事项", speaker = 1)
+                )
+            )
+        )
+
+        val rows = accumulator.snapshotSegments()
+        assertEquals(2, rows.size)
+        assertEquals("先介绍行程和安排", rows[0].text)
+        assertEquals(0, rows[0].speaker)
+        assertEquals("补充注意事项", rows[1].text)
+        assertEquals(1, rows[1].speaker)
+    }
+
+    @Test
+    fun `adjacent segments by the same speaker are grouped without duplication`() {
+        val accumulator = StreamingTranscriptAccumulator()
+        accumulator.update(
+            update(
+                text = "",
+                sessionId = "session-a",
+                segments = listOf(
+                    segment(0f, 1f, "第一句", speaker = 0),
+                    segment(1.2f, 2.4f, "第二句", speaker = 0)
+                )
+            )
+        )
+
+        val rows = accumulator.snapshotSegments()
+        assertEquals(1, rows.size)
+        assertEquals("第一句\n第二句", rows.single().text)
+    }
+
+    @Test
+    fun `speaker segments survive a websocket session reconnect`() {
+        val accumulator = StreamingTranscriptAccumulator()
+        accumulator.update(
+            update(
+                text = "",
+                sessionId = "session-a",
+                segments = listOf(segment(0f, 2f, "旧会话内容", speaker = 0))
+            )
+        )
+        accumulator.update(
+            update(
+                text = "",
+                sessionId = "session-b",
+                segments = listOf(segment(0f, 2f, "新会话内容", speaker = 1))
+            )
+        )
+
+        val segments = accumulator.snapshotSegments()
+        assertEquals(listOf("旧会话内容", "新会话内容"), segments.map { it.text })
+        assertEquals(listOf(0f, 2f), segments.map { it.startSeconds })
+        assertEquals(listOf(2f, 4f), segments.map { it.endSeconds })
+    }
+
+    @Test
+    fun `successive websocket reconnects keep extending the segment timeline`() {
+        val accumulator = StreamingTranscriptAccumulator()
+        accumulator.update(
+            update(
+                text = "",
+                sessionId = "session-a",
+                segments = listOf(segment(0f, 1.5f, "第一段", speaker = 0))
+            )
+        )
+        accumulator.update(
+            update(
+                text = "",
+                sessionId = "session-b",
+                segments = listOf(segment(0f, 2f, "第二段", speaker = 1))
+            )
+        )
+        accumulator.update(
+            update(
+                text = "",
+                sessionId = "session-c",
+                segments = listOf(segment(0f, 1f, "第三段", speaker = 2))
+            )
+        )
+
+        val segments = accumulator.snapshotSegments()
+        assertEquals(listOf(0f, 1.5f, 3.5f), segments.map { it.startSeconds })
+        assertEquals(listOf(1.5f, 3.5f, 4.5f), segments.map { it.endSeconds })
+    }
+
+    @Test
+    fun `client supplied reconnect offset is applied exactly once`() {
+        val accumulator = StreamingTranscriptAccumulator()
+        accumulator.update(
+            update(
+                text = "",
+                sessionId = "session-a",
+                segments = listOf(segment(0f, 2f, "旧会话内容", speaker = 0))
+            )
+        )
+        accumulator.update(
+            update(
+                text = "",
+                sessionId = "session-b",
+                timelineOffsetSeconds = 12f,
+                segments = listOf(segment(0f, 2f, "重连后的内容", speaker = 1))
+            )
+        )
+
+        val segments = accumulator.snapshotSegments()
+        assertEquals(listOf(0f, 12f), segments.map { it.startSeconds })
+        assertEquals(listOf(2f, 14f), segments.map { it.endSeconds })
+    }
+
+    private fun update(
+        text: String,
+        sessionId: String,
+        segments: List<StreamingTranscriptSegment> = emptyList(),
+        timelineOffsetSeconds: Float = 0f
+    ) = StreamingTranscriptUpdate(
         text = text,
         committedText = "",
         previewText = "",
-        sessionId = sessionId
+        sessionId = sessionId,
+        timelineOffsetSeconds = timelineOffsetSeconds,
+        segments = segments
     )
+
+    private fun segment(
+        start: Float,
+        end: Float,
+        text: String,
+        speaker: Int
+    ) = StreamingTranscriptSegment(start, end, text, speaker, committed = true)
 }

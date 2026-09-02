@@ -38,6 +38,7 @@ import com.oa.automation.domain.model.MeetingAttachment
 import com.oa.automation.domain.model.MeetingOrigin
 import com.oa.automation.domain.model.RecordingMarker
 import com.oa.automation.domain.model.canonicalMeetingTranscripts
+import com.oa.automation.domain.model.renderedContent
 import com.oa.automation.domain.model.STTConfig
 import com.oa.automation.domain.model.STTEngineType
 import com.oa.automation.domain.model.STTLanguage
@@ -826,7 +827,7 @@ class RecordingViewModel(
                 .getOrNull()
                 .orEmpty()
             val transcriptText = SimplifiedChineseText.normalize(
-                transcripts.canonicalMeetingTranscripts().joinToString("\n") { it.content }
+                transcripts.canonicalMeetingTranscripts().joinToString("\n") { it.renderedContent() }
             )
             val hasReport = reportRepository.findByMeetingId(meetingId).getOrNull() != null
             val transcriptionTask = taskScheduler.observeTranscription(meetingId).first()
@@ -3685,7 +3686,7 @@ class RecordingViewModel(
                             .orEmpty()
                         if (!isCurrentMeeting(meetingId)) return@collect
                         val finalText = SimplifiedChineseText.normalize(
-                            transcripts.canonicalMeetingTranscripts().joinToString("\n") { it.content }
+                            transcripts.canonicalMeetingTranscripts().joinToString("\n") { it.renderedContent() }
                         )
                         val currentLiveTranscript = _uiState.value.liveTranscript
                         existingTranscriptText = finalText

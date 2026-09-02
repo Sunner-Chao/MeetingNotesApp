@@ -58,7 +58,12 @@ object DocxReportExporter {
             exportDir,
             ReportExportFileNaming.build(report, meetingTitle, "docx")
         )
-        DocxPackageWriter(report, images, templatePackage, forumParticipants).write(output)
+        DocxPackageWriter(
+            report,
+            images,
+            templatePackage,
+            forumParticipants.ifEmpty { report.participants }
+        ).write(output)
         return output
     }
 }
@@ -191,10 +196,10 @@ internal class DocxPackageWriter(
             .filterIsInstance<ImageBlock>()
             .mapTo(mutableSetOf()) { it.index }
         val remainingImageIndexes = images.indices.filterNot(anchoredImageIndexes::contains)
-        val imageSectionTitle = if (report.templateName.usesStudyReportStyle()) {
-            "照片集锦"
-        } else {
-            "会议影像资料"
+        val imageSectionTitle = when {
+            report.templateName.usesStudyReportStyle() -> "照片集锦"
+            report.templateName.usesProjectManagementDocxTemplate() -> "会议影像资料与签到表"
+            else -> "会议影像资料"
         }
         val reportAndParticipantBlocks = if (
             report.templateName.isForumMeetingTemplate() && forumParticipants.isNotEmpty()

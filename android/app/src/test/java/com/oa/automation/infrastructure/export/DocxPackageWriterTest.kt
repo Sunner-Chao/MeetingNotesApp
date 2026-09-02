@@ -89,6 +89,7 @@ class DocxPackageWriterTest {
                 assertTrue(documentXml.indexOf("完成方案") < documentXml.indexOf("小孙"))
                 assertTrue(documentXml.indexOf("小孙") < documentXml.indexOf("待执行"))
                 assertTrue(documentXml.contains("会议影像资料"))
+                assertTrue(documentXml.contains("会议影像资料与签到表"))
                 assertTrue(documentXml.contains("白板&amp;现场.jpg"))
                 assertTrue(documentXml.contains("rIdImage1"))
                 assertTrue(relationships.contains("media/image1.jpg"))

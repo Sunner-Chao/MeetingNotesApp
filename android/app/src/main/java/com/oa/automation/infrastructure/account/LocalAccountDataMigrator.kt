@@ -3,6 +3,7 @@ package com.oa.automation.infrastructure.account
 import com.oa.automation.domain.model.AuthSession
 import com.oa.automation.domain.model.canonicalMeetingTranscripts
 import com.oa.automation.domain.model.displayTitle
+import com.oa.automation.domain.model.renderedContent
 import com.oa.automation.domain.repository.MeetingRepository
 import com.oa.automation.domain.repository.ReportRepository
 import kotlinx.coroutines.CoroutineScope
@@ -39,7 +40,7 @@ class LocalAccountDataMigrator(
                     updatedAt = updatedAt,
                     durationSeconds = meeting.durationMs / 1_000L,
                     transcript = transcripts.canonicalMeetingTranscripts()
-                        .joinToString("\n") { it.content },
+                        .joinToString("\n") { it.renderedContent() },
                     report = report?.rawContent?.ifBlank { report.summary }.orEmpty()
                 )
             }

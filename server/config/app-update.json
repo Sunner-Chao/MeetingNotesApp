@@ -1,9 +1,9 @@
 {
-  "version_code": 10256,
-  "version_name": "1.2.56",
+  "version_code": 10258,
+  "version_name": "1.2.58",
   "mandatory": false,
-  "release_notes": "全量复核并发布最新 Android、用户端 Web 与 Server 更新；强化说话人分段持久化、实时转录稳定性、会议图片归档与备份校验；通知中心、社区和用户端 Web 保持一致。",
-  "published_at": "2026-09-01T10:44:26+08:00",
-  "sha256": "0e14d2f17ed4a8c6294973c8c1c22dbb8df62b295b4d4eccc152eeff467e906f",
-  "apk_filename": "ZhiWuBen-Android-10256.apk"
+  "release_notes": "修复断线重连后的实时转录时间轴与说话人编号一致性；修正续录记录排序和历史说话人前缀兼容，提升会议转写恢复可靠性。",
+  "published_at": "2026-09-01T14:25:32+08:00",
+  "sha256": "56e848c369944414662de80ad863e1aacf5f9cbe5b2fc8db1a4cfc427c344ab6",
+  "apk_filename": "ZhiWuBen-Android-10258.apk"
 }

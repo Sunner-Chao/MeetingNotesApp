@@ -26,6 +26,16 @@ private fun String.usesStudyReportStyle(): Boolean =
 private fun String.usesProjectManagementReportStyle(): Boolean =
     trim() == "项目管理" || contains("孔爵") && contains("表格")
 
+/** Image ordering contract shared by PDF and UI preview/export tests. */
+internal fun shouldInlineReportImage(templateName: String): Boolean =
+    !templateName.usesProjectManagementReportStyle()
+
+internal fun reportImageAppendixTitle(templateName: String): String = when {
+    templateName.usesStudyReportStyle() -> "照片集锦"
+    templateName.usesProjectManagementReportStyle() -> "会议影像资料与签到表"
+    else -> "会议图片"
+}
+
 private val photoAnchorPattern = Regex(
     "^\\s*\\[照片\\s*[:：]\\s*图\\s*(\\d+)(?:\\s*[|｜]\\s*([^]]+?))?]\\s*$"
 )
@@ -173,6 +183,7 @@ object ReportExporter {
         forumParticipants: List<ForumParticipant> = emptyList()
     ): File {
         val isStudyReport = report.templateName.usesStudyReportStyle()
+        val participantsForLayout = forumParticipants.ifEmpty { report.participants }
         val images = attachments.map { attachment ->
             MeetingImagePreparer.prepare(attachment)
                 ?: error("无法写入会议图片：${attachment.displayName}")
@@ -565,7 +576,7 @@ object ReportExporter {
             }.getOrNull()
 
         fun drawForumParticipantWall() {
-            val visible = forumParticipants.filter { it.name.isNotBlank() }.take(24)
+            val visible = participantsForLayout.filter { it.name.isNotBlank() }.take(24)
             if (!report.templateName.isForumMeetingTemplate() || visible.isEmpty()) return
             yPosition = drawText("论坛参会名录", headingPaint, minimumFollowingSpace = 18f)
             yPosition = drawText(
@@ -675,7 +686,7 @@ object ReportExporter {
                 val line = lines[lineIndex]
                 val trimmed = line.trim()
                 if (
-                    report.templateName.isForumMeetingTemplate() && forumParticipants.isNotEmpty() &&
+                    report.templateName.isForumMeetingTemplate() && participantsForLayout.isNotEmpty() &&
                     trimmed.isForumRosterHeading()
                 ) {
                     lineIndex++
@@ -686,12 +697,21 @@ object ReportExporter {
                 }
                 val photoAnchor = photoAnchorPattern.matchEntire(trimmed)
                 when {
-                    photoAnchor != null -> {
+                    // Project-management reports keep all meeting/sign-in images in
+                    // the appendix. Their source may still contain legacy photo
+                    // anchors, but those anchors must not interrupt the structured
+                    // minutes body.
+                    photoAnchor != null && shouldInlineReportImage(report.templateName) -> {
                         val imageIndex = photoAnchor.groupValues[1].toIntOrNull()?.minus(1)
                         val anchorCaption = photoAnchor.groupValues.getOrNull(2)
                         if (imageIndex != null && imageIndex !in placedImageIndexes) {
                             drawReportImage(imageIndex, anchorCaption)
                         }
+                        lineIndex++
+                    }
+                    photoAnchor != null -> {
+                        // Legacy project-management anchors are represented by the
+                        // appendix image section, so omit the marker line itself.
                         lineIndex++
                     }
                     trimmed.startsWith("|") &&
@@ -843,7 +863,7 @@ object ReportExporter {
                 startNewPage()
             }
             yPosition = drawText(
-                if (isStudyReport) "照片集锦" else "会议图片",
+                reportImageAppendixTitle(report.templateName),
                 headingPaint,
                 minimumFollowingSpace = 48f
             )

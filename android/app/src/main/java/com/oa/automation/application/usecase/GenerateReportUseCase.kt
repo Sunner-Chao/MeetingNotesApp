@@ -6,6 +6,7 @@ import com.oa.automation.domain.model.Task
 import com.oa.automation.domain.model.canonicalMeetingTranscripts
 import com.oa.automation.domain.model.extractForumParticipants
 import com.oa.automation.domain.model.isForumMeetingTemplate
+import com.oa.automation.domain.model.renderedContent
 import com.oa.automation.domain.repository.MeetingRepository
 import com.oa.automation.domain.repository.ReportRepository
 import com.oa.automation.infrastructure.llm.LLMEngine
@@ -38,7 +39,7 @@ class GenerateReportUseCase(
             }
 
             val transcriptContent = SimplifiedChineseText.normalize(
-                transcripts.canonicalMeetingTranscripts().joinToString("\n") { it.content }
+                transcripts.canonicalMeetingTranscripts().joinToString("\n") { it.renderedContent() }
             )
             onProgress(ProcessingProgress(20, "准备模板和会议图片"))
             val attachments = attachmentStore.toAgentAttachments(

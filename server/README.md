@@ -2,7 +2,7 @@
 
 ## 当前发布
 
-- 当前生产发布：`1.2.56`（发布 ID 以 `server/.deployment-state.json` 与远端 systemd 为准）
+- 当前生产发布：`1.2.58`（发布 ID 以 `server/.deployment-state.json` 与远端 systemd 为准）
 - 生产部署：Ubuntu 原生 Python 3.11 + systemd
 - 目标主机：4 核、4 GB 内存、无 GPU、5 Mbps 带宽
 - 默认范围：STT 为核心组件；Backend Service 可选，当前远端实例已启用

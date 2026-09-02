@@ -68,6 +68,7 @@ data class ReportEntity(
     val participants: List<com.oa.automation.domain.model.ForumParticipant>,
     val rawContent: String = "",
     val templateName: String = "",
+    val workspaceBlockOrder: List<String> = emptyList(),
     val generatedAt: Long
 )
 
@@ -201,6 +202,7 @@ fun ReportEntity.toDomain() = Report(
     participants = participants,
     rawContent = rawContent,
     templateName = templateName,
+    workspaceBlockOrder = workspaceBlockOrder,
     generatedAt = generatedAt
 )
 
@@ -215,6 +217,7 @@ fun Report.toEntity() = ReportEntity(
     participants = participants,
     rawContent = rawContent,
     templateName = templateName,
+    workspaceBlockOrder = workspaceBlockOrder,
     generatedAt = generatedAt
 )
 

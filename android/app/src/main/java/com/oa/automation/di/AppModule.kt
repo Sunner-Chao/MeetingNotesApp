@@ -97,6 +97,7 @@ val appModule = module {
             .addMigrations(AppDatabase.MIGRATION_17_18)
             .addMigrations(AppDatabase.MIGRATION_18_19)
             .addMigrations(AppDatabase.MIGRATION_19_20)
+            .addMigrations(AppDatabase.MIGRATION_20_21)
             .build()
     }
     single { get<AppDatabase>().meetingDao() }

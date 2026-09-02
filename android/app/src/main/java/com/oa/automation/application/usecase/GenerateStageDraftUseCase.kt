@@ -1,6 +1,7 @@
 package com.oa.automation.application.usecase
 
 import com.oa.automation.domain.model.JourneyStage
+import com.oa.automation.domain.model.renderedContent
 import com.oa.automation.domain.repository.MeetingRepository
 import com.oa.automation.domain.repository.StageDraftRepository
 import com.oa.automation.infrastructure.attachment.MeetingAttachmentStore
@@ -26,12 +27,7 @@ class GenerateStageDraftUseCase(
         }
 
         val transcriptText = SimplifiedChineseText.normalize(
-            transcripts.joinToString("\n") { transcript ->
-                buildString {
-                    transcript.speakerName?.takeIf { it.isNotBlank() }?.let { append("[$it] ") }
-                    append(transcript.content)
-                }
-            }
+            transcripts.joinToString("\n") { it.renderedContent() }
         ).ifBlank { "未采集到可用转写" }
         val agentAttachments = attachmentStore.toAgentAttachments(attachments)
         val prompt = StageDraftPromptTemplates.build(

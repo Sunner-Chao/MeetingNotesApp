@@ -761,6 +761,70 @@ class SttRuntimeTest(unittest.TestCase):
         )
         self.assertEqual(state.apply({"code": 0, "final": 1}), ("第一项完成", "", True))
 
+    def test_tencent_realtime_state_exposes_speaker_segments_for_live_preview(self) -> None:
+        state = stt.TencentRealtimeTranscriptState()
+
+        state.apply(
+            {
+                "code": 0,
+                "result": {
+                    "slice_type": 2,
+                    "index": 0,
+                    "voice_text_str": "甲先说明。",
+                    "speaker_id": 7,
+                    "start_time": 0,
+                    "end_time": 1600,
+                },
+            }
+        )
+        state.apply(
+            {
+                "code": 0,
+                "result": {
+                    "slice_type": 1,
+                    "index": 1,
+                    "voice_text_str": "乙正在补充。",
+                    "speaker_id": 9,
+                    "start_time": 1600,
+                    "end_time": 3200,
+                },
+            }
+        )
+
+        self.assertEqual(
+            state.speaker_segments(),
+            [
+                {
+                    "start": 0.0,
+                    "end": 1.6,
+                    "text": "甲先说明。",
+                    "speaker": 7,
+                },
+                {
+                    "start": 1.6,
+                    "end": 3.2,
+                    "text": "乙正在补充。",
+                    "speaker": 9,
+                },
+            ],
+        )
+
+    def test_tencent_realtime_request_enables_speaker_diarization(self) -> None:
+        with (
+            patch.object(stt, "TENCENT_REALTIME_ASR_BASE_URL", "wss://asr.example/asr/v2"),
+            patch.object(stt, "TENCENT_ASR_APP_ID", "123456"),
+            patch.object(stt, "TENCENT_ASR_SECRET_ID", "secret-id"),
+            patch.object(stt, "TENCENT_ASR_SECRET_KEY", "secret-key"),
+        ):
+            _, signature_source = stt.build_tencent_realtime_request(
+                voice_id="voice-speakers",
+                timestamp=1700000000,
+                nonce=1234,
+                speaker_diarization=True,
+            )
+
+        self.assertIn("speaker_diarization=1", signature_source)
+
     def test_tencent_standard_tier_selects_configured_english_engines(self) -> None:
         with (
             patch.object(stt, "TENCENT_ASR_BASE_URL", "https://asr.example/asr/flash/v1"),

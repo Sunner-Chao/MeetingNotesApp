@@ -6,8 +6,8 @@
 
 | 组件 | 当前口径 | 发布方式 |
 |---|---|---|
-| Android | `1.2.56`（`versionCode 10256`） | 服务器 OTA，应用登录或回到前台时检查 |
-| Backend / STT | `1.2.56`（发布 ID 由部署脚本生成） | Ubuntu 原生 Python 3.11 + systemd |
+| Android | `1.2.58`（`versionCode 10258`） | 服务器 OTA，应用登录或回到前台时检查 |
+| Backend / STT | `1.2.58`（发布 ID 由部署脚本生成） | Ubuntu 原生 Python 3.11 + systemd |
 | 用户端 Web | 标准 HTTPS Web，同源 `/app/` 发布 | 浏览器直接访问 |
 | iOS | SwiftUI 基础客户端 | Xcode / 用户端 Web |
 

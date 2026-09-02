@@ -11,6 +11,22 @@ data class Transcript(
     val createdAt: Long = System.currentTimeMillis()
 )
 
+/** Renders a transcript without duplicating speaker labels already stored in legacy content. */
+fun Transcript.renderedContent(): String {
+    val body = content.trim()
+    val speaker = speakerName?.trim().orEmpty()
+    if (body.isBlank() || speaker.isBlank()) return body
+
+    val escapedSpeaker = Regex.escape(speaker)
+    val alreadyPrefixed = listOf(
+        // Current format: 说话人 1：内容 / 说话人 1 内容.
+        Regex("^$escapedSpeaker(?:\\s*[：:]|\\s+|$)"),
+        // Legacy imports: [说话人 1] 内容, 【说话人 1】内容, or (说话人 1) 内容.
+        Regex("^\\s*[\\[【(]\\s*$escapedSpeaker\\s*[\\]】)](?:\\s*[：:]?\\s*|$)")
+    ).any { it.containsMatchIn(body) }
+    return if (alreadyPrefixed) body else "$speaker：$body"
+}
+
 /**
  * Stage snapshots support study-tour drafting, while unscoped transcripts are
  * the canonical full-meeting record. Prefer the canonical record when both are

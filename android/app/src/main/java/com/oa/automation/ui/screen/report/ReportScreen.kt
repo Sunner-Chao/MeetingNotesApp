@@ -75,7 +75,6 @@ import org.koin.androidx.compose.koinViewModel
 fun ReportScreen(
     meetingId: String,
     onNavigateBack: () -> Unit,
-    onContinueRecording: (String) -> Unit,
     viewModel: ReportViewModel = koinViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -85,6 +84,8 @@ fun ReportScreen(
     var showChatPanel by remember { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf(false) }
     var showTemplatePicker by remember { mutableStateOf(false) }
+    var reportPreviewFile by remember { mutableStateOf<File?>(null) }
+    var isPreparingReportPreview by remember { mutableStateOf(false) }
     val documentTitle = uiState.report?.documentTitle() ?: "会议纪要"
     val snackbarHostState = remember { SnackbarHostState() }
     var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
@@ -163,6 +164,13 @@ fun ReportScreen(
             context.startActivity(Intent.createChooser(shareIntent, "分享会议音频"))
             viewModel.consumeAudioShare()
         }
+    }
+
+    reportPreviewFile?.let { previewFile ->
+        ReportPdfPreviewDialog(
+            file = previewFile,
+            onDismiss = { reportPreviewFile = null }
+        )
     }
 
     // Delete dialog
@@ -393,13 +401,11 @@ fun ReportScreen(
                     Column(modifier = Modifier.fillMaxSize()) {
                         ReportReferenceContent(
                             uiState = uiState,
-                            onContinueRecording = { onContinueRecording(meetingId) },
                             onToggleTranscript = viewModel::toggleTranscript,
                             onExportTranscript = {
                                 exportTranscript(context, uiState.transcriptText, documentTitle)
                             },
                             onSelectTemplate = { template -> viewModel.selectReportTemplate(template) },
-                            onRegenerateWithTemplate = { viewModel.regenerateWithTemplate(meetingId) },
                             onDeleteAttachment = viewModel::deleteAttachment,
                             onAddImages = { galleryLauncher.launch("image/*") },
                             onCaptureImage = ::launchCamera,
@@ -407,7 +413,35 @@ fun ReportScreen(
                             onPrepareAudioPlayback = viewModel::prepareArchivedAudioPlayback,
                             onShareAudio = viewModel::shareArchivedAudio,
                             onDeleteAudio = viewModel::deleteArchivedAudio,
-                            onShare = { showExportMenu = true },
+                            onWorkspaceOrderChanged = viewModel::updateWorkspaceBlockOrder,
+                            onPreviewFullReport = {
+                                val report = uiState.report
+                                if (report != null && !isPreparingReportPreview) {
+                                    isPreparingReportPreview = true
+                                    exportScope.launch {
+                                        val result = runCatching {
+                                            val attachments = viewModel.attachmentsForExport(meetingId)
+                                            withContext(Dispatchers.IO) {
+                                                ReportExporter.exportToPdf(
+                                                    context = context,
+                                                    report = report,
+                                                    attachments = attachments,
+                                                    meetingTitle = uiState.meetingTitle,
+                                                    forumParticipants = uiState.forumParticipants
+                                                )
+                                            }
+                                        }
+                                        isPreparingReportPreview = false
+                                        result.onSuccess { file ->
+                                            reportPreviewFile = file
+                                        }.onFailure { error ->
+                                            snackbarHostState.showSnackbar(
+                                                error.message ?: "无法生成纪要预览"
+                                            )
+                                        }
+                                    }
+                                }
+                            },
                             showTemplatePicker = showTemplatePicker,
                             onShowTemplatePicker = { showTemplatePicker = it },
                             modifier = Modifier
@@ -483,7 +517,6 @@ fun ReportScreen(
 private fun ReportContent(
     report: Report,
     onRegenerate: () -> Unit,
-    onContinueRecording: () -> Unit,
     transcriptText: String = "",
     showTranscript: Boolean = false,
     onToggleTranscript: () -> Unit = {},
@@ -514,7 +547,6 @@ private fun ReportContent(
         ReportHeaderCard(
             report = report,
             onRegenerate = onRegenerate,
-            onContinueRecording = onContinueRecording,
             presetTemplates = presetTemplates,
             currentTemplateName = currentTemplateName,
             onSelectTemplate = onSelectTemplate,
@@ -729,7 +761,6 @@ private fun AttachmentThumbnail(
 private fun ReportHeaderCard(
     report: Report,
     onRegenerate: () -> Unit,
-    onContinueRecording: () -> Unit,
     presetTemplates: List<PresetReportTemplate> = emptyList(),
     currentTemplateName: String = "",
     onSelectTemplate: (PresetReportTemplate) -> Unit = {},
@@ -865,26 +896,14 @@ private fun ReportHeaderCard(
                 }
             }
 
-            // Action buttons
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedButton(
-                    onClick = onContinueRecording,
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(8.dp)
-                ) {
-                    Icon(Icons.Default.Mic, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("继续录音", style = MaterialTheme.typography.labelLarge)
-                }
-                Button(
-                    onClick = onRegenerateWithTemplate,
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(8.dp)
-                ) {
-                    Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("重新生成", style = MaterialTheme.typography.labelLarge)
-                }
+            Button(
+                onClick = onRegenerateWithTemplate,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("重新生成", style = MaterialTheme.typography.labelLarge)
             }
         }
     }

@@ -212,8 +212,8 @@ android {
         applicationId = "com.oa.automation"
         minSdk = 26
         targetSdk = 34
-        versionCode = 10256
-        versionName = "1.2.56"
+        versionCode = 10258
+        versionName = "1.2.58"
         manifestPlaceholders["socialAuthScheme"] = socialAuthScheme
         manifestPlaceholders["socialAuthHost"] = socialAuthHost
         manifestPlaceholders["socialAuthPath"] = socialAuthPath

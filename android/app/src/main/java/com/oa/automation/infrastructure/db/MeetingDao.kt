@@ -61,10 +61,18 @@ interface MeetingDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertTranscript(entity: TranscriptEntity)
 
-    @Query("SELECT * FROM transcripts WHERE meetingId = :meetingId ORDER BY createdAt ASC")
+    @Query(
+        "SELECT * FROM transcripts WHERE meetingId = :meetingId " +
+            "ORDER BY CASE WHEN startTimeMs > 0 THEN startTimeMs ELSE createdAt END ASC, " +
+            "endTimeMs ASC, createdAt ASC"
+    )
     suspend fun findTranscriptsByMeetingId(meetingId: String): List<TranscriptEntity>
 
-    @Query("SELECT * FROM transcripts WHERE journeyStageId = :journeyStageId ORDER BY createdAt ASC")
+    @Query(
+        "SELECT * FROM transcripts WHERE journeyStageId = :journeyStageId " +
+            "ORDER BY CASE WHEN startTimeMs > 0 THEN startTimeMs ELSE createdAt END ASC, " +
+            "endTimeMs ASC, createdAt ASC"
+    )
     suspend fun findTranscriptsByJourneyStageId(journeyStageId: String): List<TranscriptEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)

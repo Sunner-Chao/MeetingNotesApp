@@ -111,6 +111,12 @@ class StreamingSttClient internal constructor(
     private val audioLock = Any()
     private val pendingAudio = ArrayDeque<ByteArray>()
     private var pendingAudioBytes = 0
+    private var producedAudioBytes = 0L
+    @Volatile
+    private var connectionTimelineOffsetSeconds = 0f
+    private val speakerLabelLock = Any()
+    private val speakerLabels = linkedMapOf<Int, Int>()
+    private var speakerLabelMeetingId: String? = null
     private val providerSwitchLock = Any()
     private var pendingProviderSwitch: PendingProviderSwitch? = null
     private val languageSwitchLock = Any()
@@ -142,7 +148,11 @@ class StreamingSttClient internal constructor(
         onProviderFailure: (StreamingSttProvider, String) -> Unit = { _, _ -> },
         connectionReady: CompletableDeferred<Unit>? = null
     ) {
-        stop()  // tear down any existing connection before installing the new session
+        // A provider switch reuses the same meeting and should keep its
+        // speaker labels. A completed meeting (or a different meeting) starts
+        // a fresh label map.
+        val reuseSpeakerLabels = this.meetingId == meetingId && meetingId.isNotBlank()
+        stopInternal(clearSpeakerLabels = !reuseSpeakerLabels)
 
         // Store callbacks so reconnect logic can reuse them
         onPartialTextCallback = onPartialText
@@ -157,6 +167,12 @@ class StreamingSttClient internal constructor(
         this.contextHint = contextHint.orEmpty()
         this.speakerDiarization = speakerDiarization
         this.connectionReady = connectionReady
+        synchronized(speakerLabelLock) {
+            if (speakerLabelMeetingId != meetingId) {
+                speakerLabels.clear()
+                speakerLabelMeetingId = meetingId
+            }
+        }
         serverSessionId = null
         serverReady = false
         localRecoveryDeadlineScheduled = false
@@ -231,6 +247,12 @@ class StreamingSttClient internal constructor(
                     }
                     var pendingFlushFailed = false
                     synchronized(audioLock) {
+                        // A reconnect starts a fresh server timeline. The server
+                        // receives only the retained PCM queue, so keep the
+                        // absolute start of that queue for persisted segments.
+                        connectionTimelineOffsetSeconds = audioBytesToSeconds(
+                            (producedAudioBytes - pendingAudioBytes).coerceAtLeast(0L)
+                        )
                         isConnected = true
                         while (pendingAudio.isNotEmpty()) {
                             val audio = pendingAudio.first()
@@ -276,7 +298,7 @@ class StreamingSttClient internal constructor(
                                         startSeconds = segment.start?.coerceAtLeast(0f) ?: 0f,
                                         endSeconds = (segment.end ?: segment.start ?: 0f).coerceAtLeast(0f),
                                         text = segmentText,
-                                        speaker = segment.speaker ?: segment.speakerId,
+                                        speaker = normalizeSpeakerId(segment.speaker ?: segment.speakerId),
                                         committed = segment.committed ?: false
                                     )
                                 }
@@ -295,6 +317,7 @@ class StreamingSttClient internal constructor(
                                         committedText = displayCommitted,
                                         previewText = displayPreview,
                                         sessionId = serverSessionId.orEmpty(),
+                                        timelineOffsetSeconds = connectionTimelineOffsetSeconds,
                                         segments = segments,
                                         diarizationEnabled = message.diarization?.enabled ?: false,
                                         diarizationActive = message.diarization?.active ?: segments.any { it.speaker != null }
@@ -543,6 +566,7 @@ class StreamingSttClient internal constructor(
         if (pcmBytes.isEmpty()) return
         var failedSocket: WebSocket? = null
         synchronized(audioLock) {
+            producedAudioBytes += pcmBytes.size.toLong()
             val socket = webSocket
             if (isConnected && socket != null) {
                 if (socket.send(pcmBytes.toByteString())) return
@@ -657,7 +681,9 @@ class StreamingSttClient internal constructor(
         }
     }
 
-    fun stop(): String? {
+    fun stop(): String? = stopInternal(clearSpeakerLabels = true)
+
+    private fun stopInternal(clearSpeakerLabels: Boolean): String? {
         var finalizationSession = serverSessionId?.takeIf { isConnected && streamCanFinalize }
         sessionGeneration.incrementAndGet()
         connectionGeneration.incrementAndGet()
@@ -678,6 +704,8 @@ class StreamingSttClient internal constructor(
         webSocket = null
         synchronized(audioLock) {
             isConnected = false
+            producedAudioBytes = 0L
+            connectionTimelineOffsetSeconds = 0f
             pendingAudio.clear()
             pendingAudioBytes = 0
         }
@@ -693,6 +721,12 @@ class StreamingSttClient internal constructor(
         authorizationRejected = false
         serverSessionId = null
         streamCanFinalize = false
+        if (clearSpeakerLabels) {
+            synchronized(speakerLabelLock) {
+                speakerLabels.clear()
+                speakerLabelMeetingId = null
+            }
+        }
         return finalizationSession
     }
 
@@ -705,6 +739,15 @@ class StreamingSttClient internal constructor(
             else -> "ws://$normalizedBase"
         }
         return "$wsBase/ws/transcribe-stream"
+    }
+
+    private fun audioBytesToSeconds(bytes: Long): Float =
+        bytes.toFloat() / (AudioRecorder.SAMPLE_RATE * AudioRecorder.CHANNEL_COUNT * 2f)
+
+    private fun normalizeSpeakerId(rawSpeaker: Int?): Int? = rawSpeaker?.let { raw ->
+        synchronized(speakerLabelLock) {
+            speakerLabels.getOrPut(raw) { speakerLabels.size }
+        }
     }
 
     private fun isAuthorizationError(message: String): Boolean {
@@ -847,6 +890,8 @@ data class StreamingTranscriptUpdate(
     val committedText: String,
     val previewText: String,
     val sessionId: String = "",
+    /** Absolute audio position represented by the first frame of this socket session. */
+    val timelineOffsetSeconds: Float = 0f,
     val segments: List<StreamingTranscriptSegment> = emptyList(),
     val diarizationEnabled: Boolean = false,
     val diarizationActive: Boolean = false
@@ -862,15 +907,13 @@ data class StreamingTranscriptSegment(
 
 private fun formatStreamingSpeakerPreview(segments: List<StreamingTranscriptSegment>): String {
     if (segments.none { it.speaker != null }) return ""
-    val labels = linkedMapOf<Int, Int>()
     return segments
         .sortedBy { it.startSeconds }
         .groupByConsecutive { it.speaker }
         .mapNotNull { group ->
             val speaker = group.first().speaker ?: return@mapNotNull null
-            val displaySpeaker = labels.getOrPut(speaker) { labels.size + 1 }
             val content = group.joinToString(" ") { it.text }.trim()
-            content.takeIf { it.isNotBlank() }?.let { "说话人 $displaySpeaker：$it" }
+            content.takeIf { it.isNotBlank() }?.let { "说话人 ${speaker + 1}：$it" }
         }
         .joinToString("\n")
 }

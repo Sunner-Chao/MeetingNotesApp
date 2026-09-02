@@ -21,6 +21,148 @@ import org.junit.Test
 
 class StreamingSttClientTest {
     @Test
+    fun `sparse provider speaker ids use stable compact labels across partial updates`() {
+        val server = MockWebServer()
+        val updates = Collections.synchronizedList(mutableListOf<StreamingTranscriptUpdate>())
+        val updatesReceived = CountDownLatch(2)
+        server.enqueue(
+            MockResponse().withWebSocketUpgrade(
+                object : WebSocketListener() {
+                    override fun onMessage(webSocket: WebSocket, text: String) {
+                        val payload = JsonParser.parseString(text).asJsonObject
+                        if (payload.get("event")?.asString == "start") {
+                            webSocket.send(
+                                """{
+                                    "type":"partial",
+                                    "segments":[{"start":0.0,"end":1.0,"text":"甲先介绍。","speaker_id":7,"committed":true}],
+                                    "diarization":{"enabled":true,"active":true}
+                                }""".trimIndent()
+                            )
+                            webSocket.send(
+                                """{
+                                    "type":"partial",
+                                    "segments":[
+                                        {"start":0.0,"end":1.0,"text":"甲先介绍。","speaker_id":7,"committed":true},
+                                        {"start":1.0,"end":2.0,"text":"乙再补充。","speaker_id":9,"committed":true}
+                                    ],
+                                    "diarization":{"enabled":true,"active":true}
+                                }""".trimIndent()
+                            )
+                        }
+                    }
+
+                    override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                        webSocket.close(code, reason)
+                    }
+                }
+            )
+        )
+        server.start()
+        val client = StreamingSttClient(
+            client = OkHttpClient.Builder().build(),
+            reconnectDelay = {},
+            debugLog = {},
+            warningLog = {}
+        )
+        try {
+            client.start(
+                endpoint = server.url("/speaker-normalization").toString(),
+                meetingId = "meeting-speakers",
+                speakerDiarization = true,
+                onPartialText = { update ->
+                    updates += update
+                    updatesReceived.countDown()
+                },
+                onStatus = {},
+                onError = {}
+            )
+
+            assertTrue("speaker partial updates were not received", updatesReceived.await(5, TimeUnit.SECONDS))
+            assertEquals(listOf(0), updates[0].segments.map { it.speaker })
+            assertEquals("说话人 1：甲先介绍。", updates[0].text)
+            assertEquals(listOf(0, 1), updates[1].segments.map { it.speaker })
+            assertEquals("说话人 1：甲先介绍。\n说话人 2：乙再补充。", updates[1].text)
+        } finally {
+            client.stop()
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun `speaker labels reset for a different meeting`() {
+        val server = MockWebServer()
+        val firstUpdate = AtomicReference<StreamingTranscriptUpdate>()
+        val secondUpdate = AtomicReference<StreamingTranscriptUpdate>()
+        val firstReceived = CountDownLatch(1)
+        val secondReceived = CountDownLatch(1)
+
+        fun response(speakerId: Int) = MockResponse().withWebSocketUpgrade(
+            object : WebSocketListener() {
+                override fun onMessage(webSocket: WebSocket, text: String) {
+                    val payload = JsonParser.parseString(text).asJsonObject
+                    if (payload.get("event")?.asString == "start") {
+                        webSocket.send(
+                            """{
+                                "type":"partial",
+                                "segments":[{"start":0.0,"end":1.0,"text":"一段发言。","speaker_id":$speakerId,"committed":true}],
+                                "diarization":{"enabled":true,"active":true}
+                            }""".trimIndent()
+                        )
+                    }
+                }
+
+                override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                    webSocket.close(code, reason)
+                }
+            }
+        )
+
+        server.enqueue(response(7))
+        server.enqueue(response(9))
+        server.start()
+        val client = StreamingSttClient(
+            client = OkHttpClient.Builder().build(),
+            reconnectDelay = {},
+            debugLog = {},
+            warningLog = {}
+        )
+        try {
+            client.start(
+                endpoint = server.url("/speaker-reset").toString(),
+                meetingId = "meeting-a",
+                speakerDiarization = true,
+                onPartialText = { update ->
+                    firstUpdate.set(update)
+                    firstReceived.countDown()
+                },
+                onStatus = {},
+                onError = {}
+            )
+            assertTrue("first speaker update was not received", firstReceived.await(5, TimeUnit.SECONDS))
+
+            client.start(
+                endpoint = server.url("/speaker-reset").toString(),
+                meetingId = "meeting-b",
+                speakerDiarization = true,
+                onPartialText = { update ->
+                    secondUpdate.set(update)
+                    secondReceived.countDown()
+                },
+                onStatus = {},
+                onError = {}
+            )
+            assertTrue("second speaker update was not received", secondReceived.await(5, TimeUnit.SECONDS))
+            assertEquals(listOf(0), firstUpdate.get().segments.map { it.speaker })
+            assertEquals(listOf(0), secondUpdate.get().segments.map { it.speaker })
+            assertEquals("说话人 1：一段发言。", firstUpdate.get().text)
+            assertEquals("说话人 1：一段发言。", secondUpdate.get().text)
+        } finally {
+            client.stop()
+            server.shutdown()
+        }
+    }
+
+    @Test
     fun `local stream uses three one-second recovery attempts`() {
         assertEquals(3, LOCAL_STREAM_RECONNECT_ATTEMPTS)
         assertEquals(3L, STREAM_PING_INTERVAL_SECONDS)

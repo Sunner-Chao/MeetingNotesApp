@@ -9,6 +9,8 @@ internal class StreamingTranscriptAccumulator {
     private var latestText = ""
     private var committedText = ""
     private var previewText = ""
+    private var currentSessionOffsetSeconds = 0f
+    private var currentSessionDurationSeconds = 0f
     private val preservedSegments = mutableListOf<StreamingTranscriptSegment>()
     private val currentSegments = mutableListOf<StreamingTranscriptSegment>()
 
@@ -19,6 +21,8 @@ internal class StreamingTranscriptAccumulator {
         latestText = ""
         committedText = ""
         previewText = ""
+        currentSessionOffsetSeconds = 0f
+        currentSessionDurationSeconds = 0f
         preservedSegments.clear()
         currentSegments.clear()
     }
@@ -29,6 +33,7 @@ internal class StreamingTranscriptAccumulator {
         val incomingCommitted = normalizeStreamingTranscript(update.committedText)
         val incomingPreview = normalizeStreamingTranscript(update.previewText)
         val incomingSessionId = update.sessionId.trim()
+        val incomingTimelineOffsetSeconds = update.timelineOffsetSeconds.coerceAtLeast(0f)
         val incomingSessionText = sessionText(incomingText, incomingCommitted, incomingPreview)
         val incomingSegments = update.segments
             .asSequence()
@@ -44,6 +49,12 @@ internal class StreamingTranscriptAccumulator {
             preservedText = mergeStreamingTranscriptText(preservedText, previousSessionText)
             preservedSegments += currentSegments
             currentSegments.clear()
+            currentSessionOffsetSeconds = maxOf(
+                currentSessionOffsetSeconds + currentSessionDurationSeconds,
+                preservedSegments.maxOfOrNull { it.endSeconds } ?: 0f,
+                incomingTimelineOffsetSeconds
+            )
+            currentSessionDurationSeconds = 0f
             latestText = ""
             committedText = ""
             previewText = ""
@@ -51,12 +62,31 @@ internal class StreamingTranscriptAccumulator {
             preservedText = mergeStreamingTranscriptText(preservedText, previousSessionText)
         }
 
+        // The streaming client derives this from the amount of PCM already
+        // produced before the reconnect queue. Keep it when the first update
+        // of a session arrives, including a session that started after audio
+        // was buffered before the socket opened.
+        if (!sessionChanged && currentSegments.isEmpty() && incomingTimelineOffsetSeconds > 0f) {
+            currentSessionOffsetSeconds = maxOf(currentSessionOffsetSeconds, incomingTimelineOffsetSeconds)
+        }
         if (incomingSessionId.isNotBlank()) currentSessionId = incomingSessionId
         latestText = incomingText
         committedText = incomingCommitted
         previewText = incomingPreview
         if (incomingSegments.isNotEmpty()) {
-            mergeSegments(currentSegments, incomingSegments)
+            currentSessionDurationSeconds = maxOf(
+                currentSessionDurationSeconds,
+                incomingSegments.maxOf { it.endSeconds }
+            )
+            mergeSegments(
+                currentSegments,
+                incomingSegments.map { segment ->
+                    segment.copy(
+                        startSeconds = segment.startSeconds + currentSessionOffsetSeconds,
+                        endSeconds = segment.endSeconds + currentSessionOffsetSeconds
+                    )
+                }
+            )
         }
         return snapshotLocked()
     }

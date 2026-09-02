@@ -1,9 +1,12 @@
 package com.oa.automation.ui.screen.report
 
 import android.app.Activity
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.pdf.PdfRenderer
 import android.media.AudioAttributes
 import android.media.MediaPlayer
+import android.os.ParcelFileDescriptor
 import android.util.Base64
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.BorderStroke
@@ -13,6 +16,7 @@ import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -74,10 +78,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.input.pointer.consumePositionChange
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -106,10 +115,13 @@ import com.oa.automation.domain.model.JourneyStage
 import com.oa.automation.domain.model.JourneyStageStatus
 import com.oa.automation.domain.model.PresetReportTemplate
 import com.oa.automation.domain.model.Report
+import com.oa.automation.domain.model.ReportWorkspaceBlocks
+import com.oa.automation.domain.model.normalizeReportWorkspaceOrder
 import com.oa.automation.domain.model.ReportTitleResolver
 import com.oa.automation.domain.model.isForumMeetingTemplate
 import com.oa.automation.infrastructure.audio.ArchivedMeetingAudio
 import com.oa.automation.infrastructure.audio.ArchivedMeetingAudioPlaybackSource
+import com.oa.automation.infrastructure.export.ReportDocumentFormatter
 import com.oa.automation.infrastructure.image.OrientedImageDecoder
 import com.oa.automation.ui.component.FlowingProgressBorder
 import com.oa.automation.ui.theme.LocalAppIsDarkTheme
@@ -118,8 +130,10 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /*
  * The coordinates below are calibrated from redesigned_meeting_summary_ui.png
@@ -291,11 +305,9 @@ private fun ReferenceCircleButton(
 @Composable
 internal fun ReportReferenceContent(
     uiState: ReportUiState,
-    onContinueRecording: () -> Unit,
     onToggleTranscript: () -> Unit,
     onExportTranscript: () -> Unit,
     onSelectTemplate: (PresetReportTemplate) -> Unit,
-    onRegenerateWithTemplate: () -> Unit,
     onDeleteAttachment: (MeetingAttachment) -> Unit,
     onAddImages: () -> Unit,
     onCaptureImage: () -> Unit,
@@ -303,7 +315,8 @@ internal fun ReportReferenceContent(
     onPrepareAudioPlayback: suspend (ArchivedMeetingAudio) -> Result<ArchivedMeetingAudioPlaybackSource>,
     onShareAudio: (ArchivedMeetingAudio) -> Unit,
     onDeleteAudio: (ArchivedMeetingAudio) -> Unit,
-    onShare: () -> Unit,
+    onWorkspaceOrderChanged: (List<String>) -> Unit,
+    onPreviewFullReport: () -> Unit = {},
     showTemplatePicker: Boolean,
     onShowTemplatePicker: (Boolean) -> Unit,
     modifier: Modifier = Modifier
@@ -345,7 +358,7 @@ internal fun ReportReferenceContent(
                 start = metrics.horizontalInset,
                 top = metrics.topGap,
                 end = metrics.horizontalInset,
-                bottom = metrics.controlHeight + metrics.controlBottom + 18.dp
+                bottom = 18.dp
             ),
             verticalArrangement = Arrangement.spacedBy(metrics.itemGap)
         ) {
@@ -393,47 +406,27 @@ internal fun ReportReferenceContent(
                     )
                 }
             } else {
-                if (isForumReport) {
-                    item {
-                        ReferenceForumParticipantWall(
-                            participants = uiState.forumParticipants
-                        )
-                    }
-                }
                 item {
-                    ReferenceAudioCard(
-                        audio = uiState.archivedAudio.firstOrNull(),
-                        isLoading = uiState.isLoadingAudio,
-                        height = metrics.audioHeight,
-                        onRefresh = onRefreshAudio,
-                        onPreparePlayback = onPrepareAudioPlayback,
-                        onShare = { uiState.archivedAudio.firstOrNull()?.let(onShareAudio) },
-                        onDelete = { uiState.archivedAudio.firstOrNull()?.let(onDeleteAudio) }
-                    )
-                }
-                item {
-                    ReferenceImagesCard(
-                        attachments = uiState.attachments,
-                        height = metrics.imageHeight,
-                        onDelete = onDeleteAttachment,
+                    StructuredReportWorkspace(
+                        report = report,
+                        uiState = uiState,
+                        isForumReport = isForumReport,
+                        metrics = metrics,
+                        onDeleteAttachment = onDeleteAttachment,
                         onAddImages = onAddImages,
                         onCaptureImage = onCaptureImage,
-                        isStudyReport = isStudyReport
-                    )
-                }
-                item {
-                    ReferenceReportCard(
-                        report = report,
-                        initiatorName = uiState.initiatorName,
-                        initiatorAvatarDataUrl = uiState.initiatorAvatarDataUrl,
-                        isStudyReport = isStudyReport,
-                        isForumReport = isForumReport,
-                        isProcessing = uiState.isGenerating,
-                        height = metrics.reportHeight
+                        onRefreshAudio = onRefreshAudio,
+                        onPrepareAudioPlayback = onPrepareAudioPlayback,
+                        onShareAudio = onShareAudio,
+                        onDeleteAudio = onDeleteAudio,
+                        onPreviewFullReport = onPreviewFullReport,
+                        onToggleTranscript = onToggleTranscript,
+                        onExportTranscript = onExportTranscript,
+                        onWorkspaceOrderChanged = onWorkspaceOrderChanged
                     )
                 }
             }
-            if (uiState.showTranscript && uiState.transcriptText.isNotBlank()) {
+            if (isStudyReport && uiState.showTranscript && uiState.transcriptText.isNotBlank()) {
                 item {
                     ReferenceTranscriptCard(
                         text = uiState.transcriptText,
@@ -444,28 +437,149 @@ internal fun ReportReferenceContent(
             }
         }
 
-        Row(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .padding(bottom = metrics.controlBottom),
-            horizontalArrangement = Arrangement.Center,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            ReferenceBottomAction(
-                icon = Icons.Default.Mic,
-                label = "继续录制",
-                height = metrics.controlHeight,
-                onClick = onContinueRecording
-            )
-            Spacer(Modifier.width(42.dp))
-            ReferenceBottomAction(
-                icon = Icons.Default.Share,
-                label = "分享",
-                height = metrics.controlHeight,
-                onClick = onShare
-            )
+    }
+}
+
+@Composable
+private fun StructuredReportWorkspace(
+    report: Report,
+    uiState: ReportUiState,
+    isForumReport: Boolean,
+    metrics: ReferenceMetrics,
+    onDeleteAttachment: (MeetingAttachment) -> Unit,
+    onAddImages: () -> Unit,
+    onCaptureImage: () -> Unit,
+    onRefreshAudio: () -> Unit,
+    onPrepareAudioPlayback: suspend (ArchivedMeetingAudio) -> Result<ArchivedMeetingAudioPlaybackSource>,
+    onShareAudio: (ArchivedMeetingAudio) -> Unit,
+    onDeleteAudio: (ArchivedMeetingAudio) -> Unit,
+    onPreviewFullReport: () -> Unit,
+    onToggleTranscript: () -> Unit,
+    onExportTranscript: () -> Unit,
+    onWorkspaceOrderChanged: (List<String>) -> Unit
+) {
+    val available = buildList {
+        if (isForumReport) add(ReportWorkspaceBlocks.PARTICIPANTS)
+        add(ReportWorkspaceBlocks.AUDIO)
+        add(ReportWorkspaceBlocks.IMAGES)
+        add(ReportWorkspaceBlocks.REPORT)
+        if (uiState.showTranscript && uiState.transcriptText.isNotBlank()) {
+            add(ReportWorkspaceBlocks.TRANSCRIPT)
         }
+    }
+    val persisted = report.workspaceBlockOrder
+    var order by remember(report.id, persisted, available) {
+        mutableStateOf(
+            normalizeReportWorkspaceOrder(persisted, available)
+        )
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(metrics.itemGap)) {
+        order.forEachIndexed { index, blockId ->
+            key(blockId) {
+                DraggableWorkspaceBlock(
+                    blockId = blockId,
+                    index = index,
+                    order = order,
+                    onMove = { from, to ->
+                        if (from == to || to !in order.indices) return@DraggableWorkspaceBlock
+                        val next = order.toMutableList().apply { add(to, removeAt(from)) }
+                        order = next
+                        onWorkspaceOrderChanged(next)
+                    }
+                ) {
+                    when (blockId) {
+                        ReportWorkspaceBlocks.PARTICIPANTS -> ReferenceForumParticipantWall(uiState.forumParticipants)
+                        ReportWorkspaceBlocks.AUDIO -> ReferenceAudioCard(
+                            audio = uiState.archivedAudio.firstOrNull(),
+                            isLoading = uiState.isLoadingAudio,
+                            height = metrics.audioHeight,
+                            onRefresh = onRefreshAudio,
+                            onPreparePlayback = onPrepareAudioPlayback,
+                            onShare = { uiState.archivedAudio.firstOrNull()?.let(onShareAudio) },
+                            onDelete = { uiState.archivedAudio.firstOrNull()?.let(onDeleteAudio) }
+                        )
+                        ReportWorkspaceBlocks.IMAGES -> ReferenceImagesCard(
+                            attachments = uiState.attachments,
+                            height = metrics.imageHeight,
+                            onDelete = onDeleteAttachment,
+                            onAddImages = onAddImages,
+                            onCaptureImage = onCaptureImage,
+                            isStudyReport = false
+                        )
+                        ReportWorkspaceBlocks.REPORT -> ReferenceReportCard(
+                            report = report,
+                            initiatorName = uiState.initiatorName,
+                            initiatorAvatarDataUrl = uiState.initiatorAvatarDataUrl,
+                            isStudyReport = false,
+                            isForumReport = isForumReport,
+                            isProcessing = uiState.isGenerating,
+                            height = metrics.reportHeight,
+                            onPreviewFullReport = onPreviewFullReport
+                        )
+                        ReportWorkspaceBlocks.TRANSCRIPT -> ReferenceTranscriptCard(
+                            text = uiState.transcriptText,
+                            onCollapse = onToggleTranscript,
+                            onExport = onExportTranscript
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DraggableWorkspaceBlock(
+    blockId: String,
+    index: Int,
+    order: List<String>,
+    onMove: (Int, Int) -> Unit,
+    content: @Composable () -> Unit
+) {
+    var dragging by remember(blockId) { mutableStateOf(false) }
+    var dragDistance by remember(blockId) { mutableStateOf(0f) }
+    val currentIndex by rememberUpdatedState(index)
+    val currentOrder by rememberUpdatedState(order)
+    val moveBlock by rememberUpdatedState(onMove)
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .zIndex(if (dragging) 1f else 0f)
+            .animateContentSize()
+            .pointerInput(blockId) {
+                detectDragGestures(
+                    onDragStart = {
+                        dragging = true
+                        dragDistance = 0f
+                    },
+                    onDragCancel = {
+                        dragging = false
+                        dragDistance = 0f
+                    },
+                    onDragEnd = {
+                        dragging = false
+                        dragDistance = 0f
+                    },
+                    onDrag = { change, dragAmount ->
+                        change.consumePositionChange()
+                        dragDistance += dragAmount.y
+                        val step = 96f
+                        while (dragDistance > step && currentIndex < currentOrder.lastIndex) {
+                            moveBlock(currentIndex, currentIndex + 1)
+                            dragDistance -= step
+                        }
+                        while (dragDistance < -step && currentIndex > 0) {
+                            moveBlock(currentIndex, currentIndex - 1)
+                            dragDistance += step
+                        }
+                    }
+                )
+            },
+        shape = RoundedCornerShape(12.dp),
+        color = if (dragging) Color.White.copy(alpha = .16f) else Color.Transparent,
+        border = if (dragging) BorderStroke(1.dp, ReferenceSky.copy(alpha = .7f)) else null
+    ) {
+        Column(modifier = Modifier.padding(if (dragging) 2.dp else 0.dp)) { content() }
     }
 }
 
@@ -1319,18 +1433,10 @@ private fun ReferenceReportCard(
     isStudyReport: Boolean,
     isForumReport: Boolean,
     isProcessing: Boolean,
-    height: Dp
+    height: Dp,
+    onPreviewFullReport: () -> Unit
 ) {
-    val points = remember(report) { reportPreviewPoints(report) }
     val attendees = remember(initiatorName) { listOf(initiatorName.trim()).filter(String::isNotBlank) }
-    var showAttendees by remember { mutableStateOf(false) }
-    if (showAttendees) {
-        ReferenceAttendeeDialog(
-            attendees = attendees,
-            avatarDataUrl = initiatorAvatarDataUrl,
-            onDismiss = { showAttendees = false }
-        )
-    }
     FlowingProgressBorder(
         active = isProcessing,
         modifier = Modifier.fillMaxWidth().height(height),
@@ -1360,19 +1466,14 @@ private fun ReferenceReportCard(
                     .verticalScroll(contentScrollState),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                ReferenceSectionLabel("会议主题")
-                Text(
-                    text = reportPreviewSummary(report),
-                    color = ReferenceInk.copy(alpha = .91f),
-                    fontSize = 11.sp,
-                    lineHeight = 16.sp
-                )
-                ReferenceSectionLabel("关键要点")
-                Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                    points.forEachIndexed { index, point ->
-                        ReferencePointRow(point = point, index = index)
-                    }
-                    if (points.isEmpty()) ReferencePointRow(point = "暂无关键要点", index = 0)
+                ReferenceSectionLabel("纪要全文")
+                SelectionContainer {
+                    Text(
+                        text = reportPreviewDocument(report),
+                        color = ReferenceInk.copy(alpha = .91f),
+                        fontSize = 11.sp,
+                        lineHeight = 16.sp
+                    )
                 }
             }
             ReferenceVerticalScrollIndicator(
@@ -1392,10 +1493,10 @@ private fun ReferenceReportCard(
                 }
                 Spacer(Modifier.weight(1f))
                 Text(
-                    text = "查看全部  ›",
+                    text = "查看完整纪要  ›",
                     color = ReferenceMuted,
                     fontSize = 10.sp,
-                    modifier = Modifier.clickable { showAttendees = true }
+                    modifier = Modifier.clickable(onClick = onPreviewFullReport)
                 )
             }
         }
@@ -1769,6 +1870,191 @@ private fun ReferenceBottomAction(
             }
         }
     }
+}
+
+/**
+ * Displays the exact PDF generated by the export pipeline. Rendering the
+ * exported pages (instead of reimplementing Markdown layout in Compose) keeps
+ * this preview in lockstep with the downloadable document, including image
+ * placement and page breaks.
+ */
+@Composable
+internal fun ReportPdfPreviewDialog(
+    file: File,
+    onDismiss: () -> Unit
+) {
+    var pages by remember(file.absolutePath) { mutableStateOf<List<Bitmap>>(emptyList()) }
+    var error by remember(file.absolutePath) { mutableStateOf<String?>(null) }
+    var loading by remember(file.absolutePath) { mutableStateOf(true) }
+    val latestPages by rememberUpdatedState(pages)
+
+    LaunchedEffect(file.absolutePath) {
+        val rendered = withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching {
+                ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { descriptor ->
+                    PdfRenderer(descriptor).use { renderer ->
+                        buildList {
+                            for (index in 0 until renderer.pageCount) {
+                                renderer.openPage(index).use { page ->
+                                    val scale = (1_200f / page.width.toFloat()).coerceAtMost(2f)
+                                    val width = (page.width * scale).roundToInt().coerceAtLeast(1)
+                                    val height = (page.height * scale).roundToInt().coerceAtLeast(1)
+                                    val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                                    bitmap.eraseColor(android.graphics.Color.WHITE)
+                                    page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                                    add(bitmap)
+                                }
+                            }
+                        }
+                    }
+                }
+            }.getOrElse { throwable ->
+                error = throwable.message ?: "无法生成预览"
+                emptyList()
+            }
+        }
+        pages = rendered
+        loading = false
+    }
+
+    DisposableEffect(file.absolutePath) {
+        onDispose {
+            latestPages.forEach { bitmap -> if (!bitmap.isRecycled) bitmap.recycle() }
+        }
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth(.96f)
+                .heightIn(max = 760.dp),
+            shape = RoundedCornerShape(16.dp),
+            color = Color(0xFF17284C),
+            border = BorderStroke(1.dp, ReferenceBorder)
+        ) {
+            Column(modifier = Modifier.fillMaxSize().padding(12.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.Description, null, tint = ReferenceInk, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(7.dp))
+                    Text(
+                        "完整纪要预览",
+                        color = ReferenceInk,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(Modifier.weight(1f))
+                    if (!loading && pages.isNotEmpty()) {
+                        Text("${pages.size} 页", color = ReferenceMuted, fontSize = 11.sp)
+                        Spacer(Modifier.width(4.dp))
+                    }
+                    IconButton(onClick = onDismiss, modifier = Modifier.size(32.dp)) {
+                        Icon(Icons.Default.Close, "关闭完整纪要预览", tint = ReferenceInk, modifier = Modifier.size(18.dp))
+                    }
+                }
+                when {
+                    loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(color = ReferenceSky)
+                    }
+                    error != null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text(error.orEmpty(), color = Color(0xFF8E2C3B), fontSize = 13.sp)
+                    }
+                    pages.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text("暂无可预览页面", color = ReferenceMuted, fontSize = 13.sp)
+                    }
+                    else -> LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                        contentPadding = PaddingValues(bottom = 8.dp)
+                    ) {
+                        itemsIndexed(pages, key = { index, _ -> index }) { _, bitmap ->
+                            Image(
+                                bitmap = bitmap.asImageBitmap(),
+                                contentDescription = "纪要 PDF 页面",
+                                contentScale = ContentScale.FillWidth,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .border(1.dp, Color(0xFFD7DFEA), RoundedCornerShape(6.dp))
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Full-text rendering used by the compact report card. Unlike the previous
+ * summary-only rendering this keeps every section, list item and table row so
+ * the card is an honest preview of the document body. Photo anchors are
+ * omitted because the generated PDF places those images beside the content.
+ */
+internal fun reportPreviewDocument(report: Report): String {
+    if (report.rawContent.isBlank()) {
+        return buildString {
+            appendLine("会议概述")
+            appendLine(report.summary.ifBlank { "暂无概述" })
+            if (report.keyPoints.isNotEmpty()) {
+                appendLine()
+                appendLine("关键要点")
+                report.keyPoints.forEachIndexed { index, value ->
+                    appendLine("（${index + 1}）${value.cleanReportText()}")
+                }
+            }
+            if (report.decisions.isNotEmpty()) {
+                appendLine()
+                appendLine("决策事项")
+                report.decisions.forEachIndexed { index, value ->
+                    appendLine("（${index + 1}）${value.cleanReportText()}")
+                }
+            }
+            if (report.tasks.isNotEmpty()) {
+                appendLine()
+                appendLine("待办任务")
+                report.tasks.forEachIndexed { index, task ->
+                    val state = if (task.completed) "已完成" else "待办"
+                    appendLine("（${index + 1}）${task.content.cleanReportText()} · ${task.assignee.orEmpty()} · ${task.due.orEmpty()} · $state")
+                }
+            }
+            if (report.actionItems.isNotEmpty()) {
+                appendLine()
+                appendLine("行动项")
+                report.actionItems.forEachIndexed { index, value ->
+                    appendLine("（${index + 1}）${value.cleanReportText()}")
+                }
+            }
+        }.trim()
+    }
+
+    val source = if (report.templateName.trim() == "项目管理" ||
+        (report.templateName.contains("孔爵") && report.templateName.contains("表格"))
+    ) {
+        ReportDocumentFormatter.normalizeProjectManagementSections(report.rawContent)
+    } else {
+        report.rawContent
+    }
+    val photoAnchor = Regex("^\\s*\\[照片\\s*[:：]\\s*图\\s*\\d+(?:\\s*[|｜]\\s*[^]]+?)?]\\s*$")
+    return ReportDocumentFormatter.normalizeLists(source)
+        .lineSequence()
+        .filterNot { photoAnchor.matches(it.trim()) }
+        .joinToString("\n") { line ->
+            val trimmed = line.trim()
+            when {
+                trimmed.startsWith("#") -> trimmed.replaceFirst(Regex("^#{1,6}\\s*"), "")
+                trimmed.startsWith("|") -> trimmed.trim('|').split('|')
+                    .joinToString("  ") { it.cleanReportText() }
+                else -> trimmed.cleanReportText()
+            }
+        }
+        .trim()
+        .ifBlank { "本次会议已完成记录，暂无可显示的纪要内容。" }
 }
 
 private fun reportPreviewSummary(report: Report): String = report.summary.cleanReportText().ifBlank {
