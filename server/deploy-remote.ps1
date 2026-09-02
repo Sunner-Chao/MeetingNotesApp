@@ -20,6 +20,9 @@ param(
 
     [string]$AndroidApk = "",
 
+    [ValidatePattern('^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$')]
+    [string]$ExpectedPackageName = "com.oa.automation",
+
     [string]$RemoteAppUpdateDirectory = "/var/lib/meetingnotes-stt/downloads",
 
     [string]$RemoteAppUpdateConfig = "/var/lib/meetingnotes-stt/app-update.json",
@@ -86,7 +89,8 @@ function Assert-AndroidReleaseApk {
     param(
         [Parameter(Mandatory = $true)][string]$ApkPath,
         [Parameter(Mandatory = $true)][int]$ExpectedVersionCode,
-        [Parameter(Mandatory = $true)][string]$ExpectedVersionName
+        [Parameter(Mandatory = $true)][string]$ExpectedVersionName,
+        [Parameter(Mandatory = $true)][string]$ExpectedPackageName
     )
 
     $apksigner = Resolve-AndroidBuildTool "apksigner"
@@ -104,9 +108,10 @@ function Assert-AndroidReleaseApk {
 
     $badging = & $aapt dump badging $ApkPath 2>&1
     if ($LASTEXITCODE -ne 0) { throw "Could not read Android APK manifest: $badging" }
-    $packageLine = $badging | Where-Object { $_ -match "^package: name='com\.oa\.automation' versionCode='([0-9]+)' versionName='([^']+)'" } | Select-Object -First 1
-    if (-not $packageLine -or $packageLine -notmatch "^package: name='com\.oa\.automation' versionCode='([0-9]+)' versionName='([^']+)'") {
-        throw "APK package must be com.oa.automation and expose versionCode/versionName."
+    $packagePattern = "^package: name='" + [regex]::Escape($ExpectedPackageName) + "' versionCode='([0-9]+)' versionName='([^']+)'"
+    $packageLine = $badging | Where-Object { $_ -match $packagePattern } | Select-Object -First 1
+    if (-not $packageLine -or $packageLine -notmatch $packagePattern) {
+        throw "APK package must be $ExpectedPackageName and expose versionCode/versionName."
     }
     if ([int]$Matches[1] -ne $ExpectedVersionCode -or $Matches[2] -ne $ExpectedVersionName) {
         throw "APK version does not match server/config/app-update.json."
@@ -202,7 +207,7 @@ try {
         if ($versionCode -le 0 -or [string]::IsNullOrWhiteSpace([string]$updateManifest.version_name)) {
             throw "Android update manifest must provide a positive version_code and version_name."
         }
-        Assert-AndroidReleaseApk -ApkPath $AndroidApk -ExpectedVersionCode $versionCode -ExpectedVersionName ([string]$updateManifest.version_name)
+        Assert-AndroidReleaseApk -ApkPath $AndroidApk -ExpectedVersionCode $versionCode -ExpectedVersionName ([string]$updateManifest.version_name) -ExpectedPackageName $ExpectedPackageName
         $updateManifest | Add-Member -Force -NotePropertyName sha256 -NotePropertyValue (
             (Get-FileHash -LiteralPath $AndroidApk -Algorithm SHA256).Hash.ToLowerInvariant()
         )
