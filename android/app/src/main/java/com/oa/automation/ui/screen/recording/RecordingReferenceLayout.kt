@@ -133,6 +133,7 @@ import androidx.compose.ui.unit.sp
 import com.oa.automation.BuildConfig
 import com.oa.automation.R
 import com.oa.automation.domain.model.MeetingAttachment
+import com.oa.automation.domain.model.ProductEdition
 import com.oa.automation.domain.model.PresetReportTemplate
 import com.oa.automation.domain.model.StageDraftStatus
 import com.oa.automation.domain.model.StageDraftVersion
@@ -145,6 +146,7 @@ import com.oa.automation.domain.model.STTLanguage
 import com.oa.automation.infrastructure.audio.ArchivedMeetingAudio
 import com.oa.automation.infrastructure.textimport.ExternalTextSource
 import com.oa.automation.ui.component.ProcessingStatusRow
+import com.oa.automation.ui.navigation.ProductEntryPolicy
 import com.oa.automation.ui.theme.LocalAppIsDarkTheme
 import java.util.Locale
 import kotlinx.coroutines.launch
@@ -281,6 +283,7 @@ private fun recordingLayoutSpec(maxWidth: Dp, maxHeight: Dp): RecordingLayoutSpe
 @Composable
 internal fun RecordingReferenceScaffold(
     uiState: RecordingUiState,
+    productPolicy: ProductEntryPolicy = ProductEntryPolicy.forEdition(ProductEdition.current),
     onNavigateBack: () -> Unit,
     onNavigateToReport: () -> Unit,
     onTitleChange: (String) -> Unit,
@@ -336,6 +339,18 @@ internal fun RecordingReferenceScaffold(
     var serviceDialogVisible by remember { mutableStateOf(false) }
     var imageDialogVisible by remember { mutableStateOf(false) }
     val recordingColors = if (LocalAppIsDarkTheme.current) DarkRecordingColors else LightRecordingColors
+    val visibleTemplates = uiState.presetTemplates.filter { template ->
+        productPolicy.shouldShowMeetingTemplate(
+            templateName = template.name,
+            preserveSelectedLegacy = template.name == uiState.selectedRecordingTemplateName &&
+                (uiState.hasRecording || uiState.hasReport || uiState.journey != null)
+        )
+    }
+    val displayedUiState = if (visibleTemplates.size != uiState.presetTemplates.size) {
+        uiState.copy(presetTemplates = visibleTemplates)
+    } else {
+        uiState
+    }
 
     CompositionLocalProvider(LocalRecordingColors provides recordingColors) {
     if (titleEditorVisible) {
@@ -561,9 +576,10 @@ internal fun RecordingReferenceScaffold(
                 )
         ) {
             val layout = recordingLayoutSpec(maxWidth, maxHeight)
-            if (uiState.inputMode == InputMode.VOICE) {
+            if (displayedUiState.inputMode == InputMode.VOICE) {
                 SiriRecorderContent(
-                    uiState = uiState,
+                    uiState = displayedUiState,
+                    productPolicy = productPolicy,
                     onNavigateBack = onNavigateBack,
                     onOpenReport = onNavigateToReport,
                     hasExistingReport = uiState.hasReport,
@@ -593,7 +609,7 @@ internal fun RecordingReferenceScaffold(
                 )
             } else {
                 ImportRecordingContent(
-                    uiState = uiState,
+                    uiState = displayedUiState,
                     layout = layout,
                     onSelectTemplate = onSelectTemplate,
                     onTextChange = onTextChange,

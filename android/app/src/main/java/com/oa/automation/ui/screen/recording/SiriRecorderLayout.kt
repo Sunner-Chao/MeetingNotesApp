@@ -116,8 +116,10 @@ import com.oa.automation.domain.model.JourneyEdition
 import com.oa.automation.domain.model.JourneyEditionStatus
 import com.oa.automation.domain.model.PublishedPost
 import com.oa.automation.domain.model.PublishedPostStatus
+import com.oa.automation.domain.model.ProductEdition
 import com.oa.automation.domain.model.STTLanguage
 import com.oa.automation.domain.model.STTEngineType
+import com.oa.automation.ui.navigation.ProductEntryPolicy
 import com.oa.automation.infrastructure.audio.ArchivedMeetingAudio
 import com.oa.automation.infrastructure.image.OrientedImageDecoder
 import java.io.File
@@ -172,6 +174,7 @@ private val SiriLightPalette = SiriRecorderPalette(
 @Composable
 internal fun SiriRecorderContent(
     uiState: RecordingUiState,
+    productPolicy: ProductEntryPolicy = ProductEntryPolicy.forEdition(ProductEdition.current),
     onNavigateBack: () -> Unit,
     onOpenReport: () -> Unit,
     hasExistingReport: Boolean,
@@ -220,7 +223,7 @@ internal fun SiriRecorderContent(
             onDismiss = { savedAudioDialogVisible = false }
         )
     }
-    if (journeyDialogVisible && uiState.journey != null) {
+    if (journeyDialogVisible && productPolicy.showStudyJourneyTemplate && uiState.journey != null) {
         AlertDialog(
             onDismissRequest = { journeyDialogVisible = false },
             title = { Text("旅程暂存", fontWeight = FontWeight.SemiBold) },
@@ -271,6 +274,7 @@ internal fun SiriRecorderContent(
                 savedAudio = savedAudio,
                 onOpenSavedAudio = { savedAudioDialogVisible = true },
                 hasJourney = uiState.journey != null,
+                showStudyJourney = productPolicy.showStudyJourneyTemplate,
                 onOpenJourney = { journeyDialogVisible = true },
                 journey = uiState.journey,
                 latestSavedJourneyStage = uiState.latestSavedJourneyStage,
@@ -376,6 +380,7 @@ private fun SiriTopBar(
     onManageImages: () -> Unit,
     savedAudio: ArchivedMeetingAudio?,
     onOpenSavedAudio: () -> Unit,
+    showStudyJourney: Boolean,
     hasJourney: Boolean,
     onOpenJourney: () -> Unit,
     journey: Journey?,
@@ -450,7 +455,7 @@ private fun SiriTopBar(
                         onMenuExpandedChange
                     )
                 }
-                if (hasJourney) {
+                if (showStudyJourney && hasJourney) {
                     SiriMenuItem(
                         Icons.Default.BookmarkBorder,
                         "旅程暂存",
@@ -458,7 +463,7 @@ private fun SiriTopBar(
                         onMenuExpandedChange
                     )
                 }
-                if (journey != null) {
+                if (showStudyJourney && journey != null) {
                     HorizontalDivider(color = palette.border)
                     latestSavedJourneyStage?.let { savedStage ->
                         when {

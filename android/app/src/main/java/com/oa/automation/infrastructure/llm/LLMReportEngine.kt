@@ -5,6 +5,7 @@ import com.oa.automation.domain.model.LLMEngineType
 import com.oa.automation.domain.model.ReportTemplateConfig
 import com.oa.automation.domain.model.reportDocumentKind
 import com.oa.automation.domain.model.ForumParticipant
+import com.oa.automation.domain.model.MeetingMode
 import java.io.File
 
 /**
@@ -191,15 +192,46 @@ object ReportPromptTemplates {
         } else {
             "保留模板的标题层级、表格和章节结构。"
         }
-        val scenarioRule = when (template.selectedName) {
-            "通用会议" -> """
+        val meetingMode = MeetingMode.fromTemplateName(template.selectedName)
+        val scenarioRule = when (meetingMode) {
+            MeetingMode.GENERAL -> """
                 通用会议智能适配：
                 - 行政会议突出决定、责任人以及开始、检查、截止和汇报时间。
                 - 头脑风暴保留创意、观点聚类、少数意见、关键假设和待验证方向。
                 - 杂谈按话题脉络保留有价值的观点和案例，没有明确承诺时不生成行动项。
                 - 讲座沙龙区分主持人、主讲人和提问者，按主题、案例、问答与启发组织内容。
             """.trimIndent()
-            "论坛会议" -> """
+            MeetingMode.DIRECTIVE -> """
+                宣贯·落实会：
+                - 提取明确指令、适用范围、生效时间、责任人、检查节点和汇报节点。
+                - 严格区分已下达事项、讨论建议和待确认事项，不把建议写成决定。
+            """.trimIndent()
+            MeetingMode.PROGRESS -> """
+                推演·进度会：
+                - 提取里程碑、当前状态、延期原因、资源依赖和风险灯号。
+                - 每个风险保留证据与后续动作，负责人和时间未提及时写“待确认”。
+            """.trimIndent()
+            MeetingMode.CO_CREATE -> """
+                启迪·共创会：
+                - 保留创意池、观点聚类、少数意见、关键假设和待验证实验。
+                - 讨论建议、投票倾向和灵感不得直接写成已经批准的决定。
+            """.trimIndent()
+            MeetingMode.NEGOTIATION -> """
+                博弈·洽谈会：
+                - 区分双方立场、共识、分歧、条款、交换条件和待确认承诺。
+                - 仅记录可核对的语速变化、打断、停顿、重复强调等互动现象；不得把它们解释为情绪、意图或人格事实。
+            """.trimIndent()
+            MeetingMode.RETROSPECTIVE -> """
+                复盘·分析会：
+                - 先还原事实时间线、影响和处置，再用 5 Whys 整理根因候选与证据。
+                - 根因没有证据或未获人工确认时必须写“待确认”，改进动作需有明确承诺。
+            """.trimIndent()
+            MeetingMode.STANDUP -> """
+                敏捷·站会：
+                - 按成员或小组分开整理“昨日完成 / 今日计划 / 阻塞”，严格区分完成与计划时态。
+                - 阻塞项突出责任人、协同人、解除条件和预计时间；短会不制造额外行动项。
+            """.trimIndent()
+            MeetingMode.FORUM -> """
                 论坛会议长篇整理：
                 - 按真实时间、主持转场、议程变化和发言人切换分段，不得把数小时内容过度压缩。
                 - 区分主持人、主讲人、圆桌嘉宾和提问者，姓名不明确时写“待确认”。
@@ -207,14 +239,13 @@ object ReportPromptTemplates {
                 - 在论坛信息之后、主体内容之前输出独立的“参会人员名录”表格，列为“姓名/称谓、单位、角色”，供客户端生成照片墙通讯录。
                 - 名录只填写原文明确出现的人员；姓名不明确者不加入名录，不输出占位行，不从照片推断身份，不在后文重复整段名录。
             """.trimIndent()
-            "研学考察" -> """
+            MeetingMode.STUDY -> """
                 研学考察游记式整理：
                 - 每一站只保留一个站点标题，正文使用 3-5 个连续短段落，自然融合现场体验、讲解精要和互动发现。
                 - 禁止输出“时间与点位”“现场事实”“对方介绍”“参观者观点与互动”“学习收获”等固定标签或审计式栏目。
                 - 正文占 80%-90%；事实与待确认附录最多各 4 条，并合并同类项。
                 - 没有图片附件时不得生成图片编号、配图建议或空照片章节。
             """.trimIndent()
-            else -> ""
         }
         return """请根据以下$sourceName，依据给定模板生成一份完整的 Markdown $documentName。
 

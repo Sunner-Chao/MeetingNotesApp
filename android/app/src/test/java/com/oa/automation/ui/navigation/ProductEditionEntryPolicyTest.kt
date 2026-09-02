@@ -13,6 +13,9 @@ class ProductEditionEntryPolicyTest {
         assertFalse(policy.showCommunityTab)
         assertFalse(policy.showSocialAccountActions)
         assertFalse(policy.showGrowthNotifications)
+        assertFalse(policy.showStudyJourneyTemplate)
+        assertFalse(policy.shouldShowMeetingTemplate("研学考察"))
+        assertTrue(policy.shouldShowMeetingTemplate("项目管理"))
     }
 
     @Test
@@ -22,5 +25,7 @@ class ProductEditionEntryPolicyTest {
         assertTrue(policy.showCommunityTab)
         assertTrue(policy.showSocialAccountActions)
         assertTrue(policy.showGrowthNotifications)
+        assertTrue(policy.showStudyJourneyTemplate)
+        assertTrue(policy.shouldShowMeetingTemplate("研学考察"))
     }
 }

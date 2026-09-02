@@ -176,6 +176,36 @@ class ConfigDataStore(private val context: Context) {
                 "推演节点、风险与行动项"
             ),
             ReportTemplateAsset(
+                "宣贯·落实会",
+                "行政会议.md",
+                "指令、责任与时间节点"
+            ),
+            ReportTemplateAsset(
+                "推演·进度会",
+                "孔爵团队版表格会议纪要.md",
+                "里程碑、风险与行动项"
+            ),
+            ReportTemplateAsset(
+                "启迪·共创会",
+                "头脑风暴.md",
+                "创意池、观点聚类与验证"
+            ),
+            ReportTemplateAsset(
+                "博弈·洽谈会",
+                "博弈洽谈会.md",
+                "立场、条款与可观察互动信号"
+            ),
+            ReportTemplateAsset(
+                "复盘·分析会",
+                "复盘分析会.md",
+                "时间线、根因与预防措施"
+            ),
+            ReportTemplateAsset(
+                "敏捷·站会",
+                "敏捷站会.md",
+                "昨日、今日与阻塞项"
+            ),
+            ReportTemplateAsset(
                 "论坛会议",
                 "论坛会议.md",
                 "主持串场、主题演讲与问答脉络"

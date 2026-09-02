@@ -33,6 +33,8 @@ import com.oa.automation.application.usecase.GenerateStageDraftUseCase
 import com.oa.automation.application.usecase.GenerateJourneyEditionUseCase
 import com.oa.automation.application.usecase.CreatePublishedPostSnapshotUseCase
 import com.oa.automation.domain.model.Meeting
+import com.oa.automation.domain.model.MeetingMode
+import com.oa.automation.domain.model.ProductEdition
 import com.oa.automation.domain.model.Transcript
 import com.oa.automation.domain.model.MeetingAttachment
 import com.oa.automation.domain.model.MeetingOrigin
@@ -294,6 +296,9 @@ internal fun canGenerateReportFromRecording(state: RecordingUiState): Boolean =
 internal const val RECORDING_TEMPLATE_REQUIRED_MESSAGE =
     "请先选择模板再开始录音"
 private const val LEGACY_MEETING_GRACE_PERIOD_MS = 5 * 60 * 1_000L
+
+internal fun isStudyJourneyTemplateName(templateName: String): Boolean =
+    MeetingMode.fromTemplateName(templateName) == MeetingMode.STUDY
 
 internal fun isRecordingActionEnabled(state: RecordingUiState): Boolean =
     !state.isRecordingActionPending &&
@@ -871,10 +876,26 @@ class RecordingViewModel(
                 meeting,
                 hasPriorWork = hasPriorWork || isLikelyLegacyMeeting
             )
+            // The light edition keeps historical study meetings readable, but
+            // must not seed a new meeting from the social-only study template.
+            val editionSafeTemplateName = restoredTemplateName?.takeIf { templateName ->
+                ProductEdition.current != ProductEdition.LIGHT_ENJOY ||
+                    !isStudyJourneyTemplateName(templateName) ||
+                    hasPriorWork
+            }
+            val editionSafeAppConfig = if (
+                ProductEdition.current == ProductEdition.LIGHT_ENJOY &&
+                    !hasPriorWork &&
+                    isStudyJourneyTemplateName(appConfig.reportTemplateConfig.selectedName)
+            ) {
+                ReportTemplateConfig()
+            } else {
+                appConfig.reportTemplateConfig
+            }
             val restoredTemplateConfig = resolveRestoredRecordingTemplateConfig(
-                selectedName = restoredTemplateName,
+                selectedName = editionSafeTemplateName,
                 presetTemplates = presetTemplates,
-                appConfig = appConfig.reportTemplateConfig,
+                appConfig = editionSafeAppConfig,
                 isGlobalRecording = isGlobalRecording
             )
             // Keep the background report worker in sync with the meeting being
@@ -882,12 +903,12 @@ class RecordingViewModel(
             // mutate the app-wide default here.
             if (
                 meeting != null &&
-                    restoredTemplateName != null &&
-                    meeting.selectedTemplateName != restoredTemplateName &&
+                    editionSafeTemplateName != null &&
+                    meeting.selectedTemplateName != editionSafeTemplateName &&
                     !isGlobalRecording
             ) {
                 configDataStore.updateReportTemplate(restoredTemplateConfig)
-                meetingRepository.save(meeting.copy(selectedTemplateName = restoredTemplateName))
+                meetingRepository.save(meeting.copy(selectedTemplateName = editionSafeTemplateName))
             }
             if (!isGlobalRecording && restoredSttEngineType != sttConfig.engineType) {
                 configDataStore.updateSTTConfig(restoredSttConfig)
@@ -956,7 +977,7 @@ class RecordingViewModel(
                         },
                         presetTemplates = presetTemplates,
                         reportTemplate = restoredTemplateConfig,
-                        selectedRecordingTemplateName = restoredTemplateName
+                        selectedRecordingTemplateName = editionSafeTemplateName
                     )
                 }
                 if (isGlobalRecording) {
@@ -3094,6 +3115,14 @@ class RecordingViewModel(
     }
 
     fun selectReportTemplate(template: PresetReportTemplate) {
+        if (ProductEdition.current == ProductEdition.LIGHT_ENJOY &&
+            isStudyJourneyTemplateName(template.name) &&
+            !_uiState.value.hasRecording &&
+            !_uiState.value.hasReport
+        ) {
+            _uiState.update { it.copy(error = "轻享版暂不支持研学考察模板") }
+            return
+        }
         val meetingId = currentMeetingId
         val config = ReportTemplateConfig(
             selectedName = template.name,

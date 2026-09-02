@@ -129,6 +129,8 @@ import com.oa.automation.infrastructure.image.OrientedImageDecoder
 import com.oa.automation.infrastructure.textimport.ExternalTextSource
 import com.oa.automation.ui.location.ImageLocationPermission
 import com.oa.automation.ui.location.MeetingGalleryPermission
+import com.oa.automation.domain.model.ProductEdition
+import com.oa.automation.ui.navigation.ProductEntryPolicy
 import java.io.File
 import java.text.SimpleDateFormat
 import java.time.Instant
@@ -182,6 +184,7 @@ fun RecordingScreen(
     viewModel: RecordingViewModel = koinViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val productPolicy = remember { ProductEntryPolicy.forEdition(ProductEdition.current) }
     val context = LocalContext.current
     var pendingCameraUriString by rememberSaveable(meetingId) { mutableStateOf<String?>(null) }
     var pendingCameraMarkerId by rememberSaveable(meetingId) { mutableStateOf<String?>(null) }
@@ -448,6 +451,7 @@ fun RecordingScreen(
 
     RecordingReferenceScaffold(
         uiState = displayedUiState,
+        productPolicy = productPolicy,
         onNavigateBack = ::navigateBackToWorkspace,
         onNavigateToReport = { onNavigateToReport(meetingId) },
         onTitleChange = viewModel::onMeetingTitleChange,
