@@ -13,6 +13,8 @@ data class Report(
     val templateName: String = "",
     /** Stable ids for the report workspace blocks, persisted with the report. */
     val workspaceBlockOrder: List<String> = emptyList(),
+    /** Block ids hidden from the interactive workspace preview; source data remains intact. */
+    val hiddenWorkspaceBlocks: List<String> = emptyList(),
     val generatedAt: Long = System.currentTimeMillis()
 )
 
@@ -32,6 +34,12 @@ fun normalizeReportWorkspaceOrder(
     order: List<String>,
     available: List<String> = ReportWorkspaceBlocks.DEFAULT_ORDER
 ): List<String> = order.distinct().filter { it in available } + available.filterNot { it in order }
+
+fun normalizeHiddenReportWorkspaceBlocks(
+    hidden: List<String>,
+    available: List<String> = ReportWorkspaceBlocks.DEFAULT_ORDER
+): List<String> = hidden.distinct()
+    .filter { it in available && it != ReportWorkspaceBlocks.REPORT }
 
 data class Task(
     val content: String,

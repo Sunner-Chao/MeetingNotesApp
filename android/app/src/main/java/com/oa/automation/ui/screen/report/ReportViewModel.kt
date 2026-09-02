@@ -11,6 +11,7 @@ import com.oa.automation.domain.model.JourneyStage
 import com.oa.automation.domain.model.Report
 import com.oa.automation.domain.model.ReportWorkspaceBlocks
 import com.oa.automation.domain.model.normalizeReportWorkspaceOrder
+import com.oa.automation.domain.model.normalizeHiddenReportWorkspaceBlocks
 import com.oa.automation.domain.model.ReportTitleResolver
 import com.oa.automation.domain.model.ReportTemplateConfig
 import com.oa.automation.domain.model.Transcript
@@ -635,6 +636,36 @@ class ReportViewModel(
         val normalized = normalizeReportWorkspaceOrder(order)
         if (normalized.isEmpty()) return
         val updated = report.copy(workspaceBlockOrder = normalized)
+        _uiState.update { it.copy(report = updated, hasUnsavedChanges = true) }
+        viewModelScope.launch {
+            reportRepository.save(updated).onFailure { error ->
+                _uiState.update { it.copy(message = "纪要布局保存失败: ${error.message}") }
+            }
+        }
+    }
+
+    fun hideWorkspaceBlock(blockId: String) {
+        val report = _uiState.value.report ?: return
+        if (blockId == ReportWorkspaceBlocks.REPORT) return
+        val hidden = normalizeHiddenReportWorkspaceBlocks(
+            report.hiddenWorkspaceBlocks + blockId
+        )
+        if (hidden == report.hiddenWorkspaceBlocks) return
+        persistWorkspaceLayout(report.copy(hiddenWorkspaceBlocks = hidden))
+    }
+
+    fun restoreWorkspaceLayout() {
+        val report = _uiState.value.report ?: return
+        if (report.workspaceBlockOrder.isEmpty() && report.hiddenWorkspaceBlocks.isEmpty()) return
+        persistWorkspaceLayout(
+            report.copy(
+                workspaceBlockOrder = emptyList(),
+                hiddenWorkspaceBlocks = emptyList()
+            )
+        )
+    }
+
+    private fun persistWorkspaceLayout(updated: Report) {
         _uiState.update { it.copy(report = updated, hasUnsavedChanges = true) }
         viewModelScope.launch {
             reportRepository.save(updated).onFailure { error ->

@@ -69,6 +69,7 @@ data class ReportEntity(
     val rawContent: String = "",
     val templateName: String = "",
     val workspaceBlockOrder: List<String> = emptyList(),
+    val hiddenWorkspaceBlocks: List<String> = emptyList(),
     val generatedAt: Long
 )
 
@@ -203,6 +204,7 @@ fun ReportEntity.toDomain() = Report(
     rawContent = rawContent,
     templateName = templateName,
     workspaceBlockOrder = workspaceBlockOrder,
+    hiddenWorkspaceBlocks = hiddenWorkspaceBlocks,
     generatedAt = generatedAt
 )
 
@@ -218,6 +220,7 @@ fun Report.toEntity() = ReportEntity(
     rawContent = rawContent,
     templateName = templateName,
     workspaceBlockOrder = workspaceBlockOrder,
+    hiddenWorkspaceBlocks = hiddenWorkspaceBlocks,
     generatedAt = generatedAt
 )
 

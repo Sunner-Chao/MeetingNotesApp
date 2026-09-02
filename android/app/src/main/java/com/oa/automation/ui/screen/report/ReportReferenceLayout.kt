@@ -61,9 +61,12 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.TaskAlt
 import androidx.compose.material.icons.filled.Timeline
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -123,6 +126,7 @@ import com.oa.automation.domain.model.extractRiskItems
 import com.oa.automation.domain.model.InteractionSignal
 import com.oa.automation.domain.model.extractInteractionSignals
 import com.oa.automation.domain.model.normalizeReportWorkspaceOrder
+import com.oa.automation.domain.model.normalizeHiddenReportWorkspaceBlocks
 import com.oa.automation.domain.model.ReportTitleResolver
 import com.oa.automation.domain.model.isForumMeetingTemplate
 import com.oa.automation.infrastructure.audio.ArchivedMeetingAudio
@@ -322,6 +326,8 @@ internal fun ReportReferenceContent(
     onShareAudio: (ArchivedMeetingAudio) -> Unit,
     onDeleteAudio: (ArchivedMeetingAudio) -> Unit,
     onWorkspaceOrderChanged: (List<String>) -> Unit,
+    onHideWorkspaceBlock: (String) -> Unit = {},
+    onRestoreWorkspaceLayout: () -> Unit = {},
     onPreviewFullReport: () -> Unit = {},
     showTemplatePicker: Boolean,
     onShowTemplatePicker: (Boolean) -> Unit,
@@ -432,7 +438,9 @@ internal fun ReportReferenceContent(
                         onPreviewFullReport = onPreviewFullReport,
                         onToggleTranscript = onToggleTranscript,
                         onExportTranscript = onExportTranscript,
-                        onWorkspaceOrderChanged = onWorkspaceOrderChanged
+                        onWorkspaceOrderChanged = onWorkspaceOrderChanged,
+                        onHideWorkspaceBlock = onHideWorkspaceBlock,
+                        onRestoreWorkspaceLayout = onRestoreWorkspaceLayout
                     )
                 }
             }
@@ -468,7 +476,9 @@ private fun StructuredReportWorkspace(
     onPreviewFullReport: () -> Unit,
     onToggleTranscript: () -> Unit,
     onExportTranscript: () -> Unit,
-    onWorkspaceOrderChanged: (List<String>) -> Unit
+    onWorkspaceOrderChanged: (List<String>) -> Unit,
+    onHideWorkspaceBlock: (String) -> Unit,
+    onRestoreWorkspaceLayout: () -> Unit
 ) {
     val available = buildList {
         if (isForumReport) add(ReportWorkspaceBlocks.PARTICIPANTS)
@@ -482,21 +492,50 @@ private fun StructuredReportWorkspace(
         if (interactionSignals.isNotEmpty()) add(ReportWorkspaceBlocks.INTERACTION_SIGNALS)
     }
     val persisted = report.workspaceBlockOrder
+    val hidden = normalizeHiddenReportWorkspaceBlocks(report.hiddenWorkspaceBlocks, available)
     var order by remember(report.id, persisted, available) {
         mutableStateOf(
             normalizeReportWorkspaceOrder(persisted, available)
         )
     }
+    val visibleOrder = order.filterNot { it in hidden }
     Column(verticalArrangement = Arrangement.spacedBy(metrics.itemGap)) {
-        order.forEachIndexed { index, blockId ->
+        if (report.workspaceBlockOrder.isNotEmpty() || hidden.isNotEmpty()) {
+            Row(
+                modifier = Modifier.fillMaxWidth().height(30.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Default.DragHandle, "拖拽调整纪要区块顺序", tint = ReferenceMuted, modifier = Modifier.size(17.dp))
+                Spacer(Modifier.width(5.dp))
+                Text("纪要结构", color = ReferenceMuted, fontSize = 11.sp)
+                Spacer(Modifier.weight(1f))
+                if (hidden.isNotEmpty()) {
+                    Text("已隐藏 ${hidden.size} 个区块", color = ReferenceMuted, fontSize = 10.sp)
+                    Spacer(Modifier.width(4.dp))
+                }
+                IconButton(
+                    onClick = onRestoreWorkspaceLayout,
+                    modifier = Modifier.size(30.dp)
+                ) {
+                    Icon(Icons.Default.Restore, "恢复默认布局", tint = ReferenceInk, modifier = Modifier.size(17.dp))
+                }
+            }
+        }
+        visibleOrder.forEachIndexed { index, blockId ->
             key(blockId) {
                 DraggableWorkspaceBlock(
                     blockId = blockId,
                     index = index,
-                    order = order,
+                    order = visibleOrder,
+                    onHide = if (blockId == ReportWorkspaceBlocks.REPORT) null else {
+                        { onHideWorkspaceBlock(blockId) }
+                    },
                     onMove = { from, to ->
-                        if (from == to || to !in order.indices) return@DraggableWorkspaceBlock
-                        val next = order.toMutableList().apply { add(to, removeAt(from)) }
+                        if (from == to || to !in visibleOrder.indices) return@DraggableWorkspaceBlock
+                        val nextVisible = visibleOrder.toMutableList().apply { add(to, removeAt(from)) }
+                        val next = order.map { id ->
+                            if (id in visibleOrder) nextVisible.removeFirst() else id
+                        }
                         order = next
                         onWorkspaceOrderChanged(next)
                     }
@@ -656,6 +695,7 @@ private fun DraggableWorkspaceBlock(
     blockId: String,
     index: Int,
     order: List<String>,
+    onHide: (() -> Unit)?,
     onMove: (Int, Int) -> Unit,
     content: @Composable () -> Unit
 ) {
@@ -702,7 +742,26 @@ private fun DraggableWorkspaceBlock(
         color = if (dragging) Color.White.copy(alpha = .16f) else Color.Transparent,
         border = if (dragging) BorderStroke(1.dp, ReferenceSky.copy(alpha = .7f)) else null
     ) {
-        Column(modifier = Modifier.padding(if (dragging) 2.dp else 0.dp)) { content() }
+        Column(modifier = Modifier.padding(if (dragging) 2.dp else 0.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth().height(26.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.Default.DragHandle,
+                    "拖拽调整区块顺序",
+                    tint = ReferenceMuted.copy(alpha = .74f),
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(Modifier.weight(1f))
+                onHide?.let {
+                    IconButton(onClick = it, modifier = Modifier.size(26.dp)) {
+                        Icon(Icons.Default.VisibilityOff, "隐藏此区块", tint = ReferenceInk, modifier = Modifier.size(16.dp))
+                    }
+                }
+            }
+            content()
+        }
     }
 }
 

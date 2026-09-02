@@ -23,7 +23,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         CommunitySyncOutboxEntity::class,
         PublishedPostMediaEntity::class
     ],
-    version = 21,
+    version = 22,
     exportSchema = false
 )
 @TypeConverters(DbConverters::class)
@@ -488,6 +488,12 @@ abstract class AppDatabase : RoomDatabase() {
         val MIGRATION_20_21 = object : Migration(20, 21) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE reports ADD COLUMN workspaceBlockOrder TEXT NOT NULL DEFAULT '[]'")
+            }
+        }
+
+        val MIGRATION_21_22 = object : Migration(21, 22) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE reports ADD COLUMN hiddenWorkspaceBlocks TEXT NOT NULL DEFAULT '[]'")
             }
         }
     }

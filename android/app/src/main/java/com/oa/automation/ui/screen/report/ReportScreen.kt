@@ -431,6 +431,8 @@ fun ReportScreen(
                             onShareAudio = viewModel::shareArchivedAudio,
                             onDeleteAudio = viewModel::deleteArchivedAudio,
                             onWorkspaceOrderChanged = viewModel::updateWorkspaceBlockOrder,
+                            onHideWorkspaceBlock = viewModel::hideWorkspaceBlock,
+                            onRestoreWorkspaceLayout = viewModel::restoreWorkspaceLayout,
                             onPreviewFullReport = {
                                 val report = uiState.report
                                 if (report != null && !isPreparingReportPreview) {

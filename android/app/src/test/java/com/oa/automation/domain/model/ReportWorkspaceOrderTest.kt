@@ -12,4 +12,27 @@ class ReportWorkspaceOrderTest {
             normalizeReportWorkspaceOrder(listOf("report", "missing", "report"), available)
         )
     }
+
+    @Test
+    fun hiddenBlocksAreDistinctAndNeverHideReportBody() {
+        val available = listOf("audio", "images", "report")
+        assertEquals(
+            listOf("images", "audio"),
+            normalizeHiddenReportWorkspaceBlocks(
+                listOf("images", "report", "images", "missing", "audio"),
+                available
+            )
+        )
+    }
+
+    @Test
+    fun hiddenBlocksRespectAvailableBlocks() {
+        assertEquals(
+            listOf("audio"),
+            normalizeHiddenReportWorkspaceBlocks(
+                listOf("audio", "participants"),
+                available = listOf("audio", "images")
+            )
+        )
+    }
 }
