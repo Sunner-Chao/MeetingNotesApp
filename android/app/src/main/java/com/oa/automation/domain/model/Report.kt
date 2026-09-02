@@ -22,9 +22,10 @@ object ReportWorkspaceBlocks {
     const val IMAGES = "images"
     const val REPORT = "report"
     const val RISKS = "risks"
+    const val INTERACTION_SIGNALS = "interaction-signals"
     const val TRANSCRIPT = "transcript"
 
-    val DEFAULT_ORDER = listOf(PARTICIPANTS, AUDIO, IMAGES, REPORT, RISKS, TRANSCRIPT)
+    val DEFAULT_ORDER = listOf(PARTICIPANTS, AUDIO, IMAGES, REPORT, RISKS, INTERACTION_SIGNALS, TRANSCRIPT)
 }
 
 fun normalizeReportWorkspaceOrder(

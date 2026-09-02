@@ -120,6 +120,8 @@ import com.oa.automation.domain.model.Report
 import com.oa.automation.domain.model.ReportWorkspaceBlocks
 import com.oa.automation.domain.model.RiskItem
 import com.oa.automation.domain.model.extractRiskItems
+import com.oa.automation.domain.model.InteractionSignal
+import com.oa.automation.domain.model.extractInteractionSignals
 import com.oa.automation.domain.model.normalizeReportWorkspaceOrder
 import com.oa.automation.domain.model.ReportTitleResolver
 import com.oa.automation.domain.model.isForumMeetingTemplate
@@ -334,6 +336,7 @@ internal fun ReportReferenceContent(
         uiState.journeyStages.isNotEmpty()
     val isForumReport = templateName.isForumMeetingTemplate()
     val riskItems = remember(report.rawContent) { extractRiskItems(report.rawContent) }
+    val interactionSignals = remember(report.rawContent) { extractInteractionSignals(report.rawContent) }
     var showTemplatePreview by remember { mutableStateOf(false) }
     var previewTemplate by remember { mutableStateOf<PresetReportTemplate?>(null) }
 
@@ -417,6 +420,7 @@ internal fun ReportReferenceContent(
                         uiState = uiState,
                         isForumReport = isForumReport,
                         riskItems = riskItems,
+                        interactionSignals = interactionSignals,
                         metrics = metrics,
                         onDeleteAttachment = onDeleteAttachment,
                         onAddImages = onAddImages,
@@ -452,6 +456,7 @@ private fun StructuredReportWorkspace(
     uiState: ReportUiState,
     isForumReport: Boolean,
     riskItems: List<RiskItem>,
+    interactionSignals: List<InteractionSignal>,
     metrics: ReferenceMetrics,
     onDeleteAttachment: (MeetingAttachment) -> Unit,
     onAddImages: () -> Unit,
@@ -474,6 +479,7 @@ private fun StructuredReportWorkspace(
             add(ReportWorkspaceBlocks.TRANSCRIPT)
         }
         if (riskItems.isNotEmpty()) add(ReportWorkspaceBlocks.RISKS)
+        if (interactionSignals.isNotEmpty()) add(ReportWorkspaceBlocks.INTERACTION_SIGNALS)
     }
     val persisted = report.workspaceBlockOrder
     var order by remember(report.id, persisted, available) {
@@ -525,6 +531,7 @@ private fun StructuredReportWorkspace(
                             onPreviewFullReport = onPreviewFullReport
                         )
                         ReportWorkspaceBlocks.RISKS -> ReferenceRiskCard(riskItems)
+                        ReportWorkspaceBlocks.INTERACTION_SIGNALS -> ReferenceInteractionSignalsCard(interactionSignals)
                         ReportWorkspaceBlocks.TRANSCRIPT -> ReferenceTranscriptCard(
                             text = uiState.transcriptText,
                             onCollapse = onToggleTranscript,
@@ -572,6 +579,63 @@ private fun ReferenceRiskCard(items: List<RiskItem>) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(item.content, color = ReferenceInk, fontSize = 12.sp, lineHeight = 17.sp)
                         val meta = listOfNotNull(item.detail, item.status)
+                            .filter(String::isNotBlank)
+                            .joinToString(" · ")
+                        if (meta.isNotBlank()) {
+                            Text(meta, color = ReferenceMuted, fontSize = 10.sp, lineHeight = 14.sp)
+                        }
+                    }
+                }
+            }
+            if (items.size > 8) {
+                Text("其余 ${items.size - 8} 项可在完整纪要中查看", color = ReferenceMuted, fontSize = 10.sp)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReferenceInteractionSignalsCard(items: List<InteractionSignal>) {
+    ReferenceGlassCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 118.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Default.GraphicEq, null, tint = ReferenceSky, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(7.dp))
+            Text("互动信号", color = ReferenceInk, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.weight(1f))
+            Text("${items.size} 项", color = ReferenceMuted, fontSize = 10.sp)
+        }
+        Text(
+            text = "仅展示可核对的语速、停顿、打断等现象，不代表情绪结论",
+            color = ReferenceMuted,
+            fontSize = 10.sp,
+            lineHeight = 14.sp,
+            modifier = Modifier.padding(top = 5.dp)
+        )
+        Column(
+            modifier = Modifier.padding(top = 9.dp),
+            verticalArrangement = Arrangement.spacedBy(7.dp)
+        ) {
+            items.take(8).forEach { item ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Surface(
+                        modifier = Modifier.padding(top = 5.dp).size(6.dp),
+                        shape = CircleShape,
+                        color = ReferenceSky
+                    ) {}
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(item.content, color = ReferenceInk, fontSize = 12.sp, lineHeight = 17.sp)
+                        val meta = listOfNotNull(item.detail, item.source)
                             .filter(String::isNotBlank)
                             .joinToString(" · ")
                         if (meta.isNotBlank()) {
