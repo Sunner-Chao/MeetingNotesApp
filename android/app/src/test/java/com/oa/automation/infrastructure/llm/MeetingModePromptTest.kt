@@ -37,4 +37,11 @@ class MeetingModePromptTest {
         assertTrue(prompt.contains("可观察互动信号"))
         assertTrue(prompt.contains("不使用“愤怒、焦虑、抵触、缺乏诚意”等情绪、意图或人格结论"))
     }
+
+    @Test
+    fun promptRequiresAuditableInteractionSignalSection() {
+        assertTrue(ReportPromptTemplates.SYSTEM_PROMPT.contains("## 可观察互动信号"))
+        assertTrue(ReportPromptTemplates.SYSTEM_PROMPT.contains("证据或时间轴"))
+        assertTrue(ReportPromptTemplates.SYSTEM_PROMPT.contains("不要输出情绪、意图或人格标签"))
+    }
 }
