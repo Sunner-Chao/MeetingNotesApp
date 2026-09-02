@@ -18,14 +18,20 @@ class AppUpdateRouteTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.previous_config = backend.APP_UPDATE_CONFIG_PATH
         self.previous_apk = backend.APP_UPDATE_ANDROID_APK_PATH
+        self.previous_light_config = backend.APP_UPDATE_LIGHT_CONFIG_PATH
+        self.previous_light_apk = backend.APP_UPDATE_LIGHT_ANDROID_APK_PATH
         self.previous_web_token = backend.WEB_API_TOKEN
         backend.APP_UPDATE_CONFIG_PATH = Path(self.temp_dir.name) / "app-update.json"
         backend.APP_UPDATE_ANDROID_APK_PATH = Path(self.temp_dir.name) / "ZhiWuBen-Android.apk"
+        backend.APP_UPDATE_LIGHT_CONFIG_PATH = Path(self.temp_dir.name) / "app-update-light.json"
+        backend.APP_UPDATE_LIGHT_ANDROID_APK_PATH = Path(self.temp_dir.name) / "light" / "ZhiWuBen-Android.apk"
         backend.WEB_API_TOKEN = "test-protected-backend"
 
     def tearDown(self) -> None:
         backend.APP_UPDATE_CONFIG_PATH = self.previous_config
         backend.APP_UPDATE_ANDROID_APK_PATH = self.previous_apk
+        backend.APP_UPDATE_LIGHT_CONFIG_PATH = self.previous_light_config
+        backend.APP_UPDATE_LIGHT_ANDROID_APK_PATH = self.previous_light_apk
         backend.WEB_API_TOKEN = self.previous_web_token
         self.temp_dir.cleanup()
 
@@ -151,6 +157,38 @@ class AppUpdateRouteTests(unittest.TestCase):
         backend.APP_UPDATE_ANDROID_APK_PATH.write_bytes(b"apk-bytes")
         with TestClient(backend.app) as client:
             self.assertEqual(client.get("/api/app-update/android").status_code, 204)
+
+    def test_light_channel_metadata_and_versioned_download_are_isolated(self) -> None:
+        backend.APP_UPDATE_LIGHT_ANDROID_APK_PATH.parent.mkdir(parents=True)
+        backend.APP_UPDATE_LIGHT_ANDROID_APK_PATH.parent.joinpath(
+            "ZhiWuBen-Android-10259.apk"
+        ).write_bytes(b"light-apk")
+        backend.APP_UPDATE_LIGHT_CONFIG_PATH.write_text(
+            json.dumps(
+                {
+                    "version_code": 10259,
+                    "version_name": "1.2.59",
+                    "mandatory": False,
+                    "release_notes": "Light Enjoy",
+                    "apk_filename": "ZhiWuBen-Android-10259.apk",
+                }
+            ),
+            encoding="utf-8",
+        )
+        with TestClient(backend.app) as client:
+            response = client.get("/api/app-update/android/light")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["version_code"], 10259)
+            self.assertTrue(
+                response.json()["download_url"].endswith(
+                    "/api/app-update/android/light/apk/10259"
+                )
+            )
+            apk_response = client.get("/api/app-update/android/light/apk/10259")
+            self.assertEqual(apk_response.status_code, 200)
+            self.assertEqual(apk_response.content, b"light-apk")
+            social_response = client.get("/api/app-update/android")
+            self.assertEqual(social_response.status_code, 204)
 
 
 if __name__ == "__main__":

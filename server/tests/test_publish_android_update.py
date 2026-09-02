@@ -139,6 +139,12 @@ class DeployRemoteSafetyContractTests(unittest.TestCase):
         self.assertIn('" && ${Privilege}bash /opt/meetingnotes-stt/current/scripts/publish-android-update.sh "', self.script)
         self.assertIn('"--owner meetingnotes:meetingnotes --retain 2 && "', self.script)
 
+    def test_light_channel_uses_independent_package_and_state_paths(self) -> None:
+        self.assertIn('[ValidateSet("social", "light")]', self.script)
+        self.assertIn('/var/lib/meetingnotes-stt/downloads-light', self.script)
+        self.assertIn('/var/lib/meetingnotes-stt/app-update-light.json', self.script)
+        self.assertIn('com.oa.automation.light', self.script)
+
 
 if __name__ == "__main__":
     unittest.main()

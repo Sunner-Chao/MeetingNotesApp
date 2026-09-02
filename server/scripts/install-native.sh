@@ -245,6 +245,7 @@ APP_UPDATE_CONFIG_FILE="${STATE_ROOT}/app-update.json"
 if [[ ! -f "$APP_UPDATE_CONFIG_FILE" && -f "$FINAL_RELEASE/config/app-update.json" ]]; then
   install -m 0644 -o "$APP_USER" -g "$APP_GROUP" "$FINAL_RELEASE/config/app-update.json" "$APP_UPDATE_CONFIG_FILE"
 fi
+APP_UPDATE_LIGHT_CONFIG_FILE="${STATE_ROOT}/app-update-light.json"
 sed -i 's/\r$//' "$CONFIG_FILE"
 if ! grep -Eq '^STT_API_TOKEN=.+$' "$CONFIG_FILE"; then
   set_env_value STT_API_TOKEN "$(generate_token)"
@@ -345,6 +346,12 @@ if ! grep -Eq '^APP_UPDATE_CONFIG_PATH=.+$' "$CONFIG_FILE" || \
 fi
 if ! grep -Eq '^APP_UPDATE_ANDROID_APK_PATH=.+$' "$CONFIG_FILE"; then
   set_env_value APP_UPDATE_ANDROID_APK_PATH "$STATE_ROOT/downloads/ZhiWuBen-Android.apk"
+fi
+if ! grep -Eq '^APP_UPDATE_LIGHT_CONFIG_PATH=.+$' "$CONFIG_FILE"; then
+  set_env_value APP_UPDATE_LIGHT_CONFIG_PATH "$APP_UPDATE_LIGHT_CONFIG_FILE"
+fi
+if ! grep -Eq '^APP_UPDATE_LIGHT_ANDROID_APK_PATH=.+$' "$CONFIG_FILE"; then
+  set_env_value APP_UPDATE_LIGHT_ANDROID_APK_PATH "$STATE_ROOT/downloads-light/ZhiWuBen-Android.apk"
 fi
 if ! grep -Eq '^STT_AUDIO_ARCHIVE_ENABLED=.+$' "$CONFIG_FILE"; then
   set_env_value STT_AUDIO_ARCHIVE_ENABLED "1"

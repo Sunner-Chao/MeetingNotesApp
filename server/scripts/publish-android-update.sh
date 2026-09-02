@@ -165,7 +165,7 @@ mapfile -t RETAINED_APKS < <(
   {
     printf '%s\n' "$APK_FILENAME"
     printf '%s\n' "${EXISTING_APKS[@]}"
-  } | awk -F'[-.]' '{ print $(NF-1) "\t" $0 }' | sort -rn | head -n 2 | cut -f2-
+  } | awk -F'[-.]' 'NF >= 3 { print $(NF-1) "\t" $0 }' | sort -rn | head -n 2 | cut -f2-
 )
 for existing in "${EXISTING_APKS[@]}"; do
   if [[ ! " ${RETAINED_APKS[*]} " =~ " ${existing} " ]]; then

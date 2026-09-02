@@ -193,6 +193,15 @@ APP_UPDATE_CONFIG_PATH = Path(
 APP_UPDATE_ANDROID_APK_PATH = Path(
     _env("APP_UPDATE_ANDROID_APK_PATH", str(SERVER_ROOT / "downloads" / "ZhiWuBen-Android.apk"))
 ).resolve()
+APP_UPDATE_LIGHT_CONFIG_PATH = Path(
+    _env("APP_UPDATE_LIGHT_CONFIG_PATH", "/var/lib/meetingnotes-stt/app-update-light.json")
+).resolve()
+APP_UPDATE_LIGHT_ANDROID_APK_PATH = Path(
+    _env(
+        "APP_UPDATE_LIGHT_ANDROID_APK_PATH",
+        "/var/lib/meetingnotes-stt/downloads-light/ZhiWuBen-Android.apk",
+    )
+).resolve()
 
 ACCOUNT_MIGRATION_ID = "legacy-main-db-accounts-v1"
 ACCOUNT_MIGRATION_TABLES = (
@@ -1572,22 +1581,32 @@ def admin_system_metrics(
     }
 
 
-def _android_app_update_artifact(raw: dict, version_code: int) -> Path | None:
+def _android_app_update_artifact(
+    raw: dict,
+    version_code: int,
+    apk_path: Path | None = None,
+) -> Path | None:
     """Resolve a published APK without allowing manifest path traversal."""
+    apk_path = apk_path or APP_UPDATE_ANDROID_APK_PATH
     filename = str(raw.get("apk_filename", "")).strip()
     if not filename:
-        return APP_UPDATE_ANDROID_APK_PATH
+        return apk_path
     if not re.fullmatch(r"ZhiWuBen-Android-[0-9]+\.apk", filename):
         return None
-    return APP_UPDATE_ANDROID_APK_PATH.parent / filename
+    return apk_path.parent / filename
 
 
-def configured_android_app_update_with_artifact() -> tuple[dict, Path] | None:
+def configured_android_app_update_with_artifact(
+    config_path: Path | None = None,
+    apk_path: Path | None = None,
+) -> tuple[dict, Path] | None:
     """Read the current non-secret manifest and its immutable APK artifact."""
+    config_path = config_path or APP_UPDATE_CONFIG_PATH
+    apk_path = apk_path or APP_UPDATE_ANDROID_APK_PATH
     try:
-        if not APP_UPDATE_CONFIG_PATH.is_file():
+        if not config_path.is_file():
             return None
-        raw = json.loads(APP_UPDATE_CONFIG_PATH.read_text(encoding="utf-8"))
+        raw = json.loads(config_path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
             return None
         version_code = int(raw["version_code"])
@@ -1596,7 +1615,7 @@ def configured_android_app_update_with_artifact() -> tuple[dict, Path] | None:
         return None
     if version_code <= 0 or not version_name:
         return None
-    artifact = _android_app_update_artifact(raw, version_code)
+    artifact = _android_app_update_artifact(raw, version_code, apk_path)
     if artifact is None or not artifact.is_file():
         return None
     sha256 = str(raw.get("sha256", "")).strip().lower()
@@ -1615,14 +1634,21 @@ def configured_android_app_update_with_artifact() -> tuple[dict, Path] | None:
     )
 
 
-def configured_android_app_update() -> dict | None:
-    configured = configured_android_app_update_with_artifact()
+def configured_android_app_update(
+    config_path: Path | None = None,
+    apk_path: Path | None = None,
+) -> dict | None:
+    configured = configured_android_app_update_with_artifact(config_path, apk_path)
     return configured[0] if configured is not None else None
 
 
-def retained_android_app_update_artifacts() -> tuple[dict | None, list[dict]]:
+def retained_android_app_update_artifacts(
+    config_path: Path | None = None,
+    apk_path: Path | None = None,
+) -> tuple[dict | None, list[dict]]:
     """Return the current and immediately previous downloadable APKs."""
-    configured = configured_android_app_update_with_artifact()
+    apk_path = apk_path or APP_UPDATE_ANDROID_APK_PATH
+    configured = configured_android_app_update_with_artifact(config_path, apk_path)
     if configured is None:
         return None, []
 
@@ -1634,7 +1660,7 @@ def retained_android_app_update_artifacts() -> tuple[dict | None, list[dict]]:
     previous = sorted(
         (
             (int(match.group(1)), artifact)
-            for artifact in APP_UPDATE_ANDROID_APK_PATH.parent.glob("ZhiWuBen-Android-*.apk")
+            for artifact in apk_path.parent.glob("ZhiWuBen-Android-*.apk")
             if artifact.is_file()
             and (match := re.fullmatch(r"ZhiWuBen-Android-([0-9]+)\.apk", artifact.name))
             and int(match.group(1)) < current_version_code
@@ -1679,11 +1705,16 @@ def _format_file_size(size_bytes: int) -> str:
     return f"{size_bytes} B"
 
 
-def _android_apk_directory_row(request: Request, update: dict, artifact: dict) -> str:
+def _android_apk_directory_row(
+    request: Request,
+    update: dict,
+    artifact: dict,
+    download_route_name: str = "android_app_update_download",
+) -> str:
     version_code = int(artifact["version_code"])
     is_current = bool(artifact["is_current"])
     download_url = str(
-        request.url_for("android_app_update_download", version_code=str(version_code))
+        request.url_for(download_route_name, version_code=str(version_code))
     )
     version_label = update["version_name"] if is_current else f"versionCode {version_code}"
     status_label = "当前版本" if is_current else "上一版本"
@@ -1738,6 +1769,29 @@ def android_app_update_metadata(request: Request) -> Response:
             "download_url": str(
                 request.url_for(
                     "android_app_update_download",
+                    version_code=str(update["version_code"]),
+                )
+            ),
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.get("/api/app-update/android/light", name="android_app_update_light_metadata")
+def android_app_update_light_metadata(request: Request) -> Response:
+    configured = configured_android_app_update_with_artifact(
+        APP_UPDATE_LIGHT_CONFIG_PATH,
+        APP_UPDATE_LIGHT_ANDROID_APK_PATH,
+    )
+    if configured is None:
+        return Response(status_code=204, headers={"Cache-Control": "no-store"})
+    update, _ = configured
+    return JSONResponse(
+        content={
+            **update,
+            "download_url": str(
+                request.url_for(
+                    "android_app_update_light_download",
                     version_code=str(update["version_code"]),
                 )
             ),
@@ -1804,6 +1858,74 @@ def android_app_update_download(version_code: int) -> FileResponse:
     )
     if artifact is None:
         raise HTTPException(status_code=404, detail="Android update package is unavailable")
+    return android_app_update_file_response(Path(artifact["path"]))
+
+
+@app.get("/api/app-update/android/light/apk", name="android_app_update_light_download_legacy")
+def android_app_update_light_download_legacy() -> FileResponse:
+    configured = configured_android_app_update_with_artifact(
+        APP_UPDATE_LIGHT_CONFIG_PATH,
+        APP_UPDATE_LIGHT_ANDROID_APK_PATH,
+    )
+    if configured is None:
+        raise HTTPException(status_code=404, detail="Light Enjoy Android update package is not published")
+    return android_app_update_file_response(configured[1])
+
+
+@app.get(
+    "/api/app-update/android/light/apk/",
+    name="android_app_update_light_directory",
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
+def android_app_update_light_directory(request: Request) -> HTMLResponse:
+    update, artifacts = retained_android_app_update_artifacts(
+        APP_UPDATE_LIGHT_CONFIG_PATH,
+        APP_UPDATE_LIGHT_ANDROID_APK_PATH,
+    )
+    current_version = str(update["version_name"]) if update else "暂无发布"
+    current_version_code = str(update["version_code"]) if update else "-"
+    release_rows = "".join(
+        _android_apk_directory_row(
+            request,
+            update or {},
+            artifact,
+            "android_app_update_light_download",
+        )
+        for artifact in artifacts
+    )
+    empty_state_class = "hidden" if artifacts else ""
+    template = APK_DIRECTORY_TEMPLATE_PATH.read_text(encoding="utf-8")
+    replacements = {
+        "__CURRENT_VERSION__": current_version,
+        "__CURRENT_VERSION_CODE__": current_version_code,
+        "__RELEASE_COUNT__": str(len(artifacts)),
+        "__RELEASE_ROWS__": release_rows,
+        "__EMPTY_STATE_CLASS__": empty_state_class,
+        "__GENERATED_AT__": datetime.now(BEIJING_TIMEZONE).strftime("%Y-%m-%d %H:%M 北京时间"),
+    }
+    for placeholder, value in replacements.items():
+        if placeholder == "__RELEASE_ROWS__":
+            template = template.replace(placeholder, value)
+        else:
+            template = template.replace(placeholder, html_escape(value, quote=True))
+    return HTMLResponse(template, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/app-update/android/light/apk/{version_code}", name="android_app_update_light_download")
+def android_app_update_light_download(version_code: int) -> FileResponse:
+    update, artifacts = retained_android_app_update_artifacts(
+        APP_UPDATE_LIGHT_CONFIG_PATH,
+        APP_UPDATE_LIGHT_ANDROID_APK_PATH,
+    )
+    if update is None or version_code <= 0:
+        raise HTTPException(status_code=404, detail="Light Enjoy Android update package is not published")
+    artifact = next(
+        (item for item in artifacts if int(item["version_code"]) == version_code),
+        None,
+    )
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="Light Enjoy Android update package is unavailable")
     return android_app_update_file_response(Path(artifact["path"]))
 
 

@@ -20,12 +20,15 @@ param(
 
     [string]$AndroidApk = "",
 
+    [ValidateSet("social", "light")]
+    [string]$AndroidChannel = "social",
+
     [ValidatePattern('^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$')]
     [string]$ExpectedPackageName = "com.oa.automation",
 
-    [string]$RemoteAppUpdateDirectory = "/var/lib/meetingnotes-stt/downloads",
+    [string]$RemoteAppUpdateDirectory = "",
 
-    [string]$RemoteAppUpdateConfig = "/var/lib/meetingnotes-stt/app-update.json",
+    [string]$RemoteAppUpdateConfig = "",
 
     [switch]$WithBackend,
     [switch]$OpenFirewall,
@@ -130,6 +133,25 @@ $PwaProject = (Resolve-Path -LiteralPath $PwaProject).Path
 $PwaPackage = Join-Path $PwaProject "package.json"
 $PwaDist = Join-Path $PwaProject "dist"
 $AppUpdateConfig = Join-Path $ServerRoot "config\app-update.json"
+if ($AndroidChannel -eq "light") {
+    if ($ExpectedPackageName -eq "com.oa.automation") {
+        $ExpectedPackageName = "com.oa.automation.light"
+    }
+    if ([string]::IsNullOrWhiteSpace($RemoteAppUpdateDirectory)) {
+        $RemoteAppUpdateDirectory = "/var/lib/meetingnotes-stt/downloads-light"
+    }
+    if ([string]::IsNullOrWhiteSpace($RemoteAppUpdateConfig)) {
+        $RemoteAppUpdateConfig = "/var/lib/meetingnotes-stt/app-update-light.json"
+    }
+    $AppUpdateConfig = Join-Path $ServerRoot "config\app-update-light.json"
+} else {
+    if ([string]::IsNullOrWhiteSpace($RemoteAppUpdateDirectory)) {
+        $RemoteAppUpdateDirectory = "/var/lib/meetingnotes-stt/downloads"
+    }
+    if ([string]::IsNullOrWhiteSpace($RemoteAppUpdateConfig)) {
+        $RemoteAppUpdateConfig = "/var/lib/meetingnotes-stt/app-update.json"
+    }
+}
 
 foreach ($command in @("tar", "ssh", "scp")) {
     if (-not (Get-Command $command -ErrorAction SilentlyContinue)) {

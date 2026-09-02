@@ -226,8 +226,10 @@ android {
         applicationId = productApplicationId
         minSdk = 26
         targetSdk = 34
-        versionCode = 10258
-        versionName = "1.2.58"
+        // Keep the frozen social channel on 1.2.58 while the independently
+        // installable Light Enjoy product advances its own OTA sequence.
+        versionCode = if (productEdition == "light-enjoy") 10259 else 10258
+        versionName = if (productEdition == "light-enjoy") "1.2.59" else "1.2.58"
         manifestPlaceholders["appLabel"] = if (productEdition == "social") "智悟本" else "智悟本轻享版"
         manifestPlaceholders["socialAuthScheme"] = socialAuthScheme
         manifestPlaceholders["socialAuthHost"] = socialAuthHost
@@ -496,7 +498,8 @@ android.defaultConfig {
         ?: "http://localhost:8090/api"
     val defaultAppUpdateEndpoint = claudeEnv["MEETINGNOTES_APP_UPDATE_ENDPOINT"]
         ?.takeIf { it.isNotBlank() }
-        ?: "${defaultAccountEndpoint.trimEnd('/')}/app-update/android"
+        ?: "${defaultAccountEndpoint.trimEnd('/')}/app-update/android" +
+            if (productEdition == "light-enjoy") "/light" else ""
     val defaultRelayBaseUrl = relayConfig["baseurl"]
         ?.takeIf { it.isNotBlank() }
         ?: claudeEnv["MEETINGNOTES_RELAY_BASE_URL"]?.takeIf { it.isNotBlank() }
