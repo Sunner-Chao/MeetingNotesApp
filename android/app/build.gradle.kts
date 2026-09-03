@@ -228,8 +228,8 @@ android {
         targetSdk = 34
         // Keep the frozen social channel on 1.2.58 while the independently
         // installable Light Enjoy product advances its own OTA sequence.
-        versionCode = if (productEdition == "light-enjoy") 10259 else 10258
-        versionName = if (productEdition == "light-enjoy") "1.2.59" else "1.2.58"
+        versionCode = if (productEdition == "light-enjoy") 10260 else 10258
+        versionName = if (productEdition == "light-enjoy") "1.2.60" else "1.2.58"
         manifestPlaceholders["appLabel"] = if (productEdition == "social") "智悟本" else "智悟本轻享版"
         manifestPlaceholders["socialAuthScheme"] = socialAuthScheme
         manifestPlaceholders["socialAuthHost"] = socialAuthHost
