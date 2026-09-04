@@ -1353,6 +1353,29 @@ class AccountService:
                 "user": self._profile(conn, principal.user_id),
             }
 
+    def ensure_agent_access(self, principal: AccountPrincipal) -> None:
+        """Synchronize the internal user Agent record without returning its secret."""
+        now = int(time.time())
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT u.username, u.role, s.expires_at
+                FROM user_sessions s
+                JOIN users u ON u.id = s.user_id
+                WHERE s.id = ? AND s.user_id = ? AND u.enabled = 1
+                """,
+                (principal.session_id, principal.user_id),
+            ).fetchone()
+            if row is None or int(row["expires_at"]) <= now:
+                raise AccountAuthError("用户会话无效或已过期")
+            self._ensure_agent_token(
+                conn,
+                principal.user_id,
+                row["username"],
+                row["role"],
+                int(row["expires_at"]),
+            )
+
     def list_meetings(self, principal: AccountPrincipal) -> dict:
         with self._connect() as conn:
             rows = conn.execute(

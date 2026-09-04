@@ -1,6 +1,5 @@
 package com.oa.automation.ui.screen.recording
 
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -11,20 +10,18 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -41,18 +38,13 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.BookmarkBorder
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Cloud
-import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.PhotoCamera
@@ -72,13 +64,11 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LocalMinimumInteractiveComponentEnforcement
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -86,6 +76,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.CornerRadius
@@ -108,6 +99,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.oa.automation.BuildConfig
+import com.oa.automation.domain.model.CustomTemplateLayout
 import com.oa.automation.domain.model.MeetingAttachment
 import com.oa.automation.domain.model.PresetReportTemplate
 import com.oa.automation.domain.model.Journey
@@ -128,8 +120,10 @@ import com.oa.automation.infrastructure.image.OrientedImageDecoder
 import java.io.File
 import kotlin.math.PI
 import kotlin.math.sin
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.foundation.layout.fillMaxHeight
 
-private data class SiriRecorderPalette(
+internal data class SiriRecorderPalette(
     val background: List<Color>,
     val card: Color,
     val cardRaised: Color,
@@ -189,6 +183,7 @@ internal fun SiriRecorderContent(
     templateWorkflowReducedMotion: Boolean,
     templateWorkflowSeen: Set<String>,
     onTemplateWorkflowSeen: (String) -> Unit,
+    onCustomTemplateLayoutChange: (CustomTemplateLayout) -> Unit,
     onStartRecording: () -> Unit,
     onTogglePause: () -> Unit,
     onAddMarker: () -> Unit,
@@ -211,6 +206,7 @@ internal fun SiriRecorderContent(
         SiriLightPalette
     }
     var menuExpanded by remember { mutableStateOf(false) }
+    val isDark = com.oa.automation.ui.theme.LocalAppIsDarkTheme.current
     var savedAudioDialogVisible by remember { mutableStateOf(false) }
     var journeyDialogVisible by remember { mutableStateOf(false) }
     val canGenerate = canGenerateReportFromRecording(uiState)
@@ -255,6 +251,8 @@ internal fun SiriRecorderContent(
         )
     }
 
+    val doodleSkin = rememberDoodleSkin(isDark)
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -264,7 +262,7 @@ internal fun SiriRecorderContent(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 28.dp, vertical = 4.dp)
+                .padding(start = 26.dp, end = 22.dp, top = 4.dp, bottom = 4.dp)
         ) {
             SiriTopBar(
                 palette = palette,
@@ -305,41 +303,6 @@ internal fun SiriRecorderContent(
                 onPublishPublishedPost = onPublishPublishedPost,
                 onWithdrawPublishedPost = onWithdrawPublishedPost
             )
-            Spacer(Modifier.height(8.dp))
-            Text(
-                text = "选择模板",
-                color = palette.text,
-                style = MaterialTheme.typography.titleLarge.copy(fontSize = 17.sp, lineHeight = 23.sp),
-                fontWeight = FontWeight.Medium,
-                modifier = Modifier.padding(horizontal = 2.dp)
-            )
-            Spacer(Modifier.height(7.dp))
-            SiriTemplateChips(
-                templates = uiState.presetTemplates,
-                selectedTemplateName = uiState.selectedRecordingTemplateName.orEmpty(),
-                palette = palette,
-                onSelectTemplate = onSelectTemplate
-            )
-            AnimatedVisibility(
-                visible = !uiState.isRecording && !uiState.isTranscribing &&
-                    !uiState.isGeneratingReport &&
-                    !uiState.selectedRecordingTemplateName.isNullOrBlank(),
-                enter = fadeIn(animationSpec = tween(180)),
-                exit = fadeOut(animationSpec = tween(120))
-            ) {
-                TemplateWorkflowExplainer(
-                    templateName = uiState.selectedRecordingTemplateName.orEmpty(),
-                    reducedMotion = templateWorkflowReducedMotion,
-                    hasBeenSeen = uiState.selectedRecordingTemplateName.orEmpty() in templateWorkflowSeen,
-                    onViewed = onTemplateWorkflowSeen,
-                    surfaceColor = palette.card,
-                    raisedColor = palette.control,
-                    inkColor = palette.text,
-                    mutedColor = palette.muted,
-                    accentColor = palette.cyan,
-                    borderColor = palette.border
-                )
-            }
             Spacer(Modifier.height(10.dp))
             SiriTranscriptCard(
                 transcript = uiState.liveTranscript,
@@ -367,11 +330,15 @@ internal fun SiriRecorderContent(
                 onCancelReport = onCancelReport,
                 onDismissError = onDismissError,
                 error = uiState.error,
+                workflowTemplateName = uiState.selectedRecordingTemplateName,
+                workflowSeen = templateWorkflowSeen,
+                onWorkflowViewed = onTemplateWorkflowSeen,
+                customTemplateLayout = uiState.customTemplateLayout,
+                onCustomTemplateLayoutChange = onCustomTemplateLayoutChange,
                 modifier = Modifier.weight(1f)
             )
             Spacer(Modifier.height(10.dp))
             SiriBottomControls(
-                palette = palette,
                 isRecording = uiState.isRecording,
                 isPaused = uiState.isPaused,
                 audioLevel = uiState.audioLevel,
@@ -389,6 +356,18 @@ internal fun SiriRecorderContent(
             )
             Spacer(Modifier.height(2.dp))
         }
+        TemplateBookmarkRail(
+            templates = uiState.presetTemplates,
+            selectedTemplateName = uiState.selectedRecordingTemplateName.orEmpty(),
+            palette = palette,
+            skin = doodleSkin,
+            isDark = isDark,
+            onSelectTemplate = onSelectTemplate,
+            modifier = Modifier
+                .align(Alignment.CenterStart)
+                .fillMaxHeight()
+                .padding(top = 54.dp, bottom = 96.dp)
+        )
     }
 }
 
@@ -427,45 +406,68 @@ private fun SiriTopBar(
     onPublishPublishedPost: () -> Unit,
     onWithdrawPublishedPost: () -> Unit
 ) {
+    val skin = rememberDoodleSkin(com.oa.automation.ui.theme.LocalAppIsDarkTheme.current)
     Row(
         modifier = Modifier.fillMaxWidth().height(40.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        SiriGlassIconButton(
-            palette = palette,
-            onClick = onNavigateBack,
+        DoodleIconButton(
+            icon = Icons.AutoMirrored.Filled.ArrowBack,
             contentDescription = "返回上一页",
-            icon = Icons.AutoMirrored.Filled.ArrowBack
+            onClick = onNavigateBack,
+            skin = skin,
+            size = 40.dp
         )
-        Surface(
-            shape = RoundedCornerShape(50),
-            color = palette.control,
-            border = BorderStroke(1.dp, palette.controlBorder)
+        Box(
+            modifier = Modifier
+                .height(36.dp)
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = {}
+                ),
+            contentAlignment = Alignment.Center
         ) {
+            Canvas(modifier = Modifier.matchParentSize()) {
+                doodleRoundRect(
+                    topLeft = Offset.Zero,
+                    size = this.size,
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(18.dp.toPx(), 18.dp.toPx()),
+                    color = skin.ink,
+                    strokeWidth = skin.strokeWidth.toPx(),
+                    wobbleAmplitude = skin.wobbleAmplitude
+                )
+            }
             Row(
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(7.dp)
             ) {
-                Box(
-                    modifier = Modifier.size(7.dp).clip(CircleShape)
-                        .background(if (isRecording) palette.red else palette.muted)
-                )
+                Canvas(modifier = Modifier.size(7.dp)) {
+                    doodleCircle(
+                        center = Offset(this.size.width / 2f, this.size.height / 2f),
+                        radius = this.size.width / 2f,
+                        color = if (isRecording) skin.accentRed else skin.inkMuted,
+                        strokeWidth = 0f,
+                        filled = true
+                    )
+                }
                 Text(
                     text = formatSiriDuration(durationSeconds),
-                    color = palette.text,
+                    color = skin.ink,
                     style = MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp, lineHeight = 20.sp),
                     fontWeight = FontWeight.Medium
                 )
             }
         }
         Box {
-            SiriGlassIconButton(
-                palette = palette,
+            DoodleIconButton(
+                icon = Icons.Default.MoreHoriz,
+                contentDescription = "更多选项",
                 onClick = { onMenuExpandedChange(true) },
-                contentDescription = "更多功能",
-                icon = Icons.Default.MoreHoriz
+                skin = skin,
+                size = 40.dp
             )
             DropdownMenu(
                 expanded = menuExpanded,
@@ -1011,162 +1013,6 @@ private fun SiriJourneyMetric(
     }
 }
 
-@Composable
-private fun SiriGlassIconButton(
-    palette: SiriRecorderPalette,
-    onClick: () -> Unit,
-    contentDescription: String,
-    icon: androidx.compose.ui.graphics.vector.ImageVector
-) {
-    Surface(
-        onClick = onClick,
-        modifier = Modifier.size(34.dp),
-        shape = CircleShape,
-        color = palette.control,
-        border = BorderStroke(1.dp, palette.controlBorder)
-    ) {
-        Box(contentAlignment = Alignment.Center) {
-            Icon(icon, contentDescription = contentDescription, tint = palette.text, modifier = Modifier.size(18.dp))
-        }
-    }
-}
-
-@Composable
-private fun SiriGlassEmblem(
-    palette: SiriRecorderPalette,
-    icon: androidx.compose.ui.graphics.vector.ImageVector
-) {
-    Surface(
-        modifier = Modifier.size(34.dp),
-        shape = CircleShape,
-        color = palette.control,
-        border = BorderStroke(1.dp, palette.controlBorder)
-    ) {
-        Box(contentAlignment = Alignment.Center) {
-            Icon(icon, contentDescription = null, tint = palette.text, modifier = Modifier.size(18.dp))
-        }
-    }
-}
-
-@Composable
-private fun SiriTemplateChips(
-    templates: List<PresetReportTemplate>,
-    selectedTemplateName: String,
-    palette: SiriRecorderPalette,
-    onSelectTemplate: (PresetReportTemplate) -> Unit
-) {
-    CompositionLocalProvider(LocalMinimumInteractiveComponentEnforcement provides false) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 2.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            templates.chunked(2).forEachIndexed { rowIndex, rowTemplates ->
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    rowTemplates.forEachIndexed { columnIndex, template ->
-                        val index = rowIndex * 2 + columnIndex
-                        SiriTemplateChip(
-                            template = template,
-                            selected = template.name == selectedTemplateName,
-                            icon = siriTemplateIcon(index),
-                            palette = palette,
-                            modifier = Modifier.weight(1f),
-                            onClick = { onSelectTemplate(template) }
-                        )
-                    }
-                    if (rowTemplates.size == 1) {
-                        Spacer(Modifier.weight(1f))
-                    }
-                }
-            }
-        }
-    }
-}
-
-private fun siriTemplateIcon(index: Int) = when (index) {
-    1 -> Icons.Default.Lightbulb
-    2 -> Icons.Default.Groups
-    3 -> Icons.Default.Apps
-    else -> Icons.Default.Description
-}
-
-@Composable
-private fun SiriTemplateChip(
-    template: PresetReportTemplate,
-    selected: Boolean,
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    palette: SiriRecorderPalette,
-    modifier: Modifier,
-    onClick: () -> Unit
-) {
-    val scale by animateFloatAsState(
-        targetValue = if (selected) 1f else 0.96f,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioNoBouncy,
-            stiffness = Spring.StiffnessMediumLow
-        ),
-        label = "templateChipScale"
-    )
-    val containerColor by animateColorAsState(
-        targetValue = if (selected) palette.cardRaised else palette.control,
-        animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
-        label = "templateChipColor"
-    )
-    val borderColor by animateColorAsState(
-        targetValue = if (selected) palette.text.copy(alpha = 0.62f) else palette.border,
-        animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
-        label = "templateChipBorder"
-    )
-    val checkAlpha by animateFloatAsState(
-        targetValue = if (selected) 1f else 0f,
-        animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
-        label = "templateChipCheck"
-    )
-    Surface(
-        onClick = onClick,
-        modifier = modifier
-            .height(38.dp)
-            .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
-            },
-        shape = RoundedCornerShape(50),
-        color = containerColor,
-        border = BorderStroke(1.dp, borderColor)
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 9.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.Center
-        ) {
-            Icon(icon, contentDescription = null, tint = palette.text, modifier = Modifier.size(14.dp))
-            Spacer(Modifier.width(3.dp))
-            Text(
-                text = template.name,
-                color = palette.text,
-                style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp, lineHeight = 14.sp),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Spacer(Modifier.width(4.dp))
-            Box(modifier = Modifier.size(14.dp), contentAlignment = Alignment.Center) {
-                Icon(
-                    Icons.Default.Check,
-                    contentDescription = "已选择",
-                    tint = palette.text,
-                    modifier = Modifier
-                        .size(14.dp)
-                        .graphicsLayer { alpha = checkAlpha }
-                )
-            }
-        }
-    }
-}
-
 private fun buildMarkerAwareTranscriptText(
     transcript: String,
     markerAnchors: List<String>,
@@ -1211,6 +1057,11 @@ private fun SiriTranscriptCard(
     onCancelReport: () -> Unit,
     onDismissError: () -> Unit,
     error: String?,
+    workflowTemplateName: String? = null,
+    workflowSeen: Set<String> = emptySet(),
+    onWorkflowViewed: (String) -> Unit = {},
+    customTemplateLayout: CustomTemplateLayout = CustomTemplateLayout.DEFAULT,
+    onCustomTemplateLayoutChange: (CustomTemplateLayout) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val scrollState = rememberScrollState()
@@ -1226,14 +1077,11 @@ private fun SiriTranscriptCard(
         kotlinx.coroutines.yield()
         scrollState.scrollTo(scrollState.maxValue)
     }
-    Surface(
+    val skin = rememberDoodleSkin(isDark)
+    DoodleCard(
+        skin = skin,
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
-        // Keep the dark-mode transcript area visually continuous with the
-        // ambient page background; no translucent rectangle should surround it.
-        color = if (isDark) Color.Transparent else palette.card,
-        border = null,
-        shadowElevation = 0.dp
+        filled = false
     ) {
         Column(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1249,7 +1097,6 @@ private fun SiriTranscriptCard(
                 LocalCloudSttSegmentedControl(
                     sttEngineType = sttEngineType,
                     enabled = !isSwitchingSttEngine && !isTranscribing && !isGeneratingReport,
-                    palette = palette,
                     onSttEngineSelected = onSttEngineSelected
                 )
             }
@@ -1300,7 +1147,25 @@ private fun SiriTranscriptCard(
                 )
                 Spacer(Modifier.height(8.dp))
             }
-            if (visibleTranscript.isBlank()) {
+            val showWorkflowDoodle = visibleTranscript.isBlank() &&
+                !isRecording &&
+                !isFinalizingRecording &&
+                !isTranscribing &&
+                !isGeneratingReport &&
+                !workflowTemplateName.isNullOrBlank()
+            if (showWorkflowDoodle) {
+                TemplateWorkflowDoodlePanel(
+                    templateName = workflowTemplateName.orEmpty(),
+                    hasBeenSeen = workflowTemplateName.orEmpty() in workflowSeen,
+                    onViewed = onWorkflowViewed,
+                    isDark = isDark,
+                    customTemplateLayout = customTemplateLayout,
+                    onCustomTemplateLayoutChange = onCustomTemplateLayoutChange,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                )
+            } else if (visibleTranscript.isBlank()) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1348,39 +1213,49 @@ private fun SiriTranscriptCard(
 private fun LocalCloudSttSegmentedControl(
     sttEngineType: STTEngineType,
     enabled: Boolean,
-    palette: SiriRecorderPalette,
     onSttEngineSelected: (STTEngineType) -> Unit
 ) {
     val selectedCloud = sttEngineType == STTEngineType.TENCENT_HYBRID
-    Row(
+    val skin = rememberDoodleSkin(com.oa.automation.ui.theme.LocalAppIsDarkTheme.current)
+    Box(
         modifier = Modifier
             .width(126.dp)
             .height(34.dp)
-            .clip(RoundedCornerShape(17.dp))
-            .background(palette.control)
-            .border(1.dp, palette.controlBorder, RoundedCornerShape(17.dp))
-            .padding(2.dp)
-            .graphicsLayer { alpha = if (enabled) 1f else 0.58f },
-        verticalAlignment = Alignment.CenterVertically
+            .graphicsLayer { alpha = if (enabled) 1f else 0.58f }
     ) {
-        SiriSttSegment(
-            label = "云端",
-            icon = Icons.Default.Cloud,
-            selected = selectedCloud,
-            enabled = enabled,
-            palette = palette,
-            modifier = Modifier.weight(1f),
-            onClick = { onSttEngineSelected(STTEngineType.TENCENT_HYBRID) }
-        )
-        SiriSttSegment(
-            label = "本地",
-            icon = Icons.Default.Computer,
-            selected = !selectedCloud,
-            enabled = enabled,
-            palette = palette,
-            modifier = Modifier.weight(1f),
-            onClick = { onSttEngineSelected(STTEngineType.FASTER_WHISPER) }
-        )
+        Canvas(modifier = Modifier.matchParentSize()) {
+            doodleRoundRect(
+                topLeft = Offset.Zero,
+                size = this.size,
+                cornerRadius = CornerRadius(this.size.height / 2f, this.size.height / 2f),
+                color = skin.ink,
+                strokeWidth = skin.strokeWidth.toPx() * 0.8f,
+                wobbleAmplitude = skin.wobbleAmplitude * 0.5f
+            )
+        }
+        Row(
+            modifier = Modifier.fillMaxSize().padding(3.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            SiriSttSegment(
+                label = "云端",
+                icon = Icons.Default.Cloud,
+                selected = selectedCloud,
+                enabled = enabled,
+                skin = skin,
+                modifier = Modifier.weight(1f),
+                onClick = { onSttEngineSelected(STTEngineType.TENCENT_HYBRID) }
+            )
+            SiriSttSegment(
+                label = "本地",
+                icon = Icons.Default.Computer,
+                selected = !selectedCloud,
+                enabled = enabled,
+                skin = skin,
+                modifier = Modifier.weight(1f),
+                onClick = { onSttEngineSelected(STTEngineType.FASTER_WHISPER) }
+            )
+        }
     }
 }
 
@@ -1390,29 +1265,53 @@ private fun SiriSttSegment(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     selected: Boolean,
     enabled: Boolean,
-    palette: SiriRecorderPalette,
+    skin: DoodleSkin,
     modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
-    val background by animateColorAsState(
-        targetValue = if (selected) palette.cyan else Color.Transparent,
+    // The active side reads as a pencil-shaded chip rather than a solid
+    // Material fill, so it matches the hand-drawn chrome around it.
+    val fillAlpha by animateFloatAsState(
+        targetValue = if (selected) 0.18f else 0f,
         animationSpec = tween(durationMillis = 180),
-        label = "sttSegmentBackground"
+        label = "sttSegmentFill"
     )
     val contentColor by animateColorAsState(
-        targetValue = if (selected) Color.White else palette.muted,
+        targetValue = if (selected) skin.accentCyan else skin.inkMuted,
         animationSpec = tween(durationMillis = 180),
         label = "sttSegmentContent"
     )
-    Row(
+    Box(
         modifier = modifier
             .fillMaxHeight()
-            .clip(RoundedCornerShape(15.dp))
-            .background(background)
             .clickable(enabled = enabled && !selected, onClick = onClick),
-        horizontalArrangement = Arrangement.Center,
-        verticalAlignment = Alignment.CenterVertically
+        contentAlignment = Alignment.Center
     ) {
+        if (fillAlpha > 0.01f) {
+            Canvas(modifier = Modifier.matchParentSize()) {
+                val r = this.size.height / 2f
+                doodleRoundRect(
+                    topLeft = Offset.Zero,
+                    size = this.size,
+                    cornerRadius = CornerRadius(r, r),
+                    color = skin.accentCyan.copy(alpha = fillAlpha),
+                    strokeWidth = 0f,
+                    filled = true
+                )
+                doodleRoundRect(
+                    topLeft = Offset.Zero,
+                    size = this.size,
+                    cornerRadius = CornerRadius(r, r),
+                    color = skin.accentCyan,
+                    strokeWidth = skin.strokeWidth.toPx() * 0.7f,
+                    wobbleAmplitude = skin.wobbleAmplitude * 0.4f
+                )
+            }
+        }
+        Row(
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
         Icon(
             imageVector = icon,
             contentDescription = null,
@@ -1427,6 +1326,7 @@ private fun SiriSttSegment(
             fontWeight = FontWeight.SemiBold,
             maxLines = 1
         )
+        }
     }
 }
 
@@ -1559,7 +1459,6 @@ private fun formatSiriIllustrationTimestamp(timestampMs: Long): String {
 
 @Composable
 private fun SiriBottomControls(
-    palette: SiriRecorderPalette,
     isRecording: Boolean,
     isPaused: Boolean,
     audioLevel: Float,
@@ -1576,12 +1475,14 @@ private fun SiriBottomControls(
     onCancelReport: () -> Unit
 ) {
     val mainActionEnabled = actionEnabled && (isRecording || hasSelectedTemplate)
+    val isDark = com.oa.automation.ui.theme.LocalAppIsDarkTheme.current
+    val skin = rememberDoodleSkin(isDark)
+
     Box(
         modifier = Modifier.fillMaxWidth().height(166.dp),
         contentAlignment = Alignment.Center
     ) {
-        SiriRoundAction(
-            palette = palette,
+        DoodleRoundAction(
             icon = Icons.Default.PhotoCamera,
             label = when {
                 hasActivePhotoMarker -> "待插图"
@@ -1590,6 +1491,7 @@ private fun SiriBottomControls(
             },
             enabled = isRecording && !isPaused && actionEnabled,
             onClick = onAddMarker,
+            skin = skin,
             modifier = Modifier.align(Alignment.CenterStart)
         )
         Column(
@@ -1597,13 +1499,13 @@ private fun SiriBottomControls(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            SiriMicOrb(
-                palette = palette,
+            DoodleMicOrb(
                 isRecording = isRecording,
                 isPaused = isPaused,
                 audioLevel = audioLevel,
                 enabled = mainActionEnabled,
-                onClick = onMainAction
+                onClick = onMainAction,
+                skin = skin
             )
             Text(
                 text = when {
@@ -1611,13 +1513,13 @@ private fun SiriBottomControls(
                     isRecording -> "暂停"
                     else -> "开始"
                 },
-                color = palette.muted,
+                color = skin.inkMuted,
                 style = MaterialTheme.typography.labelMedium.copy(fontSize = 12.sp)
             )
             if (!isRecording && !hasSelectedTemplate) {
                 Text(
                     text = RECORDING_TEMPLATE_REQUIRED_MESSAGE,
-                    color = palette.red,
+                    color = skin.accentRed,
                     fontSize = 11.sp,
                     lineHeight = 14.sp,
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center,
@@ -1627,229 +1529,47 @@ private fun SiriBottomControls(
                 )
             }
         }
-        SiriReportAction(
-            palette = palette,
+        DoodleReportAction(
             canGenerate = canGenerate,
             isTranscribing = isTranscribing,
             isGeneratingReport = isGeneratingReport,
             onGenerateReport = onGenerateReport,
             onCancelReport = onCancelReport,
+            skin = skin,
             modifier = Modifier.align(Alignment.CenterEnd)
         )
     }
 }
 
 @Composable
-private fun SiriReportAction(
-    palette: SiriRecorderPalette,
+private fun DoodleReportAction(
     canGenerate: Boolean,
     isTranscribing: Boolean,
     isGeneratingReport: Boolean,
     onGenerateReport: () -> Unit,
     onCancelReport: () -> Unit,
+    skin: DoodleSkin,
     modifier: Modifier = Modifier
 ) {
     val enabled = isGeneratingReport || (canGenerate && !isTranscribing)
     val label = when {
-        isGeneratingReport -> "停止生成"
-        isTranscribing -> "整理录音"
+        isGeneratingReport -> "停止"
+        isTranscribing -> "整理中"
         else -> "生成纪要"
     }
-    val actionColor = when {
-        isGeneratingReport -> palette.red.copy(alpha = 0.92f)
-        else -> palette.control.copy(alpha = palette.control.alpha * if (enabled) 1f else 0.50f)
-    }
-    Column(
-        modifier = modifier.width(82.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(6.dp)
-    ) {
-        Box(
-            modifier = Modifier.size(66.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            if (isGeneratingReport) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(66.dp),
-                    color = palette.red,
-                    strokeWidth = 3.dp
-                )
-            }
-            Surface(
-                onClick = if (isGeneratingReport) onCancelReport else onGenerateReport,
-                enabled = enabled,
-                modifier = Modifier.size(52.dp),
-                shape = CircleShape,
-                color = actionColor,
-                border = BorderStroke(
-                    width = 1.dp,
-                    color = when {
-                        isGeneratingReport -> palette.red.copy(alpha = 0.80f)
-                        else -> palette.controlBorder.copy(alpha = palette.controlBorder.alpha * if (enabled) 1f else 0.55f)
-                    }
-                ),
-                shadowElevation = if (isGeneratingReport) 4.dp else 0.dp
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        imageVector = if (isGeneratingReport) Icons.Default.Stop else Icons.Default.Summarize,
-                        contentDescription = label,
-                        tint = if (isGeneratingReport) Color.White else palette.text.copy(alpha = if (enabled) 1f else 0.44f),
-                        modifier = Modifier.size(23.dp)
-                    )
-                }
-            }
-        }
-        Text(
-            text = label,
-            color = palette.muted.copy(alpha = if (enabled) 1f else 0.52f),
-            style = MaterialTheme.typography.labelMedium.copy(fontSize = 12.sp)
-        )
-    }
-}
 
-@Composable
-private fun SiriRoundAction(
-    palette: SiriRecorderPalette,
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    label: String,
-    enabled: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
     Column(
         modifier = modifier,
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(6.dp)
+        verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        Surface(
-            onClick = onClick,
+        DoodleRoundAction(
+            icon = Icons.Default.Summarize,
+            label = label,
             enabled = enabled,
-            modifier = Modifier.size(52.dp),
-            shape = CircleShape,
-            color = palette.control.copy(alpha = palette.control.alpha * if (enabled) 1f else 0.50f),
-            border = BorderStroke(
-                1.dp,
-                palette.controlBorder.copy(alpha = palette.controlBorder.alpha * if (enabled) 1f else 0.55f)
-            )
-        ) {
-            Box(contentAlignment = Alignment.Center) {
-                Icon(
-                    icon,
-                    contentDescription = label,
-                    tint = palette.text.copy(alpha = if (enabled) 1f else 0.44f),
-                    modifier = Modifier.size(22.dp)
-                )
-            }
-        }
-        Text(
-            label,
-            color = palette.muted.copy(alpha = if (enabled) 1f else 0.48f),
-            style = MaterialTheme.typography.labelMedium.copy(fontSize = 12.sp)
+            onClick = if (isGeneratingReport) onCancelReport else onGenerateReport,
+            skin = skin
         )
-    }
-}
-
-@Composable
-private fun SiriMicOrb(
-    palette: SiriRecorderPalette,
-    isRecording: Boolean,
-    isPaused: Boolean,
-    audioLevel: Float,
-    enabled: Boolean,
-    onClick: () -> Unit
-) {
-    val transition = rememberInfiniteTransition(label = "siriOrb")
-    val phase by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(2600, easing = FastOutSlowInEasing), RepeatMode.Restart),
-        label = "siriOrbPhase"
-    )
-    Box(
-        modifier = Modifier
-            .size(118.dp)
-            .graphicsLayer { alpha = if (enabled) 1f else 0.46f }
-            .clip(CircleShape)
-            .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier),
-        contentAlignment = Alignment.Center
-    ) {
-        Canvas(Modifier.fillMaxSize()) {
-            val center = Offset(size.width / 2f, size.height / 2f)
-            val core = size.minDimension * 0.35f
-            val pulse = if (isRecording && !isPaused) {
-                1f + 0.10f * sin(phase * (PI * 2).toFloat())
-            } else {
-                1f
-            }
-            for (ring in 3 downTo 1) {
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        listOf(
-                            palette.violet.copy(alpha = 0.34f / ring),
-                            palette.cyan.copy(alpha = 0.18f / ring),
-                            Color.Transparent
-                        ),
-                        center = center,
-                        radius = core * (1.12f + ring * 0.13f)
-                    ),
-                    radius = core * (1.12f + ring * 0.13f),
-                    center = center
-                )
-            }
-            if (isRecording && !isPaused) {
-                // Each ring expands from the microphone like a water ripple. The
-                // measured level controls both radius and opacity, while phase
-                // keeps the feedback alive between PCM callbacks.
-                repeat(4) { index ->
-                    val progress = (phase + index / 4f) % 1f
-                    val level = audioLevel.coerceIn(0f, 1f)
-                    val radius = core * (1.18f + progress * (1.72f + level * 0.56f))
-                    val alpha = (1f - progress) * (0.16f + level * 0.42f)
-                    drawCircle(
-                        color = if (index % 2 == 0) palette.cyan.copy(alpha = alpha)
-                        else palette.violet.copy(alpha = alpha * 0.82f),
-                        radius = radius,
-                        center = center,
-                        style = Stroke(width = (1.1f + level * 2.1f).dp.toPx())
-                    )
-                }
-            }
-            drawCircle(
-                brush = Brush.sweepGradient(
-                    listOf(palette.cyan, palette.violet, palette.pink, palette.cyan),
-                    center = center
-                ),
-                radius = core * pulse,
-                center = center
-            )
-            drawCircle(
-                brush = Brush.radialGradient(listOf(Color(0xFFFFFFFF).copy(alpha = 0.96f), palette.cyan.copy(alpha = 0.52f), palette.violet.copy(alpha = 0.40f))),
-                radius = core * 0.84f * pulse,
-                center = center
-            )
-            drawCircle(
-                color = Color.White.copy(alpha = 0.30f),
-                radius = core * 0.84f * pulse,
-                center = center,
-                style = Stroke(width = 2.dp.toPx())
-            )
-        }
-        if (isRecording) {
-            Icon(
-                if (isPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
-                contentDescription = if (isPaused) "继续录音" else "暂停录音",
-                tint = Color.White,
-                modifier = Modifier.size(38.dp)
-            )
-        } else {
-            Icon(
-                Icons.Default.Mic,
-                contentDescription = "开始录音",
-                tint = Color.White,
-                modifier = Modifier.size(39.dp)
-            )
-        }
     }
 }
 

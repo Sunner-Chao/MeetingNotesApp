@@ -11,17 +11,22 @@ import com.oa.automation.domain.repository.MeetingRepository
 import com.oa.automation.domain.repository.ReportRepository
 import com.oa.automation.infrastructure.llm.LLMEngine
 import com.oa.automation.infrastructure.llm.AgentAttachment
+import com.oa.automation.infrastructure.llm.ReportData
 import com.oa.automation.infrastructure.attachment.MeetingAttachmentStore
+import com.oa.automation.infrastructure.account.AccountSessionSynchronizer
+import com.oa.automation.infrastructure.account.isAuthenticationFailure
 import com.oa.automation.locale.SimplifiedChineseText
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.UUID
 
 class GenerateReportUseCase(
     private val meetingRepository: MeetingRepository,
     private val reportRepository: ReportRepository,
     private val llmEngine: LLMEngine,
-    private val attachmentStore: MeetingAttachmentStore
+    private val attachmentStore: MeetingAttachmentStore,
+    private val accountSessionSynchronizer: AccountSessionSynchronizer
 ) {
     suspend operator fun invoke(
         meetingId: String,
@@ -46,12 +51,17 @@ class GenerateReportUseCase(
                 meetingRepository.observeAttachments(meetingId).first()
             )
             onProgress(ProcessingProgress(35, "Agent 正在分析会议内容", isIndeterminate = true))
-            val reportData = llmEngine.generateReport(
-                buildMarkerAwareTranscript(transcriptContent, attachments),
-                attachments,
-                meetingId = meetingId,
-                usageKey = "report:$meetingId:${UUID.randomUUID()}"
-            )
+            val reportTranscript = buildMarkerAwareTranscript(transcriptContent, attachments)
+            val usageKey = "report:$meetingId:${UUID.randomUUID()}"
+            var reportResult = runReportRequest(reportTranscript, attachments, meetingId, usageKey)
+            if (reportResult.exceptionOrNull()?.isAuthenticationFailure() == true) {
+                onProgress(ProcessingProgress(38, "服务会话正在更新，请稍候", isIndeterminate = true))
+                val refreshed = withTimeoutOrNull(5_000L) { accountSessionSynchronizer.refresh() }
+                if (refreshed?.isSuccess == true) {
+                    reportResult = runReportRequest(reportTranscript, attachments, meetingId, usageKey)
+                }
+            }
+            val reportData = reportResult.getOrElse { return Result.failure(it) }
 
             onProgress(ProcessingProgress(85, "整理纪要结构"))
             val tasks = reportData.tasks.map { taskData ->
@@ -99,6 +109,19 @@ class GenerateReportUseCase(
         } catch (e: Exception) {
             Result.failure(e)
         }
+    }
+
+    private suspend fun runReportRequest(
+        transcript: String,
+        attachments: List<AgentAttachment>,
+        meetingId: String,
+        usageKey: String
+    ): Result<ReportData> = try {
+        Result.success(llmEngine.generateReport(transcript, attachments, meetingId, usageKey))
+    } catch (error: CancellationException) {
+        throw error
+    } catch (error: Exception) {
+        Result.failure(error)
     }
 }
 

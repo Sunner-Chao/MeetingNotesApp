@@ -6,6 +6,7 @@ set "STT_PORT=8888"
 set "BACKEND_PORT=8090"
 set "STT_SERVICE_URL=http://127.0.0.1:%STT_PORT%"
 if "%STT_ENGINE%"=="" set "STT_ENGINE=faster-whisper"
+if exist "%SERVER_ROOT%.env.remote" set "BACKEND_AUTH_ENV_FILE=%SERVER_ROOT%.env.remote"
 
 echo ==========================================
 echo   MeetingNotesApp Services Launcher
@@ -14,7 +15,7 @@ echo.
 
 echo [MAIN] Starting STT Service (%STT_ENGINE%) on port %STT_PORT%...
 set "STT_MODEL_ROOT=%SERVER_ROOT%models"
-call "%SERVER_ROOT%stt-service\start.bat" "%STT_ENGINE%" "%STT_MODEL%"
+call "%SERVER_ROOT%stt-service\start-windows-local.bat"
 if errorlevel 1 (
     echo [MAIN] STT service failed to start!
     pause

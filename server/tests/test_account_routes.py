@@ -207,6 +207,21 @@ class AccountRouteTests(unittest.TestCase):
             self.assertEqual(deleted.json()["status"], "deleted")
             self.assertEqual(client.get("/api/account/me", headers=user_headers).status_code, 401)
 
+    def test_account_session_is_accepted_by_agent_gateway_without_agent_token(self) -> None:
+        with TestClient(backend.app) as client:
+            registered = self.register_with_email(client, "account_agent_session_user")
+            account_headers = {"Authorization": f"Bearer {registered.json()['access_token']}"}
+
+            quota = client.get("/api/agent/quota", headers=account_headers)
+            self.assertEqual(quota.status_code, 200, quota.text)
+            self.assertEqual(quota.json()["points_remaining"], 1_000)
+
+            invalid = client.get(
+                "/api/agent/quota",
+                headers={"Authorization": "Bearer mn_user_invalid"},
+            )
+            self.assertEqual(invalid.status_code, 401)
+
     def test_admin_dashboard_alias_and_web_credentials_manage_accounts(self) -> None:
         import base64
 

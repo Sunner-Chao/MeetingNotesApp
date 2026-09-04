@@ -17,7 +17,7 @@ data class ForumParticipant(
 )
 
 fun String.isForumMeetingTemplate(): Boolean =
-    contains("论坛会议") || contains("讲座论坛")
+    contains("论坛") || contains("共识会") || contains("聚智")
 
 /**
  * Extracts conservative roster entries from forum report tables and speaker

@@ -83,6 +83,21 @@ class SttDnsTest {
         assertTrue(result.single() is Inet6Address)
     }
 
+    @Test
+    fun `IPv4 only network gets a Chinese reason naming IPv6`() {
+        val dns = LocalSttDns(
+            delegate = object : Dns {
+                override fun lookup(hostname: String): List<InetAddress> =
+                    listOf(InetAddress.getByName("118.25.43.185"))
+            },
+            localPublicHost = "lstwin.space"
+        )
+        val error = runCatching { dns.lookup("lstwin.space") }.exceptionOrNull()
+        assertTrue(error is UnknownHostException)
+        assertEquals(LOCAL_STT_IPV6_UNAVAILABLE_REASON, error?.message)
+        assertTrue(error?.message.orEmpty().contains("IPv6"))
+    }
+
     @Test(expected = UnknownHostException::class)
     fun `local public host fails instead of leaking onto cloud IPv4`() {
         val dns = LocalSttDns(

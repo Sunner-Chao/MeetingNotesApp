@@ -35,7 +35,6 @@ import com.oa.automation.infrastructure.community.CommunitySyncProcessor
 import com.oa.automation.infrastructure.community.PublishedPostMediaStore
 import com.oa.automation.infrastructure.db.AppDatabase
 import com.oa.automation.infrastructure.llm.LLMEngine
-import com.oa.automation.infrastructure.llm.AgentQuotaService
 import com.oa.automation.infrastructure.location.DeviceLocationProvider
 import com.oa.automation.infrastructure.notification.ScheduledMeetingNotificationScheduler
 import com.oa.automation.infrastructure.repository.MeetingRepositoryImpl
@@ -147,7 +146,6 @@ val appModule = module {
     single { SharedTextImportCoordinator(androidContext()) }
     single { ExternalTextSourceLauncher(androidContext()) }
     single { LLMEngine(get()) }
-    single { AgentQuotaService() }
     single { AccountApiService() }
     single { AccountSessionSynchronizer(get(), get()) }
     single { LocalAccountDataMigrator(get(), get(), get()) }
@@ -157,8 +155,8 @@ val appModule = module {
 
     // Use Cases
     factory { StartRecordingUseCase(get()) }
-    factory { StopRecordingUseCase(get(), get(), get()) }
-    factory { GenerateReportUseCase(get(), get(), get(), get()) }
+    factory { StopRecordingUseCase(get(), get(), get(), get()) }
+    factory { GenerateReportUseCase(get(), get(), get(), get(), get()) }
     factory { GenerateStageDraftUseCase(get(), get(), get(), get()) }
     factory { GenerateJourneyEditionUseCase(get(), get(), get()) }
     factory { CreatePublishedPostSnapshotUseCase(get(), get(), get(), get()) }
@@ -171,7 +169,7 @@ val appModule = module {
     viewModel { ForgotPasswordViewModel(get(), get()) }
     viewModel { RegisterViewModel(get(), get(), get()) }
     viewModel { HomeViewModel(get(), get(), get(), get(), get(), get(), get(), get()) }
-    viewModel { AccountViewModel(get(), get(), get(), get(), get()) }
+    viewModel { AccountViewModel(get(), get(), get(), get()) }
     viewModel { GrowthCenterViewModel(get(), get()) }
     viewModel { PointsPlansViewModel(get(), get()) }
     viewModel { CommunityModerationViewModel(get(), get()) }

@@ -26,6 +26,7 @@ import com.oa.automation.infrastructure.llm.AgentGatewayEngine
 import com.oa.automation.infrastructure.stt.STTServiceClient
 import com.oa.automation.infrastructure.stt.CloudSTTEngine
 import com.oa.automation.infrastructure.stt.SttAuthorizationException
+import com.oa.automation.infrastructure.account.isAuthenticationFailure
 import com.oa.automation.infrastructure.update.AppUpdateCheck
 import com.oa.automation.infrastructure.update.AppUpdateService
 import com.oa.automation.infrastructure.update.AndroidAppUpdate
@@ -50,6 +51,7 @@ import kotlinx.coroutines.withContext
  */
 data class SettingsUiState(
     val appConfig: AppConfig = AppConfig.DEFAULT,
+    val hasAccountSession: Boolean = false,
     val isLoading: Boolean = true,
     val isSaving: Boolean = false,
     val isTestingSTT: Boolean = false,
@@ -103,6 +105,11 @@ class SettingsViewModel(
                 _uiState.value = _uiState.value.copy(
                     templateWorkflowReducedMotion = preferences.reducedMotion
                 )
+            }
+        }
+        viewModelScope.launch {
+            configDataStore.authSessionFlow.collect { session ->
+                _uiState.value = _uiState.value.copy(hasAccountSession = session != null)
             }
         }
     }
@@ -599,18 +606,46 @@ class SettingsViewModel(
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isTestingSTT = true)
             try {
-                val config = _uiState.value.appConfig.sttConfig
-                val result = withContext(Dispatchers.IO) {
+                var config = _uiState.value.appConfig.sttConfig
+                val hasAccountSession = configDataStore.authSessionFlow.first() != null
+                if (hasAccountSession) {
+                    // The account session is the only credential users maintain.
+                    // Refresh missing/near-expiry derived service credentials before
+                    // testing, so a stale local snapshot is not reported as a setup error.
+                    withContext(Dispatchers.IO) {
+                        accountSessionSynchronizer.refreshIfNeeded()
+                    }
+                    config = configDataStore.appConfigFlow.first().sttConfig
+                }
+                var result = withContext(Dispatchers.IO) {
                     when (config.engineType) {
                         STTEngineType.TENCENT_HYBRID -> CloudSTTEngine.testHybridConnection(config)
                         else -> STTServiceClient.testConnection(config.localEndpoint, config.apiToken)
+                    }
+                }
+                if (hasAccountSession && result.exceptionOrNull()?.isAuthenticationFailure() == true) {
+                    val refreshed = withContext(Dispatchers.IO) { accountSessionSynchronizer.refresh() }
+                    if (refreshed.isSuccess) {
+                        config = configDataStore.appConfigFlow.first().sttConfig
+                        result = withContext(Dispatchers.IO) {
+                            when (config.engineType) {
+                                STTEngineType.TENCENT_HYBRID -> CloudSTTEngine.testHybridConnection(config)
+                                else -> STTServiceClient.testConnection(config.localEndpoint, config.apiToken)
+                            }
+                        }
                     }
                 }
                 _uiState.value = _uiState.value.copy(
                     isTestingSTT = false,
                     message = result.fold(
                         onSuccess = { "STT 服务连接成功 ✓" },
-                        onFailure = { "STT 服务连接失败: ${it.message}" }
+                        onFailure = {
+                            if (hasAccountSession && it.isAuthenticationFailure()) {
+                                "STT 服务暂时无法验证账户会话，请稍后重试"
+                            } else {
+                                "STT 服务连接失败: ${it.message}"
+                            }
+                        }
                     )
                 )
             } catch (e: Exception) {
@@ -629,8 +664,12 @@ class SettingsViewModel(
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isTestingLLM = true)
             try {
-                val config = _uiState.value.appConfig.llmConfig
-                val result = withContext(Dispatchers.IO) { testLlmByCurrentMode(config) }
+                if (configDataStore.authSessionFlow.first() != null) {
+                    withContext(Dispatchers.IO) { accountSessionSynchronizer.refreshIfNeeded() }
+                }
+                val config = configDataStore.appConfigFlow.first().llmConfig
+                val accountAccessToken = configDataStore.authSessionFlow.first()?.accessToken
+                val result = withContext(Dispatchers.IO) { testLlmByCurrentMode(config, accountAccessToken) }
                 _uiState.value = _uiState.value.copy(
                     isTestingLLM = false,
                     message = result.fold(
@@ -647,9 +686,9 @@ class SettingsViewModel(
         }
     }
 
-    private fun testLlmByCurrentMode(config: LLMConfig): Result<Boolean> {
+    private fun testLlmByCurrentMode(config: LLMConfig, accountAccessToken: String? = null): Result<Boolean> {
         return when (config.engineType) {
-            LLMEngineType.AGENT_GATEWAY -> AgentGatewayEngine.testConnection(config)
+            LLMEngineType.AGENT_GATEWAY -> AgentGatewayEngine.testConnection(config, accountAccessToken)
             LLMEngineType.LOCAL_OLLAMA -> {
                 val success = OllamaEngine.testConnection(config.localEndpoint)
                 if (success) Result.success(true) else Result.failure(Exception("无法连接到 Ollama 服务"))
@@ -739,12 +778,20 @@ class SettingsViewModel(
         }
     }
 
-    private fun requestRemoteSttSwitch(config: STTConfig): Result<String> {
+    private suspend fun requestRemoteSttSwitch(config: STTConfig): Result<String> {
         if (config.engineType == STTEngineType.TENCENT_HYBRID) {
             return Result.success("STT 已成功切换为 ${config.engineType.displayName}")
         }
         if (!BuildConfig.STT_REMOTE_SWITCH_ENABLED) {
             return Result.success("STT 已成功切换为 ${config.engineType.displayName}")
+        }
+
+        // The app-facing account session is deliberately not a management token.
+        // A signed-in user should not need a second service secret just to select
+        // the already-deployed local model. The Windows STT node keeps its model
+        // loaded and the next request uses the selected engine configuration.
+        if (configDataStore.sttUsesAccountTokenFlow.first()) {
+            return Result.success("STT 已切换为 ${config.engineType.displayName}")
         }
 
         val endpoint = config.localEndpoint.trim().trimEnd('/')

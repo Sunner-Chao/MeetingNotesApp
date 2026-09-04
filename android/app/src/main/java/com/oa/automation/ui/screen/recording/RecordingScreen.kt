@@ -53,6 +53,7 @@ import androidx.compose.material.icons.filled.Collections
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
@@ -60,16 +61,11 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.OpenInFull
 import androidx.compose.material.icons.filled.PhotoCamera
-import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Apps
-import androidx.compose.material.icons.filled.AudioFile
-import androidx.compose.material.icons.filled.OpenInNew
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.SaveAlt
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Summarize
 import androidx.compose.material.icons.filled.Warning
@@ -126,7 +122,6 @@ import com.oa.automation.domain.model.STTLanguage
 import com.oa.automation.domain.model.TencentAsrQuotaWarningLevel
 import com.oa.automation.infrastructure.audio.ArchivedMeetingAudio
 import com.oa.automation.infrastructure.image.OrientedImageDecoder
-import com.oa.automation.infrastructure.textimport.ExternalTextSource
 import com.oa.automation.ui.location.ImageLocationPermission
 import com.oa.automation.ui.location.MeetingGalleryPermission
 import com.oa.automation.domain.model.ProductEdition
@@ -412,13 +407,6 @@ fun RecordingScreen(
         }
     }
 
-    val filePickerLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.GetContent()
-    ) { uri -> uri?.let(viewModel::importTextDocument) }
-    val audioPickerLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.GetContent()
-    ) { uri -> uri?.let(viewModel::importAudioDocument) }
-
     LaunchedEffect(meetingId, launchAction, uiState.meetingTitle, launchActionConsumed) {
         if (launchActionConsumed || uiState.meetingTitle.isBlank()) return@LaunchedEffect
         when (launchAction) {
@@ -460,10 +448,9 @@ fun RecordingScreen(
         templateWorkflowReducedMotion = displayedUiState.templateWorkflowReducedMotion,
         templateWorkflowSeen = displayedUiState.templateWorkflowSeen,
         onTemplateWorkflowSeen = viewModel::markTemplateWorkflowSeen,
+        onCustomTemplateLayoutChange = viewModel::updateCustomTemplateLayout,
         onSttEngineSelected = viewModel::switchSttEngine,
         onSttLanguageSelected = viewModel::switchSttLanguage,
-        onSwitchToVoice = viewModel::switchToVoiceMode,
-        onSwitchToImport = viewModel::switchToImportMode,
         onStartRecording = viewModel::startRecording,
         onTogglePause = viewModel::togglePauseRecording,
         onAddMarker = viewModel::addRecordingMarker,
@@ -490,10 +477,7 @@ fun RecordingScreen(
         onCancelTranscription = viewModel::cancelTranscription,
         onCancelReport = viewModel::cancelReportGeneration,
         onTextChange = viewModel::updateManualText,
-        onPasteText = viewModel::importClipboardText,
         onPickExternalFile = { externalDocumentPickerLauncher.launch(arrayOf("*/*")) },
-        onImportTextFile = { filePickerLauncher.launch("text/*") },
-        onImportAudioFile = { audioPickerLauncher.launch("audio/*") },
         onGenerateFromImport = viewModel::generateFromImport,
         onTakePhoto = viewModel::requestPhotoCapture,
         onPickImages = viewModel::requestPhotoLibrary,
@@ -1788,121 +1772,6 @@ internal fun MeetingImagesSection(
     }
 }
 
-
-@Composable
-private fun CompactTextInputCard(
-    text: String,
-    importStatus: String,
-    externalSources: List<ExternalTextSource>,
-    onTextChange: (String) -> Unit,
-    onPaste: () -> Unit,
-    onOpenExternalSource: (ExternalTextSource) -> Unit,
-    onImportFile: () -> Unit
-) {
-    var importMenuExpanded by remember { mutableStateOf(false) }
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.medium,
-        border = androidx.compose.foundation.BorderStroke(
-            1.dp,
-            MaterialTheme.colorScheme.outlineVariant
-        ),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        )
-    ) {
-        Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Icon(
-                        Icons.Default.Description,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Text(
-                        text = "文本输入",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(onClick = onPaste) {
-                        Icon(
-                            Icons.Default.ContentPaste,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("粘贴", style = MaterialTheme.typography.labelSmall)
-                    }
-                    Box {
-                        IconButton(onClick = { importMenuExpanded = true }) {
-                            Icon(Icons.Default.Apps, contentDescription = "选择导入来源")
-                        }
-                        DropdownMenu(
-                            expanded = importMenuExpanded,
-                            onDismissRequest = { importMenuExpanded = false }
-                        ) {
-                            externalSources.forEach { source ->
-                                DropdownMenuItem(
-                                    text = { Text(source.label) },
-                                    leadingIcon = {
-                                        Icon(Icons.Default.OpenInNew, contentDescription = null)
-                                    },
-                                    onClick = {
-                                        importMenuExpanded = false
-                                        onOpenExternalSource(source)
-                                    }
-                                )
-                            }
-                            if (externalSources.isNotEmpty()) HorizontalDivider()
-                            DropdownMenuItem(
-                                text = { Text("本地文本文件") },
-                                leadingIcon = {
-                                    Icon(Icons.Default.FolderOpen, contentDescription = null)
-                                },
-                                onClick = {
-                                    importMenuExpanded = false
-                                    onImportFile()
-                                }
-                            )
-                        }
-                    }
-                }
-            }
-
-            OutlinedTextField(
-                value = text,
-                onValueChange = onTextChange,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 200.dp, max = 350.dp),
-                label = { Text("请输入会议内容", style = MaterialTheme.typography.labelSmall) },
-                placeholder = { Text("请输入会议内容", style = MaterialTheme.typography.bodySmall) },
-                shape = RoundedCornerShape(8.dp),
-                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences)
-            )
-            if (importStatus.isNotBlank()) {
-                Text(
-                    text = importStatus,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-    }
-}
 
 private fun formatRecordingAudioTime(value: String): String = runCatching {
     SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())

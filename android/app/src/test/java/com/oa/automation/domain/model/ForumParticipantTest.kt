@@ -40,6 +40,8 @@ class ForumParticipantTest {
         assertTrue(participants.map { it.name }.containsAll(listOf("记录者", "周老师", "林老师", "陈工", "顾老师")))
         assertTrue(participants.all { it.avatarDataUrl == null && !it.photoAuthorized })
         assertTrue("论坛会议".isForumMeetingTemplate())
+        assertTrue("论坛·共识会".isForumMeetingTemplate())
+        assertTrue("聚智·论道会".isForumMeetingTemplate())
         assertTrue(!"项目管理".isForumMeetingTemplate())
     }
 

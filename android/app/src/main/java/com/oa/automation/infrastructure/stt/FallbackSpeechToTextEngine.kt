@@ -60,7 +60,48 @@ internal class FallbackSpeechToTextEngine(
     override suspend fun transcribeStreamSession(
         sessionId: String,
         onProgress: (ProcessingProgress) -> Unit
-    ): Result<String> = primary.transcribeStreamSession(sessionId, onProgress)
+    ): Result<String> {
+        // A live socket may have moved from the local node to Tencent after a
+        // local connection failure. The session id is owned by whichever
+        // service accepted the socket, so retry finalization through the cloud
+        // engine when the preferred/local endpoint cannot see it.
+        var lastProgress = 0
+        val primaryResult = execute {
+            primary.transcribeStreamSession(sessionId) { progress ->
+                lastProgress = maxOf(lastProgress, progress.percent)
+                onProgress(progress)
+            }
+        }
+        if (primaryResult.isSuccess) return primaryResult
+
+        val fallbackStart = maxOf(lastProgress, 45).coerceAtMost(FALLBACK_END_PERCENT)
+        onProgress(
+            ProcessingProgress(
+                percent = fallbackStart,
+                stage = "本地流式会话不可用，正在启用云端兜底",
+                isIndeterminate = true
+            )
+        )
+        val fallbackResult = execute {
+            fallback.transcribeStreamSession(sessionId) { progress ->
+                val mappedPercent = fallbackStart +
+                    progress.percent * (FALLBACK_END_PERCENT - fallbackStart) / 100
+                onProgress(progress.copy(percent = mappedPercent))
+            }
+        }
+        if (fallbackResult.isSuccess) return fallbackResult
+
+        val primaryError = primaryResult.exceptionOrNull()
+            ?: IOException("本地流式会话最终化失败")
+        val fallbackError = fallbackResult.exceptionOrNull()
+            ?: IOException("云端流式会话最终化失败")
+        val combined = IOException(
+            "本地流式会话最终化失败，云端兜底也失败：${fallbackError.message ?: "未知错误"}",
+            fallbackError
+        )
+        combined.addSuppressed(primaryError)
+        return Result.failure(combined)
+    }
 
     override fun getEngineType(): STTEngineType = primary.getEngineType()
 

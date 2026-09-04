@@ -163,6 +163,9 @@ class RecordingUiStateTest {
         assertTrue(switching?.detail.orEmpty().contains("录音持续保存"))
         assertEquals("云端识别已接管", active?.title)
         assertTrue(active?.detail.orEmpty().contains("录音未中断"))
+        // The takeover is sticky for the meeting, so the card must say the
+        // cloud route persists rather than implying a momentary glitch.
+        assertTrue(active?.detail.orEmpty().contains("继续使用云端"))
     }
 
     @Test
@@ -181,6 +184,35 @@ class RecordingUiStateTest {
                 preferred = STTEngineType.TENCENT_HYBRID,
                 route = RealtimeSttRouteState.LOCAL_ACTIVE,
                 isRecording = true
+            )
+        )
+    }
+
+    @Test
+    fun `idle route defers to the meeting engine so a cloud fallback survives pause`() {
+        // After an automatic local->cloud fallback the stream route returns to
+        // IDLE whenever the preview stops (pause, 暂存, reopen). The card must
+        // then follow the engine the meeting actually resolved to — cloud — not
+        // the app-wide preference that still says local.
+        val engineAfterFallback = resolveMeetingSttEngine(
+            meetingOverride = STTEngineType.TENCENT_HYBRID,
+            appPreference = STTEngineType.FASTER_WHISPER
+        )
+        assertEquals(STTEngineType.TENCENT_HYBRID, engineAfterFallback)
+        assertEquals(
+            STTEngineType.TENCENT_HYBRID,
+            effectiveSttEngineType(
+                preferred = engineAfterFallback,
+                route = RealtimeSttRouteState.IDLE,
+                isRecording = false
+            )
+        )
+        // A meeting that never resolved an engine keeps following the app.
+        assertEquals(
+            STTEngineType.FASTER_WHISPER,
+            resolveMeetingSttEngine(
+                meetingOverride = null,
+                appPreference = STTEngineType.FASTER_WHISPER
             )
         )
     }

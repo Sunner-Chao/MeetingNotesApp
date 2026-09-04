@@ -6,6 +6,20 @@ set "SERVER_ROOT=%~dp0.."
 set "BACKEND_PORT=8090"
 set "STT_SERVICE_URL=http://127.0.0.1:8888"
 
+rem Keep Backend and the local STT process on the same private auth snapshot.
+if not defined BACKEND_AUTH_ENV_FILE if exist "%SERVER_ROOT%\.env.remote" set "BACKEND_AUTH_ENV_FILE=%SERVER_ROOT%\.env.remote"
+if defined BACKEND_AUTH_ENV_FILE if exist "%BACKEND_AUTH_ENV_FILE%" call "%SERVER_ROOT%\load-env.bat" "%BACKEND_AUTH_ENV_FILE%"
+
+rem The shared snapshot is also used by Ubuntu. Restore Windows-owned paths
+rem so local startup never writes logs, databases, or OTA files to Linux paths.
+set "APP_UPDATE_CONFIG_PATH=%SERVER_ROOT%\config\app-update.json"
+set "APP_UPDATE_ANDROID_APK_PATH=%SERVER_ROOT%\downloads\ZhiWuBen-Android.apk"
+set "APP_UPDATE_LIGHT_CONFIG_PATH=%SERVER_ROOT%\config\app-update-light.json"
+set "APP_UPDATE_LIGHT_ANDROID_APK_PATH=%SERVER_ROOT%\downloads-light\ZhiWuBen-Android.apk"
+set "ACCOUNT_MEDIA_DIR=%SERVER_ROOT%\shared\data\account-media"
+set "TENCENT_ASR_USAGE_LEDGER_PATH=%SERVER_ROOT%\stt-service\data\tencent-asr-usage.db"
+set "STT_LOG_PATH=%SERVER_ROOT%\stt-service\logs\stt.log"
+
 if "%WEB_BACKEND_PORT%"=="" set "WEB_BACKEND_PORT=%BACKEND_PORT%"
 if "%STT_SERVICE_URL%"=="" set "STT_SERVICE_URL=http://127.0.0.1:8888"
 

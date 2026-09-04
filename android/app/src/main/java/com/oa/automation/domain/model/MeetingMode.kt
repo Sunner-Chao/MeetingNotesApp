@@ -16,7 +16,9 @@ enum class MeetingMode(
     NEGOTIATION("博弈·洽谈会", "博弈·洽谈会"),
     RETROSPECTIVE("复盘·分析会", "复盘·分析会"),
     STANDUP("敏捷·站会", "敏捷·站会"),
-    FORUM("论坛会议", "论坛会议"),
+    /** Persisted as the legacy key “论坛会议” so existing forum reports retain their behavior. */
+    FORUM("论坛会议", "论坛·共识会"),
+    CUSTOM("自定义会议", "自定义会议"),
     STUDY("研学考察", "研学考察");
 
     companion object {
@@ -29,7 +31,12 @@ enum class MeetingMode(
                 normalized == NEGOTIATION.templateName -> NEGOTIATION
                 normalized == RETROSPECTIVE.templateName -> RETROSPECTIVE
                 normalized == STANDUP.templateName -> STANDUP
-                normalized == FORUM.templateName -> FORUM
+                normalized == FORUM.templateName ||
+                    normalized == FORUM.displayName ||
+                    normalized == "论坛共识会" ||
+                    normalized == "聚智·论道会" ||
+                    normalized == "聚智论道会" -> FORUM
+                normalized == CUSTOM.templateName -> CUSTOM
                 normalized == STUDY.templateName ||
                     normalized.contains("参观考察") ||
                     normalized.contains("游记") -> STUDY

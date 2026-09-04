@@ -25,7 +25,8 @@ import java.util.concurrent.TimeUnit
  * Claude locally and never contains the credentials used by those CLIs.
  */
 class AgentGatewayEngine(
-    private val config: LLMConfig
+    private val config: LLMConfig,
+    private val accountAccessToken: String? = null
 ) : LLMReportEngine {
 
     private val client = OkHttpClient.Builder()
@@ -79,7 +80,11 @@ class AgentGatewayEngine(
     override fun getDisplayName(): String = "智悟云端模型 (${config.agentProvider.displayName})"
 
     override fun isAvailable(): Boolean =
-        config.agentEndpoint.isNotBlank() && !config.agentAccessToken.isNullOrBlank()
+        config.agentEndpoint.isNotBlank() && !credential().isNullOrBlank()
+
+    private fun credential(): String? =
+        accountAccessToken?.trim()?.takeIf { it.isNotBlank() }
+            ?: config.agentAccessToken?.trim()?.takeIf { it.isNotBlank() }
 
     private suspend fun execute(
         payload: AgentTaskRequest,
@@ -88,8 +93,8 @@ class AgentGatewayEngine(
         return try {
             val endpoint = config.agentEndpoint.trim().trimEnd('/')
             require(endpoint.isNotBlank()) { "Agent 服务地址未配置" }
-            val token = config.agentAccessToken?.trim().orEmpty()
-            require(token.isNotBlank()) { "Agent 访问令牌未配置" }
+            val token = credential().orEmpty()
+            require(token.isNotBlank()) { "请先登录账户" }
 
             val body = MultipartBody.Builder()
                 .setType(MultipartBody.FORM)
@@ -190,12 +195,14 @@ class AgentGatewayEngine(
     )
 
     companion object {
-        fun testConnection(config: LLMConfig): Result<Boolean> = runCatching {
+        fun testConnection(config: LLMConfig, accountAccessToken: String? = null): Result<Boolean> = runCatching {
             require(config.agentEndpoint.isNotBlank()) { "Agent 服务地址未配置" }
-            require(!config.agentAccessToken.isNullOrBlank()) { "Agent 访问令牌未配置" }
+            val token = accountAccessToken?.trim()?.takeIf { it.isNotBlank() }
+                ?: config.agentAccessToken?.trim()?.takeIf { it.isNotBlank() }
+            require(!token.isNullOrBlank()) { "请先登录账户" }
             val request = Request.Builder()
                 .url("${config.agentEndpoint.trim().trimEnd('/')}/health")
-                .addHeader("Authorization", "Bearer ${config.agentAccessToken}")
+                .addHeader("Authorization", "Bearer $token")
                 .get()
                 .build()
             val client = OkHttpClient.Builder().connectTimeout(15, TimeUnit.SECONDS).build()

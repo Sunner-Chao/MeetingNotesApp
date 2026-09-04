@@ -45,12 +45,13 @@ class AgentQuotaService(
         .build(),
     private val gson: Gson = Gson()
 ) {
-    suspend fun fetch(config: LLMConfig): Result<AgentQuota> = withContext(Dispatchers.IO) {
+    suspend fun fetch(config: LLMConfig, accountAccessToken: String? = null): Result<AgentQuota> = withContext(Dispatchers.IO) {
         runCatching {
             val endpoint = config.agentEndpoint.trim().trimEnd('/')
             require(endpoint.isNotBlank()) { "Agent 服务地址未配置" }
-            val token = config.agentAccessToken?.trim().orEmpty()
-            require(token.isNotBlank()) { "Agent 访问令牌未配置" }
+            val token = accountAccessToken?.trim()?.takeIf { it.isNotBlank() }
+                ?: config.agentAccessToken?.trim()?.takeIf { it.isNotBlank() }
+            require(!token.isNullOrBlank()) { "请先登录账户" }
 
             val request = Request.Builder()
                 .url("$endpoint/quota")

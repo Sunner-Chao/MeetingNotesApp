@@ -46,7 +46,7 @@ data class AccountProfile(
 
 data class AuthSession(
     @SerializedName("access_token") val accessToken: String,
-    @SerializedName("agent_access_token") val agentAccessToken: String,
+    @SerializedName("agent_access_token") val agentAccessToken: String = "",
     @SerializedName("stt_access_token") val sttAccessToken: String? = null,
     @SerializedName("token_type") val tokenType: String,
     @SerializedName("expires_at") val expiresAt: Long,
@@ -74,8 +74,8 @@ data class AuthCodeRequestResult(
 )
 
 data class AccountSessionCredentials(
-    @SerializedName("agent_access_token") val agentAccessToken: String,
-    @SerializedName("stt_access_token") val sttAccessToken: String,
+    @SerializedName("agent_access_token") val agentAccessToken: String = "",
+    @SerializedName("stt_access_token") val sttAccessToken: String = "",
     @SerializedName("expires_at") val expiresAt: Long,
     val user: AccountProfile
 )

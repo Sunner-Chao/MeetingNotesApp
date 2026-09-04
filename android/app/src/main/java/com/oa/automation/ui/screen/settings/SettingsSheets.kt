@@ -99,6 +99,7 @@ import com.oa.automation.domain.model.TencentAsrTierPolicy
 @Composable
 internal fun SttDetailSheetContent(
     config: STTConfig,
+    isAccountSessionActive: Boolean,
     isTesting: Boolean,
     isSwitching: Boolean,
     isLoadingTencentAsrPolicy: Boolean,
@@ -188,21 +189,50 @@ internal fun SttDetailSheetContent(
                 shape = RoundedCornerShape(8.dp)
             )
 
-            OutlinedTextField(
-                value = apiToken,
-                onValueChange = {
-                    apiToken = it
-                    onApiTokenChange(it.ifBlank { null })
-                },
-                label = { Text("服务访问令牌") },
-                leadingIcon = {
-                    Icon(Icons.Default.Key, contentDescription = null)
-                },
-                visualTransformation = PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true
-            )
+            if (isAccountSessionActive) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp),
+                    color = LocalSettingsPalette.current.pillFill,
+                    border = androidx.compose.foundation.BorderStroke(
+                        1.dp,
+                        LocalSettingsPalette.current.outline
+                    )
+                ) {
+                    ListItem(
+                        headlineContent = { Text("账户会话自动管理") },
+                        supportingContent = {
+                            Text(
+                                if (config.apiToken.isNullOrBlank()) {
+                                    "正在准备语音服务凭证，请稍候"
+                                } else {
+                                    "登录会话会自动续期，无需手动填写访问令牌"
+                                }
+                            )
+                        },
+                        leadingContent = {
+                            Icon(Icons.Default.CloudDone, contentDescription = null)
+                        },
+                        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                    )
+                }
+            } else if (BuildConfig.DEBUG) {
+                OutlinedTextField(
+                    value = apiToken,
+                    onValueChange = {
+                        apiToken = it
+                        onApiTokenChange(it.ifBlank { null })
+                    },
+                    label = { Text("服务访问令牌（仅调试）") },
+                    leadingIcon = {
+                        Icon(Icons.Default.Key, contentDescription = null)
+                    },
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+            }
 
             ModelDropdown(
                 currentModel = localModel,
@@ -227,6 +257,7 @@ internal fun SttDetailSheetContent(
 @Composable
 internal fun LlmDetailSheetContent(
     config: LLMConfig,
+    isAccountSessionActive: Boolean,
     isTesting: Boolean,
     onEngineTypeChange: (LLMEngineType) -> Unit,
     onAgentEndpointChange: (String) -> Unit,
@@ -310,39 +341,41 @@ internal fun LlmDetailSheetContent(
                 shape = RoundedCornerShape(8.dp)
             )
 
-            OutlinedTextField(
-                value = agentAccessToken,
-                onValueChange = {
-                    agentAccessToken = it
-                    agentTokenDirty = true
-                },
-                label = { Text("Agent 访问令牌（仅调试构建可见）") },
-                leadingIcon = {
-                    Icon(Icons.Default.Key, contentDescription = null, modifier = Modifier.size(20.dp))
-                },
-                visualTransformation = PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(
-                    keyboardType = KeyboardType.Password,
-                    imeAction = ImeAction.Done
-                ),
-                keyboardActions = KeyboardActions(
-                    onDone = {
-                        onAgentAccessTokenChange(agentAccessToken.ifBlank { null })
-                        agentTokenDirty = false
-                        focusManager.clearFocus()
-                    }
-                ),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .onFocusChanged { state ->
-                        if (!state.isFocused && agentTokenDirty) {
+            if (!isAccountSessionActive) {
+                OutlinedTextField(
+                    value = agentAccessToken,
+                    onValueChange = {
+                        agentAccessToken = it
+                        agentTokenDirty = true
+                    },
+                    label = { Text("Agent 访问令牌（仅调试构建可见）") },
+                    leadingIcon = {
+                        Icon(Icons.Default.Key, contentDescription = null, modifier = Modifier.size(20.dp))
+                    },
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Password,
+                        imeAction = ImeAction.Done
+                    ),
+                    keyboardActions = KeyboardActions(
+                        onDone = {
                             onAgentAccessTokenChange(agentAccessToken.ifBlank { null })
                             agentTokenDirty = false
+                            focusManager.clearFocus()
                         }
-                    },
-                singleLine = true,
-                shape = RoundedCornerShape(8.dp)
-            )
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .onFocusChanged { state ->
+                            if (!state.isFocused && agentTokenDirty) {
+                                onAgentAccessTokenChange(agentAccessToken.ifBlank { null })
+                                agentTokenDirty = false
+                            }
+                        },
+                    singleLine = true,
+                    shape = RoundedCornerShape(8.dp)
+                )
+            }
         }
 
         TestConnectionButton(isTesting = isTesting, onClick = onTestConnection)

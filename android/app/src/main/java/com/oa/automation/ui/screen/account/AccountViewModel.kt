@@ -7,9 +7,7 @@ import com.oa.automation.BuildConfig
 import com.oa.automation.data.local.ConfigDataStore
 import com.oa.automation.domain.model.AccountProfile
 import com.oa.automation.domain.model.AuthSession
-import com.oa.automation.domain.model.LLMConfig
 import com.oa.automation.infrastructure.llm.AgentQuota
-import com.oa.automation.infrastructure.llm.AgentQuotaService
 import com.oa.automation.infrastructure.account.AccountApiService
 import com.oa.automation.infrastructure.account.AccountSessionSynchronizer
 import com.oa.automation.infrastructure.account.ProfileAvatarCodec
@@ -44,14 +42,12 @@ data class AccountUiState(
 
 class AccountViewModel(
     private val configDataStore: ConfigDataStore,
-    private val quotaService: AgentQuotaService,
     private val accountApiService: AccountApiService,
     private val accountSessionSynchronizer: AccountSessionSynchronizer,
     private val profileAvatarCodec: ProfileAvatarCodec
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(AccountUiState())
     val uiState: StateFlow<AccountUiState> = _uiState.asStateFlow()
-    private var currentLlmConfig: LLMConfig? = null
     private var currentSession: AuthSession? = null
     private var currentAccountEndpoint: String = ""
 
@@ -59,48 +55,46 @@ class AccountViewModel(
         viewModelScope.launch {
             combine(
                 configDataStore.authSessionFlow,
-                configDataStore.accountEndpointFlow,
-                configDataStore.appConfigFlow
-            ) { session, endpoint, config -> Triple(session, endpoint, config.llmConfig) }
-                .collectLatest { (session, endpoint, llmConfig) ->
+                configDataStore.accountEndpointFlow
+            ) { session, endpoint -> Pair(session, endpoint) }
+                .collectLatest { (session, endpoint) ->
                     currentSession = session
                     currentAccountEndpoint = endpoint
-                    currentLlmConfig = llmConfig
-                    val hasToken = !llmConfig.agentAccessToken.isNullOrBlank()
                     _uiState.update {
                         it.copy(
                             username = session?.user?.username.orEmpty(),
                             profile = session?.user,
-                            tokenConfigured = hasToken,
-                            quota = if (hasToken) it.quota else null,
+                            tokenConfigured = session != null,
+                            quota = it.quota,
                             quotaError = null
                         )
                     }
                     if (session != null) loadProfile(endpoint, session.accessToken)
-                    if (hasToken) loadQuota(llmConfig)
                 }
         }
     }
 
     fun refreshQuota() {
-        currentLlmConfig?.let { config ->
-            if (!config.agentAccessToken.isNullOrBlank()) {
-                viewModelScope.launch { loadQuota(config) }
-            }
-        }
+        refreshAccount()
     }
 
     fun refreshAccount() {
         val session = currentSession ?: return
         viewModelScope.launch {
-            accountSessionSynchronizer.refresh().onSuccess { credentials ->
-                _uiState.update {
-                    it.copy(username = credentials.user.username, profile = credentials.user)
+            _uiState.update { it.copy(isQuotaLoading = true, quotaError = null) }
+            try {
+                accountSessionSynchronizer.refresh().onSuccess { credentials ->
+                    currentSession = currentSession?.copy(
+                        expiresAt = credentials.expiresAt,
+                        user = credentials.user
+                    )
+                    _uiState.update {
+                        it.copy(username = credentials.user.username, profile = credentials.user)
+                    }
                 }
-            }
-            loadProfile(currentAccountEndpoint, session.accessToken)
-            currentLlmConfig?.let { config ->
-                if (!config.agentAccessToken.isNullOrBlank()) loadQuota(config)
+                loadProfile(currentAccountEndpoint, currentSession?.accessToken ?: session.accessToken)
+            } finally {
+                _uiState.update { it.copy(isQuotaLoading = false) }
             }
         }
     }
@@ -264,24 +258,6 @@ class AccountViewModel(
             configDataStore.clearUsername()
             _uiState.update { it.copy(isLoggedOut = true) }
         }
-    }
-
-    private suspend fun loadQuota(config: LLMConfig) {
-        _uiState.update { it.copy(isQuotaLoading = true, quotaError = null) }
-        quotaService.fetch(config).fold(
-            onSuccess = { quota ->
-                _uiState.update { it.copy(quota = quota, isQuotaLoading = false) }
-            },
-            onFailure = { error ->
-                _uiState.update {
-                    it.copy(
-                        quota = null,
-                        isQuotaLoading = false,
-                        quotaError = error.message ?: "积分查询失败"
-                    )
-                }
-            }
-        )
     }
 
     private suspend fun loadProfile(endpoint: String, accessToken: String) {

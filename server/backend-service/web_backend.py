@@ -35,6 +35,7 @@ from starlette.responses import StreamingResponse
 
 from agent_gateway import (
     PROVIDERS,
+    AgentAuthError,
     AgentError,
     AgentPrincipal,
     IncomingAttachment,
@@ -1114,6 +1115,19 @@ def require_agent_principal(
     try:
         return AGENT_GATEWAY.authenticate(authorization)
     except AgentError as exc:
+        # New clients use the ordinary account session as their only public
+        # credential.  Keep the legacy Agent-token path above for compatibility.
+        if isinstance(exc, AgentAuthError) and ACCOUNT_SERVICE is not None and authorization:
+            try:
+                account_principal = ACCOUNT_SERVICE.authenticate(authorization)
+                ACCOUNT_SERVICE.ensure_agent_access(account_principal)
+                return AGENT_GATEWAY.authenticate_account_principal(
+                    user_id=account_principal.user_id,
+                    username=account_principal.username,
+                    role=account_principal.role,
+                )
+            except (AccountError, AgentError):
+                pass
         raise HTTPException(
             status_code=exc.status_code,
             detail=str(exc),

@@ -8,7 +8,10 @@ if defined STT_AUTH_ENV_FILE (
         echo [ERROR] STT auth environment is missing: %STT_AUTH_ENV_FILE%
         exit /b 1
     )
-    for /f "usebackq tokens=1,* delims==" %%A in (`findstr /b /c:"STT_API_TOKEN=" /c:"ACCOUNT_TOKEN_SECRET=" /c:"WEB_API_USERNAME=" /c:"WEB_API_TOKEN=" "%STT_AUTH_ENV_FILE%"`) do set "%%A=%%~B"
+    call "%~dp0..\load-env.bat" "%STT_AUTH_ENV_FILE%"
+    rem The shared snapshot may contain Ubuntu defaults; restore this host's
+    rem model/runtime overrides after loading its common credentials.
+    if exist "%~dp0.env.windows-local.bat" call "%~dp0.env.windows-local.bat"
 )
 
 if defined STT_LOCAL_WEB_API_USERNAME set "WEB_API_USERNAME=%STT_LOCAL_WEB_API_USERNAME%"

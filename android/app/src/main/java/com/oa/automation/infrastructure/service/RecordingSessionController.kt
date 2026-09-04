@@ -77,6 +77,14 @@ data class RecordingSessionState(
     val accumulatedTranscript: String = "",
     val status: String = "流式预览",
     val realtimeSttRoute: RealtimeSttRouteState = RealtimeSttRouteState.IDLE,
+    /**
+     * True once this meeting has automatically fallen back from local to cloud
+     * recognition. The route alone is not enough: it returns to [IDLE] whenever
+     * the stream stops, which would otherwise flip the engine shown on the card
+     * — and the engine used by the next connection — back to the local model
+     * that just failed.
+     */
+    val cloudFallbackEngaged: Boolean = false,
     val error: String? = null
 )
 
@@ -102,6 +110,7 @@ class RecordingSessionController(
     private var accountAccessEnabled = false
     private var cloudFallbackAvailable = false
     @Volatile private var automaticCloudFallbackAttempted = false
+    @Volatile private var sessionRecoveryAttempted = false
     private val transcriptAccumulator = StreamingTranscriptAccumulator()
     @Volatile private var smoothedAudioLevel = 0f
     @Volatile private var pendingStopMeetingId: String? = null
@@ -148,18 +157,14 @@ class RecordingSessionController(
             var sttConfig = configDataStore.appConfigFlow.first().sttConfig
             val usesTencentHybrid = sttConfig.engineType == STTEngineType.TENCENT_HYBRID
             automaticCloudFallbackAttempted = false
+            sessionRecoveryAttempted = false
             val storedSession = configDataStore.authSessionFlow.first()
             // Do not make microphone capture wait on the account server. A stale
             // session can be refreshed opportunistically, but the local socket
             // should be allowed to connect immediately with the current token.
-            val nowSeconds = System.currentTimeMillis() / 1_000L
-            val shouldRefreshSession = storedSession != null && (
-                storedSession.expiresAt <= nowSeconds + 120L ||
-                    sttConfig.apiToken.isNullOrBlank()
-                )
-            if (shouldRefreshSession) {
+            if (storedSession != null) {
                 val refreshResult = withTimeoutOrNull(3_000L) {
-                    accountSessionSynchronizer.refresh()
+                    accountSessionSynchronizer.refreshIfNeeded()
                 }
                 if (refreshResult == null) {
                     Log.w("RecordingSessionController", "account refresh timed out before STT start")
@@ -168,7 +173,7 @@ class RecordingSessionController(
                         "RecordingSessionController",
                         "account refresh failed before STT start: ${refreshResult.exceptionOrNull()?.message}"
                     )
-                } else {
+                } else if (refreshResult.getOrNull() == true) {
                     sttConfig = configDataStore.appConfigFlow.first().sttConfig
                 }
             }
@@ -293,23 +298,24 @@ class RecordingSessionController(
                         }
                     },
                     onProviderFailure = { provider, detail ->
-                        if (provider == StreamingSttProvider.LOCAL) {
-                            if (isSttAuthorizationFailure(detail)) {
-                                _state.update {
-                                    it.copy(
-                                        realtimeSttRoute = RealtimeSttRouteState.UNAVAILABLE,
-                                        error = "本地 STT 登录已失效，请重新登录后重试；录音仍会保存在本机"
-                                    )
-                                }
-                            } else if (cloudFallbackAvailable) {
-                                requestAutomaticCloudFallback(detail)
-                            } else {
-                                _state.update {
-                                    it.copy(
-                                        realtimeSttRoute = RealtimeSttRouteState.UNAVAILABLE,
-                                        error = "本地实时识别不可用，录音仍会保存在本机"
-                                    )
-                                }
+                        if (isSttAuthorizationFailure(detail) && !sessionRecoveryAttempted) {
+                            sessionRecoveryAttempted = true
+                            requestSessionRefreshAndReconnect(provider, detail)
+                        } else if (provider == StreamingSttProvider.LOCAL && cloudFallbackAvailable) {
+                            requestAutomaticCloudFallback(detail)
+                        } else if (provider == StreamingSttProvider.LOCAL) {
+                            _state.update {
+                                it.copy(
+                                    realtimeSttRoute = RealtimeSttRouteState.UNAVAILABLE,
+                                    error = "本地实时识别不可用，录音仍会保存在本机"
+                                )
+                            }
+                        } else {
+                            _state.update {
+                                it.copy(
+                                    realtimeSttRoute = RealtimeSttRouteState.UNAVAILABLE,
+                                    error = "实时识别鉴权已失效，录音仍会保存在本机"
+                                )
                             }
                         }
                     }
@@ -539,7 +545,10 @@ class RecordingSessionController(
         }
     }
 
-    suspend fun switchStreamingProvider(engineType: STTEngineType): Result<Unit> =
+    suspend fun switchStreamingProvider(
+        engineType: STTEngineType,
+        forceReconnect: Boolean = false
+    ): Result<Unit> =
         operationMutex.withLock {
             runCatching {
                 val current = _state.value
@@ -579,7 +588,12 @@ class RecordingSessionController(
                         error = null
                     )
                 }
-                streamingSttClient.switchService(endpoint, provider).getOrThrow()
+                streamingSttClient.switchService(
+                    nextEndpoint = endpoint,
+                    provider = provider,
+                    forceReconnect = forceReconnect,
+                    apiTokenOverride = sttConfig.apiToken
+                ).getOrThrow()
                 _state.update {
                     val connectedRoute = when {
                         engineType != STTEngineType.TENCENT_HYBRID ->
@@ -609,6 +623,51 @@ class RecordingSessionController(
             }
         }
 
+    private fun requestSessionRefreshAndReconnect(
+        failedProvider: StreamingSttProvider,
+        detail: String
+    ) {
+        val current = _state.value
+        if ((!current.isRecording && !current.isStarting) || current.isStopping) return
+        _state.update {
+            it.copy(
+                status = "服务会话正在更新，请稍候",
+                realtimeSttRoute = if (failedProvider == StreamingSttProvider.LOCAL) {
+                    RealtimeSttRouteState.LOCAL_RECOVERING
+                } else {
+                    RealtimeSttRouteState.CLOUD_CONNECTING
+                },
+                error = null
+            )
+        }
+        fallbackScope.launch {
+            val refreshed = withTimeoutOrNull(5_000L) {
+                accountSessionSynchronizer.refresh()
+            }
+            val reconnect = if (refreshed?.isSuccess == true) {
+                val engineType = if (failedProvider == StreamingSttProvider.LOCAL) {
+                    STTEngineType.FASTER_WHISPER
+                } else {
+                    STTEngineType.TENCENT_HYBRID
+                }
+                switchStreamingProvider(engineType, forceReconnect = true)
+            } else {
+                Result.failure(IllegalStateException("登录会话更新失败"))
+            }
+            if (reconnect.isSuccess) return@launch
+            if (failedProvider == StreamingSttProvider.LOCAL && cloudFallbackAvailable) {
+                requestAutomaticCloudFallback("本地实时识别鉴权失败：$detail")
+            } else {
+                _state.update {
+                    it.copy(
+                        realtimeSttRoute = RealtimeSttRouteState.UNAVAILABLE,
+                        error = "实时识别暂不可用，录音仍会保存在本机"
+                    )
+                }
+            }
+        }
+    }
+
     private fun requestAutomaticCloudFallback(detail: String) {
         if (!cloudFallbackAvailable || automaticCloudFallbackAttempted) return
         val current = _state.value
@@ -629,6 +688,7 @@ class RecordingSessionController(
                     it.copy(
                         status = "云端识别已接管，录音未中断",
                         realtimeSttRoute = RealtimeSttRouteState.CLOUD_FALLBACK_ACTIVE,
+                        cloudFallbackEngaged = true,
                         error = null
                     )
                 } else {

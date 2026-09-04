@@ -10,6 +10,7 @@ import androidx.lifecycle.viewModelScope
 import com.oa.automation.data.local.ConfigDataStore
 import com.oa.automation.domain.model.PresetReportTemplate
 import com.oa.automation.domain.model.AgentProvider
+import com.oa.automation.domain.model.CustomTemplateLayout
 import com.oa.automation.domain.model.Journey
 import com.oa.automation.domain.model.JourneyStage
 import com.oa.automation.domain.model.JourneyStageStatus
@@ -120,6 +121,7 @@ data class RecordingUiState(
     val selectedRecordingTemplateName: String? = null,
     val templateWorkflowReducedMotion: Boolean = false,
     val templateWorkflowSeen: Set<String> = emptySet(),
+    val customTemplateLayout: CustomTemplateLayout = CustomTemplateLayout.DEFAULT,
     val journey: Journey? = null,
     val currentJourneyStage: JourneyStage? = null,
     val latestSavedJourneyStage: JourneyStage? = null,
@@ -329,6 +331,16 @@ internal fun resolveRestoredRecordingTemplateName(
     ?.takeIf(String::isNotBlank)
     ?: appConfig.selectedName.trim()
         .takeIf { (isGlobalRecording || hasPriorWork) && it.isNotBlank() }
+
+/**
+ * Engine a meeting should show and reconnect with while its stream is idle.
+ * A resolved per-meeting engine (manual choice or automatic cloud fallback)
+ * outranks the app-wide preference.
+ */
+internal fun resolveMeetingSttEngine(
+    meetingOverride: STTEngineType?,
+    appPreference: STTEngineType
+): STTEngineType = meetingOverride ?: appPreference
 
 internal fun resolveRestoredSttEngineType(
     meeting: Meeting?,
@@ -605,6 +617,32 @@ class RecordingViewModel(
     private var persistedDurationSeconds: Long = 0L
     private var preferredSttEngineType: STTEngineType = STTEngineType.FASTER_WHISPER
 
+    /**
+     * Engine this meeting resolved to after an automatic local→cloud fallback.
+     *
+     * It outranks the app-wide preference for the rest of the meeting so a
+     * stream that drops back to [RealtimeSttRouteState.IDLE] — pausing, 暂存, or
+     * reopening — cannot silently show, or reconnect with, the local model that
+     * just failed.
+     */
+    private var meetingSttEngineOverride: STTEngineType? = null
+
+    private fun preferredEngineForMeeting(): STTEngineType =
+        resolveMeetingSttEngine(meetingSttEngineOverride, preferredSttEngineType)
+
+    /** Stores the engine on the meeting so reopening it keeps the same route. */
+    private fun persistMeetingSttEngine(meetingId: String, engineType: STTEngineType) {
+        if (meetingId.isBlank()) return
+        viewModelScope.launch {
+            meetingRepository.findById(meetingId)
+                .getOrNull()
+                ?.takeIf { it.selectedSttEngineName != engineType.name }
+                ?.let { meeting ->
+                    meetingRepository.save(meeting.copy(selectedSttEngineName = engineType.name))
+                }
+        }
+    }
+
     init {
         _uiState.update {
             it.copy(externalTextSources = externalTextSourceLauncher.availableSources())
@@ -614,7 +652,7 @@ class RecordingViewModel(
                 preferredSttEngineType = config.sttConfig.engineType
                 val session = recordingController.state.value
                 val actualEngine = effectiveSttEngineType(
-                    preferred = preferredSttEngineType,
+                    preferred = preferredEngineForMeeting(),
                     route = session.realtimeSttRoute,
                     isRecording = session.isRecording || session.isStarting
                 )
@@ -628,6 +666,11 @@ class RecordingViewModel(
                         templateWorkflowSeen = config.templateWorkflowPreferences.seenTemplateNames
                     )
                 }
+            }
+        }
+        viewModelScope.launch {
+            configDataStore.customTemplateLayoutFlow.collect { layout ->
+                _uiState.update { it.copy(customTemplateLayout = layout) }
             }
         }
         viewModelScope.launch {
@@ -649,8 +692,17 @@ class RecordingViewModel(
                 val isFinalizing = isLiveRecordingFinalizing(session)
                 val clearTranscriptionState = isFinalizing ||
                     session.error != null || session.status == "录音启动已取消"
+                // An automatic fallback is a decision, not just a transient
+                // route: remember it for this meeting and write it through so a
+                // later resume does not retry the local model that just failed.
+                if (session.cloudFallbackEngaged &&
+                    meetingSttEngineOverride != STTEngineType.TENCENT_HYBRID
+                ) {
+                    meetingSttEngineOverride = STTEngineType.TENCENT_HYBRID
+                    persistMeetingSttEngine(session.meetingId, STTEngineType.TENCENT_HYBRID)
+                }
                 val actualEngine = effectiveSttEngineType(
-                    preferred = preferredSttEngineType,
+                    preferred = preferredEngineForMeeting(),
                     route = session.realtimeSttRoute,
                     isRecording = session.isRecording || session.isStarting
                 )
@@ -860,6 +912,11 @@ class RecordingViewModel(
                 appEngineType = sttConfig.engineType,
                 isGlobalRecording = isGlobalRecording
             )
+            // Carry a previously resolved engine (including one reached by an
+            // automatic fallback) into this meeting; a meeting that never chose
+            // one keeps following the app-wide preference.
+            meetingSttEngineOverride = meeting?.selectedSttEngineName
+                ?.let { saved -> runCatching { STTEngineType.valueOf(saved) }.getOrNull() }
             val restoredSttConfig = sttConfig.withEngineType(restoredSttEngineType)
             val presetTemplates = configDataStore.loadPresetTemplates()
             val hasPriorWork = meeting != null && (
@@ -1190,16 +1247,9 @@ class RecordingViewModel(
                 onSuccess = {
                     configDataStore.updateSTTConfig(nextConfig)
                     preferredSttEngineType = engineType
-                    if (requestedMeetingId.isNotBlank()) {
-                        meetingRepository.findById(requestedMeetingId)
-                            .getOrNull()
-                            ?.takeIf { it.selectedSttEngineName != engineType.name }
-                            ?.let { meeting ->
-                                meetingRepository.save(
-                                    meeting.copy(selectedSttEngineName = engineType.name)
-                                )
-                            }
-                    }
+                    // An explicit choice replaces any automatic fallback.
+                    meetingSttEngineOverride = engineType
+                    persistMeetingSttEngine(requestedMeetingId, engineType)
                     if (isCurrentMeeting(requestedMeetingId)) {
                         _uiState.update {
                             it.copy(
@@ -3167,6 +3217,15 @@ class RecordingViewModel(
     fun setTemplateWorkflowReducedMotion(enabled: Boolean) {
         _uiState.update { it.copy(templateWorkflowReducedMotion = enabled) }
         viewModelScope.launch { configDataStore.updateTemplateWorkflowReducedMotion(enabled) }
+    }
+
+    /**
+     * Persist a module arrangement dragged in the 自定义会议 editor. The state is
+     * updated first so the drag stays responsive, then written through.
+     */
+    fun updateCustomTemplateLayout(layout: CustomTemplateLayout) {
+        _uiState.update { it.copy(customTemplateLayout = layout) }
+        viewModelScope.launch { configDataStore.updateCustomTemplateLayout(layout) }
     }
 
     fun updateReportTemplateContent(content: String) {

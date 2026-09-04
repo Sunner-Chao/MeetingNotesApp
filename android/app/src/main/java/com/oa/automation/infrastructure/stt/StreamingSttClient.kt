@@ -612,11 +612,13 @@ class StreamingSttClient internal constructor(
 
     suspend fun switchService(
         nextEndpoint: String,
-        provider: StreamingSttProvider
+        provider: StreamingSttProvider,
+        forceReconnect: Boolean = false,
+        apiTokenOverride: String? = null
     ): Result<Unit> {
         val normalizedEndpoint = nextEndpoint.trim().trimEnd('/')
         require(normalizedEndpoint.isNotBlank()) { "STT 服务地址未配置" }
-        if (normalizedEndpoint == endpoint.trim().trimEnd('/')) {
+        if (!forceReconnect && normalizedEndpoint == endpoint.trim().trimEnd('/')) {
             return switchProvider(provider)
         }
 
@@ -625,7 +627,7 @@ class StreamingSttClient internal constructor(
             val statusCallback = requireNotNull(onStatusCallback) { "实时预览尚未启动" }
             val errorCallback = requireNotNull(onErrorCallback) { "实时预览尚未启动" }
             val activeMeetingId = meetingId
-            val activeApiToken = apiToken
+            val activeApiToken = apiTokenOverride?.takeIf { it.isNotBlank() } ?: apiToken
             val activeLanguage = language
             val providerFailureCallback = onProviderFailureCallback
             require(activeMeetingId.isNotBlank()) { "实时预览会话无效" }

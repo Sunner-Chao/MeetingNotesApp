@@ -18,11 +18,14 @@ import com.oa.automation.domain.model.AccountProfile
 import com.oa.automation.domain.model.AccountSessionCredentials
 import com.oa.automation.domain.model.AuthSession
 import com.oa.automation.domain.model.CloudApiFormat
+import com.oa.automation.domain.model.CustomTemplateLayout
 import com.oa.automation.domain.model.ClaudeReasoningEffort
 import com.oa.automation.domain.model.CodexReasoningEffort
 import com.oa.automation.domain.model.LLMConfig
 import com.oa.automation.domain.model.LLMEngineType
+import com.oa.automation.domain.model.MeetingMode
 import com.oa.automation.domain.model.PresetReportTemplate
+import com.oa.automation.domain.model.ProductEdition
 import com.oa.automation.domain.model.ReportTemplate
 import com.oa.automation.domain.model.ReportTemplateConfig
 import com.oa.automation.domain.model.STTConfig
@@ -154,6 +157,7 @@ class ConfigDataStore(private val context: Context) {
         private val REPORT_TEMPLATE_IS_CUSTOM = stringPreferencesKey("report_template_is_custom")
         private val TEMPLATE_WORKFLOW_REDUCED_MOTION = booleanPreferencesKey("template_workflow_reduced_motion")
         private val TEMPLATE_WORKFLOW_SEEN = stringSetPreferencesKey("template_workflow_seen")
+        private val CUSTOM_TEMPLATE_LAYOUT = stringPreferencesKey("custom_template_layout")
         private val STT_DEFAULT_ENDPOINT_MIGRATED = stringPreferencesKey("stt_default_endpoint_migrated")
         private val DEFAULT_PROFILE_VERSION = stringPreferencesKey("default_profile_version")
         private val LOGGED_IN_USERNAME = stringPreferencesKey("logged_in_username")
@@ -214,6 +218,16 @@ class ConfigDataStore(private val context: Context) {
                 "主持串场、主题演讲与问答脉络"
             ),
             ReportTemplateAsset(
+                "论坛·共识会",
+                "论坛会议.md",
+                "议程脉络、发言归属与共识提炼"
+            ),
+            ReportTemplateAsset(
+                "自定义会议",
+                "自定义会议.md",
+                "拖拽编排模块，组合专属模板"
+            ),
+            ReportTemplateAsset(
                 "研学考察",
                 "参观考察游记.md",
                 "分段旅程、图文游记与阶段续写"
@@ -225,6 +239,9 @@ class ConfigDataStore(private val context: Context) {
             "头脑风暴" to "通用会议",
             "讲座论坛纪要" to "论坛会议",
             "论坛会议纪要" to "论坛会议",
+            "论坛共识会" to "论坛·共识会",
+            "聚智·论道会" to "论坛·共识会",
+            "聚智论道会" to "论坛·共识会",
             "孔爵团队版表格会议纪要" to "项目管理",
             "项目管理纪要" to "项目管理",
             "参观考察（游记）" to "研学考察",
@@ -258,7 +275,7 @@ class ConfigDataStore(private val context: Context) {
      * Get app configuration as Flow
      */
     val appConfigFlow: Flow<AppConfig> = context.dataStore.data.map { preferences ->
-        val defaultTemplate = loadPresetTemplates().firstOrNull()
+        val defaultTemplate = defaultPresetTemplate()
         val rawSavedTemplateName = preferences[REPORT_TEMPLATE_NAME]
         val savedTemplateIsCustom = preferences[REPORT_TEMPLATE_IS_CUSTOM]
             ?.toBooleanStrictOrNull() ?: false
@@ -295,12 +312,23 @@ class ConfigDataStore(private val context: Context) {
             else -> savedTemplateName
         }
 
-        val templateContent = when {
+        val resolvedTemplateContent = when {
             migratedCoreTemplate != null -> migratedCoreTemplate.content
             migratedVipTemplate != null -> migratedVipTemplate.content
             isRetiredPreset -> defaultTemplate?.content ?: ""
             preferences[REPORT_TEMPLATE_CONTENT].isNullOrBlank() -> defaultTemplate?.content ?: ""
             else -> preferences[REPORT_TEMPLATE_CONTENT] ?: ""
+        }
+        // The 自定义会议 preset is assembled from the user's dragged module
+        // arrangement rather than the shipped asset, so the report follows the
+        // exact order and selection shown in the editor. A user-authored custom
+        // template is never rewritten.
+        val templateContent = if (
+            !savedTemplateIsCustom && templateName == MeetingMode.CUSTOM.templateName
+        ) {
+            CustomTemplateLayout.deserialize(preferences[CUSTOM_TEMPLATE_LAYOUT]).toPromptDocument()
+        } else {
+            resolvedTemplateContent
         }
         val savedSttEngineName = preferences[STT_ENGINE_TYPE]
         val rawSavedSttEndpoint = preferences[STT_LOCAL_ENDPOINT]
@@ -414,6 +442,16 @@ class ConfigDataStore(private val context: Context) {
         )
     }
 
+    val customTemplateLayoutFlow: Flow<CustomTemplateLayout> = context.dataStore.data.map { preferences ->
+        CustomTemplateLayout.deserialize(preferences[CUSTOM_TEMPLATE_LAYOUT])
+    }
+
+    suspend fun updateCustomTemplateLayout(layout: CustomTemplateLayout) {
+        context.dataStore.edit { preferences ->
+            preferences[CUSTOM_TEMPLATE_LAYOUT] = layout.serialize()
+        }
+    }
+
     val appThemeModeFlow: Flow<AppThemeMode> = context.dataStore.data.map { preferences ->
         preferences[APP_THEME_MODE]?.let { saved ->
             runCatching { AppThemeMode.valueOf(saved) }.getOrNull()
@@ -462,6 +500,16 @@ class ConfigDataStore(private val context: Context) {
                     )
                 }
             }.getOrNull()
+        }
+    }
+
+    /** Light Enjoyment starts new configuration from its first selectable template. */
+    private fun defaultPresetTemplate(): PresetReportTemplate? {
+        val templates = loadPresetTemplates()
+        return if (ProductEdition.current == ProductEdition.LIGHT_ENJOY) {
+            templates.firstOrNull { it.name == "宣贯·落实会" } ?: templates.firstOrNull()
+        } else {
+            templates.firstOrNull()
         }
     }
 
@@ -612,7 +660,7 @@ class ConfigDataStore(private val context: Context) {
     }
 
     private suspend fun migrateDefaultSttEndpoint() {
-        val defaultReportTemplate = loadPresetTemplates().firstOrNull()
+        val defaultReportTemplate = defaultPresetTemplate()
         val vipTemplatesByName = loadVipTemplates().associateBy { it.name }
         context.dataStore.edit { preferences ->
             val profileVersion = preferences[DEFAULT_PROFILE_VERSION]?.toIntOrNull() ?: 0
@@ -773,6 +821,21 @@ class ConfigDataStore(private val context: Context) {
                     preferences[STT_LOCAL_ENDPOINT] = STTConfig.DEFAULT_LOCAL_ENDPOINT
                 }
             }
+            if (profileVersion < 15 && !BuildConfig.DEBUG) {
+                // The local model is now reachable over IPv4 through the VPS's
+                // /stt-local WireGuard relay. Installs still pointing at the
+                // bare public host (IPv6-only path) move to the relay path so
+                // mobile-data users get the local model instead of a failure.
+                val savedEndpoint = preferences[STT_LOCAL_ENDPOINT]?.trim()?.trimEnd('/').orEmpty()
+                val defaultHost = runCatching { URI(STTConfig.DEFAULT_LOCAL_ENDPOINT).host }.getOrNull().orEmpty()
+                val savedHost = runCatching { URI(savedEndpoint).host }.getOrNull().orEmpty()
+                val savedPath = runCatching { URI(savedEndpoint).path }.getOrNull().orEmpty().trimEnd('/')
+                if (savedEndpoint.isBlank() ||
+                    (savedHost.equals(defaultHost, ignoreCase = true) && savedPath.isEmpty())
+                ) {
+                    preferences[STT_LOCAL_ENDPOINT] = STTConfig.DEFAULT_LOCAL_ENDPOINT
+                }
+            }
             if (profileVersion < 14) {
                 val savedEngine = preferences[STT_ENGINE_TYPE]
                 val savedEndpoint = preferences[STT_LOCAL_ENDPOINT]
@@ -886,7 +949,7 @@ class ConfigDataStore(private val context: Context) {
     }
 
     suspend fun resetReportTemplate() {
-        val defaultTemplate = loadPresetTemplates().firstOrNull()
+        val defaultTemplate = defaultPresetTemplate()
         context.dataStore.edit { preferences ->
             if (defaultTemplate == null) {
                 preferences.remove(REPORT_TEMPLATE_NAME)

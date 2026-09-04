@@ -335,6 +335,47 @@ class AgentGateway:
             expires_at=expires_at,
         )
 
+    def authenticate_account_principal(
+        self,
+        *,
+        user_id: str,
+        username: str,
+        role: str,
+    ) -> AgentPrincipal:
+        """Build the internal Agent principal from a validated account session.
+
+        Account sessions are the public client credential.  The user-scoped
+        ``agent_tokens`` row remains an internal compatibility record so the
+        existing quota, task ownership, and billing code keep one source of
+        truth.  No Agent secret is exposed or required by this path.
+        """
+        clean_user_id = user_id.strip()
+        if not clean_user_id:
+            raise AgentAuthError("Account user identity is invalid")
+        token_id = f"user:{clean_user_id}"
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id, label, enabled, request_limit, requests_used,
+                       allowed_providers, expires_at
+                FROM agent_tokens WHERE id = ?
+                """,
+                (token_id,),
+            ).fetchone()
+        if row is None or not row["enabled"]:
+            raise AgentAuthError("Account Agent principal is not initialized")
+        expires_at = row["expires_at"]
+        if expires_at is not None and expires_at <= int(time.time()):
+            raise AgentAuthError("Account session has expired")
+        return AgentPrincipal(
+            token_id=token_id,
+            label=row["label"] or f"{username} ({role})",
+            request_limit=row["request_limit"],
+            requests_used=row["requests_used"],
+            allowed_providers=self._parse_providers(row["allowed_providers"]),
+            expires_at=expires_at,
+        )
+
     def quota(self, principal: AgentPrincipal) -> dict:
         with self._connect() as conn:
             row = conn.execute(

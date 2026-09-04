@@ -328,7 +328,7 @@ private fun WorkflowStepRail(
     }
 }
 
-private fun workflowIcon(key: String): ImageVector = when (key) {
+internal fun workflowIcon(key: String): ImageVector = when (key) {
     "listen" -> Icons.Default.Mic
     "split" -> Icons.Default.Settings
     "check", "done" -> Icons.Default.Check

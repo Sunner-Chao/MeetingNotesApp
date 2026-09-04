@@ -59,7 +59,6 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Cloud
-import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FolderOpen
@@ -135,6 +134,7 @@ import com.oa.automation.R
 import com.oa.automation.domain.model.MeetingAttachment
 import com.oa.automation.domain.model.ProductEdition
 import com.oa.automation.domain.model.PresetReportTemplate
+import com.oa.automation.domain.model.CustomTemplateLayout
 import com.oa.automation.domain.model.StageDraftStatus
 import com.oa.automation.domain.model.StageDraftVersion
 import com.oa.automation.domain.model.JourneyEdition
@@ -144,7 +144,6 @@ import com.oa.automation.domain.model.PublishedPostStatus
 import com.oa.automation.domain.model.STTEngineType
 import com.oa.automation.domain.model.STTLanguage
 import com.oa.automation.infrastructure.audio.ArchivedMeetingAudio
-import com.oa.automation.infrastructure.textimport.ExternalTextSource
 import com.oa.automation.ui.component.ProcessingStatusRow
 import com.oa.automation.ui.navigation.ProductEntryPolicy
 import com.oa.automation.ui.theme.LocalAppIsDarkTheme
@@ -292,10 +291,9 @@ internal fun RecordingReferenceScaffold(
     templateWorkflowReducedMotion: Boolean,
     templateWorkflowSeen: Set<String>,
     onTemplateWorkflowSeen: (String) -> Unit,
+    onCustomTemplateLayoutChange: (CustomTemplateLayout) -> Unit,
     onSttEngineSelected: (STTEngineType) -> Unit,
     onSttLanguageSelected: (STTLanguage) -> Unit,
-    onSwitchToVoice: () -> Unit,
-    onSwitchToImport: () -> Unit,
     onStartRecording: () -> Unit,
     onTogglePause: () -> Unit,
     onAddMarker: () -> Unit,
@@ -322,10 +320,7 @@ internal fun RecordingReferenceScaffold(
     onCancelTranscription: () -> Unit,
     onCancelReport: () -> Unit,
     onTextChange: (String) -> Unit,
-    onPasteText: () -> Unit,
     onPickExternalFile: () -> Unit,
-    onImportTextFile: () -> Unit,
-    onImportAudioFile: () -> Unit,
     onGenerateFromImport: () -> Unit,
     onTakePhoto: () -> Unit,
     onPickImages: () -> Unit,
@@ -597,6 +592,7 @@ internal fun RecordingReferenceScaffold(
                     templateWorkflowReducedMotion = templateWorkflowReducedMotion,
                     templateWorkflowSeen = templateWorkflowSeen,
                     onTemplateWorkflowSeen = onTemplateWorkflowSeen,
+                    onCustomTemplateLayoutChange = onCustomTemplateLayoutChange,
                     onStartRecording = onStartRecording,
                     onTogglePause = onTogglePause,
                     onAddMarker = onAddMarker,
@@ -622,10 +618,7 @@ internal fun RecordingReferenceScaffold(
                     templateWorkflowSeen = templateWorkflowSeen,
                     onTemplateWorkflowSeen = onTemplateWorkflowSeen,
                     onTextChange = onTextChange,
-                    onPasteText = onPasteText,
                     onPickExternalFile = onPickExternalFile,
-                    onImportTextFile = onImportTextFile,
-                    onImportAudioFile = onImportAudioFile,
                     onCancelTranscription = onCancelTranscription,
                     onCancelReport = onCancelReport,
                     onDismissError = onDismissError
@@ -1178,10 +1171,7 @@ private fun ImportRecordingContent(
     templateWorkflowSeen: Set<String>,
     onTemplateWorkflowSeen: (String) -> Unit,
     onTextChange: (String) -> Unit,
-    onPasteText: () -> Unit,
     onPickExternalFile: () -> Unit,
-    onImportTextFile: () -> Unit,
-    onImportAudioFile: () -> Unit,
     onCancelTranscription: () -> Unit,
     onCancelReport: () -> Unit,
     onDismissError: () -> Unit
@@ -1223,12 +1213,8 @@ private fun ImportRecordingContent(
             importStatus = uiState.textImportStatus,
             importedAudioDisplayName = uiState.importedAudioDisplayName,
             isAudioBusy = uiState.isImportingAudio || uiState.isTranscribing,
-            externalSources = uiState.externalTextSources,
             onTextChange = onTextChange,
-            onPaste = onPasteText,
             onPickExternalFile = onPickExternalFile,
-            onImportTextFile = onImportTextFile,
-            onImportAudioFile = onImportAudioFile,
             modifier = Modifier.weight(1f)
         )
         if (uiState.isImportingAudio || uiState.isTranscribing) {
@@ -2037,15 +2023,10 @@ private fun ReferenceTextInputPanel(
     importStatus: String,
     importedAudioDisplayName: String,
     isAudioBusy: Boolean,
-    externalSources: List<ExternalTextSource>,
     onTextChange: (String) -> Unit,
-    onPaste: () -> Unit,
     onPickExternalFile: () -> Unit,
-    onImportTextFile: () -> Unit,
-    onImportAudioFile: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var importExpanded by remember { mutableStateOf(false) }
     val isDark = LocalAppIsDarkTheme.current
     Surface(
         modifier = modifier
@@ -2065,58 +2046,11 @@ private fun ReferenceTextInputPanel(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("导入内容", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
-                Box {
-                    TextButton(onClick = { importExpanded = true }) {
+                TextButton(onClick = onPickExternalFile) {
                         Icon(Icons.Default.Apps, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(4.dp))
                         Text("其他应用打开", fontSize = 11.sp)
-                    }
-                    DropdownMenu(expanded = importExpanded, onDismissRequest = { importExpanded = false }) {
-                        externalSources.forEach { source ->
-                            DropdownMenuItem(
-                                text = { Text("${source.label}文件") },
-                                leadingIcon = { Icon(Icons.Default.FolderOpen, contentDescription = null) },
-                                onClick = {
-                                    importExpanded = false
-                                    onPickExternalFile()
-                                }
-                            )
-                        }
-                        if (externalSources.isNotEmpty()) HorizontalDivider()
-                        DropdownMenuItem(
-                            text = { Text("本地文本文件") },
-                            leadingIcon = { Icon(Icons.Default.FolderOpen, contentDescription = null) },
-                            onClick = {
-                                importExpanded = false
-                                onImportTextFile()
-                            }
-                        )
-                    }
                 }
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                ImportSourceButton(
-                    text = "粘贴",
-                    icon = Icons.Default.ContentPaste,
-                    onClick = onPaste,
-                    modifier = Modifier.weight(1f)
-                )
-                ImportSourceButton(
-                    text = "文本文件",
-                    icon = Icons.Default.FolderOpen,
-                    onClick = onImportTextFile,
-                    modifier = Modifier.weight(1f)
-                )
-                ImportSourceButton(
-                    text = "音频文件",
-                    icon = Icons.Default.Headphones,
-                    enabled = !isAudioBusy,
-                    onClick = onImportAudioFile,
-                    modifier = Modifier.weight(1f)
-                )
             }
             if (importedAudioDisplayName.isNotBlank()) {
                 Surface(
@@ -2188,7 +2122,7 @@ private fun ReferenceTextInputPanel(
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f),
-                    placeholder = { Text("粘贴文字，或选择文本/音频文件") },
+                    placeholder = { Text("输入文字，或从设备导入") },
                     shape = RoundedCornerShape(11.dp),
                     keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences)
                 )
@@ -2208,45 +2142,6 @@ private fun ReferenceTextInputPanel(
                     fontSize = 10.sp
                 )
             }
-        }
-    }
-}
-
-@Composable
-private fun ImportSourceButton(
-    text: String,
-    icon: ImageVector,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-    enabled: Boolean = true
-) {
-    Surface(
-        onClick = onClick,
-        enabled = enabled,
-        modifier = modifier.height(42.dp),
-        shape = RoundedCornerShape(10.dp),
-        color = if (enabled) RecordingSurfaceRaised else RecordingSurfaceRaised.copy(alpha = 0.55f),
-        border = BorderStroke(1.dp, RecordingBorder)
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 7.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.Center
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                modifier = Modifier.size(16.dp),
-                tint = if (enabled) RecordingPurple else RecordingMuted
-            )
-            Spacer(Modifier.width(4.dp))
-            Text(
-                text = text,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                fontSize = 11.sp,
-                color = if (enabled) RecordingInk else RecordingMuted
-            )
         }
     }
 }

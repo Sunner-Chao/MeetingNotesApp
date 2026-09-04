@@ -50,6 +50,30 @@ class AgentGatewayEngineTest {
     }
 
     @Test
+    fun prefersAccountSessionOverLegacyAgentToken() = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setBody("{\"text\":\"ok\"}"))
+            val config = LLMConfig(
+                agentEndpoint = server.url("/").toString(),
+                agentAccessToken = "legacy-agent-token"
+            )
+
+            val result = AgentGatewayEngine(config, accountAccessToken = "mn_user_session-token")
+                .generateReport(
+                    transcript = "会议内容",
+                    template = ReportTemplateConfig()
+                )
+
+            assertTrue(result.isSuccess)
+            val request = server.takeRequest(5, TimeUnit.SECONDS)
+            assertEquals(
+                "Bearer mn_user_session-token",
+                request?.getHeader("Authorization")
+            )
+        }
+    }
+
+    @Test
     fun sendsOrderedAttachmentManifestWithCaptureMetadata() = runBlocking {
         val image = File.createTempFile("visit-entrance", ".jpg").apply {
             writeBytes(byteArrayOf(1, 2, 3))

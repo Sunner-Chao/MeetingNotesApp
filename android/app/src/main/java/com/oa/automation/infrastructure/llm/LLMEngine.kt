@@ -31,7 +31,8 @@ class LLMEngine(
     ): ReportData {
         val appConfig = configDataStore.appConfigFlow.first()
         val config = appConfig.llmConfig
-        val engine = LLMReportEngine.fromConfig(config)
+        val accountAccessToken = configDataStore.authSessionFlow.first()?.accessToken
+        val engine = LLMReportEngine.fromConfig(config, accountAccessToken)
 
         val usageContext = meetingId?.takeIf { it.isNotBlank() }?.let {
             AgentUsageContext(it, usageKey?.takeIf(String::isNotBlank) ?: java.util.UUID.randomUUID().toString())
@@ -58,7 +59,8 @@ class LLMEngine(
         attachments: List<AgentAttachment> = emptyList()
     ): Result<String> {
         val config = configDataStore.appConfigFlow.first().llmConfig
-        val engine = LLMReportEngine.fromConfig(config)
+        val accountAccessToken = configDataStore.authSessionFlow.first()?.accessToken
+        val engine = LLMReportEngine.fromConfig(config, accountAccessToken)
         return engine.chat(messages, attachments)
     }
 

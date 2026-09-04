@@ -64,4 +64,23 @@ class AgentQuotaServiceTest {
         assertTrue(result.isFailure)
         assertEquals("访问令牌无效或已过期", result.exceptionOrNull()?.message)
     }
+
+    @Test
+    fun fetchPrefersAccountSessionOverLegacyAgentToken() = runBlocking {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody("{\"label\":\"小张三\",\"request_limit\":10,\"requests_used\":0,\"requests_remaining\":10,\"allowed_providers\":[\"codex-cli\"],\"expires_at\":1893456000}")
+        )
+        val config = LLMConfig(
+            agentEndpoint = server.url("/api/agent").toString().trimEnd('/'),
+            agentAccessToken = "legacy-agent-token"
+        )
+
+        val result = AgentQuotaService().fetch(config, "mn_user_session-token").getOrThrow()
+
+        assertEquals("小张三", result.label)
+        assertEquals("Bearer mn_user_session-token", server.takeRequest().getHeader("Authorization"))
+    }
 }

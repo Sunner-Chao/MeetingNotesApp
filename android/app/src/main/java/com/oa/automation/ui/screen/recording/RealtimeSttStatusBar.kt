@@ -98,7 +98,9 @@ internal fun realtimeSttStatusPresentation(
     )
     RealtimeSttRouteState.CLOUD_FALLBACK_ACTIVE -> RealtimeSttStatusPresentation(
         title = "云端识别已接管",
-        detail = "本地连接中断 · 录音未中断",
+        // The takeover is remembered for this meeting: pausing, resuming and
+        // reopening all stay on cloud, so say so rather than implying a glitch.
+        detail = "录音未中断 · 本次会议继续使用云端",
         tone = RealtimeSttTone.CLOUD,
         inProgress = false,
         icon = Icons.Default.Cloud

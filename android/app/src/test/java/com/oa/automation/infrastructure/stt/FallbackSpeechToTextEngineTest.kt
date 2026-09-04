@@ -6,7 +6,6 @@ import com.oa.automation.domain.model.STTEngineType
 import java.io.File
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -56,21 +55,33 @@ class FallbackSpeechToTextEngineTest {
     }
 
     @Test
-    fun `stream session remains bound to the service that created it`() = runBlocking {
-        val local = FakeEngine(Result.success("local"), STTEngineType.FASTER_WHISPER)
-        val cloud = FakeEngine(Result.success("cloud"), STTEngineType.TENCENT_HYBRID)
+    fun `stream session falls back to cloud when local endpoint cannot finalize it`() = runBlocking {
+        val local = FakeEngine(
+            Result.failure(IllegalStateException("local session not found")),
+            STTEngineType.FASTER_WHISPER
+        )
+        val cloud = FakeEngine(
+            Result.success("cloud"),
+            STTEngineType.TENCENT_HYBRID,
+            streamResult = Result.success("cloud")
+        )
         val engine = FallbackSpeechToTextEngine(local, cloud)
 
-        val result = engine.transcribeStreamSession("a".repeat(32))
+        val progress = mutableListOf<ProcessingProgress>()
+        val result = engine.transcribeStreamSession("a".repeat(32), progress::add)
 
-        assertFalse(result.isSuccess)
+        assertEquals("cloud", result.getOrThrow())
         assertEquals(1, local.streamCalls)
-        assertEquals(0, cloud.streamCalls)
+        assertEquals(1, cloud.streamCalls)
+        assertTrue(progress.any { it.stage.contains("云端兜底") })
     }
 
     private class FakeEngine(
         private val result: Result<String>,
-        private val type: STTEngineType
+        private val type: STTEngineType,
+        private val streamResult: Result<String> = Result.failure(
+            UnsupportedOperationException("no stream finalization")
+        )
     ) : SpeechToTextEngine {
         var transcribeCalls = 0
         var streamCalls = 0
@@ -92,7 +103,7 @@ class FallbackSpeechToTextEngineTest {
             onProgress: (ProcessingProgress) -> Unit
         ): Result<String> {
             streamCalls += 1
-            return Result.failure(UnsupportedOperationException("no stream finalization"))
+            return streamResult
         }
 
         override fun getEngineType(): STTEngineType = type

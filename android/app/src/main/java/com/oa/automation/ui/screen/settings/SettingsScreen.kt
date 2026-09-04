@@ -286,6 +286,7 @@ fun SettingsScreen(
                     ) {
                         SttDetailSheetContent(
                             config = uiState.appConfig.sttConfig,
+                            isAccountSessionActive = uiState.hasAccountSession,
                             isTesting = uiState.isTestingSTT,
                             isSwitching = uiState.isSwitchingSTT,
                             isLoadingTencentAsrPolicy = uiState.isLoadingTencentAsrPolicy,
@@ -310,6 +311,7 @@ fun SettingsScreen(
                     ) {
                         LlmDetailSheetContent(
                             config = uiState.appConfig.llmConfig,
+                            isAccountSessionActive = uiState.hasAccountSession,
                             isTesting = uiState.isTestingLLM,
                             onEngineTypeChange = viewModel::updateLLMEngineType,
                             onAgentEndpointChange = viewModel::updateAgentEndpoint,

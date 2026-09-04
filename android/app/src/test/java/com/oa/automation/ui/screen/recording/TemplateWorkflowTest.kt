@@ -8,7 +8,7 @@ import org.junit.Test
 class TemplateWorkflowTest {
     @Test
     fun knownTemplatesExposeFourStructuredSteps() {
-        listOf("宣贯·落实会", "推演·进度会", "启迪·共创会", "博弈·洽谈会", "复盘·分析会", "敏捷·站会")
+        listOf("宣贯·落实会", "推演·进度会", "启迪·共创会", "博弈·洽谈会", "复盘·分析会", "敏捷·站会", "论坛·共识会", "自定义会议")
             .forEach { name ->
                 val workflow = templateWorkflowFor(name)
                 assertEquals(name, workflow.templateName)
@@ -17,6 +17,19 @@ class TemplateWorkflowTest {
                 assertTrue(workflow.output.isNotBlank())
                 assertTrue(workflow.steps.all { it.title.isNotBlank() && it.detail.isNotBlank() })
             }
+    }
+
+    @Test
+    fun customWorkflowExplainsTheDragAndDropBuilder() {
+        val workflow = templateWorkflowFor("自定义会议")
+
+        assertEquals(listOf("选择模块", "拖拽排序", "按需取舍", "形成纪要"), workflow.steps.map { it.title })
+        assertTrue(workflow.goal.contains("按需组合模块"))
+        // The builder ships, so the copy must promise the user's own order
+        // rather than a future release.
+        assertTrue(workflow.steps[1].detail.contains("拖动"))
+        assertTrue(workflow.output.contains("你编排的模块顺序"))
+        assertTrue(workflow.confirmation.contains("即时保存"))
     }
 
     @Test

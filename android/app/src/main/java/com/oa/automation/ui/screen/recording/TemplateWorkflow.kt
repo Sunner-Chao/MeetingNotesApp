@@ -101,6 +101,32 @@ internal fun templateWorkflowFor(templateName: String): TemplateWorkflow {
             output = "站会摘要 · 阻塞项 · 今日承诺",
             confirmation = "会后只检查阻塞项是否有人接手"
         )
+        normalized.contains("论坛") || normalized.contains("共识") || normalized.contains("聚智") -> TemplateWorkflow(
+            templateName = normalized,
+            goal = "串联主持、演讲、圆桌与问答的完整脉络",
+            aiFocus = "按议程和发言人组织观点、案例与现场问题",
+            steps = listOf(
+                TemplateWorkflowStep("对齐议程", "记录主持串场与主题切换", "timeline"),
+                TemplateWorkflowStep("保留演讲", "整理主讲观点、论据和案例", "listen"),
+                TemplateWorkflowStep("梳理讨论", "区分圆桌分歧、共识与提问", "cluster"),
+                TemplateWorkflowStep("形成共识纪要", "输出名录与完整讨论脉络", "output")
+            ),
+            output = "议程时间线 · 发言要点 · 问答脉络",
+            confirmation = "会后核对人员称谓和待确认信息"
+        )
+        normalized == "自定义会议" -> TemplateWorkflow(
+            templateName = normalized,
+            goal = "按需组合模块，形成贴合本次会议的纪要",
+            aiFocus = "保持模块顺序，只保留有事实依据的内容",
+            steps = listOf(
+                TemplateWorkflowStep("选择模块", "按会议需要启用信息、讨论、决策等模块", "filter"),
+                TemplateWorkflowStep("拖拽排序", "长按模块上下拖动，编排成自己的顺序", "timeline"),
+                TemplateWorkflowStep("按需取舍", "省略没有内容支撑的模块", "check"),
+                TemplateWorkflowStep("形成纪要", "输出本次组合后的结构化正文", "output")
+            ),
+            output = "按你编排的模块顺序生成的会议纪要",
+            confirmation = "编排会即时保存，下次录音继续沿用"
+        )
         else -> TemplateWorkflow(
             templateName = normalized.ifBlank { "通用会议" },
             goal = "把讨论整理成可阅读、可执行的纪要",

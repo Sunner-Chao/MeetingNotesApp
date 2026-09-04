@@ -8,7 +8,7 @@ import org.junit.Test
 
 class ReportTemplateAssetContractTest {
     @Test
-    fun shipsFourCanonicalMeetingCategoriesAndKeepsProfessionalLayouts() {
+    fun shipsCanonicalMeetingAssetsAndKeepsProfessionalLayouts() {
         val assets = assetsDirectory()
         val markdownFiles = assets.listFiles { file -> file.isFile && file.extension == "md" }
             ?.associateBy { it.name }
@@ -18,6 +18,7 @@ class ReportTemplateAssetContractTest {
             "通用会议.md",
             "孔爵团队版表格会议纪要.md",
             "论坛会议.md",
+            "自定义会议.md",
             "参观考察游记.md"
         )))
         val generalTemplate = markdownFiles.getValue("通用会议.md").readText()
@@ -36,6 +37,20 @@ class ReportTemplateAssetContractTest {
         assertTrue(forumTemplate.contains("主题演讲"))
         assertTrue(forumTemplate.contains("圆桌讨论"))
         assertTrue(forumTemplate.contains("现场问答"))
+        val customTemplate = markdownFiles.getValue("自定义会议.md").readText()
+        assertTrue(customTemplate.contains("按需组合模块"))
+        // The asset is now only the un-arranged default; the shipped editor
+        // supplies the real order, so the copy must not promise a future one.
+        assertFalse(customTemplate.contains("拖拽编排稍后开放"))
+        assertTrue(customTemplate.contains("拖拽编排顺序与启停"))
+        assertTrue(customTemplate.contains("保留转写内容能够支撑的模块"))
+        // Every module the editor can enable must exist in the fallback asset.
+        CustomTemplateModule.entries.forEach { module ->
+            assertTrue(
+                "自定义会议.md is missing module ${module.title}",
+                customTemplate.contains(module.title)
+            )
+        }
         val visitTemplate = markdownFiles.getValue("参观考察游记.md").readText()
         assertTrue(visitTemplate.contains("第一站｜"))
         assertTrue(visitTemplate.contains("体验画面 + 讲解精要 + 互动发现"))

@@ -44,6 +44,11 @@ init-server.bat
 start-all.bat
 ```
 
+Windows 本地启动会先读取被 Git 忽略的 `server/.env.remote` 认证快照，再应用
+`stt-service/.env.windows-local.bat` 的本机模型与 GPU 参数。STT 和 Backend 因此共享
+同一账户签名配置；不要把快照复制到仓库或写入 APK。需要单独启动时，优先使用
+`stt-service/start-windows-local.bat` 和 `backend-service/start.bat`，两者会使用同样的加载规则。
+
 单独启动 STT：
 
 ```bat

@@ -1,9 +1,8 @@
 {
-  "version_code": 10258,
-  "version_name": "1.2.58",
+  "version_code": 10259,
+  "version_name": "1.2.59",
   "mandatory": false,
-  "release_notes": "修复断线重连后的实时转录时间轴与说话人编号一致性；修正续录记录排序和历史说话人前缀兼容，提升会议转写恢复可靠性。",
-  "published_at": "2026-09-01T14:25:32+08:00",
-  "sha256": "56e848c369944414662de80ad863e1aacf5f9cbe5b2fc8db1a4cfc427c344ab6",
-  "apk_filename": "ZhiWuBen-Android-10258.apk"
+  "release_notes": "精简顷刻成稿导入入口；修复实时会话最终化在本地不可用时无法切换云端的问题；提升导入音频转写链路的可靠性。",
+  "published_at": "2026-09-04T13:20:00+08:00",
+  "apk_filename": "ZhiWuBen-Android-10259.apk"
 }

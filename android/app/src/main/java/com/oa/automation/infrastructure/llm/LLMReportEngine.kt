@@ -52,9 +52,9 @@ interface LLMReportEngine {
      * Create engine from configuration
      */
     companion object {
-        fun fromConfig(config: LLMConfig): LLMReportEngine {
+        fun fromConfig(config: LLMConfig, accountAccessToken: String? = null): LLMReportEngine {
             return when (config.engineType) {
-                LLMEngineType.AGENT_GATEWAY -> AgentGatewayEngine(config)
+                LLMEngineType.AGENT_GATEWAY -> AgentGatewayEngine(config, accountAccessToken)
                 LLMEngineType.LOCAL_OLLAMA -> OllamaEngine(config)
                 LLMEngineType.CLOUD_API -> CloudLLMEngine(config)
             }
@@ -120,7 +120,7 @@ object ReportPromptTemplates {
     const val SYSTEM_PROMPT = """你是一个专业的 AI 文档生成助手，专门负责将录音转写、现场口述或原始记录整理成规范文档。
 
 你的职责：
-1. 依据用户选择的会议类型和模板生成文档；通用会议允许按内容智能调整章节
+1. 依据用户选择的会议类型和模板生成文档；通用会议和自定义会议允许按内容智能调整章节
 2. 从原始记录中提取关键信息、事实、数据和结论
 3. 会议纪要场景下识别决策事项、行动项和参会人员
 4. 工程/建筑日志场景下整理日期、天气、施工生产、设计工作、质量、安全、材料机具、验收、停工和加班等现场记录
@@ -129,7 +129,7 @@ object ReportPromptTemplates {
 7. 研学正文使用短段落和轻量标题，减少表格和连续“待确认”；不得虚构天气、心情、气味、路线、价格、开放时间、人物身份或评价
 8. 研学考察不得混入负责人、截止时间、验收标准、优先级、行动项、风险清单等项目管理字段；讲解人员只记录角色、姓名和单位，不推断职务
 9. 研学图片章节使用“照片集锦”；正文配图使用单独一行的“[照片：图 N｜事实型图注]”锚点，并且只能引用实际存在的图号
-10. 论坛会议按主持串场、时间线、主题演讲、圆桌讨论和现场问答组织长篇内容，严格区分主持人、嘉宾与提问者
+10. 论坛·共识会（兼容旧“论坛会议”）按主持串场、时间线、主题演讲、圆桌讨论和现场问答组织长篇内容，严格区分主持人、嘉宾与提问者
 11. 会议模板如存在可核对的语速变化、长停顿、打断、沉默或重复强调，必须单独输出“## 可观察互动信号”章节；每行使用“现象 | 证据或时间轴 | 来源发言人（如能确认）”格式。没有明确证据时不要生成该章节，也不要输出情绪、意图或人格标签
 
 输出格式要求：
@@ -189,10 +189,12 @@ object ReportPromptTemplates {
         val documentKind = reportDocumentKind(template.selectedName)
         val documentName = documentKind.documentTitle
         val sourceName = documentKind.sourceTitle
-        val structureRule = if (template.selectedName == "通用会议") {
-            "先判断行政会议、头脑风暴、杂谈、讲座沙龙、经营讨论或混合型场景，再按真实内容增删、合并和重排章节；不要输出判断过程。"
-        } else {
-            "保留模板的标题层级、表格和章节结构。"
+        val structureRule = when (template.selectedName) {
+            "通用会议" ->
+                "先判断行政会议、头脑风暴、杂谈、讲座沙龙、经营讨论或混合型场景，再按真实内容增删、合并和重排章节；不要输出判断过程。"
+            "自定义会议" ->
+                "严格按模板中用户编排的模块顺序组织内容，不要新增、重排或重命名模块；只保留转写文本能够支撑的模块，没有内容的模块直接省略，不得补造事实。"
+            else -> "保留模板的标题层级、表格和章节结构。"
         }
         val meetingMode = MeetingMode.fromTemplateName(template.selectedName)
         val interactionSignalRule = if (meetingMode in setOf(
@@ -251,12 +253,18 @@ object ReportPromptTemplates {
                 - 阻塞项突出责任人、协同人、解除条件和预计时间；短会不制造额外行动项。
             """.trimIndent()
             MeetingMode.FORUM -> """
-                论坛会议长篇整理：
+                论坛·共识会长篇整理（兼容旧“论坛会议”）：
                 - 按真实时间、主持转场、议程变化和发言人切换分段，不得把数小时内容过度压缩。
                 - 区分主持人、主讲人、圆桌嘉宾和提问者，姓名不明确时写“待确认”。
                 - 保留演讲论据、数据、案例、圆桌分歧和问答对应关系。
                 - 在论坛信息之后、主体内容之前输出独立的“参会人员名录”表格，列为“姓名/称谓、单位、角色”，供客户端生成照片墙通讯录。
                 - 名录只填写原文明确出现的人员；姓名不明确者不加入名录，不输出占位行，不从照片推断身份，不在后文重复整段名录。
+            """.trimIndent()
+            MeetingMode.CUSTOM -> """
+                自定义会议：
+                - 依照模板中的可选模块顺序组织正文；仅在转写内容有对应事实、讨论或结论时保留该模块。
+                - 没有证据的模块直接省略，不用“未提及”填充整段，也不得为凑齐模板编造议题、决定或行动项。
+                - 拖拽选择和重排模块的能力保留给后续版本，当前按随附模板的预设顺序生成。
             """.trimIndent()
             MeetingMode.STUDY -> """
                 研学考察游记式整理：
