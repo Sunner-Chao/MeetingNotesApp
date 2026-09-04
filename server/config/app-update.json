@@ -1,8 +1,8 @@
 {
-  "version_code": 10261,
-  "version_name": "1.2.61",
+  "version_code": 10262,
+  "version_name": "1.2.62",
   "mandatory": false,
-  "release_notes": "移除顷刻成稿中间重复导入按钮，统一为系统文件选择；增强导入转写与即刻倾听的本地优先、腾讯云兜底链路，切换时保留上下文、说话人设置与待发送音频。",
-  "published_at": "2026-09-04T16:27:00+08:00",
-  "apk_filename": "ZhiWuBen-Android-10261.apk"
+  "release_notes": "修复顷刻成稿纯文本导入生成路径；导入文本先保存为转写记录，再生成会议纪要，保持即刻倾听与导入音频流程稳定。",
+  "published_at": "2026-09-04T18:00:00+08:00",
+  "apk_filename": "ZhiWuBen-Android-10262.apk"
 }

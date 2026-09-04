@@ -619,7 +619,7 @@ internal fun RecordingReferenceScaffold(
                     onTemplateWorkflowSeen = onTemplateWorkflowSeen,
                     onTextChange = onTextChange,
                     onPickExternalFile = onPickExternalFile,
-                    onGenerateReport = onGenerateReport,
+                    onGenerateFromImport = onGenerateFromImport,
                     onCancelTranscription = onCancelTranscription,
                     onCancelReport = onCancelReport,
                     onDismissError = onDismissError
@@ -1173,7 +1173,7 @@ private fun ImportRecordingContent(
     onTemplateWorkflowSeen: (String) -> Unit,
     onTextChange: (String) -> Unit,
     onPickExternalFile: () -> Unit,
-    onGenerateReport: () -> Unit,
+    onGenerateFromImport: () -> Unit,
     onCancelTranscription: () -> Unit,
     onCancelReport: () -> Unit,
     onDismissError: () -> Unit
@@ -1219,7 +1219,7 @@ private fun ImportRecordingContent(
             )
         }
         if (hasContent && !isBusy) {
-            ImportGenerateButton(onGenerateReport = onGenerateReport, skin = doodleSkin)
+            ImportGenerateButton(onGenerateFromImport = onGenerateFromImport, skin = doodleSkin)
         }
         if (uiState.isImportingAudio || uiState.isTranscribing) {
             ProcessingStatusRow(
@@ -1302,12 +1302,12 @@ private fun ImportSourceBar(onPickExternalFile: () -> Unit) {
 
 /** Hand-drawn 生成纪要 action, matching the recording page's doodle chrome. */
 @Composable
-private fun ImportGenerateButton(onGenerateReport: () -> Unit, skin: DoodleSkin) {
+private fun ImportGenerateButton(onGenerateFromImport: () -> Unit, skin: DoodleSkin) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .height(46.dp)
-            .clickable(onClick = onGenerateReport),
+            .clickable(onClick = onGenerateFromImport),
         contentAlignment = Alignment.Center
     ) {
         Canvas(modifier = Modifier.fillMaxWidth().height(46.dp)) {
