@@ -619,6 +619,7 @@ internal fun RecordingReferenceScaffold(
                     onTemplateWorkflowSeen = onTemplateWorkflowSeen,
                     onTextChange = onTextChange,
                     onPickExternalFile = onPickExternalFile,
+                    onGenerateReport = onGenerateReport,
                     onCancelTranscription = onCancelTranscription,
                     onCancelReport = onCancelReport,
                     onDismissError = onDismissError
@@ -1172,51 +1173,54 @@ private fun ImportRecordingContent(
     onTemplateWorkflowSeen: (String) -> Unit,
     onTextChange: (String) -> Unit,
     onPickExternalFile: () -> Unit,
+    onGenerateReport: () -> Unit,
     onCancelTranscription: () -> Unit,
     onCancelReport: () -> Unit,
     onDismissError: () -> Unit
 ) {
+    val isDark = LocalAppIsDarkTheme.current
+    val doodleSkin = rememberDoodleSkin(isDark)
+    val palette = if (isDark) siriDarkPalette() else siriLightPalette()
+    val isBusy = uiState.isImportingAudio || uiState.isTranscribing || uiState.isGeneratingReport
+    val hasContent = uiState.manualTextInput.isNotBlank() || uiState.liveTranscript.isNotBlank()
+    // Mirror 即刻倾听: the workflow canvas owns the page until there is real
+    // content, then the editable panel takes over.
+    val showWorkflowCanvas = !hasContent &&
+        !isBusy &&
+        !uiState.selectedRecordingTemplateName.isNullOrBlank()
+
+    Box(modifier = Modifier.fillMaxSize()) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = layout.pagePadding),
+            .padding(start = 26.dp, end = layout.pagePadding),
         verticalArrangement = Arrangement.spacedBy(if (layout.compact) 8.dp else 11.dp)
     ) {
-        MeetingTemplateStrip(
-            templates = uiState.presetTemplates,
-            selectedTemplateName = uiState.selectedRecordingTemplateName.orEmpty(),
-            cardHeight = layout.templateCardHeight,
-            onSelectTemplate = onSelectTemplate
-        )
-        if (!uiState.isRecording && !uiState.isTranscribing && !uiState.isGeneratingReport &&
-            !uiState.selectedRecordingTemplateName.isNullOrBlank()
-        ) {
-            TemplateWorkflowExplainer(
-                templateName = uiState.selectedRecordingTemplateName.orEmpty(),
-                reducedMotion = templateWorkflowReducedMotion,
-                hasBeenSeen = uiState.selectedRecordingTemplateName.orEmpty() in templateWorkflowSeen,
-                onViewed = onTemplateWorkflowSeen,
-                surfaceColor = RecordingSurface,
-                raisedColor = RecordingSurfaceRaised,
-                inkColor = RecordingInk,
-                mutedColor = RecordingMuted,
-                accentColor = RecordingPurple,
-                borderColor = RecordingBorder
-            )
-        }
         AnimatedVisibility(visible = uiState.error != null) {
             uiState.error?.let { CompactErrorBanner(error = it, onDismiss = onDismissError) }
         }
-        ReferenceTextInputPanel(
-            text = uiState.manualTextInput,
-            audioTranscript = uiState.liveTranscript,
-            importStatus = uiState.textImportStatus,
-            importedAudioDisplayName = uiState.importedAudioDisplayName,
-            isAudioBusy = uiState.isImportingAudio || uiState.isTranscribing,
-            onTextChange = onTextChange,
-            onPickExternalFile = onPickExternalFile,
-            modifier = Modifier.weight(1f)
-        )
+        if (showWorkflowCanvas) {
+            ImportWorkflowDoodle(
+                progressPercent = null,
+                statusLabel = "选择音频或文档 · 开始转写",
+                modifier = Modifier.weight(1f)
+            )
+            ImportSourceBar(onPickExternalFile = onPickExternalFile)
+        } else {
+            ReferenceTextInputPanel(
+                text = uiState.manualTextInput,
+                audioTranscript = uiState.liveTranscript,
+                importStatus = uiState.textImportStatus,
+                importedAudioDisplayName = uiState.importedAudioDisplayName,
+                isAudioBusy = uiState.isImportingAudio || uiState.isTranscribing,
+                onTextChange = onTextChange,
+                onPickExternalFile = onPickExternalFile,
+                modifier = Modifier.weight(1f)
+            )
+        }
+        if (hasContent && !isBusy) {
+            ImportGenerateButton(onGenerateReport = onGenerateReport, skin = doodleSkin)
+        }
         if (uiState.isImportingAudio || uiState.isTranscribing) {
             ProcessingStatusRow(
                 title = "导入音频转写",
@@ -1231,6 +1235,107 @@ private fun ImportRecordingContent(
                 stage = uiState.reportProgressStage.ifBlank { "会议纪要处理中" },
                 actionLabel = "终止",
                 onAction = onCancelReport
+            )
+        }
+    }
+        // Exactly the 即刻倾听 rail: hidden colour slivers, peek on touch,
+        // slide to browse, long press to pin, tap to commit.
+        TemplateBookmarkRail(
+            templates = uiState.presetTemplates,
+            selectedTemplateName = uiState.selectedRecordingTemplateName.orEmpty(),
+            palette = palette,
+            skin = doodleSkin,
+            isDark = isDark,
+            onSelectTemplate = onSelectTemplate,
+            modifier = Modifier
+                .align(Alignment.CenterStart)
+                .fillMaxHeight()
+                .padding(top = 8.dp, bottom = 8.dp)
+        )
+    }
+}
+
+/** Compact import affordance shown under the workflow canvas. */
+@Composable
+private fun ImportSourceBar(onPickExternalFile: () -> Unit) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = RecordingSurface,
+        border = BorderStroke(1.dp, RecordingBorder),
+        onClick = onPickExternalFile
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.Default.FolderOpen,
+                contentDescription = null,
+                tint = RecordingPurple,
+                modifier = Modifier.size(18.dp)
+            )
+            Spacer(Modifier.width(8.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "选择音频或文档",
+                    color = RecordingInk,
+                    style = MaterialTheme.typography.titleSmall.copy(fontSize = 13.sp)
+                )
+                Text(
+                    text = "支持录音文件与文本，导入后自动转写",
+                    color = RecordingMuted,
+                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Icon(
+                imageVector = Icons.Default.ChevronRight,
+                contentDescription = null,
+                tint = RecordingMuted,
+                modifier = Modifier.size(18.dp)
+            )
+        }
+    }
+}
+
+/** Hand-drawn 生成纪要 action, matching the recording page's doodle chrome. */
+@Composable
+private fun ImportGenerateButton(onGenerateReport: () -> Unit, skin: DoodleSkin) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(46.dp)
+            .clickable(onClick = onGenerateReport),
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(modifier = Modifier.fillMaxWidth().height(46.dp)) {
+            doodleRoundRect(
+                topLeft = Offset.Zero,
+                size = size,
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(
+                    14.dp.toPx(),
+                    14.dp.toPx()
+                ),
+                color = skin.accentCyan,
+                strokeWidth = skin.strokeWidth.toPx(),
+                wobbleAmplitude = skin.wobbleAmplitude
+            )
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                imageVector = Icons.Default.Summarize,
+                contentDescription = null,
+                tint = skin.accentCyan,
+                modifier = Modifier.size(18.dp)
+            )
+            Spacer(Modifier.width(7.dp))
+            Text(
+                text = "生成纪要",
+                color = skin.accentCyan,
+                style = MaterialTheme.typography.titleSmall.copy(fontSize = 15.sp),
+                fontWeight = FontWeight.SemiBold
             )
         }
     }

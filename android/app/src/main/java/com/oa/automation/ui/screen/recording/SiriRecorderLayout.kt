@@ -168,6 +168,11 @@ private val SiriLightPalette = SiriRecorderPalette(
     red = Color(0xFFE54850)
 )
 
+/** Palette accessors so sibling recording surfaces share one visual language. */
+internal fun siriDarkPalette(): SiriRecorderPalette = SiriDarkPalette
+
+internal fun siriLightPalette(): SiriRecorderPalette = SiriLightPalette
+
 @Composable
 internal fun SiriRecorderContent(
     uiState: RecordingUiState,

@@ -29,6 +29,18 @@ from common.account_stt_token import issue_account_stt_token  # noqa: E402
 
 
 class SttRuntimeTest(unittest.TestCase):
+    def test_duplicate_receive_after_websocket_disconnect_is_normal(self) -> None:
+        self.assertTrue(
+            stt.is_normal_websocket_disconnect_runtime_error(
+                RuntimeError('Cannot call "receive" once a disconnect message has been received.')
+            )
+        )
+        self.assertFalse(
+            stt.is_normal_websocket_disconnect_runtime_error(
+                RuntimeError("inference worker failed")
+            )
+        )
+
     def test_context_hint_is_sanitized_and_bounded(self) -> None:
         hint = stt.sanitize_context_hint("  大佛寺\x00\n研学考察  " + "词" * 300)
 

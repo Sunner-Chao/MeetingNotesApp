@@ -1,8 +1,8 @@
 {
-  "version_code": 10259,
-  "version_name": "1.2.59",
+  "version_code": 10261,
+  "version_name": "1.2.61",
   "mandatory": false,
-  "release_notes": "精简顷刻成稿导入入口；修复实时会话最终化在本地不可用时无法切换云端的问题；提升导入音频转写链路的可靠性。",
-  "published_at": "2026-09-04T13:20:00+08:00",
-  "apk_filename": "ZhiWuBen-Android-10259.apk"
+  "release_notes": "移除顷刻成稿中间重复导入按钮，统一为系统文件选择；增强导入转写与即刻倾听的本地优先、腾讯云兜底链路，切换时保留上下文、说话人设置与待发送音频。",
+  "published_at": "2026-09-04T16:27:00+08:00",
+  "apk_filename": "ZhiWuBen-Android-10261.apk"
 }

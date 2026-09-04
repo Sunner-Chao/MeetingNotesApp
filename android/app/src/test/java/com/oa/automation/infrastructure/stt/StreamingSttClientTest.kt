@@ -486,13 +486,15 @@ class StreamingSttClientTest {
         val cloudServer = MockWebServer()
         val localStarted = CountDownLatch(1)
         val cloudStarted = CountDownLatch(1)
+        val cloudStartPayload = AtomicReference<com.google.gson.JsonObject>()
 
         fun response(latch: CountDownLatch, sessionId: String) = MockResponse().withWebSocketUpgrade(
             object : WebSocketListener() {
-                override fun onMessage(webSocket: WebSocket, text: String) {
-                    val payload = JsonParser.parseString(text).asJsonObject
-                    if (payload.get("event")?.asString == "start") {
-                        webSocket.send(
+                    override fun onMessage(webSocket: WebSocket, text: String) {
+                        val payload = JsonParser.parseString(text).asJsonObject
+                        if (payload.get("event")?.asString == "start") {
+                            cloudStartPayload.set(payload)
+                            webSocket.send(
                             """{"type":"status","session_id":"$sessionId","message":"ready"}"""
                         )
                         latch.countDown()
@@ -520,6 +522,8 @@ class StreamingSttClientTest {
                 endpoint = localServer.url("/local").toString(),
                 meetingId = "meeting-switch",
                 streamProvider = StreamingSttProvider.LOCAL,
+                contextHint = "大佛寺研学考察",
+                speakerDiarization = true,
                 onPartialText = {},
                 onStatus = {},
                 onError = {}
@@ -534,6 +538,8 @@ class StreamingSttClientTest {
             )
             assertTrue(cloudStarted.await(5, TimeUnit.SECONDS))
             assertEquals("/cloud/ws/transcribe-stream", cloudServer.takeRequest().path)
+            assertEquals("大佛寺研学考察", cloudStartPayload.get().get("context_hint").asString)
+            assertTrue(cloudStartPayload.get().get("speaker_diarization").asBoolean)
             assertNull(client.stop())
         } finally {
             client.stop()

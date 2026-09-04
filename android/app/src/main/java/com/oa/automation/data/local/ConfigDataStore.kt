@@ -821,7 +821,7 @@ class ConfigDataStore(private val context: Context) {
                     preferences[STT_LOCAL_ENDPOINT] = STTConfig.DEFAULT_LOCAL_ENDPOINT
                 }
             }
-            if (profileVersion < 15 && !BuildConfig.DEBUG) {
+            if (profileVersion < 16 && !BuildConfig.DEBUG) {
                 // The local model is now reachable over IPv4 through the VPS's
                 // /stt-local WireGuard relay. Installs still pointing at the
                 // bare public host (IPv6-only path) move to the relay path so
@@ -867,7 +867,7 @@ class ConfigDataStore(private val context: Context) {
                     preferences[STT_LOCAL_MODEL] = STTEngineType.FASTER_WHISPER.defaultModel
                 }
             }
-            preferences[DEFAULT_PROFILE_VERSION] = "15"
+            preferences[DEFAULT_PROFILE_VERSION] = "16"
         }
     }
 

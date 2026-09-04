@@ -6,6 +6,7 @@ import java.net.InetAddress
 import java.net.UnknownHostException
 import okhttp3.Dns
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -81,6 +82,49 @@ class SttDnsTest {
 
         assertEquals(1, result.size)
         assertTrue(result.single() is Inet6Address)
+    }
+
+    @Test
+    fun `relay endpoint accepts IPv4 so mobile data can reach the local model`() {
+        // /stt-local is proxied over WireGuard to the Windows host, so IPv4 is a
+        // real local route there — this is what makes cellular usable.
+        val dns = LocalSttDns(
+            delegate = object : Dns {
+                override fun lookup(hostname: String): List<InetAddress> =
+                    listOf(InetAddress.getByName("118.25.43.185"))
+            },
+            localPublicHost = "lstwin.space",
+            ipv4RelayAllowed = true
+        )
+
+        val result = dns.lookup("lstwin.space")
+
+        assertEquals(1, result.size)
+        assertTrue(result.single() is Inet4Address)
+    }
+
+    @Test
+    fun `relay endpoint still prefers IPv6 when the network has it`() {
+        val ipv6 = InetAddress.getByName("2001:db8::10")
+        val ipv4 = InetAddress.getByName("118.25.43.185")
+        val dns = LocalSttDns(
+            delegate = object : Dns {
+                override fun lookup(hostname: String): List<InetAddress> = listOf(ipv4, ipv6)
+            },
+            localPublicHost = "lstwin.space",
+            ipv4RelayAllowed = true
+        )
+
+        assertTrue(dns.lookup("lstwin.space").single() is Inet6Address)
+    }
+
+    @Test
+    fun `relay path is recognised only for the stt-local prefix`() {
+        assertTrue("https://lstwin.space/stt-local".isLocalSttRelayEndpoint())
+        assertTrue("https://lstwin.space/stt-local/".isLocalSttRelayEndpoint())
+        assertFalse("https://lstwin.space".isLocalSttRelayEndpoint())
+        assertFalse("https://lstwin.space/stt-cloud".isLocalSttRelayEndpoint())
+        assertFalse("http://10.0.2.2:8888".isLocalSttRelayEndpoint())
     }
 
     @Test

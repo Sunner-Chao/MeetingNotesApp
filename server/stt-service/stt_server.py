@@ -5117,6 +5117,12 @@ async def audio_archive_delete(
     return {"status": "deleted", "id": archive_id}
 
 
+def is_normal_websocket_disconnect_runtime_error(exc: RuntimeError) -> bool:
+    """Recognize Starlette's duplicate-receive transport race as a disconnect."""
+    detail = str(exc).lower()
+    return "receive" in detail and "disconnect" in detail
+
+
 @app.websocket("/ws/transcribe-stream")
 async def transcribe_stream(websocket: WebSocket):
     await websocket.accept()
@@ -6075,6 +6081,17 @@ async def transcribe_stream(websocket: WebSocket):
     except WebSocketDisconnect:
         stream_stopped = True
         push_debug_event("session_disconnect", session_id=session_id)
+    except RuntimeError as exc:
+        # Starlette can surface a second receive() after it has already
+        # delivered websocket.disconnect as RuntimeError instead of
+        # WebSocketDisconnect. Treat that normal transport race as a clean
+        # session end; unexpected runtime failures must still be visible.
+        if is_normal_websocket_disconnect_runtime_error(exc):
+            stream_stopped = True
+            push_debug_event("session_disconnect", session_id=session_id)
+        else:
+            push_debug_event("session_error", session_id=session_id, error=str(exc))
+            raise
     except Exception as exc:
         push_debug_event("session_error", session_id=session_id, error=str(exc))
         raise

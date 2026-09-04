@@ -146,13 +146,17 @@ class StreamingSttClient internal constructor(
         onStatus: (String) -> Unit,
         onError: (String) -> Unit,
         onProviderFailure: (StreamingSttProvider, String) -> Unit = { _, _ -> },
-        connectionReady: CompletableDeferred<Unit>? = null
+        connectionReady: CompletableDeferred<Unit>? = null,
+        preserveAudioBuffer: Boolean = false
     ) {
         // A provider switch reuses the same meeting and should keep its
         // speaker labels. A completed meeting (or a different meeting) starts
         // a fresh label map.
         val reuseSpeakerLabels = this.meetingId == meetingId && meetingId.isNotBlank()
-        stopInternal(clearSpeakerLabels = !reuseSpeakerLabels)
+        stopInternal(
+            clearSpeakerLabels = !reuseSpeakerLabels,
+            preserveAudioBuffer = preserveAudioBuffer
+        )
 
         // Store callbacks so reconnect logic can reuse them
         onPartialTextCallback = onPartialText
@@ -639,12 +643,18 @@ class StreamingSttClient internal constructor(
                 apiToken = activeApiToken,
                 streamProvider = provider,
                 language = activeLanguage,
+                contextHint = contextHint,
+                speakerDiarization = speakerDiarization,
                 allowFinalization = false,
                 onPartialText = partialCallback,
                 onStatus = statusCallback,
                 onError = errorCallback,
                 onProviderFailure = providerFailureCallback ?: { _, _ -> },
-                connectionReady = readiness
+                connectionReady = readiness,
+                // A provider switch closes the old socket, but PCM queued while
+                // it is closing still belongs to this meeting and must be sent
+                // to the new socket after its handshake.
+                preserveAudioBuffer = true
             )
             try {
                 withTimeout(BuildConfig.STT_STREAM_SWITCH_TIMEOUT_SECONDS * 1_000L) {
@@ -685,7 +695,10 @@ class StreamingSttClient internal constructor(
 
     fun stop(): String? = stopInternal(clearSpeakerLabels = true)
 
-    private fun stopInternal(clearSpeakerLabels: Boolean): String? {
+    private fun stopInternal(
+        clearSpeakerLabels: Boolean,
+        preserveAudioBuffer: Boolean = false
+    ): String? {
         var finalizationSession = serverSessionId?.takeIf { isConnected && streamCanFinalize }
         sessionGeneration.incrementAndGet()
         connectionGeneration.incrementAndGet()
@@ -706,10 +719,12 @@ class StreamingSttClient internal constructor(
         webSocket = null
         synchronized(audioLock) {
             isConnected = false
-            producedAudioBytes = 0L
-            connectionTimelineOffsetSeconds = 0f
-            pendingAudio.clear()
-            pendingAudioBytes = 0
+            if (!preserveAudioBuffer) {
+                producedAudioBytes = 0L
+                connectionTimelineOffsetSeconds = 0f
+                pendingAudio.clear()
+                pendingAudioBytes = 0
+            }
         }
         onPartialTextCallback = null
         onStatusCallback = null
