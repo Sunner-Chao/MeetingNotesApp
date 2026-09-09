@@ -43,6 +43,7 @@ import com.oa.automation.domain.model.CommunityCollectionRemoval
 import com.oa.automation.domain.model.CommunityCollectionShare
 import com.oa.automation.domain.model.MyCommunityPost
 import com.oa.automation.domain.model.PublicCommunityPost
+import com.oa.automation.infrastructure.stt.STT_IPV4_RELAY_DNS
 import java.io.IOException
 import java.net.URLEncoder
 import java.security.MessageDigest
@@ -57,6 +58,11 @@ import okhttp3.Response
 
 class AccountApiService(
     private val client: OkHttpClient = OkHttpClient.Builder()
+        // Account, token refresh, and cloud-STT traffic must use the VPS IPv4
+        // relay. The same hostname also has an AAAA record for the Windows
+        // local STT service; system DNS could otherwise route mobile clients
+        // to that private/local path and surface a connection reset.
+        .dns(STT_IPV4_RELAY_DNS)
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .build(),
@@ -1053,6 +1059,17 @@ class AccountApiService(
             )
         )
     ) { body -> gson.fromJson(body, AccountProfile::class.java) }
+
+    /** Permanently deletes the authenticated account and all server-side user data. */
+    suspend fun deleteMyAccount(
+        endpoint: String,
+        token: String
+    ): Result<Unit> = request(
+        endpoint = endpoint,
+        path = "account/me",
+        token = token,
+        method = "DELETE"
+    ) { Unit }
 
     suspend fun refreshSession(
         endpoint: String,

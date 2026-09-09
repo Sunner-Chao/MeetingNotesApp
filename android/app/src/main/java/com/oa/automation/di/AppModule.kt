@@ -170,7 +170,7 @@ val appModule = module {
     viewModel { ForgotPasswordViewModel(get(), get()) }
     viewModel { RegisterViewModel(get(), get(), get()) }
     viewModel { HomeViewModel(get(), get(), get(), get(), get(), get(), get(), get(), androidContext()) }
-    viewModel { AccountViewModel(get(), get(), get(), get()) }
+    viewModel { AccountViewModel(get(), get(), get(), get(), get()) }
     viewModel { GrowthCenterViewModel(get(), get()) }
     viewModel { PointsPlansViewModel(get(), get()) }
     viewModel { CommunityModerationViewModel(get(), get()) }

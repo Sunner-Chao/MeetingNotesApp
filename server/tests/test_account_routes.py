@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import io
 import sys
 import tempfile
@@ -85,11 +86,15 @@ class AccountRouteTests(unittest.TestCase):
         self.previous_web_api_username = backend.WEB_API_USERNAME
         self.previous_growth_media_dir = backend.PRIVATE_CHANNEL_MEDIA_DIR
         self.previous_account_media_dir = backend.ACCOUNT_MEDIA_DIR
+        self.previous_stt_archive_dir = backend.STT_AUDIO_ARCHIVE_DIR
+        self.previous_stt_recovery_dir = backend.STT_RECOVERY_DIR
         backend.DB_PATH = self.db_path
         backend.WEB_API_TOKEN = "web-dashboard-secret"
         backend.WEB_API_USERNAME = "dashboard-admin"
         backend.PRIVATE_CHANNEL_MEDIA_DIR = root / "growth-media"
         backend.ACCOUNT_MEDIA_DIR = root / "account-media"
+        backend.STT_AUDIO_ARCHIVE_DIR = root / "audio-archive"
+        backend.STT_RECOVERY_DIR = root / "recovery-audio"
         backend.AGENT_GATEWAY = AgentGateway(
             db_path=self.db_path,
             work_root=root / "tasks",
@@ -112,6 +117,8 @@ class AccountRouteTests(unittest.TestCase):
         backend.WEB_API_USERNAME = self.previous_web_api_username
         backend.PRIVATE_CHANNEL_MEDIA_DIR = self.previous_growth_media_dir
         backend.ACCOUNT_MEDIA_DIR = self.previous_account_media_dir
+        backend.STT_AUDIO_ARCHIVE_DIR = self.previous_stt_archive_dir
+        backend.STT_RECOVERY_DIR = self.previous_stt_recovery_dir
         self.temp_dir.cleanup()
 
     def register_with_email(self, client: TestClient, username: str):
@@ -206,6 +213,40 @@ class AccountRouteTests(unittest.TestCase):
             self.assertEqual(deleted.status_code, 200)
             self.assertEqual(deleted.json()["status"], "deleted")
             self.assertEqual(client.get("/api/account/me", headers=user_headers).status_code, 401)
+
+    def test_user_can_delete_own_account_and_admin_cannot_self_delete(self) -> None:
+        with TestClient(backend.app) as client:
+            registered = self.register_with_email(client, "self_delete_user")
+            user_headers = {"Authorization": f"Bearer {registered.json()['access_token']}"}
+            profile = client.get("/api/account/me", headers=user_headers).json()
+            media_root = backend.ACCOUNT_MEDIA_DIR / profile["id"]
+            media_root.mkdir(parents=True)
+            (media_root / "photo.bin").write_bytes(b"private")
+            owner_key = hashlib.sha256(profile["id"].encode()).hexdigest()[:32]
+            archive_root = backend.STT_AUDIO_ARCHIVE_DIR / owner_key / "meeting-1"
+            archive_root.mkdir(parents=True)
+            (archive_root / "audio.wav").write_bytes(b"private-audio")
+            recovery_root = backend.STT_RECOVERY_DIR / "recovery-1"
+            recovery_root.mkdir(parents=True)
+            (recovery_root / "recovery-1.json").write_text(
+                json.dumps({"owner_id": profile["id"]}), encoding="utf-8"
+            )
+
+            deleted = client.delete("/api/account/me", headers=user_headers)
+            self.assertEqual(deleted.status_code, 200, deleted.text)
+            self.assertEqual(deleted.json()["status"], "deleted")
+            self.assertEqual(client.get("/api/account/me", headers=user_headers).status_code, 401)
+            self.assertFalse(media_root.exists())
+            self.assertFalse((backend.STT_AUDIO_ARCHIVE_DIR / owner_key).exists())
+            self.assertFalse(recovery_root.exists())
+
+            admin = client.post(
+                "/api/auth/login",
+                json={"username": "admin", "password": "route-admin-password"},
+            )
+            admin_headers = {"Authorization": f"Bearer {admin.json()['access_token']}"}
+            refused = client.delete("/api/account/me", headers=admin_headers)
+            self.assertEqual(refused.status_code, 409)
 
     def test_account_session_is_accepted_by_agent_gateway_without_agent_token(self) -> None:
         with TestClient(backend.app) as client:

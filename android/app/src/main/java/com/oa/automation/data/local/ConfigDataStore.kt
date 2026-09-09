@@ -754,6 +754,13 @@ class ConfigDataStore(private val context: Context) {
                     preferences[STT_LOCAL_ENDPOINT] = normalizedEndpoint
                 }
             }
+            if (profileVersion < 19) {
+                val savedAccountEndpoint = preferences[ACCOUNT_ENDPOINT]
+                val resolvedAccountEndpoint = resolveAccountEndpoint(savedAccountEndpoint)
+                if (savedAccountEndpoint != resolvedAccountEndpoint) {
+                    preferences[ACCOUNT_ENDPOINT] = resolvedAccountEndpoint
+                }
+            }
             if (!ProductEdition.current.supportsLocalStt) {
                 preferences[STT_ENGINE_TYPE] = STTEngineType.TENCENT_HYBRID.name
                 preferences[STT_CLOUD_MODEL] = TencentAsrTier.STANDARD_FREE.cloudModel
@@ -761,7 +768,7 @@ class ConfigDataStore(private val context: Context) {
                     ?.takeIf { it.isNotBlank() }
                     ?.let { preferences[STT_CLOUD_ENDPOINT] = it }
             }
-            preferences[DEFAULT_PROFILE_VERSION] = "18"
+            preferences[DEFAULT_PROFILE_VERSION] = "19"
         }
     }
 
@@ -784,6 +791,18 @@ class ConfigDataStore(private val context: Context) {
             return STTConfig.DEFAULT_LOCAL_ENDPOINT
         }
         return if (host.isBlank()) STTConfig.DEFAULT_LOCAL_ENDPOINT else candidate
+    }
+
+    /** Keep the released Lite build on the same origin as its working API route. */
+    private fun resolveAccountEndpoint(savedEndpoint: String?): String {
+        val candidate = savedEndpoint?.trim()?.trimEnd('/').orEmpty()
+        if (candidate.isBlank()) return BuildConfig.DEFAULT_ACCOUNT_ENDPOINT
+        val host = runCatching { URI(candidate).host.orEmpty().lowercase() }.getOrDefault("")
+        return if (host == "auth.synthapi.asia") {
+            "https://lstwin.space/api"
+        } else {
+            candidate
+        }
     }
 
     /**
@@ -981,9 +1000,11 @@ class ConfigDataStore(private val context: Context) {
     }
 
     val accountEndpointFlow: Flow<String> = context.dataStore.data.map { preferences ->
-        preferences[ACCOUNT_ENDPOINT]
-            ?.takeIf { it.isNotBlank() }
-            ?: BuildConfig.DEFAULT_ACCOUNT_ENDPOINT
+        resolveAccountEndpoint(
+            preferences[ACCOUNT_ENDPOINT]
+                ?.takeIf { it.isNotBlank() }
+                ?: BuildConfig.DEFAULT_ACCOUNT_ENDPOINT
+        )
     }
 
     val seenNotificationEventsFlow: Flow<Set<String>> = context.dataStore.data.map { preferences ->
@@ -1069,6 +1090,23 @@ class ConfigDataStore(private val context: Context) {
             preferences.remove(LLM_AGENT_ACCESS_TOKEN)
             preferences.remove(ACCOUNT_STT_ACCESS_TOKEN)
             preferences.remove(STT_USE_ACCOUNT_TOKEN)
+        }
+    }
+
+    /**
+     * Clears credentials and account-scoped local markers after permanent account deletion.
+     * Unlike logout, a deleted account must not remain the owner of this device workspace.
+     */
+    suspend fun clearDeletedAccountData() {
+        context.dataStore.edit { preferences ->
+            preferences.remove(LOGGED_IN_USERNAME)
+            preferences.remove(ACCOUNT_SESSION_JSON)
+            preferences.remove(LLM_AGENT_ACCESS_TOKEN)
+            preferences.remove(ACCOUNT_STT_ACCESS_TOKEN)
+            preferences.remove(STT_USE_ACCOUNT_TOKEN)
+            preferences.remove(LOCAL_WORKSPACE_ACCOUNT_ID)
+            preferences.remove(SEEN_NOTIFICATION_EVENTS)
+            preferences.remove(SEEN_GROWTH_CAMPAIGNS)
         }
     }
 }

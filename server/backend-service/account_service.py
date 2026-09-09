@@ -1325,6 +1325,87 @@ class AccountService:
                 raise AccountNotFoundError("用户不存在")
             return self._profile(conn, principal.user_id)
 
+    def delete_self(self, principal: AccountPrincipal) -> dict:
+        """Permanently remove the current user's account and account-owned data."""
+        if principal.is_admin:
+            raise AccountConflictError("管理员账户不能自助删除")
+        user_id = principal.user_id
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            user = conn.execute(
+                "SELECT username, role FROM users WHERE id = ?", (user_id,)
+            ).fetchone()
+            if user is None:
+                raise AccountNotFoundError("用户不存在")
+            if user["role"] == "admin":
+                raise AccountConflictError("管理员账户不能自助删除")
+
+            # These tables contain user-owned rows but predate the account
+            # schema's ON DELETE CASCADE rules. Delete them explicitly so a
+            # pending order or referral cannot make account deletion fail.
+            direct_user_tables = (
+                "user_sessions",
+                "user_entitlements",
+                "recharge_orders",
+                "account_meetings",
+                "account_meeting_tombstones",
+                "account_meeting_images",
+                "account_identities",
+                "account_registration_sources",
+                "social_auth_tickets",
+                "social_auth_audit",
+                "account_usage_balances",
+                "account_usage_events",
+                "account_team_members",
+                "growth_referral_codes",
+                "growth_redemption_claims",
+                "growth_campaign_entries",
+                "growth_campaign_actions",
+                "growth_reward_ledger",
+                "growth_channel_applications",
+                "growth_system_messages",
+                "growth_system_message_receipts",
+            )
+            for table in direct_user_tables:
+                if self._table_exists(conn, table):
+                    conn.execute(f"DELETE FROM {table} WHERE user_id = ?", (user_id,))
+            if self._table_exists(conn, "growth_referral_bindings"):
+                conn.execute(
+                    "DELETE FROM growth_referral_bindings "
+                    "WHERE referrer_user_id = ? OR referred_user_id = ?",
+                    (user_id, user_id),
+                )
+
+            # Team ownership is account-owned; delete the team after members.
+            if self._table_exists(conn, "account_teams"):
+                conn.execute(
+                    "DELETE FROM account_teams WHERE owner_user_id = ?", (user_id,)
+                )
+            # Internal Agent compatibility rows live in the shared account DB
+            # on production, but are absent in standalone account tests.
+            if self._table_exists(conn, "agent_tokens"):
+                token_id = self._agent_token_id(user_id)
+                if self._table_exists(conn, "agent_tasks"):
+                    conn.execute("DELETE FROM agent_tasks WHERE token_id = ?", (token_id,))
+                conn.execute("DELETE FROM agent_tokens WHERE id = ?", (token_id,))
+
+            # Actor/audit references are retained only as anonymous records;
+            # they are not personal account content.
+            for table, column in (
+                ("growth_redemption_batches", "created_by"),
+                ("growth_campaigns", "created_by"),
+                ("growth_private_channels", "updated_by"),
+                ("growth_channel_applications", "reviewed_by"),
+                ("growth_channel_events", "user_id"),
+            ):
+                if self._table_exists(conn, table):
+                    conn.execute(
+                        f"UPDATE {table} SET {column} = NULL WHERE {column} = ?",
+                        (user_id,),
+                    )
+            conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+            return {"status": "deleted", "user_id": user_id, "username": user["username"]}
+
     def session_credentials(self, principal: AccountPrincipal) -> dict:
         now = int(time.time())
         with self._connect() as conn:

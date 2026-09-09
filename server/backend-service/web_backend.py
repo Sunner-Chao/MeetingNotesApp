@@ -84,6 +84,10 @@ DB_PATH = Path(_env("WEB_BACKEND_DB_PATH", "./data/meeting_notes.db")).resolve()
 ACCOUNT_DB_PATH = Path(_env("ACCOUNT_DB_PATH", "./data/accounts.db")).resolve()
 ACCOUNT_MEDIA_DIR = Path(_env("ACCOUNT_MEDIA_DIR", "./data/account-media")).resolve()
 ACCOUNT_MEDIA_MAX_BYTES = max(1, int(_env("ACCOUNT_MEDIA_MAX_BYTES", str(12 * 1024 * 1024))))
+# The STT process stores account-scoped archives separately from backend images.
+# Keep the path deployment-configurable so account deletion can remove both.
+STT_AUDIO_ARCHIVE_DIR = Path(_env("STT_AUDIO_ARCHIVE_DIR", "./data/audio-archive")).resolve()
+STT_RECOVERY_DIR = Path(_env("STT_RECOVERY_DIR", "./data/recovery-audio")).resolve()
 COMMUNITY_DB_PATH = Path(
     _env("COMMUNITY_DB_PATH", str(ACCOUNT_DB_PATH))
 ).resolve()
@@ -942,6 +946,40 @@ def account_media_path(user_id: str, meeting_id: str, image_id: str) -> Path:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="媒体路径无效") from exc
     return resolved
+
+
+def remove_account_media(user_id: str) -> None:
+    """Remove all uploaded meeting images for a deleted account."""
+    root = (ACCOUNT_MEDIA_DIR / user_id).resolve()
+    try:
+        root.relative_to(ACCOUNT_MEDIA_DIR.resolve())
+    except ValueError:
+        return
+    if root.is_dir():
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def remove_account_stt_data(user_id: str) -> None:
+    """Remove account-owned STT archives and failed-upload recovery files."""
+    owner_key = hashlib.sha256(user_id.encode("utf-8")).hexdigest()[:32]
+    archive_root = (STT_AUDIO_ARCHIVE_DIR / owner_key).resolve()
+    try:
+        archive_root.relative_to(STT_AUDIO_ARCHIVE_DIR.resolve())
+    except ValueError:
+        archive_root = None
+    if archive_root is not None and archive_root.is_dir():
+        shutil.rmtree(archive_root, ignore_errors=True)
+
+    # Recovery manifests carry the original owner id. Remove only matching
+    # manifest directories and leave other users' failed uploads untouched.
+    if STT_RECOVERY_DIR.is_dir():
+        for manifest in STT_RECOVERY_DIR.glob("*/*.json"):
+            try:
+                payload = json.loads(manifest.read_text(encoding="utf-8"))
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            if payload.get("owner_id") == user_id:
+                shutil.rmtree(manifest.parent, ignore_errors=True)
 
 
 class GrowthRedeemPayload(BaseModel):
@@ -2628,6 +2666,19 @@ def update_account_profile(
         )
     except AccountError as exc:
         raise account_http_error(exc) from exc
+
+
+@app.delete("/api/account/me")
+def delete_account(
+    principal: Annotated[AccountPrincipal, Depends(require_account_principal)],
+) -> dict:
+    try:
+        result = configured_account_service().delete_self(principal)
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+    remove_account_media(principal.user_id)
+    remove_account_stt_data(principal.user_id)
+    return result
 
 
 @app.get("/api/account/session")

@@ -10,6 +10,7 @@ import com.oa.automation.domain.model.AuthSession
 import com.oa.automation.infrastructure.llm.AgentQuota
 import com.oa.automation.infrastructure.account.AccountApiService
 import com.oa.automation.infrastructure.account.AccountSessionSynchronizer
+import com.oa.automation.infrastructure.account.LocalAccountDataCleaner
 import com.oa.automation.infrastructure.account.ProfileAvatarCodec
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -37,6 +38,8 @@ data class AccountUiState(
     val isProfileSaving: Boolean = false,
     val profileError: String? = null,
     val profileMessage: String? = null,
+    val isDeletingAccount: Boolean = false,
+    val accountDeletionError: String? = null,
     val isLoggedOut: Boolean = false
 )
 
@@ -44,7 +47,8 @@ class AccountViewModel(
     private val configDataStore: ConfigDataStore,
     private val accountApiService: AccountApiService,
     private val accountSessionSynchronizer: AccountSessionSynchronizer,
-    private val profileAvatarCodec: ProfileAvatarCodec
+    private val profileAvatarCodec: ProfileAvatarCodec,
+    private val localAccountDataCleaner: LocalAccountDataCleaner
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(AccountUiState())
     val uiState: StateFlow<AccountUiState> = _uiState.asStateFlow()
@@ -199,6 +203,57 @@ class AccountViewModel(
 
     fun clearProfileMessage() {
         _uiState.update { it.copy(profileMessage = null) }
+    }
+
+    /** Delete the current user's server account, then wipe all device-local data. */
+    fun deleteMyAccount() {
+        val session = currentSession ?: return
+        val state = _uiState.value
+        if (state.isDeletingAccount) return
+        if (session.user.isAdmin) {
+            _uiState.update { it.copy(accountDeletionError = "管理员账户暂不支持自助删除") }
+            return
+        }
+        viewModelScope.launch {
+            _uiState.update { it.copy(isDeletingAccount = true, accountDeletionError = null) }
+            accountApiService.deleteMyAccount(
+                currentAccountEndpoint,
+                session.accessToken
+            ).fold(
+                onSuccess = {
+                    // Local data is a cache of this account and must not survive deletion.
+                    try {
+                        localAccountDataCleaner.clearForAccountSwitch()
+                    } catch (_: Exception) {
+                        // Continue clearing credentials even if a stale local file cannot be removed.
+                    }
+                    configDataStore.clearDeletedAccountData()
+                    currentSession = null
+                    _uiState.update {
+                        it.copy(
+                            isDeletingAccount = false,
+                            isLoggedOut = true,
+                            profile = null,
+                            username = "",
+                            quota = null,
+                            managedUsers = emptyList()
+                        )
+                    }
+                },
+                onFailure = { error ->
+                    _uiState.update {
+                        it.copy(
+                            isDeletingAccount = false,
+                            accountDeletionError = error.message ?: "账户删除失败，请稍后重试"
+                        )
+                    }
+                }
+            )
+        }
+    }
+
+    fun clearAccountDeletionError() {
+        _uiState.update { it.copy(accountDeletionError = null) }
     }
 
     fun setUserEnabled(userId: String, enabled: Boolean) {

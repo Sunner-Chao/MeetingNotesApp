@@ -29,6 +29,7 @@ import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.AccountBox
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.ManageAccounts
@@ -161,6 +162,7 @@ fun AccountScreen(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     var showLogoutDialog by remember { mutableStateOf(false) }
+    var showDeleteAccountDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(uiState.isLoggedOut) {
         if (uiState.isLoggedOut) onLogout()
@@ -169,6 +171,12 @@ fun AccountScreen(
         uiState.profileMessage?.let { message ->
             snackbarHostState.showSnackbar(message)
             viewModel.clearProfileMessage()
+        }
+    }
+    LaunchedEffect(uiState.accountDeletionError) {
+        uiState.accountDeletionError?.let { message ->
+            snackbarHostState.showSnackbar(message)
+            viewModel.clearAccountDeletionError()
         }
     }
     if (showLogoutDialog) {
@@ -189,6 +197,40 @@ fun AccountScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showLogoutDialog = false }) { Text("取消") }
+            },
+            shape = MaterialTheme.shapes.large
+        )
+    }
+    if (showDeleteAccountDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                if (!uiState.isDeletingAccount) showDeleteAccountDialog = false
+            },
+            title = { Text("删除账户与数据") },
+            text = {
+                Text("将永久删除账户、会议、录音、图片和云端资料，删除后无法恢复。确定继续吗？")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showDeleteAccountDialog = false
+                        viewModel.deleteMyAccount()
+                    },
+                    enabled = !uiState.isDeletingAccount,
+                    shape = MaterialTheme.shapes.medium
+                ) {
+                    if (uiState.isDeletingAccount) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                        Spacer(modifier = Modifier.width(8.dp))
+                    }
+                    Text("永久删除")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showDeleteAccountDialog = false },
+                    enabled = !uiState.isDeletingAccount
+                ) { Text("取消") }
             },
             shape = MaterialTheme.shapes.large
         )
@@ -250,7 +292,8 @@ fun AccountScreen(
                             onModerateCommunity = onNavigateToCommunityModeration,
                             showSocialActions = showSocialActions,
                             showProjectWorkspace = showProjectWorkspace,
-                            onOpenProjects = onNavigateToProjects
+                            onOpenProjects = onNavigateToProjects,
+                            onDeleteAccount = { showDeleteAccountDialog = true }
                         )
                         Spacer(modifier = Modifier.height(12.dp))
                     }
@@ -724,7 +767,8 @@ private fun AccountActionGroup(
     onModerateCommunity: () -> Unit,
     showSocialActions: Boolean,
     showProjectWorkspace: Boolean,
-    onOpenProjects: () -> Unit
+    onOpenProjects: () -> Unit,
+    onDeleteAccount: () -> Unit
 ) {
     Surface(
         modifier = Modifier
@@ -808,6 +852,19 @@ private fun AccountActionGroup(
                     )
                 }
             }
+            if (!isAdmin) {
+                HorizontalDivider(
+                    modifier = Modifier.padding(horizontal = 18.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant
+                )
+                AccountActionRow(
+                    icon = Icons.Default.DeleteForever,
+                    title = "删除账户与数据",
+                    rowHeight = layout.actionRowHeight,
+                    onClick = onDeleteAccount,
+                    tint = MaterialTheme.colorScheme.error
+                )
+            }
         }
     }
 }
@@ -817,7 +874,8 @@ private fun AccountActionRow(
     icon: ImageVector,
     title: String,
     rowHeight: Dp,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    tint: Color = AccountGreen
 ) {
     Surface(
         onClick = onClick,
@@ -839,7 +897,7 @@ private fun AccountActionRow(
                     Icon(
                         imageVector = icon,
                         contentDescription = null,
-                        tint = AccountGreen,
+                        tint = tint,
                         modifier = Modifier.size(23.dp)
                     )
                 }

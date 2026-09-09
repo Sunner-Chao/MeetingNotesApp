@@ -150,6 +150,20 @@ class AccountApiServiceTest {
     }
 
     @Test
+    fun deleteMyAccountUsesAuthenticatedAccountEndpoint() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(204))
+
+        val endpoint = server.url("/api").toString().trimEnd('/')
+        val result = service.deleteMyAccount(endpoint, "user-session")
+
+        assertTrue(result.isSuccess)
+        val request = server.takeRequest()
+        assertEquals("DELETE", request.method)
+        assertEquals("/api/account/me", request.path)
+        assertEquals("Bearer user-session", request.getHeader("Authorization"))
+    }
+
+    @Test
     fun createOrderUsesUserBearerAndMapsConflict() = runBlocking {
         server.enqueue(
             MockResponse()

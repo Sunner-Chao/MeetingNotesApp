@@ -26,5 +26,7 @@ class LocalAccountDataCleaner(
         ).forEach { directory ->
             File(context.filesDir, directory).deleteRecursively()
         }
+        // Generated report/audio exports are cached outside filesDir.
+        File(context.cacheDir, "exports").deleteRecursively()
     }
 }
