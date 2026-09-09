@@ -176,25 +176,46 @@ class CloudSTTEngine(
             if (apiToken.isBlank()) return Result.failure(Exception("STT 访问令牌未配置"))
 
             return runCatching {
-                val request = Request.Builder()
-                    .url(managedHealthUrl(endpoint))
-                    .addHeader("Authorization", "Bearer $apiToken")
-                    .get()
-                    .build()
-                createClient().newCall(request).execute().use { response ->
-                    val body = response.body?.string().orEmpty()
-                    if (!response.isSuccessful) {
-                        throw IOException(cloudAsrHttpError(response.code, body))
+                // A mobile carrier or an IPv4 relay can reset one short-lived
+                // health request even though the service is available. Retry
+                // transport/server-gateway failures here so recording reaches
+                // the WebSocket recovery path instead of failing before capture
+                // starts. Authentication and quota responses remain immediate.
+                var lastFailure: IOException? = null
+                repeat(HYBRID_CONNECTION_ATTEMPTS) { attempt ->
+                    try {
+                        val request = Request.Builder()
+                            .url(managedHealthUrl(endpoint))
+                            .addHeader("Authorization", "Bearer $apiToken")
+                            .get()
+                            .build()
+                        createClient().newCall(request).execute().use { response ->
+                            val body = response.body?.string().orEmpty()
+                            if (!response.isSuccessful) {
+                                val failure = IOException(cloudAsrHttpError(response.code, body))
+                                if (response.code !in TRANSIENT_CONNECTION_STATUS_CODES) {
+                                    throw NonRetryableHybridConnectionException(failure.message.orEmpty())
+                                }
+                                throw failure
+                            }
+                            val root = JsonParser.parseString(body).asJsonObject
+                            val realtimeReady = root.getAsJsonObject("realtime_asr")
+                                ?.get("configured")?.asBoolean == true
+                            val finalReady = root.getAsJsonObject("cloud_asr")
+                                ?.get("configured")?.asBoolean == true
+                            check(realtimeReady) { "智悟增强云模型实时识别尚未启用或配置不完整" }
+                            check(finalReady) { "智悟增强云模型最终稿尚未启用或配置不完整" }
+                            return@runCatching true
+                        }
+                    } catch (failure: IOException) {
+                        if (failure is NonRetryableHybridConnectionException) throw failure
+                        lastFailure = failure
+                        if (attempt + 1 < HYBRID_CONNECTION_ATTEMPTS) {
+                            Thread.sleep(HYBRID_CONNECTION_RETRY_DELAY_MS * (attempt + 1))
+                        }
                     }
-                    val root = JsonParser.parseString(body).asJsonObject
-                    val realtimeReady = root.getAsJsonObject("realtime_asr")
-                        ?.get("configured")?.asBoolean == true
-                    val finalReady = root.getAsJsonObject("cloud_asr")
-                        ?.get("configured")?.asBoolean == true
-                    check(realtimeReady) { "智悟增强云模型实时识别尚未启用或配置不完整" }
-                    check(finalReady) { "智悟增强云模型最终稿尚未启用或配置不完整" }
-                    true
                 }
+                throw lastFailure ?: IOException("云端 STT 连接失败")
             }
         }
 
@@ -207,6 +228,12 @@ class CloudSTTEngine(
             .readTimeout(BuildConfig.STT_CLOUD_READ_TIMEOUT_SECONDS.toLong(), TimeUnit.SECONDS)
             .writeTimeout(BuildConfig.STT_CLOUD_WRITE_TIMEOUT_SECONDS.toLong(), TimeUnit.SECONDS)
             .build()
+
+        private const val HYBRID_CONNECTION_ATTEMPTS = 3
+        private const val HYBRID_CONNECTION_RETRY_DELAY_MS = 350L
+        private val TRANSIENT_CONNECTION_STATUS_CODES = setOf(502, 503, 504)
+
+        private class NonRetryableHybridConnectionException(message: String) : IOException(message)
     }
 }
 

@@ -1,11 +1,11 @@
 {
-  "version_code": 10272,
-  "version_name": "1.2.72",
+  "version_code": 10273,
+  "version_name": "1.2.73",
   "product_edition": "light",
   "product_name": "\u667a\u609f\u672c(Lite)",
   "application_id": "com.oa.automation.light",
   "mandatory": false,
-  "release_notes": "\u8d26\u6237 API \u4e0e\u4e91\u7aef STT \u7edf\u4e00\u8d70\u7a33\u5b9a IPv4 \u4e2d\u7ee7\uff0c\u4fee\u590d\u79fb\u52a8\u7f51\u7edc\u8fde\u63a5\u91cd\u7f6e\uff1b\u65b0\u589e\u5220\u9664\u8d26\u6237\u4e0e\u5168\u90e8\u7528\u6237\u6570\u636e\u529f\u80fd\u3002",
+  "release_notes": "\u4e91\u7aef STT \u542f\u52a8\u9884\u68c0\u652f\u6301\u77ed\u6682\u7f51\u7edc\u91cd\u8bd5\uff1b\u666e\u901a\u7528\u6237\u53ef\u5220\u9664\u8d26\u6237\u53ca\u5168\u90e8\u6570\u636e\u3002",
   "published_at": "2026-09-09T00:00:00+08:00",
-  "apk_filename": "ZhiWuBen-Android-10272.apk"
+  "apk_filename": "ZhiWuBen-Android-10273.apk"
 }

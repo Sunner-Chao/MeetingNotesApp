@@ -7,6 +7,7 @@ import java.io.File
 import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.SocketPolicy
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -199,5 +200,28 @@ class CloudSTTEngineTest {
         val request = server.takeRequest()
         assertEquals("/managed/health", request.path)
         assertEquals("Bearer account-stt-token", request.getHeader("Authorization"))
+    }
+
+    @Test
+    fun `tencent hybrid connection retries transient gateway reset`() {
+        server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AT_START))
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """{"realtime_asr":{"configured":true},"cloud_asr":{"configured":true}}"""
+            )
+        )
+        val config = STTConfig(
+            engineType = STTEngineType.TENCENT_HYBRID,
+            cloudEndpoint = server.url("/managed").toString(),
+            apiToken = "account-stt-token"
+        )
+
+        val result = CloudSTTEngine.testHybridConnection(config)
+
+        assertTrue(result.isSuccess)
+        // The first request is intentionally reset before an HTTP response;
+        // MockWebServer records it with a null path. The retry must succeed.
+        server.takeRequest()
+        assertEquals("/managed/health", server.takeRequest().path)
     }
 }
