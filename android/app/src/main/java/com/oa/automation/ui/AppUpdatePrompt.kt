@@ -13,6 +13,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.oa.automation.domain.model.ProductEdition
 import com.oa.automation.infrastructure.update.AndroidAppUpdate
 
 @Composable
@@ -29,7 +30,7 @@ fun AppUpdatePrompt(
 
     AlertDialog(
         onDismissRequest = { if (!update.mandatory && !isDownloading) onLater() },
-        title = { Text("智悟本有新版本") },
+        title = { Text("${ProductEdition.current.displayName}有新版本") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("版本 ${update.versionName} 已发布，建议及时更新。")

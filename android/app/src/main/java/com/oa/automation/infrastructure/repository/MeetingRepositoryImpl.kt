@@ -9,6 +9,7 @@ import com.oa.automation.domain.repository.MeetingRepository
 import com.oa.automation.infrastructure.db.MeetingDao
 import com.oa.automation.infrastructure.db.toDomain
 import com.oa.automation.infrastructure.db.toEntity
+import com.oa.automation.data.local.ConfigDataStore
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -16,26 +17,32 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.flatMapLatest
 
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class MeetingRepositoryImpl(
-    private val meetingDao: MeetingDao
+    private val meetingDao: MeetingDao,
+    private val configDataStore: ConfigDataStore
 ) : MeetingRepository {
 
     private val repositoryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val meetingsFlow: StateFlow<List<Meeting>> = meetingDao.observeAllMeetings()
+    private val meetingsFlow: StateFlow<List<Meeting>> = configDataStore.localWorkspaceAccountIdFlow
+        .map { it ?: "__anonymous__" }
+        .flatMapLatest { ownerId -> meetingDao.observeAllMeetings(ownerId) }
         .map { list -> list.map { it.toDomain() } }
         .stateIn(repositoryScope, SharingStarted.Eagerly, emptyList())
 
     override suspend fun save(meeting: Meeting): Result<Meeting> {
         return runCatching {
-            meetingDao.upsertMeeting(meeting.toEntity())
+            val ownerId = configDataStore.currentLocalWorkspaceAccountId() ?: "__anonymous__"
+            meetingDao.upsertMeeting(meeting.copy(ownerId = ownerId).toEntity())
             meeting
         }
     }
 
     override suspend fun findById(id: String): Result<Meeting?> {
         return runCatching {
-            meetingDao.findMeetingById(id)?.toDomain()
+            meetingDao.findMeetingById(id, configDataStore.currentLocalWorkspaceAccountId() ?: "__anonymous__")?.toDomain()
         }
     }
 
@@ -43,12 +50,14 @@ class MeetingRepositoryImpl(
         return meetingsFlow
     }
 
-    override suspend fun getAllMeetings(): List<Meeting> = meetingDao.findAllMeetings()
+    override suspend fun getAllMeetings(): List<Meeting> = meetingDao.findAllMeetings(
+        configDataStore.currentLocalWorkspaceAccountId() ?: "__anonymous__"
+    )
         .map { it.toDomain() }
 
     override suspend fun delete(id: String): Result<Unit> {
         return runCatching {
-            meetingDao.deleteMeeting(id)
+            meetingDao.deleteMeeting(id, configDataStore.currentLocalWorkspaceAccountId() ?: "__anonymous__")
         }
     }
 
@@ -65,11 +74,12 @@ class MeetingRepositoryImpl(
     }
 
     override suspend fun updateTitle(id: String, title: String): Result<Meeting> {
-        val existing = meetingDao.findMeetingById(id)
+        val ownerId = configDataStore.currentLocalWorkspaceAccountId() ?: "__anonymous__"
+        val existing = meetingDao.findMeetingById(id, ownerId)
             ?: return Result.failure(IllegalArgumentException("Meeting not found: $id"))
         return runCatching {
             val updated = existing.copy(title = title).toDomain()
-            meetingDao.upsertMeeting(updated.toEntity())
+            meetingDao.upsertMeeting(updated.copy(ownerId = ownerId).toEntity())
             updated
         }
     }
@@ -90,7 +100,7 @@ class MeetingRepositoryImpl(
     override suspend fun findTranscriptsByJourneyStageId(
         journeyStageId: String
     ): Result<List<Transcript>> = runCatching {
-        meetingDao.findTranscriptsByJourneyStageId(journeyStageId).map { it.toDomain() }
+            meetingDao.findTranscriptsByJourneyStageId(journeyStageId).map { it.toDomain() }
     }
 
     override suspend fun saveAttachment(attachment: MeetingAttachment): Result<MeetingAttachment> = runCatching {

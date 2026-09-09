@@ -12,8 +12,8 @@ interface MeetingDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertMeeting(entity: MeetingEntity)
 
-    @Query("SELECT * FROM meetings WHERE id = :id LIMIT 1")
-    suspend fun findMeetingById(id: String): MeetingEntity?
+    @Query("SELECT * FROM meetings WHERE ownerId = :ownerId AND id = :id LIMIT 1")
+    suspend fun findMeetingById(id: String, ownerId: String? = null): MeetingEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAudioSegment(entity: MeetingAudioSegmentEntity)
@@ -24,11 +24,11 @@ interface MeetingDao {
     @Query("DELETE FROM meeting_audio_segments WHERE meetingId = :meetingId")
     suspend fun deleteAudioSegmentsForMeeting(meetingId: String)
 
-    @Query("SELECT * FROM meetings ORDER BY createdAt DESC")
-    fun observeAllMeetings(): Flow<List<MeetingEntity>>
+    @Query("SELECT * FROM meetings WHERE ownerId = :ownerId ORDER BY createdAt DESC")
+    fun observeAllMeetings(ownerId: String?): Flow<List<MeetingEntity>>
 
-    @Query("SELECT * FROM meetings ORDER BY createdAt DESC")
-    suspend fun findAllMeetings(): List<MeetingEntity>
+    @Query("SELECT * FROM meetings WHERE ownerId = :ownerId ORDER BY createdAt DESC")
+    suspend fun findAllMeetings(ownerId: String?): List<MeetingEntity>
 
     @Query("DELETE FROM reports WHERE meetingId = :meetingId")
     suspend fun deleteReportsForMeeting(meetingId: String)
@@ -42,17 +42,18 @@ interface MeetingDao {
     @Query("DELETE FROM recording_markers WHERE meetingId = :meetingId")
     suspend fun deleteRecordingMarkersForMeeting(meetingId: String)
 
-    @Query("DELETE FROM meetings WHERE id = :id")
-    suspend fun deleteMeetingRow(id: String)
+    @Query("DELETE FROM meetings WHERE ownerId = :ownerId AND id = :id")
+    suspend fun deleteMeetingRow(id: String, ownerId: String?)
 
     @Transaction
-    suspend fun deleteMeeting(id: String) {
+    suspend fun deleteMeeting(id: String, ownerId: String?) {
+        if (findMeetingById(id, ownerId) == null) return
         deleteReportsForMeeting(id)
         deleteTranscriptsForMeeting(id)
         deleteAttachmentsForMeeting(id)
         deleteRecordingMarkersForMeeting(id)
         deleteAudioSegmentsForMeeting(id)
-        deleteMeetingRow(id)
+        deleteMeetingRow(id, ownerId)
     }
 
     @Query("UPDATE meetings SET title = :title WHERE id = :id")

@@ -275,8 +275,11 @@ internal fun isActiveRecordingSessionForMeeting(
 internal fun effectiveSttEngineType(
     preferred: STTEngineType,
     route: RealtimeSttRouteState,
-    isRecording: Boolean
-): STTEngineType = when (route) {
+    isRecording: Boolean,
+    supportsLocalStt: Boolean = true
+): STTEngineType {
+    if (!supportsLocalStt) return STTEngineType.TENCENT_HYBRID
+    return when (route) {
     RealtimeSttRouteState.LOCAL_CONNECTING,
     RealtimeSttRouteState.LOCAL_ACTIVE,
     RealtimeSttRouteState.LOCAL_RECOVERING -> STTEngineType.FASTER_WHISPER
@@ -286,6 +289,7 @@ internal fun effectiveSttEngineType(
     RealtimeSttRouteState.CLOUD_FALLBACK_ACTIVE -> STTEngineType.TENCENT_HYBRID
     RealtimeSttRouteState.IDLE,
     RealtimeSttRouteState.UNAVAILABLE -> preferred
+    }
 }
 
 internal fun canGenerateReportFromRecording(state: RecordingUiState): Boolean =
@@ -339,14 +343,21 @@ internal fun resolveRestoredRecordingTemplateName(
  */
 internal fun resolveMeetingSttEngine(
     meetingOverride: STTEngineType?,
-    appPreference: STTEngineType
-): STTEngineType = meetingOverride ?: appPreference
+    appPreference: STTEngineType,
+    supportsLocalStt: Boolean = true
+): STTEngineType = if (supportsLocalStt) {
+    meetingOverride ?: appPreference
+} else {
+    STTEngineType.TENCENT_HYBRID
+}
 
 internal fun resolveRestoredSttEngineType(
     meeting: Meeting?,
     appEngineType: STTEngineType,
-    isGlobalRecording: Boolean
+    isGlobalRecording: Boolean,
+    supportsLocalStt: Boolean = true
 ): STTEngineType {
+    if (!supportsLocalStt) return STTEngineType.TENCENT_HYBRID
     if (isGlobalRecording) return appEngineType
     return meeting?.selectedSttEngineName
         ?.let { saved -> runCatching { STTEngineType.valueOf(saved) }.getOrNull() }
@@ -354,10 +365,15 @@ internal fun resolveRestoredSttEngineType(
 }
 
 private fun STTConfig.withEngineType(engineType: STTEngineType): STTConfig {
-    val usesTencent = engineType == STTEngineType.TENCENT_HYBRID
+    val effectiveEngine = if (ProductEdition.current.supportsLocalStt) {
+        engineType
+    } else {
+        STTEngineType.TENCENT_HYBRID
+    }
+    val usesTencent = effectiveEngine == STTEngineType.TENCENT_HYBRID
     return copy(
-        engineType = engineType,
-        localModel = engineType.defaultModel.ifBlank { localModel },
+        engineType = effectiveEngine,
+        localModel = effectiveEngine.defaultModel.ifBlank { localModel },
         cloudEndpoint = if (usesTencent) {
             cloudEndpoint ?: STTConfig.DEFAULT_CLOUD_ENDPOINT
         } else {
@@ -628,7 +644,11 @@ class RecordingViewModel(
     private var meetingSttEngineOverride: STTEngineType? = null
 
     private fun preferredEngineForMeeting(): STTEngineType =
-        resolveMeetingSttEngine(meetingSttEngineOverride, preferredSttEngineType)
+        resolveMeetingSttEngine(
+            meetingSttEngineOverride,
+            preferredSttEngineType,
+            ProductEdition.current.supportsLocalStt
+        )
 
     /** Stores the engine on the meeting so reopening it keeps the same route. */
     private fun persistMeetingSttEngine(meetingId: String, engineType: STTEngineType) {
@@ -654,7 +674,8 @@ class RecordingViewModel(
                 val actualEngine = effectiveSttEngineType(
                     preferred = preferredEngineForMeeting(),
                     route = session.realtimeSttRoute,
-                    isRecording = session.isRecording || session.isStarting
+                    isRecording = session.isRecording || session.isStarting,
+                    supportsLocalStt = ProductEdition.current.supportsLocalStt
                 )
                 _uiState.update {
                     it.copy(
@@ -704,7 +725,8 @@ class RecordingViewModel(
                 val actualEngine = effectiveSttEngineType(
                     preferred = preferredEngineForMeeting(),
                     route = session.realtimeSttRoute,
-                    isRecording = session.isRecording || session.isStarting
+                    isRecording = session.isRecording || session.isStarting,
+                    supportsLocalStt = ProductEdition.current.supportsLocalStt
                 )
                 val sessionTranscript = SimplifiedChineseText.normalize(session.accumulatedTranscript)
                 _uiState.update {
@@ -910,7 +932,8 @@ class RecordingViewModel(
             val restoredSttEngineType = resolveRestoredSttEngineType(
                 meeting = meeting,
                 appEngineType = sttConfig.engineType,
-                isGlobalRecording = isGlobalRecording
+                isGlobalRecording = isGlobalRecording,
+                supportsLocalStt = ProductEdition.current.supportsLocalStt
             )
             // Carry a previously resolved engine (including one reached by an
             // automatic fallback) into this meeting; a meeting that never chose
@@ -1212,11 +1235,18 @@ class RecordingViewModel(
     }
 
     fun switchSttEngine(engineType: STTEngineType) {
+        if (!ProductEdition.current.supportsLocalStt && engineType != STTEngineType.TENCENT_HYBRID) {
+            _uiState.update {
+                it.copy(error = "Lite 版仅支持云端识别", isSwitchingSttEngine = false)
+            }
+            return
+        }
         val currentState = _uiState.value
         val actualEngine = effectiveSttEngineType(
             preferred = currentState.sttEngineType,
             route = currentState.realtimeSttRoute,
-            isRecording = currentState.isRecording
+            isRecording = currentState.isRecording,
+            supportsLocalStt = ProductEdition.current.supportsLocalStt
         )
         if (engineType == actualEngine || currentState.isSwitchingSttEngine) {
             return

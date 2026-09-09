@@ -11,12 +11,12 @@ interface ReportDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertReport(entity: ReportEntity)
 
-    @Query("SELECT * FROM reports WHERE meetingId = :meetingId LIMIT 1")
-    suspend fun findByMeetingId(meetingId: String): ReportEntity?
+    @Query("SELECT * FROM reports WHERE ownerId = :ownerId AND meetingId = :meetingId LIMIT 1")
+    suspend fun findByMeetingId(meetingId: String, ownerId: String? = null): ReportEntity?
 
-    @Query("DELETE FROM reports WHERE meetingId = :meetingId")
-    suspend fun deleteByMeetingId(meetingId: String)
+    @Query("DELETE FROM reports WHERE ownerId = :ownerId AND meetingId = :meetingId")
+    suspend fun deleteByMeetingId(meetingId: String, ownerId: String?)
 
-    @Query("SELECT * FROM reports ORDER BY generatedAt DESC")
-    fun observeAllReports(): Flow<List<ReportEntity>>
+    @Query("SELECT * FROM reports WHERE ownerId = :ownerId ORDER BY generatedAt DESC")
+    fun observeAllReports(ownerId: String?): Flow<List<ReportEntity>>
 }

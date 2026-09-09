@@ -6,7 +6,7 @@ import com.oa.automation.data.local.ConfigDataStore
 import com.oa.automation.domain.model.AuthSession
 import com.oa.automation.domain.model.SocialAuthProvider
 import com.oa.automation.infrastructure.account.AccountApiService
-import com.oa.automation.infrastructure.account.LocalAccountDataMigrator
+import com.oa.automation.infrastructure.account.LocalAccountDataCleaner
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -56,7 +56,7 @@ sealed interface LoginEvent {
 class LoginViewModel(
     private val configDataStore: ConfigDataStore,
     private val accountApiService: AccountApiService,
-    private val localAccountDataMigrator: LocalAccountDataMigrator
+    private val localAccountDataCleaner: LocalAccountDataCleaner
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(LoginUiState())
@@ -206,8 +206,10 @@ class LoginViewModel(
     private fun completeLogin(session: AuthSession) {
         viewModelScope.launch {
             val endpoint = configDataStore.accountEndpointFlow.first()
+            if (configDataStore.localWorkspaceRequiresReset(session.user.id)) {
+                localAccountDataCleaner.clearForAccountSwitch()
+            }
             configDataStore.saveAuthSession(session, endpoint)
-            localAccountDataMigrator.migrateAsync(endpoint, session)
             if (!_uiState.value.rememberUsername) configDataStore.saveUsername("")
             _uiState.update {
                 it.copy(

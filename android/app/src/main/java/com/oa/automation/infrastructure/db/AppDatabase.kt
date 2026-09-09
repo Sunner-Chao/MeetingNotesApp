@@ -29,7 +29,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ProjectDecisionRefEntity::class,
         ProjectAggregateSnapshotEntity::class
     ],
-    version = 24,
+    version = 25,
     exportSchema = false
 )
 @TypeConverters(DbConverters::class)
@@ -621,6 +621,15 @@ abstract class AppDatabase : RoomDatabase() {
                 )
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_project_aggregate_snapshots_projectId ON project_aggregate_snapshots(projectId)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_project_aggregate_snapshots_projectId_generatedAt ON project_aggregate_snapshots(projectId, generatedAt)")
+            }
+        }
+
+        val MIGRATION_24_25 = object : Migration(24, 25) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE meetings ADD COLUMN ownerId TEXT")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_meetings_ownerId ON meetings(ownerId)")
+                db.execSQL("ALTER TABLE reports ADD COLUMN ownerId TEXT")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_reports_ownerId ON reports(ownerId)")
             }
         }
     }

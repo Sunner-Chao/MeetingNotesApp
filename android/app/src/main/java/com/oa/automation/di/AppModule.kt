@@ -23,7 +23,7 @@ import com.oa.automation.infrastructure.audio.ImportedAudioStore
 import com.oa.automation.infrastructure.audio.OrphanedMeetingAudioRecovery
 import com.oa.automation.infrastructure.account.AccountApiService
 import com.oa.automation.infrastructure.account.AccountSessionSynchronizer
-import com.oa.automation.infrastructure.account.LocalAccountDataMigrator
+import com.oa.automation.infrastructure.account.LocalAccountDataCleaner
 import com.oa.automation.infrastructure.account.ProfileAvatarCodec
 import com.oa.automation.infrastructure.attachment.MeetingAttachmentStore
 import com.oa.automation.infrastructure.attachment.MeetingGalleryBackupStore
@@ -103,6 +103,7 @@ val appModule = module {
             .addMigrations(AppDatabase.MIGRATION_21_22)
             .addMigrations(AppDatabase.MIGRATION_22_23)
             .addMigrations(AppDatabase.MIGRATION_23_24)
+            .addMigrations(AppDatabase.MIGRATION_24_25)
             .build()
     }
     single { get<AppDatabase>().meetingDao() }
@@ -117,7 +118,7 @@ val appModule = module {
     single { get<AppDatabase>().projectDao() }
 
     // Infrastructure
-    single<MeetingRepository> { MeetingRepositoryImpl(get()) }
+    single<MeetingRepository> { MeetingRepositoryImpl(get(), get()) }
     single<JourneyRepository> { JourneyRepositoryImpl(get()) }
     single<StageDraftRepository> { StageDraftRepositoryImpl(get()) }
     single<JourneyEditionRepository> { JourneyEditionRepositoryImpl(get()) }
@@ -131,7 +132,7 @@ val appModule = module {
     single { MeetingGalleryBackupStore(androidContext()) }
     single { MeetingAttachmentStore(androidContext(), get(), get(), get()) }
     single { LegacyMeetingAttachmentRecovery(androidContext(), get(), get()) }
-    single<ReportRepository> { ReportRepositoryImpl(get()) }
+    single<ReportRepository> { ReportRepositoryImpl(get(), get()) }
     single<ScheduledMeetingRepository> { ScheduledMeetingRepositoryImpl(get()) }
     single { AudioRecorder(androidContext()) }
     single { MeetingAudioAssembler(androidContext()) }
@@ -148,7 +149,7 @@ val appModule = module {
     single { LLMEngine(get()) }
     single { AccountApiService() }
     single { AccountSessionSynchronizer(get(), get()) }
-    single { LocalAccountDataMigrator(get(), get(), get()) }
+    single { LocalAccountDataCleaner(androidContext(), get()) }
     single { CommunitySyncProcessor(get(), get(), get(), get(), get()) }
     single { PublishedPostMediaStore(androidContext(), get(), get()) }
     single { ProfileAvatarCodec(androidContext()) }
@@ -168,7 +169,7 @@ val appModule = module {
     viewModel { LoginViewModel(get(), get(), get()) }
     viewModel { ForgotPasswordViewModel(get(), get()) }
     viewModel { RegisterViewModel(get(), get(), get()) }
-    viewModel { HomeViewModel(get(), get(), get(), get(), get(), get(), get(), get()) }
+    viewModel { HomeViewModel(get(), get(), get(), get(), get(), get(), get(), get(), androidContext()) }
     viewModel { AccountViewModel(get(), get(), get(), get()) }
     viewModel { GrowthCenterViewModel(get(), get()) }
     viewModel { PointsPlansViewModel(get(), get()) }

@@ -207,6 +207,7 @@ class StreamingSttClientTest {
         assertEquals("zh", payload.get("language").asString)
         assertEquals(16000, payload.get("sample_rate").asInt)
         assertEquals(1, payload.get("channels").asInt)
+        assertTrue(payload.get("audio_watchdog").asBoolean)
     }
 
     @Test

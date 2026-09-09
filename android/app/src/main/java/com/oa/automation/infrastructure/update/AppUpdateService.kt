@@ -23,7 +23,8 @@ data class AndroidAppUpdate(
     val releaseNotes: String,
     val publishedAt: String,
     val downloadUrl: String,
-    val sha256: String?
+    val sha256: String?,
+    val productEdition: String = ""
 )
 
 sealed interface AppUpdateCheck {
@@ -137,6 +138,15 @@ class AppUpdateService(private val context: Context) {
     }
 
     private fun parseUpdate(json: JSONObject, endpoint: String): AndroidAppUpdate {
+        val expectedEdition = if (BuildConfig.PRODUCT_EDITION.equals("social", ignoreCase = true)) {
+            "social"
+        } else {
+            "light"
+        }
+        val publishedEdition = json.optString("product_edition").trim().lowercase()
+        require(publishedEdition == expectedEdition) {
+            "版本更新通道与当前产品不匹配"
+        }
         val relativeUrl = json.getString("download_url")
         return AndroidAppUpdate(
             versionCode = json.getInt("version_code"),
@@ -148,7 +158,8 @@ class AppUpdateService(private val context: Context) {
                 if (relativeUrl.startsWith("http://") || relativeUrl.startsWith("https://")) relativeUrl
                 else "${base.scheme}://${base.authority}${if (relativeUrl.startsWith('/')) relativeUrl else "/$relativeUrl"}"
             },
-            sha256 = json.optString("sha256").takeIf { it.isNotBlank() }
+            sha256 = json.optString("sha256").takeIf { it.isNotBlank() },
+            productEdition = publishedEdition
         )
     }
 }

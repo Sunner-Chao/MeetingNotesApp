@@ -194,6 +194,16 @@ val productEdition = providers.gradleProperty("meetingnotesProductEdition")
     .trim()
     .lowercase()
     .also { require(it in setOf("light-enjoy", "social")) { "Unsupported product edition: $it" } }
+// Lite local STT remains an internal preview capability. Keep the switch
+// build-time configurable so it can be reopened later without redesigning the
+// product surface; production defaults to disabled.
+val liteLocalSttEnabled = providers.gradleProperty("meetingnotesLiteLocalSttEnabled")
+    .orElse(providers.environmentVariable("MEETINGNOTES_LITE_LOCAL_STT_ENABLED"))
+    .orElse("false")
+    .get()
+    .trim()
+    .lowercase()
+    .also { require(it == "true" || it == "false") { "meetingnotesLiteLocalSttEnabled must be true or false" } }
 val socialAuthScheme = providers.gradleProperty("meetingnotesSocialAuthScheme")
     .orElse(providers.environmentVariable("MEETINGNOTES_SOCIAL_AUTH_SCHEME"))
     .orElse(if (productEdition == "light-enjoy") "zhiwuben-light" else "zhiwuben")
@@ -227,14 +237,15 @@ android {
         minSdk = 26
         targetSdk = 34
         // Social and Light Enjoy are independently installable OTA channels.
-        versionCode = if (productEdition == "light-enjoy") 10264 else 10262
-        versionName = if (productEdition == "light-enjoy") "1.2.64" else "1.2.62"
-        manifestPlaceholders["appLabel"] = if (productEdition == "social") "智悟本" else "智悟本轻享版"
+        versionCode = if (productEdition == "light-enjoy") 10270 else 10264
+        versionName = if (productEdition == "light-enjoy") "1.2.70" else "1.2.64"
+        manifestPlaceholders["appLabel"] = if (productEdition == "social") "智悟本(Pro)" else "智悟本(Lite)"
         manifestPlaceholders["socialAuthScheme"] = socialAuthScheme
         manifestPlaceholders["socialAuthHost"] = socialAuthHost
         manifestPlaceholders["socialAuthPath"] = socialAuthPath
         buildConfigField("String", "SOCIAL_AUTH_CALLBACK_URI", "\"$socialAuthCallbackUri\"")
         buildConfigField("String", "PRODUCT_EDITION", "\"$productEdition\"")
+        buildConfigField("boolean", "LITE_LOCAL_STT_ENABLED", liteLocalSttEnabled)
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -495,8 +506,30 @@ android.defaultConfig {
     val defaultAccountEndpoint = claudeEnv["MEETINGNOTES_ACCOUNT_ENDPOINT"]
         ?.takeIf { it.isNotBlank() }
         ?: "http://localhost:8090/api"
-    val defaultAppUpdateEndpoint = claudeEnv["MEETINGNOTES_APP_UPDATE_ENDPOINT"]
+    // Keep OTA channels explicit. A single shared endpoint is retained only as
+    // a backwards-compatible base and is normalized to the selected channel,
+    // so a Light build can never inherit the Social manifest (or vice versa).
+    val editionUpdateKey = if (productEdition == "light-enjoy") {
+        "MEETINGNOTES_APP_UPDATE_ENDPOINT_LIGHT"
+    } else {
+        "MEETINGNOTES_APP_UPDATE_ENDPOINT_SOCIAL"
+    }
+    val configuredEditionUpdateEndpoint = claudeEnv[editionUpdateKey]
         ?.takeIf { it.isNotBlank() }
+    val configuredLegacyUpdateEndpoint = claudeEnv["MEETINGNOTES_APP_UPDATE_ENDPOINT"]
+        ?.takeIf { it.isNotBlank() }
+        ?.trimEnd('/')
+        ?.let { endpoint ->
+            val lightSuffix = "/light"
+            when {
+                productEdition == "light-enjoy" && endpoint.endsWith(lightSuffix) -> endpoint
+                productEdition == "light-enjoy" -> "$endpoint$lightSuffix"
+                productEdition == "social" && endpoint.endsWith(lightSuffix) -> endpoint.removeSuffix(lightSuffix)
+                else -> endpoint
+            }
+        }
+    val defaultAppUpdateEndpoint = configuredEditionUpdateEndpoint
+        ?: configuredLegacyUpdateEndpoint
         ?: "${defaultAccountEndpoint.trimEnd('/')}/app-update/android" +
             if (productEdition == "light-enjoy") "/light" else ""
     val defaultRelayBaseUrl = relayConfig["baseurl"]

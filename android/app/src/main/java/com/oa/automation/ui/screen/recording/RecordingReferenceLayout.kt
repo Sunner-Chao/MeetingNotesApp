@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -64,9 +65,10 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Headphones
+import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.OpenInFull
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PhotoCamera
@@ -79,7 +81,6 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -93,7 +94,6 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -106,6 +106,7 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -393,7 +394,8 @@ internal fun RecordingReferenceScaffold(
                 sttEngineType = effectiveSttEngineType(
                     preferred = uiState.sttEngineType,
                     route = uiState.realtimeSttRoute,
-                    isRecording = uiState.isRecording
+                    isRecording = uiState.isRecording,
+                    supportsLocalStt = ProductEdition.current.supportsLocalStt
                 ),
                 sttLanguage = uiState.sttLanguage,
                 isSwitchingStt = uiState.isSwitchingSttEngine,
@@ -468,100 +470,6 @@ internal fun RecordingReferenceScaffold(
 
     Scaffold(
         containerColor = RecordingCanvas,
-        topBar = {
-            if (uiState.inputMode == InputMode.IMPORT) CenterAlignedTopAppBar(
-                title = {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Text(
-                            text = uiState.meetingTitle.ifBlank { "会议记录" },
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 18.sp
-                        )
-                        IconButton(
-                            onClick = {
-                                titleDraft = uiState.meetingTitle
-                                titleEditorVisible = true
-                            },
-                            modifier = Modifier.size(32.dp)
-                        ) {
-                            Icon(
-                                Icons.Default.Edit,
-                                contentDescription = "修改会议名称",
-                                tint = RecordingMuted,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                    }
-                },
-                navigationIcon = {
-                    IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
-                    }
-                },
-                actions = {
-                    val importHasContent = uiState.manualTextInput.isNotBlank() ||
-                        (uiState.hasRecording && uiState.liveTranscript.isNotBlank())
-                    IconButton(
-                        onClick = onGenerateFromImport,
-                        enabled = importHasContent && !uiState.isImportingAudio &&
-                            !uiState.isTranscribing && !uiState.isGeneratingReport
-                    ) {
-                        if (uiState.isGeneratingReport) {
-                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                        } else {
-                            Icon(Icons.Default.Summarize, contentDescription = "生成会议纪要")
-                        }
-                    }
-                    Box {
-                        IconButton(onClick = { moreMenuExpanded = true }) {
-                            Icon(Icons.Default.MoreVert, contentDescription = "更多功能")
-                        }
-                        DropdownMenu(
-                            expanded = moreMenuExpanded,
-                            onDismissRequest = { moreMenuExpanded = false }
-                        ) {
-                            RecordingMenuItem(
-                                icon = Icons.Default.Settings,
-                                text = "识别设置",
-                                onClick = {
-                                    moreMenuExpanded = false
-                                    serviceDialogVisible = true
-                                }
-                            )
-                            RecordingMenuItem(
-                                icon = Icons.Default.AddPhotoAlternate,
-                                text = "会议图片",
-                                onClick = {
-                                    moreMenuExpanded = false
-                                    imageDialogVisible = true
-                                }
-                            )
-                            if (uiState.hasReport && !uiState.isGeneratingReport) {
-                                RecordingMenuItem(
-                                    icon = Icons.Default.Description,
-                                    text = "查看会议纪要",
-                                    onClick = {
-                                        moreMenuExpanded = false
-                                        onNavigateToReport()
-                                    }
-                                )
-                            }
-                        }
-                    }
-                },
-                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
-                    containerColor = RecordingCanvas,
-                    titleContentColor = RecordingInk,
-                    navigationIconContentColor = RecordingInk,
-                    actionIconContentColor = RecordingInk
-                )
-            )
-        }
     ) { paddingValues ->
         BoxWithConstraints(
             modifier = Modifier
@@ -614,9 +522,19 @@ internal fun RecordingReferenceScaffold(
                     uiState = displayedUiState,
                     layout = layout,
                     onSelectTemplate = onSelectTemplate,
-                    templateWorkflowReducedMotion = templateWorkflowReducedMotion,
                     templateWorkflowSeen = templateWorkflowSeen,
                     onTemplateWorkflowSeen = onTemplateWorkflowSeen,
+                    onCustomTemplateLayoutChange = onCustomTemplateLayoutChange,
+                    onNavigateBack = onNavigateBack,
+                    onOpenReport = onNavigateToReport,
+                    onEditTitle = {
+                        titleDraft = uiState.meetingTitle
+                        titleEditorVisible = true
+                    },
+                    onOpenSttSettings = { serviceDialogVisible = true },
+                    onManageImages = { imageDialogVisible = true },
+                    menuExpanded = moreMenuExpanded,
+                    onMenuExpandedChange = { moreMenuExpanded = it },
                     onTextChange = onTextChange,
                     onPickExternalFile = onPickExternalFile,
                     onGenerateFromImport = onGenerateFromImport,
@@ -1168,9 +1086,16 @@ private fun ImportRecordingContent(
     uiState: RecordingUiState,
     layout: RecordingLayoutSpec,
     onSelectTemplate: (PresetReportTemplate) -> Unit,
-    templateWorkflowReducedMotion: Boolean,
     templateWorkflowSeen: Set<String>,
     onTemplateWorkflowSeen: (String) -> Unit,
+    onCustomTemplateLayoutChange: (CustomTemplateLayout) -> Unit,
+    onNavigateBack: () -> Unit,
+    onOpenReport: () -> Unit,
+    onEditTitle: () -> Unit,
+    onOpenSttSettings: () -> Unit,
+    onManageImages: () -> Unit,
+    menuExpanded: Boolean,
+    onMenuExpandedChange: (Boolean) -> Unit,
     onTextChange: (String) -> Unit,
     onPickExternalFile: () -> Unit,
     onGenerateFromImport: () -> Unit,
@@ -1181,68 +1106,135 @@ private fun ImportRecordingContent(
     val isDark = LocalAppIsDarkTheme.current
     val doodleSkin = rememberDoodleSkin(isDark)
     val palette = if (isDark) siriDarkPalette() else siriLightPalette()
-    val isBusy = uiState.isImportingAudio || uiState.isTranscribing || uiState.isGeneratingReport
+    val isTranscribingAudio = uiState.isImportingAudio || uiState.isTranscribing
+    val isBusy = isTranscribingAudio || uiState.isGeneratingReport
     val hasContent = uiState.manualTextInput.isNotBlank() || uiState.liveTranscript.isNotBlank()
+    val templateName = uiState.selectedRecordingTemplateName.orEmpty()
+    val templateChosen = templateName.isNotBlank()
+    // Typing by hand is the one path that needs the editor before any content
+    // exists, so it is an explicit opt-out from the workflow canvas.
+    var manualEntry by remember { mutableStateOf(false) }
     // Mirror 即刻倾听: the workflow canvas owns the page until there is real
-    // content, then the editable panel takes over.
-    val showWorkflowCanvas = !hasContent &&
-        !isBusy &&
-        !uiState.selectedRecordingTemplateName.isNullOrBlank()
+    // content, then the editable panel takes over. Transcription keeps the
+    // canvas up so the status chip can carry live progress.
+    val showWorkflowCanvas = !hasContent && !uiState.isGeneratingReport && !manualEntry
+    val chipState = importChipState(uiState, isTranscribingAudio, hasContent, templateName)
 
     Box(modifier = Modifier.fillMaxSize()) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(start = 26.dp, end = layout.pagePadding),
-        verticalArrangement = Arrangement.spacedBy(if (layout.compact) 8.dp else 11.dp)
-    ) {
-        AnimatedVisibility(visible = uiState.error != null) {
-            uiState.error?.let { CompactErrorBanner(error = it, onDismiss = onDismissError) }
-        }
-        if (showWorkflowCanvas) {
-            ImportWorkflowDoodle(
-                progressPercent = null,
-                statusLabel = "选择音频或文档 · 开始转写",
-                modifier = Modifier.weight(1f)
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 10.dp)
+        ) {
+            ImportDoodleTopBar(
+                title = uiState.meetingTitle.ifBlank { "会议记录" },
+                generateEnabled = hasContent && !isBusy,
+                isGeneratingReport = uiState.isGeneratingReport,
+                hasReport = uiState.hasReport && !uiState.isGeneratingReport,
+                menuExpanded = menuExpanded,
+                onMenuExpandedChange = onMenuExpandedChange,
+                onNavigateBack = onNavigateBack,
+                onEditTitle = onEditTitle,
+                onGenerateFromImport = onGenerateFromImport,
+                onOpenSttSettings = onOpenSttSettings,
+                onManageImages = onManageImages,
+                onOpenReport = onOpenReport
             )
-            ImportSourceBar(onPickExternalFile = onPickExternalFile)
-        } else {
-            ReferenceTextInputPanel(
-                text = uiState.manualTextInput,
-                audioTranscript = uiState.liveTranscript,
-                importStatus = uiState.textImportStatus,
-                importedAudioDisplayName = uiState.importedAudioDisplayName,
-                isAudioBusy = uiState.isImportingAudio || uiState.isTranscribing,
-                onTextChange = onTextChange,
-                onPickExternalFile = onPickExternalFile,
-                modifier = Modifier.weight(1f)
-            )
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(start = 14.dp, end = 10.dp, top = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(if (layout.compact) 8.dp else 11.dp)
+            ) {
+                AnimatedVisibility(visible = uiState.error != null) {
+                    uiState.error?.let { CompactErrorBanner(error = it, onDismiss = onDismissError) }
+                }
+                if (showWorkflowCanvas) {
+                    // Picking a bookmark swaps the canvas to that meeting type's
+                    // own sketch, exactly as 即刻倾听 does. The generic import
+                    // pipeline stays as the explainer until one is chosen.
+                    if (templateChosen) {
+                        TemplateWorkflowDoodlePanel(
+                            templateName = templateName,
+                            hasBeenSeen = templateName in templateWorkflowSeen,
+                            onViewed = onTemplateWorkflowSeen,
+                            isDark = isDark,
+                            customTemplateLayout = uiState.customTemplateLayout,
+                            onCustomTemplateLayoutChange = onCustomTemplateLayoutChange,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f)
+                        )
+                    } else {
+                        ImportWorkflowDoodle(
+                            isDark = isDark,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    ImportStatusChip(
+                        state = chipState,
+                        skin = doodleSkin,
+                        modifier = Modifier.align(Alignment.CenterHorizontally)
+                    )
+                    if (!isTranscribingAudio) {
+                        ImportSourceBar(
+                            skin = doodleSkin,
+                            onPickExternalFile = onPickExternalFile,
+                            onManualEntry = { manualEntry = true }
+                        )
+                    }
+                } else {
+                    ReferenceTextInputPanel(
+                        text = uiState.manualTextInput,
+                        audioTranscript = uiState.liveTranscript,
+                        importStatus = uiState.textImportStatus,
+                        importedAudioDisplayName = uiState.importedAudioDisplayName,
+                        isAudioBusy = isTranscribingAudio,
+                        onTextChange = onTextChange,
+                        onPickExternalFile = onPickExternalFile,
+                        modifier = Modifier.weight(1f)
+                    )
+                    if (manualEntry && !hasContent && !isBusy) {
+                        TextButton(
+                            onClick = { manualEntry = false },
+                            modifier = Modifier.align(Alignment.CenterHorizontally)
+                        ) {
+                            Text(text = "返回流程图", color = RecordingMuted, fontSize = 12.sp)
+                        }
+                    }
+                    if (hasContent && !isBusy) {
+                        ImportStatusChip(
+                            state = chipState,
+                            skin = doodleSkin,
+                            modifier = Modifier.align(Alignment.CenterHorizontally)
+                        )
+                        ImportGenerateButton(onGenerateFromImport = onGenerateFromImport, skin = doodleSkin)
+                    }
+                }
+                if (isTranscribingAudio) {
+                    ProcessingStatusRow(
+                        title = "导入音频转写",
+                        stage = uiState.transcriptionProgressStage.ifBlank { "正在处理会议音频" },
+                        actionLabel = "终止",
+                        onAction = onCancelTranscription
+                    )
+                }
+                if (uiState.isGeneratingReport) {
+                    ProcessingStatusRow(
+                        title = "生成会议纪要",
+                        stage = uiState.reportProgressStage.ifBlank { "会议纪要处理中" },
+                        actionLabel = "终止",
+                        onAction = onCancelReport
+                    )
+                }
+            }
         }
-        if (hasContent && !isBusy) {
-            ImportGenerateButton(onGenerateFromImport = onGenerateFromImport, skin = doodleSkin)
-        }
-        if (uiState.isImportingAudio || uiState.isTranscribing) {
-            ProcessingStatusRow(
-                title = "导入音频转写",
-                stage = uiState.transcriptionProgressStage.ifBlank { "正在处理会议音频" },
-                actionLabel = "终止",
-                onAction = onCancelTranscription
-            )
-        }
-        if (uiState.isGeneratingReport) {
-            ProcessingStatusRow(
-                title = "生成会议纪要",
-                stage = uiState.reportProgressStage.ifBlank { "会议纪要处理中" },
-                actionLabel = "终止",
-                onAction = onCancelReport
-            )
-        }
-    }
         // Exactly the 即刻倾听 rail: hidden colour slivers, peek on touch,
         // slide to browse, long press to pin, tap to commit.
         TemplateBookmarkRail(
             templates = uiState.presetTemplates,
-            selectedTemplateName = uiState.selectedRecordingTemplateName.orEmpty(),
+            selectedTemplateName = templateName,
             palette = palette,
             skin = doodleSkin,
             isDark = isDark,
@@ -1250,42 +1242,228 @@ private fun ImportRecordingContent(
             modifier = Modifier
                 .align(Alignment.CenterStart)
                 .fillMaxHeight()
-                .padding(top = 8.dp, bottom = 8.dp)
+                .padding(top = 54.dp, bottom = 16.dp)
         )
     }
 }
 
-/** Compact import affordance shown under the workflow canvas. */
+/** What the status chip says, and how it should look saying it. */
+private enum class ImportChipTone { HINT, PENDING, BUSY, READY }
+
+private data class ImportChipState(val text: String, val tone: ImportChipTone)
+
+private fun importChipState(
+    uiState: RecordingUiState,
+    isTranscribingAudio: Boolean,
+    hasContent: Boolean,
+    templateName: String
+): ImportChipState = when {
+    isTranscribingAudio -> {
+        val stage = uiState.transcriptionProgressStage
+            .ifBlank { uiState.textImportStatus }
+            .ifBlank { "正在转写音频" }
+        val percent = uiState.transcriptionProgressPercent
+        ImportChipState(
+            text = if (percent != null) "$stage · $percent%" else stage,
+            tone = ImportChipTone.BUSY
+        )
+    }
+
+    hasContent -> ImportChipState(
+        text = if (uiState.importedAudioDisplayName.isNotBlank()) {
+            "转写完成 · 可生成纪要"
+        } else {
+            "文字已就绪 · 可生成纪要"
+        },
+        tone = ImportChipTone.READY
+    )
+
+    templateName.isBlank() -> ImportChipState(
+        text = "先从左侧选择模板 · 再导入音频或文档",
+        tone = ImportChipTone.HINT
+    )
+
+    else -> ImportChipState(
+        text = "已选「$templateName」· 导入音频或文档开始转写",
+        tone = ImportChipTone.PENDING
+    )
+}
+
+/**
+ * Hand-drawn top bar for 顷刻成稿, mirroring the recording page's chrome:
+ * doodle back button, an outlined title pill (tap to rename) and doodle
+ * actions on the right.
+ */
 @Composable
-private fun ImportSourceBar(onPickExternalFile: () -> Unit) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
-        color = RecordingSurface,
-        border = BorderStroke(1.dp, RecordingBorder),
-        onClick = onPickExternalFile
+private fun ImportDoodleTopBar(
+    title: String,
+    generateEnabled: Boolean,
+    isGeneratingReport: Boolean,
+    hasReport: Boolean,
+    menuExpanded: Boolean,
+    onMenuExpandedChange: (Boolean) -> Unit,
+    onNavigateBack: () -> Unit,
+    onEditTitle: () -> Unit,
+    onGenerateFromImport: () -> Unit,
+    onOpenSttSettings: () -> Unit,
+    onManageImages: () -> Unit,
+    onOpenReport: () -> Unit
+) {
+    val skin = rememberDoodleSkin(LocalAppIsDarkTheme.current)
+    Row(
+        modifier = Modifier.fillMaxWidth().height(40.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically
+        DoodleIconButton(
+            icon = Icons.AutoMirrored.Filled.ArrowBack,
+            contentDescription = "返回",
+            onClick = onNavigateBack,
+            skin = skin,
+            size = 40.dp
+        )
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .height(36.dp)
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onEditTitle
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            Canvas(modifier = Modifier.matchParentSize()) {
+                doodleRoundRect(
+                    topLeft = Offset.Zero,
+                    size = this.size,
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(18.dp.toPx(), 18.dp.toPx()),
+                    color = skin.ink,
+                    strokeWidth = skin.strokeWidth.toPx(),
+                    wobbleAmplitude = skin.wobbleAmplitude
+                )
+            }
+            Row(
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text(
+                    text = title,
+                    color = skin.ink,
+                    style = MaterialTheme.typography.titleMedium.copy(fontSize = 15.sp, lineHeight = 18.sp),
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                Icon(
+                    imageVector = Icons.Default.Edit,
+                    contentDescription = "修改会议名称",
+                    tint = skin.inkMuted,
+                    modifier = Modifier.size(14.dp)
+                )
+            }
+        }
+        if (isGeneratingReport) {
+            Box(modifier = Modifier.size(40.dp), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    strokeWidth = 2.dp,
+                    color = skin.accentCyan
+                )
+            }
+        } else {
+            DoodleIconButton(
+                icon = Icons.Default.Summarize,
+                contentDescription = "生成会议纪要",
+                onClick = onGenerateFromImport,
+                skin = skin,
+                size = 40.dp,
+                enabled = generateEnabled
+            )
+        }
+        Box {
+            DoodleIconButton(
+                icon = Icons.Default.MoreHoriz,
+                contentDescription = "更多功能",
+                onClick = { onMenuExpandedChange(true) },
+                skin = skin,
+                size = 40.dp
+            )
+            DropdownMenu(
+                expanded = menuExpanded,
+                onDismissRequest = { onMenuExpandedChange(false) }
+            ) {
+                RecordingMenuItem(
+                    icon = Icons.Default.Settings,
+                    text = "识别设置",
+                    onClick = {
+                        onMenuExpandedChange(false)
+                        onOpenSttSettings()
+                    }
+                )
+                RecordingMenuItem(
+                    icon = Icons.Default.AddPhotoAlternate,
+                    text = "会议图片",
+                    onClick = {
+                        onMenuExpandedChange(false)
+                        onManageImages()
+                    }
+                )
+                if (hasReport) {
+                    RecordingMenuItem(
+                        icon = Icons.Default.Description,
+                        text = "查看会议纪要",
+                        onClick = {
+                            onMenuExpandedChange(false)
+                            onOpenReport()
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** Import affordances under the workflow canvas: pick a file, or type by hand. */
+@Composable
+private fun ImportSourceBar(
+    skin: DoodleSkin,
+    onPickExternalFile: () -> Unit,
+    onManualEntry: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().height(52.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        DoodleSourceAction(
+            modifier = Modifier.weight(1f).fillMaxHeight(),
+            skin = skin,
+            accent = skin.accentCyan,
+            onClick = onPickExternalFile
         ) {
             Icon(
                 imageVector = Icons.Default.FolderOpen,
                 contentDescription = null,
-                tint = RecordingPurple,
+                tint = skin.accentCyan,
                 modifier = Modifier.size(18.dp)
             )
             Spacer(Modifier.width(8.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = "选择音频或文档",
-                    color = RecordingInk,
-                    style = MaterialTheme.typography.titleSmall.copy(fontSize = 13.sp)
+                    color = skin.ink,
+                    fontSize = 13.sp,
+                    lineHeight = 15.sp,
+                    fontWeight = FontWeight.Medium
                 )
                 Text(
-                    text = "支持录音文件与文本，导入后自动转写",
-                    color = RecordingMuted,
-                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
+                    text = "录音文件与文本 · 导入后自动转写",
+                    color = skin.inkMuted,
+                    fontSize = 10.sp,
+                    lineHeight = 12.sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -1293,10 +1471,136 @@ private fun ImportSourceBar(onPickExternalFile: () -> Unit) {
             Icon(
                 imageVector = Icons.Default.ChevronRight,
                 contentDescription = null,
-                tint = RecordingMuted,
+                tint = skin.inkMuted,
                 modifier = Modifier.size(18.dp)
             )
         }
+        DoodleSourceAction(
+            modifier = Modifier.width(100.dp).fillMaxHeight(),
+            skin = skin,
+            accent = skin.ink,
+            onClick = onManualEntry
+        ) {
+            Icon(
+                imageVector = Icons.Default.Keyboard,
+                contentDescription = null,
+                tint = skin.ink,
+                modifier = Modifier.size(16.dp)
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                text = "手动输入",
+                color = skin.ink,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium
+            )
+        }
+    }
+}
+
+@Composable
+private fun DoodleSourceAction(
+    modifier: Modifier,
+    skin: DoodleSkin,
+    accent: Color,
+    onClick: () -> Unit,
+    content: @Composable RowScope.() -> Unit
+) {
+    Box(
+        modifier = modifier.clickable(
+            interactionSource = remember { MutableInteractionSource() },
+            indication = null,
+            onClick = onClick
+        )
+    ) {
+        Canvas(modifier = Modifier.matchParentSize()) {
+            doodleRoundRect(
+                topLeft = Offset.Zero,
+                size = size,
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(14.dp.toPx(), 14.dp.toPx()),
+                color = accent,
+                strokeWidth = skin.strokeWidth.toPx(),
+                wobbleAmplitude = skin.wobbleAmplitude
+            )
+        }
+        Row(
+            modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            content = content
+        )
+    }
+}
+
+/**
+ * Chalk-style status marker under the canvas. It is the page's single status
+ * surface: it names the next step before an import, carries transcription
+ * progress, and turns green once there is something to summarise.
+ */
+@Composable
+private fun ImportStatusChip(
+    state: ImportChipState,
+    skin: DoodleSkin,
+    modifier: Modifier = Modifier
+) {
+    val ready = Color(0xFF3FB950)
+    val accent = when (state.tone) {
+        ImportChipTone.HINT -> skin.inkMuted
+        ImportChipTone.PENDING, ImportChipTone.BUSY -> skin.accentCyan
+        ImportChipTone.READY -> ready
+    }
+    Row(
+        modifier = modifier
+            .height(28.dp)
+            .drawBehind {
+                doodleRoundRect(
+                    topLeft = Offset.Zero,
+                    size = size,
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(size.height / 2f, size.height / 2f),
+                    color = accent,
+                    strokeWidth = 1.5.dp.toPx(),
+                    wobbleAmplitude = skin.wobbleAmplitude * 0.6f
+                )
+            }
+            .padding(horizontal = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        when (state.tone) {
+            ImportChipTone.BUSY -> CircularProgressIndicator(
+                modifier = Modifier.size(12.dp),
+                strokeWidth = 1.5.dp,
+                color = accent
+            )
+
+            ImportChipTone.HINT -> Icon(
+                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                contentDescription = null,
+                tint = accent,
+                modifier = Modifier.size(13.dp)
+            )
+
+            ImportChipTone.PENDING -> Icon(
+                imageVector = Icons.Default.FolderOpen,
+                contentDescription = null,
+                tint = accent,
+                modifier = Modifier.size(13.dp)
+            )
+
+            ImportChipTone.READY -> Icon(
+                imageVector = Icons.Default.Check,
+                contentDescription = null,
+                tint = accent,
+                modifier = Modifier.size(13.dp)
+            )
+        }
+        Text(
+            text = state.text,
+            color = accent,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 
@@ -2133,18 +2437,9 @@ private fun ReferenceTextInputPanel(
     modifier: Modifier = Modifier
 ) {
     val isDark = LocalAppIsDarkTheme.current
-    Surface(
-        modifier = modifier
-            .fillMaxWidth()
-            .shadow(
-                elevation = if (isDark) 4.dp else 5.dp,
-                shape = RoundedCornerShape(18.dp),
-                ambientColor = if (isDark) Color.Black.copy(0.4f) else Color.Black.copy(0.06f)
-            ),
-        shape = RoundedCornerShape(18.dp),
-        color = RecordingSurface,
-        border = BorderStroke(1.dp, RecordingBorder)
-    ) {
+    // Same hand-drawn frame as the recording page's transcript card, so the
+    // editor reads as part of the doodle chrome rather than a Material card.
+    DoodleCard(skin = rememberDoodleSkin(isDark), modifier = modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier.padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)

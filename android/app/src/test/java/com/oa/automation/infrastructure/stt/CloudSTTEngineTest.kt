@@ -57,6 +57,7 @@ class CloudSTTEngineTest {
             assertTrue(multipart.contains("name=\"language\""))
             assertTrue(multipart.contains("en"))
             assertTrue(multipart.contains("name=\"file\""))
+            assertTrue(!multipart.contains("speaker_diarization"))
         } finally {
             audio.delete()
         }

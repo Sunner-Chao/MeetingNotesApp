@@ -219,7 +219,8 @@ internal fun SiriRecorderContent(
     val displayedSttEngine = effectiveSttEngineType(
         preferred = uiState.sttEngineType,
         route = uiState.realtimeSttRoute,
-        isRecording = uiState.isRecording
+        isRecording = uiState.isRecording,
+        supportsLocalStt = ProductEdition.current.supportsLocalStt
     )
 
     if (savedAudioDialogVisible && savedAudio != null) {
@@ -1220,6 +1221,26 @@ private fun LocalCloudSttSegmentedControl(
     enabled: Boolean,
     onSttEngineSelected: (STTEngineType) -> Unit
 ) {
+    if (!ProductEdition.current.supportsLocalStt) {
+        // Lite has one managed route; keep the status visible without exposing
+        // a control that cannot be used.
+        Surface(
+            modifier = Modifier.height(34.dp),
+            shape = RoundedCornerShape(17.dp),
+            color = Color.Transparent,
+            border = BorderStroke(1.dp, rememberDoodleSkin(com.oa.automation.ui.theme.LocalAppIsDarkTheme.current).ink)
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp)
+            ) {
+                Icon(Icons.Default.Cloud, contentDescription = null, modifier = Modifier.size(16.dp))
+                Text("云端", style = MaterialTheme.typography.labelSmall)
+            }
+        }
+        return
+    }
     val selectedCloud = sttEngineType == STTEngineType.TENCENT_HYBRID
     val skin = rememberDoodleSkin(com.oa.automation.ui.theme.LocalAppIsDarkTheme.current)
     Box(

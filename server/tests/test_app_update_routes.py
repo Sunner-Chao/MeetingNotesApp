@@ -52,6 +52,9 @@ class AppUpdateRouteTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.headers["cache-control"], "no-store")
             self.assertEqual(response.json()["version_code"], 10210)
+            self.assertEqual(response.json()["product_edition"], "social")
+            self.assertEqual(response.json()["product_name"], "智悟本(Pro)")
+            self.assertEqual(response.json()["application_id"], "com.oa.automation")
             self.assertTrue(response.json()["download_url"].endswith("/api/app-update/android/apk/10210"))
             apk_response = client.get("/api/app-update/android/apk/10210")
             self.assertEqual(apk_response.status_code, 200)
@@ -127,7 +130,7 @@ class AppUpdateRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.headers["content-type"].startswith("text/html"))
         self.assertEqual(response.headers["cache-control"], "no-store")
-        self.assertIn("智悟本 Android 发布中心", response.text)
+        self.assertIn("智悟本(Pro) Android 发布中心", response.text)
         self.assertIn("ZhiWuBen-Android-10211.apk", response.text)
         self.assertIn("ZhiWuBen-Android-10210.apk", response.text)
         self.assertNotIn("ZhiWuBen-Android-10209.apk", response.text)
@@ -182,6 +185,9 @@ class AppUpdateRouteTests(unittest.TestCase):
             response = client.get("/api/app-update/android/light")
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.json()["version_code"], 10259)
+            self.assertEqual(response.json()["product_edition"], "light")
+            self.assertEqual(response.json()["product_name"], "智悟本(Lite)")
+            self.assertEqual(response.json()["application_id"], "com.oa.automation.light")
             self.assertTrue(
                 response.json()["download_url"].endswith(
                     "/api/app-update/android/light/apk/10259"
@@ -209,6 +215,7 @@ class AppUpdateRouteTests(unittest.TestCase):
                 'href="http://testserver/api/app-update/android/light/apk/10259"',
                 directory_response.text,
             )
+            self.assertIn("智悟本(Lite) Android 发布中心", directory_response.text)
             social_response = client.get("/api/app-update/android")
             self.assertEqual(social_response.status_code, 204)
 

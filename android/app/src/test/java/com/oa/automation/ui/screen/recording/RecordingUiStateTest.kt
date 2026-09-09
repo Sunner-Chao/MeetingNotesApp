@@ -186,6 +186,28 @@ class RecordingUiStateTest {
                 isRecording = true
             )
         )
+        assertEquals(
+            STTEngineType.TENCENT_HYBRID,
+            effectiveSttEngineType(
+                preferred = STTEngineType.FASTER_WHISPER,
+                route = RealtimeSttRouteState.LOCAL_ACTIVE,
+                isRecording = true,
+                supportsLocalStt = false
+            )
+        )
+    }
+
+    @Test
+    fun `cloud only product ignores local meeting engine`() {
+        assertEquals(
+            STTEngineType.TENCENT_HYBRID,
+            resolveRestoredSttEngineType(
+                meeting = Meeting(title = "Lite 会议", selectedSttEngineName = STTEngineType.FASTER_WHISPER.name),
+                appEngineType = STTEngineType.FASTER_WHISPER,
+                isGlobalRecording = false,
+                supportsLocalStt = false
+            )
+        )
     }
 
     @Test

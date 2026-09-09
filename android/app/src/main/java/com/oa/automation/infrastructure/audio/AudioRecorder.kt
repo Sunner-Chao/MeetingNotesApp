@@ -29,6 +29,8 @@ class AudioRecorder(private val context: android.content.Context) {
     private var pcmListener: ((ByteArray, Int) -> Unit)? = null
     private var noiseSuppressor: NoiseSuppressor? = null
     private var automaticGainControl: AutomaticGainControl? = null
+    private var captureBufferSize = 0
+    private var audioEnhancementEnabled = true
 
     @Volatile
     private var isRecording = false
@@ -61,6 +63,7 @@ class AudioRecorder(private val context: android.content.Context) {
         private const val CHUNK_DURATION_MS = 1000
         private const val WAV_HEADER_SIZE = 44
         private const val PREFS_RECORDING_KEY = "is_recording_globally"
+        private const val AUDIO_READ_STALL_MS = 3_000L
     }
 
     fun setOnChunkAvailableListener(listener: ((File) -> Unit)?) {
@@ -104,6 +107,8 @@ class AudioRecorder(private val context: android.content.Context) {
             }
 
             val bufferSize = max(minBufferSize, 4096)
+            captureBufferSize = bufferSize
+            audioEnhancementEnabled = enableAudioEnhancement
 
             // The final WAV is referenced by the meeting row and must survive
             // cache eviction after a study journey is completed.
@@ -309,6 +314,7 @@ class AudioRecorder(private val context: android.content.Context) {
     private fun captureLoop(bufferSize: Int) {
         val buffer = ByteArray(bufferSize)
         val chunkSizeBytes = SAMPLE_RATE * CHANNEL_COUNT * (BITS_PER_SAMPLE / 8) * CHUNK_DURATION_MS / 1000
+        var emptyReadSinceMs: Long? = null
 
         while (isRecording) {
             if (isPaused) {
@@ -321,9 +327,41 @@ class AudioRecorder(private val context: android.content.Context) {
                 continue
             }
             val readBytes = audioRecord?.read(buffer, 0, buffer.size) ?: AudioRecord.ERROR_INVALID_OPERATION
-            if (readBytes <= 0) {
+            if (readBytes == AudioRecord.ERROR_DEAD_OBJECT || readBytes == AudioRecord.ERROR_INVALID_OPERATION) {
+                // Some devices invalidate AudioRecord when another app, a
+                // Bluetooth route, or the OS audio policy takes ownership.
+                // The old loop kept spinning forever with no PCM, leaving the
+                // WAV and STT stream apparently alive but permanently silent.
+                if (!isPaused && isRecording) {
+                    Log.w(TAG, "AudioRecord became invalid ($readBytes), attempting recovery")
+                    if (!recoverAudioRecord()) {
+                        try {
+                            Thread.sleep(120)
+                        } catch (interrupted: InterruptedException) {
+                            Thread.currentThread().interrupt()
+                            break
+                        }
+                    }
+                }
                 continue
             }
+            if (readBytes <= 0) {
+                val now = android.os.SystemClock.elapsedRealtime()
+                val emptySince = emptyReadSinceMs ?: now.also { emptyReadSinceMs = it }
+                if (!isPaused && isRecording && now - emptySince >= AUDIO_READ_STALL_MS) {
+                    Log.w(TAG, "AudioRecord returned empty frames for ${now - emptySince}ms, attempting recovery")
+                    recoverAudioRecord()
+                    emptyReadSinceMs = null
+                }
+                try {
+                    Thread.sleep(20)
+                } catch (interrupted: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    break
+                }
+                continue
+            }
+            emptyReadSinceMs = null
 
             // pause() stops AudioRecord while a read may still be in flight.
             // Discard that tail frame so pausing never appends another PCM
@@ -350,6 +388,33 @@ class AudioRecorder(private val context: android.content.Context) {
                 }
             }
         }
+    }
+
+    /** Recreate the native capture object without closing the current WAV. */
+    @Synchronized
+    private fun recoverAudioRecord(): Boolean {
+        if (!isRecording || isPaused || captureBufferSize <= 0) return false
+        val previous = audioRecord
+        runCatching { previous?.stop() }
+        runCatching { previous?.release() }
+        releaseAudioEffects()
+        val replacement = createInitializedRecorder(
+            bufferSize = captureBufferSize,
+            enableAudioEnhancement = audioEnhancementEnabled
+        ) ?: run {
+            audioRecord = null
+            return false
+        }
+        val recorder = replacement.first
+        return runCatching {
+            attachAudioEffects(recorder, replacement.second, audioEnhancementEnabled)
+            recorder.startRecording()
+            check(recorder.recordingState == AudioRecord.RECORDSTATE_RECORDING)
+            audioRecord = recorder
+        }.onFailure {
+            runCatching { recorder.release() }
+            audioRecord = null
+        }.isSuccess
     }
 
     private fun flushChunk(force: Boolean) {

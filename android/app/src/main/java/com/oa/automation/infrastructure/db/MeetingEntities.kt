@@ -12,7 +12,7 @@ import com.oa.automation.domain.model.Report
 import com.oa.automation.domain.model.Task
 import com.oa.automation.domain.model.Transcript
 
-@Entity(tableName = "meetings")
+@Entity(tableName = "meetings", indices = [Index(value = ["ownerId"])])
 data class MeetingEntity(
     @PrimaryKey val id: String,
     val title: String,
@@ -21,7 +21,9 @@ data class MeetingEntity(
     val audioFilePath: String?,
     val origin: String,
     val selectedTemplateName: String? = null,
-    val selectedSttEngineName: String? = null
+    val selectedSttEngineName: String? = null,
+    /** Account that owns this local row. Null is retained for legacy/anonymous rows. */
+    val ownerId: String? = null
 )
 
 @Entity(
@@ -56,7 +58,7 @@ data class TranscriptEntity(
     val createdAt: Long
 )
 
-@Entity(tableName = "reports")
+@Entity(tableName = "reports", indices = [Index(value = ["ownerId"])])
 data class ReportEntity(
     @PrimaryKey val id: String,
     val meetingId: String,
@@ -70,7 +72,9 @@ data class ReportEntity(
     val templateName: String = "",
     val workspaceBlockOrder: List<String> = emptyList(),
     val hiddenWorkspaceBlocks: List<String> = emptyList(),
-    val generatedAt: Long
+    val generatedAt: Long,
+    /** Account that owns this local row. Null is retained for legacy/anonymous rows. */
+    val ownerId: String? = null
 )
 
 @Entity(
@@ -136,7 +140,8 @@ fun MeetingEntity.toDomain() = Meeting(
     audioFilePath = audioFilePath,
     origin = MeetingOrigin.fromPersisted(origin),
     selectedTemplateName = selectedTemplateName,
-    selectedSttEngineName = selectedSttEngineName
+    selectedSttEngineName = selectedSttEngineName,
+    ownerId = ownerId
 )
 
 fun MeetingAudioSegmentEntity.toDomain() = MeetingAudioSegment(
@@ -167,7 +172,8 @@ fun Meeting.toEntity() = MeetingEntity(
     audioFilePath = audioFilePath,
     origin = origin.name,
     selectedTemplateName = selectedTemplateName,
-    selectedSttEngineName = selectedSttEngineName
+    selectedSttEngineName = selectedSttEngineName,
+    ownerId = ownerId
 )
 
 fun TranscriptEntity.toDomain() = Transcript(
@@ -205,7 +211,8 @@ fun ReportEntity.toDomain() = Report(
     templateName = templateName,
     workspaceBlockOrder = workspaceBlockOrder,
     hiddenWorkspaceBlocks = hiddenWorkspaceBlocks,
-    generatedAt = generatedAt
+    generatedAt = generatedAt,
+    ownerId = ownerId
 )
 
 fun Report.toEntity() = ReportEntity(
@@ -221,7 +228,8 @@ fun Report.toEntity() = ReportEntity(
     templateName = templateName,
     workspaceBlockOrder = workspaceBlockOrder,
     hiddenWorkspaceBlocks = hiddenWorkspaceBlocks,
-    generatedAt = generatedAt
+    generatedAt = generatedAt,
+    ownerId = ownerId
 )
 
 fun MeetingAttachmentEntity.toDomain() = MeetingAttachment(

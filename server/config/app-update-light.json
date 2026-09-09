@@ -1,7 +1,11 @@
 {
-  "version_code": 10264,
-  "version_name": "1.2.64",
+  "version_code": 10270,
+  "version_name": "1.2.70",
+  "product_edition": "light",
+  "product_name": "\u667a\u609f\u672c(Lite)",
+  "application_id": "com.oa.automation.light",
   "mandatory": false,
-  "release_notes": "本地模型新增 IPv4 通道：移动数据下也能直连本机 large-v3-turbo 模型，不再因为运营商没有 IPv6 而失败；本地不可用时自动转云端的选择会在本次会议内保持，暂停续录与重新打开都不会退回本地。",
-  "published_at": "2026-09-04T14:37:25+08:00"
+  "release_notes": "\u667a\u609f\u672c Lite \u5185\u6d4b\u9636\u6bb5\u6682\u505c\u672c\u5730 STT\uff0c\u7edf\u4e00\u4f7f\u7528\u817e\u8baf\u4e91 STT\uff1b\u52a0\u56fa Room \u4f1a\u8bae\u4e0e\u7eaa\u8981\u7684\u5f53\u524d\u8d26\u6237 ownerId \u8fc7\u6ee4\uff0c\u5207\u6362\u8d26\u53f7\u65f6\u6e05\u7406\u672c\u5730\u5de5\u4f5c\u533a\uff0c\u907f\u514d\u6570\u636e\u4e32\u7528\u548c\u4ee4\u724c\u6c61\u67d3\u3002",
+  "published_at": "2026-09-09T00:00:00+08:00",
+  "apk_filename": "ZhiWuBen-Android-10270.apk"
 }

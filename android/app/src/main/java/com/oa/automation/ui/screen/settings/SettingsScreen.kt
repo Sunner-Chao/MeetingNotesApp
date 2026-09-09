@@ -16,16 +16,21 @@ import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.BrightnessAuto
@@ -98,6 +103,7 @@ import com.oa.automation.domain.model.CodexReasoningEffort
 import com.oa.automation.domain.model.LLMConfig
 import com.oa.automation.domain.model.LLMEngineType
 import com.oa.automation.domain.model.STTConfig
+import com.oa.automation.domain.model.ProductEdition
 import com.oa.automation.domain.model.TencentAsrBudgetPolicy
 import com.oa.automation.ui.theme.LocalAppIsDarkTheme
 
@@ -190,6 +196,25 @@ fun SettingsScreen(
                     topBar = {
                         SettingsTopBar(onNavigateBack = onNavigateBack)
                     },
+                    bottomBar = {
+                        // Pinned so the version line and the update/reset actions stay fully
+                        // visible even when the settings content is taller than the screen.
+                        if (!uiState.isLoading) {
+                            FooterStrip(
+                                isCheckingUpdate = uiState.isCheckingUpdate,
+                                isDownloadingUpdate = uiState.isDownloadingUpdate,
+                                updateProgress = uiState.updateProgress,
+                                availableVersion = uiState.availableUpdate?.versionName,
+                                onCheckUpdate = viewModel::checkForAppUpdate,
+                                onDownloadUpdate = viewModel::downloadAndInstallUpdate,
+                                onReset = { showResetDialog = true },
+                                modifier = Modifier
+                                    .windowInsetsPadding(WindowInsets.navigationBars)
+                                    .padding(horizontal = 14.dp)
+                                    .padding(top = 4.dp, bottom = 10.dp)
+                            )
+                        }
+                    },
                     snackbarHost = { SettingsMessageSnackbar(message = uiState.message) }
                 ) { paddingValues ->
                     if (uiState.isLoading) {
@@ -206,6 +231,7 @@ fun SettingsScreen(
                             modifier = Modifier
                                 .fillMaxSize()
                                 .padding(paddingValues)
+                                .verticalScroll(rememberScrollState())
                                 .padding(horizontal = 14.dp)
                                 .padding(top = 2.dp, bottom = 8.dp),
                             verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -243,12 +269,14 @@ fun SettingsScreen(
                                         .fillMaxHeight()
                                 )
                             }
-                            NetworkCard(
-                                config = uiState.appConfig.sttConfig,
-                                isTesting = uiState.isTestingSTT,
-                                onEndpointChange = viewModel::updateSTTLocalEndpoint,
-                                onTestConnection = viewModel::testSTTConnection
-                            )
+                            if (ProductEdition.current.supportsLocalStt) {
+                                NetworkCard(
+                                    config = uiState.appConfig.sttConfig,
+                                    isTesting = uiState.isTestingSTT,
+                                    onEndpointChange = viewModel::updateSTTLocalEndpoint,
+                                    onTestConnection = viewModel::testSTTConnection
+                                )
+                            }
                             FloatingBallRow(
                                 enabled = uiState.floatingBallEnabled,
                                 onChange = viewModel::updateFloatingBallEnabled
@@ -257,7 +285,6 @@ fun SettingsScreen(
                                 reducedMotion = uiState.templateWorkflowReducedMotion,
                                 onChange = viewModel::updateTemplateWorkflowReducedMotion
                             )
-                            Spacer(modifier = Modifier.weight(1f))
                             if (BuildConfig.DEBUG) {
                                 DebugDataRow(
                                     isUpdating = uiState.isUpdatingDemoData,
@@ -265,15 +292,6 @@ fun SettingsScreen(
                                     onClear = viewModel::clearDemoData
                                 )
                             }
-                            FooterStrip(
-                                isCheckingUpdate = uiState.isCheckingUpdate,
-                                isDownloadingUpdate = uiState.isDownloadingUpdate,
-                                updateProgress = uiState.updateProgress,
-                                availableVersion = uiState.availableUpdate?.versionName,
-                                onCheckUpdate = viewModel::checkForAppUpdate,
-                                onDownloadUpdate = viewModel::downloadAndInstallUpdate,
-                                onReset = { showResetDialog = true }
-                            )
                         }
                     }
                 }
@@ -669,14 +687,19 @@ private fun SttOverviewCard(
     modifier: Modifier = Modifier
 ) {
     val palette = LocalSettingsPalette.current
-    val isCloudEngine = config.engineType == com.oa.automation.domain.model.STTEngineType.TENCENT_HYBRID
+    val displayedEngine = if (ProductEdition.current.supportsLocalStt) {
+        config.engineType
+    } else {
+        com.oa.automation.domain.model.STTEngineType.TENCENT_HYBRID
+    }
+    val isCloudEngine = displayedEngine == com.oa.automation.domain.model.STTEngineType.TENCENT_HYBRID
     SettingsCard(modifier = modifier) {
         Column(
             modifier = Modifier.padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             CardHeader(title = "语音转文本", icon = Icons.Default.Mic, onClick = onOpenDetail)
-            ValuePill(label = "当前引擎", value = config.engineType.displayName, onClick = onOpenDetail)
+            ValuePill(label = "当前引擎", value = displayedEngine.displayName, onClick = onOpenDetail)
             CompactToggleRow(
                 title = "语音增强",
                 subtitle = "默认开启 · 降噪与音量优化",
@@ -1113,11 +1136,12 @@ private fun FooterStrip(
     availableVersion: String?,
     onCheckUpdate: () -> Unit,
     onDownloadUpdate: () -> Unit,
-    onReset: () -> Unit
+    onReset: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val palette = LocalSettingsPalette.current
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(modifier = Modifier.weight(1f)) {

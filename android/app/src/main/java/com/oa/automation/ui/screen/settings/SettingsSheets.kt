@@ -88,6 +88,7 @@ import com.oa.automation.domain.model.LLMConfig
 import com.oa.automation.domain.model.LLMEngineType
 import com.oa.automation.domain.model.STTConfig
 import com.oa.automation.domain.model.STTEngineType
+import com.oa.automation.domain.model.ProductEdition
 import com.oa.automation.domain.model.TencentAsrBudgetPolicy
 import com.oa.automation.domain.model.TencentAsrTier
 import com.oa.automation.domain.model.TencentAsrTierPolicy
@@ -115,8 +116,13 @@ internal fun SttDetailSheetContent(
 ) {
     var engineExpanded by remember { mutableStateOf(false) }
     var modelExpanded by remember { mutableStateOf(false) }
+    val displayedEngine = if (ProductEdition.current.supportsLocalStt) {
+        config.engineType
+    } else {
+        STTEngineType.TENCENT_HYBRID
+    }
 
-    val modelOptions = when (config.engineType) {
+    val modelOptions = when (displayedEngine) {
         STTEngineType.FASTER_WHISPER -> listOf("large-v3-turbo", "large-v3", "medium", "small", "base", "tiny")
         STTEngineType.TENCENT_HYBRID -> emptyList()
     }
@@ -141,19 +147,32 @@ internal fun SttDetailSheetContent(
             color = SettingsText
         )
 
-        EngineTypeDropdown(
-            currentType = config.engineType,
-            expanded = engineExpanded,
-            enabled = !isSwitching,
-            onExpandedChange = { engineExpanded = it },
-            onSelect = onEngineTypeChange
-        )
+        if (ProductEdition.current.supportsLocalStt) {
+            EngineTypeDropdown(
+                currentType = config.engineType,
+                expanded = engineExpanded,
+                enabled = !isSwitching,
+                onExpandedChange = { engineExpanded = it },
+                onSelect = onEngineTypeChange
+            )
+        } else {
+            OutlinedTextField(
+                value = displayedEngine.displayName,
+                onValueChange = {},
+                readOnly = true,
+                enabled = false,
+                label = { Text("转写引擎") },
+                leadingIcon = { Icon(Icons.Default.Cloud, contentDescription = null, modifier = Modifier.size(20.dp)) },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(8.dp)
+            )
+        }
 
         AnimatedVisibility(visible = isSwitching) {
             SwitchingIndicator()
         }
 
-        if (config.engineType == STTEngineType.TENCENT_HYBRID) {
+        if (displayedEngine == STTEngineType.TENCENT_HYBRID) {
             TencentAsrTierSelector(
                 selectedTier = config.tencentAsrTier,
                 policy = tencentAsrPolicy,
@@ -166,7 +185,7 @@ internal fun SttDetailSheetContent(
                 error = tencentAsrPolicyError,
                 onRefresh = onRefreshTencentAsrPolicy
             )
-        } else {
+        } else if (ProductEdition.current.supportsLocalStt) {
             if (modelOptions.isNotEmpty() && localModel !in modelOptions) {
                 localModel = modelOptions.first()
                 onLocalModelChange(localModel)

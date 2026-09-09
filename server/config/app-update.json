@@ -1,8 +1,11 @@
 {
-  "version_code": 10262,
-  "version_name": "1.2.62",
+  "version_code": 10264,
+  "version_name": "1.2.64",
+  "product_edition": "social",
+  "product_name": "智悟本(Pro)",
+  "application_id": "com.oa.automation",
   "mandatory": false,
-  "release_notes": "修复顷刻成稿纯文本导入生成路径；导入文本先保存为转写记录，再生成会议纪要，保持即刻倾听与导入音频流程稳定。",
-  "published_at": "2026-09-04T18:00:00+08:00",
-  "apk_filename": "ZhiWuBen-Android-10262.apk"
+  "release_notes": "首页统一为两列布局：入口磁贴与记录卡同宽同圆角；最近记录改为双列卡片，新增波形与文稿缩略图、状态徽标和筛选统计；会议时长超过一小时改用小时显示；修复设置页底部版本与操作按钮被截断的问题。",
+  "published_at": "2026-09-07T21:20:00+08:00",
+  "apk_filename": "ZhiWuBen-Android-10264.apk"
 }

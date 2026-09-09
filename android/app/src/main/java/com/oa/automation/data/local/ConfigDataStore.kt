@@ -41,9 +41,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.net.HttpURLConnection
 import java.net.URI
-import java.net.URL
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "oa_automation_settings")
 
@@ -52,6 +50,20 @@ private data class ReportTemplateAsset(
     val fileName: String,
     val subtitle: String
 )
+
+internal fun shouldResetLocalWorkspace(
+    currentOwnerId: String?,
+    accountId: String,
+    activeSessionAccountId: String? = null
+): Boolean {
+    val target = accountId.trim()
+    if (target.isBlank()) return false
+    val owner = currentOwnerId?.trim()?.takeIf { it.isNotBlank() }
+    if (owner != null) return owner != target
+    // First release after adding local ownership: the active signed-in session
+    // is the only safe proof that existing local records belong to this account.
+    return activeSessionAccountId?.trim() != target
+}
 
 internal fun resolveAgentGatewayEndpoint(
     savedEndpoint: String?,
@@ -103,8 +115,6 @@ class ConfigDataStore(private val context: Context) {
     private val defaultLlmCloudApiKey = BuildConfig.DEFAULT_LLM_CLOUD_API_KEY.takeIf { it.isNotBlank() }
     private val defaultLlmCloudModel = BuildConfig.DEFAULT_LLM_CLOUD_MODEL.takeIf { it.isNotBlank() }
     private val defaultRelayBaseUrl = BuildConfig.DEFAULT_RELAY_BASE_URL.takeIf { it.isNotBlank() }
-    // 常见 STT 服务本地端口
-    private val commonSttPorts = listOf(8888, 8000, 8001, 8002, 8889, 8890)
     private val isAndroidEmulator: Boolean =
         Build.FINGERPRINT.startsWith("generic") ||
             Build.FINGERPRINT.startsWith("unknown") ||
@@ -121,10 +131,6 @@ class ConfigDataStore(private val context: Context) {
     }
 
     companion object {
-        // 公网 STT 服务地址
-        const val PUBLIC_STT_ENDPOINT = STTConfig.DEFAULT_LOCAL_ENDPOINT
-        // 默认本地 endpoint（作为备选）
-        const val LOCAL_STT_ENDPOINT_FALLBACK = "http://localhost:8888"
         // STT Config Keys
         private val STT_ENGINE_TYPE = stringPreferencesKey("stt_engine_type")
         private val STT_LANGUAGE = stringPreferencesKey("stt_language")
@@ -163,6 +169,8 @@ class ConfigDataStore(private val context: Context) {
         private val LOGGED_IN_USERNAME = stringPreferencesKey("logged_in_username")
         private val ACCOUNT_SESSION_JSON = stringPreferencesKey("account_session_json")
         private val ACCOUNT_ENDPOINT = stringPreferencesKey("account_endpoint")
+        /** The last account that owned this device's local workspace. Kept across logout. */
+        private val LOCAL_WORKSPACE_ACCOUNT_ID = stringPreferencesKey("local_workspace_account_id")
         private val ACCOUNT_STT_ACCESS_TOKEN = stringPreferencesKey("account_stt_access_token")
         private val STT_USE_ACCOUNT_TOKEN = stringPreferencesKey("stt_use_account_token")
         private val SEEN_NOTIFICATION_EVENTS = stringSetPreferencesKey("seen_notification_events")
@@ -337,13 +345,7 @@ class ConfigDataStore(private val context: Context) {
                     it == STTConfig.LEGACY_LOCAL_ENDPOINT ||
                     !BuildConfig.DEBUG && it.isDevelopmentOnlySttEndpoint()
             }
-        val savedSttEndpoint = rawSavedSttEndpoint
-            ?.takeUnless { BuildConfig.DEBUG && isAndroidEmulator && it.isKnownPublicSttEndpoint() }
-            ?: if (BuildConfig.DEBUG && isAndroidEmulator) {
-                STTConfig.AVD_HOST_ENDPOINT
-            } else {
-                STTConfig.DEFAULT_LOCAL_ENDPOINT
-            }
+        val savedSttEndpoint = resolveLocalSttEndpoint(rawSavedSttEndpoint)
         val savedCloudEndpoint = preferences[STT_CLOUD_ENDPOINT] ?: STTConfig.DEFAULT_CLOUD_ENDPOINT
         val savedCloudModel = preferences[STT_CLOUD_MODEL] ?: STTConfig.DEFAULT_CLOUD_MODEL
         val savedTencentTier = preferences[STT_TENCENT_ASR_TIER]?.let {
@@ -359,7 +361,7 @@ class ConfigDataStore(private val context: Context) {
                 TencentAsrTier.STANDARD_FREE.cloudModel,
                 TencentAsrTier.PRECISION_PAID.cloudModel
             ) && !savedCloudEndpoint.isNullOrBlank()
-        val effectiveSttEngine = when {
+        val configuredSttEngine = when {
             savedSttEngineName == "CLOUD_ASR" && isManagedTencentCloud -> {
                 STTEngineType.TENCENT_HYBRID
             }
@@ -367,6 +369,13 @@ class ConfigDataStore(private val context: Context) {
             else -> savedSttEngineName?.let {
                 runCatching { STTEngineType.valueOf(it) }.getOrNull()
             } ?: STTEngineType.FASTER_WHISPER
+        }
+        // Lite is a cloud-only product. Keep this normalization at the storage
+        // boundary so legacy preferences cannot re-enable the local model.
+        val effectiveSttEngine = if (ProductEdition.current.supportsLocalStt) {
+            configuredSttEngine
+        } else {
+            STTEngineType.TENCENT_HYBRID
         }
 
         AppConfig(
@@ -527,135 +536,6 @@ class ConfigDataStore(private val context: Context) {
                     )
                 }
             }.getOrNull()
-        }
-    }
-
-    /**
-     * 检测并持久化可用的 STT 服务地址：优先公网花生壳，失败则尝试内网各端口
-     * 检测结果会保存到 DataStore，下次启动直接使用
-     */
-    suspend fun detectAndPersistSttEndpoint() {
-        val availableEndpoint = detectAvailableSttEndpoint()
-        context.dataStore.edit { preferences ->
-            preferences[STT_LOCAL_ENDPOINT] = availableEndpoint
-        }
-    }
-
-    /**
-     * 获取已保存的 STT endpoint（同步读取）
-     */
-    fun getSavedSttEndpoint(): String? {
-        return try {
-            val prefs = context.getSharedPreferences("oa_automation_settings", android.content.Context.MODE_PRIVATE)
-            prefs.getString("stt_local_endpoint", null)
-        } catch (_: Exception) {
-            null
-        }
-    }
-
-    /**
-     * 检测可用的 STT 服务地址。
-     * 优先级：用户保存的地址 > 公网服务 > 内网自动检测
-     */
-    suspend fun detectAvailableSttEndpoint(): String = withContext(Dispatchers.IO) {
-        // 第一优先级：用户已在设置页面保存了自定义地址，直接用
-        val savedEndpoint = getSavedSttEndpointFromDataStore()
-        if (savedEndpoint != null) {
-            android.util.Log.i("ConfigDataStore", "STT: 使用用户保存的地址 -> $savedEndpoint")
-            return@withContext savedEndpoint
-        }
-
-        // 第二优先级：公网 STT 服务
-        android.util.Log.i("ConfigDataStore", "STT: 尝试公网 -> $PUBLIC_STT_ENDPOINT")
-        if (isEndpointReachable(PUBLIC_STT_ENDPOINT)) {
-            android.util.Log.i("ConfigDataStore", "STT: 公网可用")
-            return@withContext PUBLIC_STT_ENDPOINT
-        }
-
-        // 第三优先级：内网自动检测
-        val localIp = getLocalIpAddress()
-        android.util.Log.i("ConfigDataStore", "STT: 检测本机内网 IP = $localIp")
-
-        if (localIp != null) {
-            for (port in commonSttPorts) {
-                val endpoint = "http://$localIp:$port"
-                android.util.Log.i("ConfigDataStore", "STT: 尝试内网 -> $endpoint")
-                if (isEndpointReachable(endpoint)) {
-                    android.util.Log.i("ConfigDataStore", "STT: 内网可用 -> $endpoint")
-                    return@withContext endpoint
-                }
-            }
-            android.util.Log.w("ConfigDataStore", "STT: 内网所有端口均不可达")
-        } else {
-            android.util.Log.w("ConfigDataStore", "STT: 未检测到内网 IP（可能在 VPN/移动网络）")
-        }
-
-        // 兜底：公网地址
-        android.util.Log.w("ConfigDataStore", "STT: 所有地址均不可达，使用公网兜底")
-        return@withContext PUBLIC_STT_ENDPOINT
-    }
-
-    /**
-     * 从 DataStore 读取用户手动保存的 STT endpoint
-     */
-    private suspend fun getSavedSttEndpointFromDataStore(): String? = withContext(Dispatchers.IO) {
-        try {
-            val prefs = context.dataStore.data.first()
-            prefs[STT_LOCAL_ENDPOINT]?.takeIf { it.isNotBlank() && it != LOCAL_STT_ENDPOINT_FALLBACK }
-        } catch (_: Exception) {
-            null
-        }
-    }
-
-    /**
-     * 检测地址是否可达（仅做 HTTP HEAD 请求，超时 3s）
-     */
-    private fun isEndpointReachable(endpoint: String): Boolean {
-        return try {
-            val url = URL("${endpoint.removeSuffix("/")}/health")
-            val connection = url.openConnection() as? HttpURLConnection
-            connection?.let {
-                it.requestMethod = "HEAD"
-                it.connectTimeout = 3000
-                it.readTimeout = 3000
-                try {
-                    it.connect()
-                    val code = it.responseCode
-                    (code in 200..499)
-                } finally {
-                    it.disconnect()
-                }
-            } ?: false
-        } catch (_: Exception) {
-            false
-        }
-    }
-
-    /**
-     * 获取本机在内网的 IP 地址
-     */
-    private fun getLocalIpAddress(): String? {
-        return try {
-            val interfaces = java.net.NetworkInterface.getNetworkInterfaces()
-            while (interfaces.hasMoreElements()) {
-                val networkInterface = interfaces.nextElement()
-                if (networkInterface.isLoopback || networkInterface.isVirtual) continue
-                val addresses = networkInterface.inetAddresses
-                while (addresses.hasMoreElements()) {
-                    val address = addresses.nextElement()
-                    if (!address.isLoopbackAddress && address is java.net.Inet4Address) {
-                        val ip = address.hostAddress ?: continue
-                        // 私有 IP 范围: 192.168.x.x, 10.x.x.x, 172.16-31.x.x
-                        if (ip.startsWith("192.168.") || ip.startsWith("10.") ||
-                            ip.matches(Regex("^172\\.(1[6-9]|2\\d|3[0-1])\\.\\d+\\.\\d+$"))) {
-                            return ip
-                        }
-                    }
-                }
-            }
-            null
-        } catch (_: Exception) {
-            null
         }
     }
 
@@ -867,38 +747,83 @@ class ConfigDataStore(private val context: Context) {
                     preferences[STT_LOCAL_MODEL] = STTEngineType.FASTER_WHISPER.defaultModel
                 }
             }
-            preferences[DEFAULT_PROFILE_VERSION] = "16"
+            if (profileVersion < 17) {
+                val savedEndpoint = preferences[STT_LOCAL_ENDPOINT]
+                val normalizedEndpoint = resolveLocalSttEndpoint(savedEndpoint)
+                if (savedEndpoint != normalizedEndpoint) {
+                    preferences[STT_LOCAL_ENDPOINT] = normalizedEndpoint
+                }
+            }
+            if (!ProductEdition.current.supportsLocalStt) {
+                preferences[STT_ENGINE_TYPE] = STTEngineType.TENCENT_HYBRID.name
+                preferences[STT_CLOUD_MODEL] = TencentAsrTier.STANDARD_FREE.cloudModel
+                STTConfig.DEFAULT_CLOUD_ENDPOINT
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { preferences[STT_CLOUD_ENDPOINT] = it }
+            }
+            preferences[DEFAULT_PROFILE_VERSION] = "18"
         }
+    }
+
+    /** Keep old public-root and cloud paths from being used as the local route. */
+    private fun resolveLocalSttEndpoint(savedEndpoint: String?): String {
+        val candidate = savedEndpoint?.trim()?.trimEnd('/').orEmpty()
+        if (candidate.isBlank() || candidate == STTConfig.LEGACY_LOCAL_ENDPOINT) {
+            return if (BuildConfig.DEBUG && isAndroidEmulator) {
+                STTConfig.AVD_HOST_ENDPOINT
+            } else {
+                STTConfig.DEFAULT_LOCAL_ENDPOINT
+            }
+        }
+        val host = runCatching { URI(candidate).host.orEmpty().lowercase() }.getOrDefault("")
+        val path = runCatching { URI(candidate).path.orEmpty().trimEnd('/') }.getOrDefault("")
+        if (BuildConfig.DEBUG && isAndroidEmulator && candidate.isKnownPublicSttEndpoint()) {
+            return STTConfig.AVD_HOST_ENDPOINT
+        }
+        if (!BuildConfig.DEBUG && candidate.isKnownPublicSttEndpoint() && path != "/stt-local") {
+            return STTConfig.DEFAULT_LOCAL_ENDPOINT
+        }
+        return if (host.isBlank()) STTConfig.DEFAULT_LOCAL_ENDPOINT else candidate
     }
 
     /**
      * Update STT configuration
      */
     suspend fun updateSTTConfig(config: STTConfig) {
+        val effectiveConfig = if (ProductEdition.current.supportsLocalStt) {
+            config
+        } else {
+            config.copy(
+                engineType = STTEngineType.TENCENT_HYBRID,
+                cloudEndpoint = config.cloudEndpoint ?: STTConfig.DEFAULT_CLOUD_ENDPOINT,
+                cloudApiKey = null,
+                cloudModel = config.tencentAsrTier.cloudModel
+            )
+        }
         context.dataStore.edit { preferences ->
-            preferences[STT_ENGINE_TYPE] = config.engineType.name
-            preferences[STT_LANGUAGE] = config.language.name
-            preferences[STT_LOCAL_ENDPOINT] = config.localEndpoint
-            preferences[STT_LOCAL_MODEL] = config.localModel
+            preferences[STT_ENGINE_TYPE] = effectiveConfig.engineType.name
+            preferences[STT_LANGUAGE] = effectiveConfig.language.name
+            preferences[STT_LOCAL_ENDPOINT] = effectiveConfig.localEndpoint
+            preferences[STT_LOCAL_MODEL] = effectiveConfig.localModel
             val usesAccountToken = preferences[STT_USE_ACCOUNT_TOKEN]
                 ?.toBooleanStrictOrNull() == true
             if (!usesAccountToken) {
-                config.apiToken?.takeIf { it.isNotBlank() }
+                effectiveConfig.apiToken?.takeIf { it.isNotBlank() }
                     ?.let { preferences[STT_API_TOKEN] = it }
                     ?: preferences.remove(STT_API_TOKEN)
             }
-            config.cloudEndpoint?.takeIf { it.isNotBlank() }
+            effectiveConfig.cloudEndpoint?.takeIf { it.isNotBlank() }
                 ?.let { preferences[STT_CLOUD_ENDPOINT] = it }
                 ?: preferences.remove(STT_CLOUD_ENDPOINT)
-            config.cloudApiKey?.takeIf { it.isNotBlank() }
+            effectiveConfig.cloudApiKey?.takeIf { it.isNotBlank() }
                 ?.let { preferences[STT_CLOUD_API_KEY] = it }
                 ?: preferences.remove(STT_CLOUD_API_KEY)
-            config.cloudModel.takeIf { it.isNotBlank() }
+            effectiveConfig.cloudModel.takeIf { it.isNotBlank() }
                 ?.let { preferences[STT_CLOUD_MODEL] = it }
                 ?: preferences.remove(STT_CLOUD_MODEL)
-            preferences[STT_TENCENT_ASR_TIER] = config.tencentAsrTier.name
-            preferences[STT_AUDIO_ENHANCEMENT_ENABLED] = config.audioEnhancementEnabled
-            preferences[STT_SPEAKER_DIARIZATION_ENABLED] = config.speakerDiarizationEnabled
+            preferences[STT_TENCENT_ASR_TIER] = effectiveConfig.tencentAsrTier.name
+            preferences[STT_AUDIO_ENHANCEMENT_ENABLED] = effectiveConfig.audioEnhancementEnabled
+            preferences[STT_SPEAKER_DIARIZATION_ENABLED] = effectiveConfig.speakerDiarizationEnabled
         }
     }
 
@@ -1029,6 +954,32 @@ class ConfigDataStore(private val context: Context) {
         }
     }
 
+    /** Active signed-in owner used to scope Room reads; logged-out users see no rows. */
+    val localWorkspaceAccountIdFlow: Flow<String?> = authSessionFlow
+        .map { session -> session?.user?.id?.trim()?.takeIf { it.isNotBlank() } }
+
+    suspend fun currentLocalWorkspaceAccountId(): String? = localWorkspaceAccountIdFlow.first()
+
+    /**
+     * Returns true when local records must not be shown to [accountId].
+     * A missing owner is legacy/anonymous data. It is kept only when the
+     * already-active signed-in session proves it belongs to this same account;
+     * otherwise it is hidden instead of being silently assigned or uploaded.
+     */
+    suspend fun localWorkspaceRequiresReset(accountId: String): Boolean {
+        val cleanAccountId = accountId.trim()
+        if (cleanAccountId.isBlank()) return false
+        val preferences = context.dataStore.data.first()
+        val owner = preferences[LOCAL_WORKSPACE_ACCOUNT_ID]
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+        val activeSessionAccountId = preferences[ACCOUNT_SESSION_JSON]
+            ?.let { json -> runCatching { gson.fromJson(json, AuthSession::class.java) }.getOrNull() }
+            ?.user
+            ?.id
+        return shouldResetLocalWorkspace(owner, cleanAccountId, activeSessionAccountId)
+    }
+
     val accountEndpointFlow: Flow<String> = context.dataStore.data.map { preferences ->
         preferences[ACCOUNT_ENDPOINT]
             ?.takeIf { it.isNotBlank() }
@@ -1063,6 +1014,7 @@ class ConfigDataStore(private val context: Context) {
         context.dataStore.edit { preferences ->
             preferences[ACCOUNT_SESSION_JSON] = gson.toJson(session)
             preferences[ACCOUNT_ENDPOINT] = endpoint.trim().trimEnd('/')
+            preferences[LOCAL_WORKSPACE_ACCOUNT_ID] = session.user.id
             preferences[LOGGED_IN_USERNAME] = session.user.username
             preferences[LLM_AGENT_ACCESS_TOKEN] = session.agentAccessToken
             val sttAccessToken = session.sttAccessToken?.takeIf { it.isNotBlank() }
@@ -1089,6 +1041,7 @@ class ConfigDataStore(private val context: Context) {
                 user = credentials.user
             )
             preferences[ACCOUNT_SESSION_JSON] = gson.toJson(updatedSession)
+            preferences[LOCAL_WORKSPACE_ACCOUNT_ID] = credentials.user.id
             preferences[LOGGED_IN_USERNAME] = credentials.user.username
             preferences[LLM_AGENT_ACCESS_TOKEN] = credentials.agentAccessToken
             preferences[ACCOUNT_STT_ACCESS_TOKEN] = credentials.sttAccessToken

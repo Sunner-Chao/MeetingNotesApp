@@ -16,7 +16,9 @@ data class Meeting(
      * The realtime speech engine chosen for this meeting. Persisted separately from
      * the app default so a resumed meeting keeps its original local/cloud route.
      */
-    val selectedSttEngineName: String? = null
+    val selectedSttEngineName: String? = null,
+    /** Local account owner; populated by account-aware repositories. */
+    val ownerId: String? = null
 )
 
 enum class MeetingOrigin {

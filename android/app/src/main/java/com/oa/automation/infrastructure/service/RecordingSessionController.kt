@@ -13,7 +13,9 @@ import com.oa.automation.infrastructure.stt.CloudSTTEngine
 import com.oa.automation.infrastructure.stt.buildSttContextHint
 import com.oa.automation.infrastructure.stt.CLOUD_STREAM_READY_STATUS
 import com.oa.automation.infrastructure.stt.LOCAL_STREAM_READY_STATUS
+import com.oa.automation.infrastructure.stt.STREAM_AUDIO_STALL_STATUS
 import com.oa.automation.domain.model.STTEngineType
+import com.oa.automation.domain.model.ProductEdition
 import com.oa.automation.domain.model.STTLanguage
 import com.oa.automation.domain.model.TencentAsrTier
 import com.oa.automation.domain.model.serviceEndpointFor
@@ -55,6 +57,7 @@ internal fun realtimeSttRouteAfterStatus(
     status == LOCAL_STREAM_READY_STATUS -> RealtimeSttRouteState.LOCAL_ACTIVE
     status.startsWith("本地连接波动") || status.startsWith("本地快速恢复") ->
         RealtimeSttRouteState.LOCAL_RECOVERING
+    status.startsWith(STREAM_AUDIO_STALL_STATUS) -> RealtimeSttRouteState.LOCAL_RECOVERING
     status == CLOUD_STREAM_READY_STATUS && current == RealtimeSttRouteState.SWITCHING_TO_CLOUD ->
         RealtimeSttRouteState.CLOUD_FALLBACK_ACTIVE
     status == CLOUD_STREAM_READY_STATUS -> RealtimeSttRouteState.CLOUD_ACTIVE
@@ -155,7 +158,8 @@ class RecordingSessionController(
             if (audioRecorder.isRecording()) error("已有其他会议正在录音")
 
             var sttConfig = configDataStore.appConfigFlow.first().sttConfig
-            val usesTencentHybrid = sttConfig.engineType == STTEngineType.TENCENT_HYBRID
+            val usesTencentHybrid = !ProductEdition.current.supportsLocalStt ||
+                sttConfig.engineType == STTEngineType.TENCENT_HYBRID
             automaticCloudFallbackAttempted = false
             sessionRecoveryAttempted = false
             val storedSession = configDataStore.authSessionFlow.first()
@@ -441,6 +445,7 @@ class RecordingSessionController(
                 "当前没有可暂停的录音"
             }
             check(audioRecorder.pause()) { "录音暂停失败" }
+            if (streamingPreviewActive) streamingSttClient.pauseAudio()
             val elapsed = SystemClock.elapsedRealtime()
             _state.update {
                 it.copy(
@@ -532,6 +537,7 @@ class RecordingSessionController(
                 "当前录音没有暂停"
             }
             check(audioRecorder.resume()) { "录音恢复失败" }
+            if (streamingPreviewActive) streamingSttClient.resumeAudio()
             _state.update {
                 it.copy(
                     isPaused = false,
@@ -551,6 +557,9 @@ class RecordingSessionController(
     ): Result<Unit> =
         operationMutex.withLock {
             runCatching {
+                require(ProductEdition.current.supportsLocalStt || engineType == STTEngineType.TENCENT_HYBRID) {
+                    "Lite 版仅支持云端识别"
+                }
                 val current = _state.value
                 require(current.isRecording && !current.isStopping) {
                     "当前没有可切换的实时录音"

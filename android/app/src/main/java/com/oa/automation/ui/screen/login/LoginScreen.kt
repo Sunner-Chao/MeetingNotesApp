@@ -374,7 +374,7 @@ internal fun AuthPageHeader(layout: AuthLayoutSpec) {
         }
         Spacer(Modifier.height(6.dp))
         Text(
-            text = "我的成长记录",
+            text = "智记所言，悟行所止",
             modifier = Modifier.padding(horizontal = 30.dp),
             color = AuthHeaderSubtitle,
             fontSize = 13.sp,

@@ -1,5 +1,7 @@
 package com.oa.automation.ui.screen.home
 
+import android.content.Context
+import android.content.Intent
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.oa.automation.application.usecase.StartRecordingUseCase
@@ -15,6 +17,7 @@ import com.oa.automation.infrastructure.background.BackgroundTaskScheduler
 import com.oa.automation.infrastructure.notification.ScheduledMeetingNotificationScheduler
 import com.oa.automation.infrastructure.service.RecordingSessionController
 import com.oa.automation.infrastructure.service.RecordingSessionState
+import com.oa.automation.infrastructure.service.RecordingService
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -87,7 +90,8 @@ class HomeViewModel(
     private val configDataStore: ConfigDataStore,
     private val taskScheduler: BackgroundTaskScheduler,
     private val recordingController: RecordingSessionController,
-    private val scheduledMeetingScheduler: ScheduledMeetingNotificationScheduler
+    private val scheduledMeetingScheduler: ScheduledMeetingNotificationScheduler,
+    private val appContext: Context
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(HomeUiState())
@@ -284,12 +288,20 @@ class HomeViewModel(
     }
 
     fun deleteMeeting(meetingId: String) {
-        val active = recordingController.state.value
-        if (active.meetingId == meetingId && (active.isRecording || active.isStarting || active.isStopping)) {
-            _uiState.update { it.copy(message = "请先结束当前会议录音") }
-            return
-        }
         viewModelScope.launch {
+            if (recordingController.state.value.isRecordingSessionFor(meetingId)) {
+                // Deletion is an explicit destructive action. A current or
+                // paused session must be discarded before its row disappears,
+                // otherwise the foreground service could later persist it.
+                // Mark cancellation first so a start job cannot acquire the
+                // microphone after this destructive action has begun.
+                recordingController.markStopRequested(meetingId)
+                appContext.startService(Intent(appContext, RecordingService::class.java).apply {
+                    action = RecordingService.ACTION_CANCEL
+                    putExtra(RecordingService.EXTRA_MEETING_ID, meetingId)
+                })
+                recordingController.cancelSession(deleteFile = true)
+            }
             // DAO transaction removes the report and transcripts with the meeting.
             meetingRepository.delete(meetingId)
                 .onSuccess { _uiState.update { it.copy(message = "会议已删除") } }
@@ -406,6 +418,9 @@ private fun RecordingSessionState.toActiveRecordingSummary(): ActiveRecordingSum
 /** A paused session has released the microphone and may be switched away. */
 internal fun RecordingSessionState.blocksNewRecording(): Boolean =
     isStarting || isStopping || (isRecording && !isPaused)
+
+internal fun RecordingSessionState.isRecordingSessionFor(meetingId: String): Boolean =
+    this.meetingId == meetingId && (isRecording || isStarting || isStopping)
 
 private fun notificationEvents(meetings: List<MeetingWithReport>): Set<String> = meetings
     .mapTo(linkedSetOf()) { item ->

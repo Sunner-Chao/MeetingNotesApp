@@ -98,7 +98,7 @@ fun SplashScreen(
                     ) + fadeIn(animationSpec = tween(550))
                 ) {
                     Text(
-                        text = "记录我的成长",
+                        text = "智记所言，悟行所止",
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

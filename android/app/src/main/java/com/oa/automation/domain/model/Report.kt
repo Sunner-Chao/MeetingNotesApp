@@ -15,7 +15,9 @@ data class Report(
     val workspaceBlockOrder: List<String> = emptyList(),
     /** Block ids hidden from the interactive workspace preview; source data remains intact. */
     val hiddenWorkspaceBlocks: List<String> = emptyList(),
-    val generatedAt: Long = System.currentTimeMillis()
+    val generatedAt: Long = System.currentTimeMillis(),
+    /** Local account owner; populated by account-aware repositories. */
+    val ownerId: String? = null
 )
 
 object ReportWorkspaceBlocks {

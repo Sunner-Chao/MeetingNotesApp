@@ -16,6 +16,7 @@ import com.oa.automation.domain.model.LLMEngineType
 import com.oa.automation.domain.model.ReportTemplate
 import com.oa.automation.domain.model.STTConfig
 import com.oa.automation.domain.model.STTEngineType
+import com.oa.automation.domain.model.ProductEdition
 import com.oa.automation.domain.model.TencentAsrBudgetPolicy
 import com.oa.automation.domain.model.TencentAsrTier
 import com.oa.automation.domain.model.serviceEndpointFor
@@ -276,6 +277,10 @@ class SettingsViewModel(
      * Update STT engine type
      */
     fun updateSTTEngineType(engineType: STTEngineType) {
+        if (!ProductEdition.current.supportsLocalStt && engineType != STTEngineType.TENCENT_HYBRID) {
+            _uiState.value = _uiState.value.copy(message = "Lite 版仅支持云端识别")
+            return
+        }
         val currentConfig = _uiState.value.appConfig.sttConfig
         if (engineType == currentConfig.engineType) {
             _uiState.value = _uiState.value.copy(
@@ -327,6 +332,7 @@ class SettingsViewModel(
      * Update STT local endpoint
      */
     fun updateSTTLocalEndpoint(endpoint: String) {
+        if (!ProductEdition.current.supportsLocalStt) return
         val config = _uiState.value.appConfig.sttConfig
         updateSTTConfig(config.copy(localEndpoint = endpoint))
     }
@@ -335,6 +341,7 @@ class SettingsViewModel(
      * Update STT local model
      */
     fun updateSTTLocalModel(model: String) {
+        if (!ProductEdition.current.supportsLocalStt) return
         updateSTTConfig(_uiState.value.appConfig.sttConfig.copy(localModel = model))
     }
 

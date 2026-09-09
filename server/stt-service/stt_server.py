@@ -325,6 +325,12 @@ TENCENT_REALTIME_ASR_FINAL_TIMEOUT_SEC = max(
 TENCENT_REALTIME_ASR_SIGNATURE_TTL_SEC = positive_int_env(
     "TENCENT_REALTIME_ASR_SIGNATURE_TTL_SEC", 3600
 )
+# Tencent's currently configured standard endpoint does not reliably support
+# speaker labels. Local sherpa-onnx remains the diarization provider; keep the
+# cloud request plain so unsupported speaker options cannot reject transcription.
+TENCENT_CLOUD_SPEAKER_DIARIZATION_ENABLED = boolean_env(
+    "TENCENT_CLOUD_SPEAKER_DIARIZATION_ENABLED"
+)
 TENCENT_REALTIME_ASR_FRAME_MS = max(
     40, min(1000, positive_int_env("TENCENT_REALTIME_ASR_FRAME_MS", 200))
 )
@@ -652,11 +658,12 @@ def build_tencent_flash_request(
         "filter_punc": "0",
         "first_channel_only": "1",
         "secretid": TENCENT_ASR_SECRET_ID,
-        "speaker_diarization": "1" if speaker_diarization else "0",
         "timestamp": str(request_timestamp),
         "voice_format": voice_format,
         "word_info": "0",
     }
+    if speaker_diarization:
+        params["speaker_diarization"] = "1"
     query = urlencode(sorted(params.items()))
     request_url = f"{TENCENT_ASR_BASE_URL}/{quote(TENCENT_ASR_APP_ID, safe='')}?{query}"
     parsed = urlparse(request_url)
@@ -717,6 +724,7 @@ def cloud_diarization_metadata(rows: object) -> dict[str, Any]:
         "provider": "tencent-cloud",
         "active": bool(speaker_ids),
         "speaker_count": len(speaker_ids),
+        "supported": TENCENT_CLOUD_SPEAKER_DIARIZATION_ENABLED,
     }
 
 
@@ -951,9 +959,11 @@ def parse_tencent_flash_response(
                 if key in sentence:
                     row[key] = sentence[key]
             rows.append(row)
-    if include_speakers and not cloud_diarization_metadata(rows)["active"]:
-        raise ValueError("Tencent Cloud ASR did not return speaker diarization labels")
-    text = format_speaker_rows(rows) if include_speakers else normalize_preview_text(
+    has_speakers = bool(cloud_diarization_metadata(rows)["active"])
+    # Missing labels are a capability result, not a transcription failure. The
+    # caller still receives the recognized text and can show cloud diarization
+    # as unavailable while local transcription keeps speaker attribution.
+    text = format_speaker_rows(rows) if include_speakers and has_speakers else normalize_preview_text(
         "\n".join(str(row["text"]) for row in rows)
     )
     if not text:
@@ -992,11 +1002,14 @@ def transcribe_with_tencent_flash(
     record_usage: bool = True,
     speaker_diarization: bool = False,
 ) -> tuple[str, dict[str, Any]]:
+    cloud_speaker_diarization = (
+        speaker_diarization and TENCENT_CLOUD_SPEAKER_DIARIZATION_ENABLED
+    )
     request_url, authorization = build_tencent_flash_request(
         voice_format=voice_format,
         tier=tier,
         language=language,
-        speaker_diarization=speaker_diarization,
+        speaker_diarization=cloud_speaker_diarization,
     )
     size = path.stat().st_size
 
@@ -1019,7 +1032,7 @@ def transcribe_with_tencent_flash(
         raise ValueError("Tencent Cloud ASR returned invalid JSON")
     parsed = parse_tencent_flash_response(
         payload,
-        include_speakers=speaker_diarization,
+        include_speakers=cloud_speaker_diarization,
     )
     if isinstance(parsed, tuple):
         text, rows = parsed
@@ -1413,7 +1426,7 @@ def transcribe_with_tencent_flash_chunked(
                         f"第 {index}/{len(chunks)} 段云端转写失败: {sanitize_upstream_error(exc)}"
                     ) from exc
                 merged_text = merge_chunk_transcript_text(merged_text, chunk_text)
-                if speaker_diarization:
+                if speaker_diarization and TENCENT_CLOUD_SPEAKER_DIARIZATION_ENABLED:
                     for row in payload.get("segments", []):
                         if not isinstance(row, dict):
                             continue
@@ -2274,7 +2287,9 @@ class TencentRealtimeBridge:
         self.on_failure = on_failure
         self.tier = tier
         self.language = normalize_stt_language(language)
-        self.speaker_diarization = bool(speaker_diarization)
+        self.speaker_diarization = bool(
+            speaker_diarization and TENCENT_CLOUD_SPEAKER_DIARIZATION_ENABLED
+        )
         self.voice_id = uuid4().hex
         self.connection = None
         self.sender_task: asyncio.Task | None = None
@@ -2474,6 +2489,10 @@ def release_stream_session(session_id: str, owner_id: str) -> None:
 STREAM_UPDATE_INTERVAL_SEC = float(os.getenv("STREAM_UPDATE_INTERVAL_SEC", "0.6"))
 STREAM_MIN_AUDIO_SEC = float(os.getenv("STREAM_MIN_AUDIO_SEC", "0.4"))
 STREAM_DEBUG_EVENT_LIMIT = int(os.getenv("STREAM_DEBUG_EVENT_LIMIT", "200"))
+# A live stream must keep receiving PCM while the meeting is recording.  The
+# Android client explicitly marks user pauses, so this watchdog only handles
+# silent/half-open transports and can safely force a reconnect.
+STREAM_AUDIO_STALL_SEC = max(3.0, float(os.getenv("STREAM_AUDIO_STALL_SEC", "8")))
 # Prefer an incomplete preview over displaying low-confidence environmental noise.
 STREAM_MIN_CONFIDENCE = float(os.getenv("STREAM_MIN_CONFIDENCE", "-0.90"))
 STREAM_MAX_NO_SPEECH_PROB = float(os.getenv("STREAM_MAX_NO_SPEECH_PROB", "0.35"))
@@ -3649,10 +3668,6 @@ def transcribe_local_single_file(
             )
             if diarization.get("active"):
                 result["text"] = format_speaker_rows(result["segments"])
-            else:
-                raise RuntimeError(
-                    "本地说话人分离未就绪，已交由调用方切换腾讯云说话人分离"
-                )
     finally:
         preparation.cleanup()
     print(
@@ -3740,10 +3755,6 @@ def transcribe_local_long_audio(
                 merged_segments, diarization = attach_local_speakers(source, merged_segments)
                 if diarization.get("active"):
                     merged_text = format_speaker_rows(merged_segments)
-                else:
-                    raise RuntimeError(
-                        "本地说话人分离未就绪，已交由调用方切换腾讯云说话人分离"
-                    )
             return TranscribeResponse(
                 text=merged_text,
                 language=detected_language,
@@ -4205,6 +4216,7 @@ async def health():
             "buffer_sec": STREAM_BUFFER_SEC,
             "overlap_sec": STREAM_OVERLAP_SEC,
             "step_sec": STREAM_STEP_SEC,
+            "audio_stall_sec": STREAM_AUDIO_STALL_SEC,
             "preview_beam_size": STREAM_BEAM_SIZE,
             "preview_model": stream_model_size,
             "preview_model_source": stream_model_source,
@@ -4266,6 +4278,7 @@ async def health():
             "chunk_seconds": TENCENT_ASR_CHUNK_SECONDS,
             "chunk_overlap_sec": TENCENT_ASR_CHUNK_OVERLAP_SEC,
             "max_concurrent": TENCENT_ASR_MAX_CONCURRENT,
+            "speaker_diarization_supported": TENCENT_CLOUD_SPEAKER_DIARIZATION_ENABLED,
         },
         "realtime_asr": {
             "provider": "tencent-tiered",
@@ -4282,6 +4295,7 @@ async def health():
             "frame_ms": TENCENT_REALTIME_ASR_FRAME_MS,
             "queue_sec": TENCENT_REALTIME_ASR_QUEUE_SEC,
             "backpressure_timeout_sec": TENCENT_REALTIME_ASR_BACKPRESSURE_TIMEOUT_SEC,
+            "speaker_diarization_supported": TENCENT_CLOUD_SPEAKER_DIARIZATION_ENABLED,
         },
         "cloud_asr_usage": {
             "enabled": TENCENT_ASR_USAGE_ENABLED,
@@ -5212,6 +5226,10 @@ async def transcribe_stream(websocket: WebSocket):
     session_stable_frames = STREAM_STABLE_FRAMES
     session_reject_fallback_threshold = STREAM_REJECT_FALLBACK_THRESHOLD
     min_bytes = int(sample_rate * channels * 2 * session_min_audio_sec)
+    last_audio_received_at = time.monotonic()
+    audio_input_paused = False
+    audio_stall_reported = False
+    audio_watchdog_enabled = False
     speaker_history: list[dict[str, Any]] = []
     next_speaker_id = 0
     speaker_diarization_metadata: dict[str, Any] = {
@@ -5317,6 +5335,7 @@ async def transcribe_stream(websocket: WebSocket):
         nonlocal last_processed_size, min_bytes, stream_stopped
         nonlocal speaker_history, next_speaker_id, speaker_diarization_metadata
         nonlocal last_speaker_signature
+        nonlocal audio_stall_reported
         rejected_streak = 0
         inference_failure_streak = 0
         loop = asyncio.get_event_loop()
@@ -5326,6 +5345,36 @@ async def transcribe_stream(websocket: WebSocket):
             await asyncio.sleep(session_update_interval)
             if stream_provider != LOCAL_STREAM_PROVIDER:
                 continue
+            if (
+                stream_started
+                and audio_watchdog_enabled
+                and not audio_input_paused
+                and time.monotonic() - last_audio_received_at >= STREAM_AUDIO_STALL_SEC
+            ):
+                if not audio_stall_reported:
+                    audio_stall_reported = True
+                    push_debug_event(
+                        "audio_input_stalled",
+                        session_id=session_id,
+                        audio_bytes=total_audio_bytes,
+                        stall_sec=round(time.monotonic() - last_audio_received_at, 1),
+                    )
+                    with contextlib.suppress(Exception):
+                        await websocket.send_text(
+                            json.dumps(
+                                {
+                                    "type": "status",
+                                    "message": "实时音频上传中断，正在恢复实时预览",
+                                    "session_id": session_id,
+                                    "stream_provider": stream_provider,
+                                },
+                                ensure_ascii=False,
+                            )
+                        )
+                    stream_stopped = True
+                    with contextlib.suppress(Exception):
+                        await websocket.close(code=1011, reason="audio input stalled")
+                break
             current_size = len(pcm_buffer)
             current_total_bytes = total_audio_bytes
             debug_audio_ticks += 1
@@ -5770,6 +5819,7 @@ async def transcribe_stream(websocket: WebSocket):
                     session_max_no_speech_prob = float(payload.get("max_no_speech_prob")) if payload.get("max_no_speech_prob") else session_max_no_speech_prob
                     session_stable_frames = int(payload.get("stable_frames")) if payload.get("stable_frames") else session_stable_frames
                     session_reject_fallback_threshold = int(payload.get("reject_fallback_threshold")) if payload.get("reject_fallback_threshold") else session_reject_fallback_threshold
+                    audio_watchdog_enabled = bool(payload.get("audio_watchdog", False))
                     if not 8000 <= sample_rate <= 48000 or channels not in {1, 2}:
                         await websocket.send_text(json.dumps({"type": "error", "message": "Invalid audio format"}))
                         await websocket.close(code=1008)
@@ -6047,6 +6097,45 @@ async def transcribe_stream(websocket: WebSocket):
                             ensure_ascii=False,
                         )
                     )
+                elif event == "pause":
+                    audio_input_paused = True
+                    audio_stall_reported = False
+                    push_debug_event(
+                        "audio_input_paused",
+                        session_id=session_id,
+                        audio_bytes=total_audio_bytes,
+                    )
+                    await websocket.send_text(
+                        json.dumps(
+                            {
+                                "type": "status",
+                                "message": "录音已暂停，实时预览待命",
+                                "session_id": session_id,
+                                "stream_provider": stream_provider,
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+                elif event == "resume":
+                    audio_input_paused = False
+                    audio_stall_reported = False
+                    last_audio_received_at = time.monotonic()
+                    push_debug_event(
+                        "audio_input_resumed",
+                        session_id=session_id,
+                        audio_bytes=total_audio_bytes,
+                    )
+                    await websocket.send_text(
+                        json.dumps(
+                            {
+                                "type": "status",
+                                "message": "录音已恢复，实时预览继续",
+                                "session_id": session_id,
+                                "stream_provider": stream_provider,
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
                 elif event == "stop":
                     stream_stop_requested = True
                     stream_stopped = True
@@ -6066,6 +6155,8 @@ async def transcribe_stream(websocket: WebSocket):
                     break
                 received = len(message["bytes"])
                 total_audio_bytes += received
+                last_audio_received_at = time.monotonic()
+                audio_stall_reported = False
                 ensure_wave_writer().writeframesraw(message["bytes"])
                 pcm_buffer.extend(message["bytes"])
                 if tencent_stream_tier(stream_provider) is not None and tencent_bridge is not None:

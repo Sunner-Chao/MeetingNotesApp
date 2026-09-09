@@ -49,4 +49,10 @@ class AppUpdatePromptPolicyTest {
         assertSame(pending, newerAppUpdate(pending, update(13)))
         assertSame(pending, newerAppUpdate(pending, update(14)))
     }
+
+    @Test
+    fun `product editions use the stable Pro and Lite names`() {
+        assertTrue(com.oa.automation.domain.model.ProductEdition.SOCIAL.displayName == "智悟本(Pro)")
+        assertTrue(com.oa.automation.domain.model.ProductEdition.LIGHT_ENJOY.displayName == "智悟本(Lite)")
+    }
 }

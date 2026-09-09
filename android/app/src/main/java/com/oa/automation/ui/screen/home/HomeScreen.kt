@@ -30,6 +30,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
@@ -203,8 +206,8 @@ internal fun homeLayoutSpec(maxWidth: Dp, maxHeight: Dp): HomeLayoutSpec {
             tileTitleSize = 18,
             artworkWidth = 62.dp,
             artworkHeight = 78.dp,
-            heroCardHeight = 132.dp,
-            heroTitleSize = 26,
+            heroCardHeight = 116.dp,
+            heroTitleSize = 18,
             brandIconSize = 34.dp,
             brandTitleSize = 25,
             greetingSize = 24,
@@ -220,8 +223,8 @@ internal fun homeLayoutSpec(maxWidth: Dp, maxHeight: Dp): HomeLayoutSpec {
             tileTitleSize = 19,
             artworkWidth = 68.dp,
             artworkHeight = 86.dp,
-            heroCardHeight = 144.dp,
-            heroTitleSize = 29,
+            heroCardHeight = 124.dp,
+            heroTitleSize = 19,
             brandIconSize = 38.dp,
             brandTitleSize = 27,
             greetingSize = 26,
@@ -370,6 +373,9 @@ fun HomeScreen(
                         .padding(innerPadding)
                 ) {
                     val layout = homeLayoutSpec(maxWidth, maxHeight)
+                    // One gutter for the whole page: quick tiles and record cards
+                    // sit on the same two-column grid.
+                    val gridGutter = layout.recordSpacing + 3.dp
                     Column(
                         modifier = Modifier
                             .align(Alignment.TopCenter)
@@ -402,6 +408,7 @@ fun HomeScreen(
                         Spacer(Modifier.height(layout.sectionSpacing))
                         QuickActionGrid(
                             layout = layout,
+                            gutter = gridGutter,
                             onQuickRecording = {
                                 viewModel.startNewMeeting(
                                     viewModel.suggestMeetingTitle("即刻倾听"),
@@ -417,7 +424,6 @@ fun HomeScreen(
                         )
                         Spacer(Modifier.height(layout.sectionSpacing))
                         RecentRecordsHeader(
-                            counts = recordCounts,
                             hasMeetings = uiState.meetings.isNotEmpty(),
                             showAllAction = uiState.meetings.size > 3,
                             onShowAll = { showAllMeetings = true },
@@ -433,7 +439,7 @@ fun HomeScreen(
                                 )
                             }
                         } else {
-                            Spacer(Modifier.height(6.dp))
+                            Spacer(Modifier.height(8.dp))
                             RecentRecordsFilterBar(
                                 filter = recordFilter,
                                 counts = recordCounts,
@@ -441,16 +447,18 @@ fun HomeScreen(
                                 onExpandedChange = { filterExpanded = it },
                                 onFilterChange = { recordFilter = it }
                             )
-                            Spacer(Modifier.height(if (layout.compact) 6.dp else 8.dp))
+                            Spacer(Modifier.height(8.dp))
                             if (orderedMeetings.isEmpty()) {
                                 RecentRecordsFilteredEmpty(
                                     onReset = { recordFilter = RecentRecordFilter() }
                                 )
                             } else {
-                                LazyColumn(
+                                LazyVerticalGrid(
+                                    columns = GridCells.Fixed(2),
                                     modifier = Modifier.fillMaxWidth().weight(1f),
-                                    verticalArrangement = Arrangement.spacedBy(layout.recordSpacing),
-                                    contentPadding = PaddingValues(bottom = 4.dp)
+                                    verticalArrangement = Arrangement.spacedBy(gridGutter),
+                                    horizontalArrangement = Arrangement.spacedBy(gridGutter),
+                                    contentPadding = PaddingValues(bottom = 12.dp)
                                 ) {
                                     items(
                                         items = orderedMeetings,
@@ -591,25 +599,33 @@ private fun HomeGreeting(displayName: String, layout: HomeLayoutSpec) {
 @Composable
 private fun QuickActionGrid(
     layout: HomeLayoutSpec,
+    gutter: Dp,
     onQuickRecording: () -> Unit,
     onImportFile: () -> Unit
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        HomeHeroActionCard(
+    // Same two-column grid and gutter as 最近记录 below, so the page reads as one
+    // rhythm instead of two full-width banners followed by a sudden pair of cards.
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(gutter)
+    ) {
+        HomeQuickTile(
             title = "即刻倾听",
-            subtitle = "选择模板后，开始 AI 智能转写",
-            buttonLabel = "开始记录",
+            subtitle = "录音实时转写",
+            actionLabel = "开始记录",
             kind = HomeHeroArt.MICROPHONE,
             layout = layout,
-            onClick = onQuickRecording
+            onClick = onQuickRecording,
+            modifier = Modifier.weight(1f)
         )
-        HomeHeroActionCard(
+        HomeQuickTile(
             title = "顷刻成稿",
-            subtitle = "导入音频或文档，AI 智能处理",
-            buttonLabel = "导入文件",
+            subtitle = "导入音频或文档",
+            actionLabel = "导入文件",
             kind = HomeHeroArt.FILE_IMPORT,
             layout = layout,
-            onClick = onImportFile
+            onClick = onImportFile,
+            modifier = Modifier.weight(1f)
         )
     }
 }
@@ -617,20 +633,24 @@ private fun QuickActionGrid(
 private enum class HomeHeroArt { MICROPHONE, FILE_IMPORT }
 
 @Composable
-private fun HomeHeroActionCard(
+private fun HomeQuickTile(
     title: String,
     subtitle: String,
-    buttonLabel: String,
+    actionLabel: String,
     kind: HomeHeroArt,
     layout: HomeLayoutSpec,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
-    Card(
+    Surface(
         onClick = onClick,
-        modifier = Modifier.fillMaxWidth().height(layout.heroCardHeight),
-        shape = RoundedCornerShape(22.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.Transparent),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp, pressedElevation = 2.dp)
+        modifier = modifier.height(layout.heroCardHeight),
+        // Matches the record cards below so every block on the page shares a radius.
+        shape = RoundedCornerShape(16.dp),
+        // The gradient is painted over this, but an opaque base keeps the drop
+        // shadow from bleeding through the tile.
+        color = Color(0xFF1C92F7),
+        shadowElevation = surfaceLift(3.dp)
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
             Canvas(modifier = Modifier.fillMaxSize()) {
@@ -638,77 +658,84 @@ private fun HomeHeroActionCard(
                     brush = Brush.linearGradient(
                         colors = listOf(Color(0xFF0968F4), Color(0xFF1C92F7), Color(0xFF59D7E5)),
                         start = Offset.Zero,
-                        end = Offset(size.width, size.height * 0.78f)
+                        end = Offset(size.width, size.height * 1.15f)
                     )
                 )
                 drawCircle(
-                    color = Color(0xFF8CDCF7).copy(alpha = 0.24f),
-                    radius = size.width * 0.47f,
-                    center = Offset(size.width * 0.22f, -size.height * 0.20f)
+                    color = Color(0xFF8CDCF7).copy(alpha = 0.22f),
+                    radius = size.width * 0.62f,
+                    center = Offset(size.width * 0.14f, -size.height * 0.34f)
                 )
                 drawCircle(
-                    color = Color.White.copy(alpha = 0.16f),
-                    radius = size.width * 0.40f,
-                    center = Offset(size.width * 1.03f, size.height * 1.14f)
+                    color = Color.White.copy(alpha = 0.15f),
+                    radius = size.width * 0.52f,
+                    center = Offset(size.width * 1.05f, size.height * 1.20f)
                 )
             }
-            Column(
-                modifier = Modifier
-                    .align(Alignment.CenterStart)
-                    .padding(start = 24.dp, top = 16.dp, bottom = 16.dp)
-                    .widthIn(max = if (layout.compact) 194.dp else 238.dp),
-                verticalArrangement = Arrangement.spacedBy(7.dp)
-            ) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.headlineMedium.copy(
-                        fontSize = layout.heroTitleSize.sp,
-                        lineHeight = (layout.heroTitleSize + 7).sp
-                    ),
-                    fontWeight = FontWeight.Bold,
-                    color = Color.White
-                )
-                Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
-                    color = Color.White.copy(alpha = 0.92f),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Button(
-                    onClick = onClick,
-                    shape = RoundedCornerShape(24.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color.White.copy(alpha = 0.19f),
-                        contentColor = Color.White
-                    ),
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp),
-                    modifier = Modifier.height(39.dp)
-                ) {
-                    Icon(
-                        imageVector = if (kind == HomeHeroArt.MICROPHONE) Icons.Default.Mic else Icons.Default.FileUpload,
-                        contentDescription = null,
-                        modifier = Modifier.size(21.dp)
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(buttonLabel, fontSize = 15.sp, fontWeight = FontWeight.Medium)
-                }
-            }
+            // The artwork sits in the trailing corner, clear of the text column.
             when (kind) {
                 HomeHeroArt.MICROPHONE -> MicrophoneHeroArtwork(
                     modifier = Modifier
-                        .align(Alignment.CenterEnd)
-                        .padding(end = 20.dp, top = 7.dp, bottom = 3.dp)
-                        .width(if (layout.compact) 114.dp else 128.dp)
-                        .fillMaxHeight()
+                        .align(Alignment.BottomEnd)
+                        .padding(end = 8.dp, bottom = 6.dp)
+                        .size(if (layout.compact) 54.dp else 58.dp)
                 )
                 HomeHeroArt.FILE_IMPORT -> FileImportHeroArtwork(
                     modifier = Modifier
-                        .align(Alignment.CenterEnd)
-                        .padding(end = 18.dp, top = 4.dp, bottom = 2.dp)
-                        .width(if (layout.compact) 112.dp else 124.dp)
-                        .fillMaxHeight()
+                        .align(Alignment.BottomEnd)
+                        .padding(end = 8.dp, bottom = 6.dp)
+                        .size(if (layout.compact) 54.dp else 58.dp)
                 )
+            }
+            Column(modifier = Modifier.fillMaxSize().padding(14.dp)) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleLarge.copy(
+                        fontSize = layout.heroTitleSize.sp,
+                        lineHeight = (layout.heroTitleSize + 5).sp
+                    ),
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White,
+                    maxLines = 1
+                )
+                Spacer(Modifier.height(3.dp))
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                    color = Color.White.copy(alpha = 0.88f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(Modifier.weight(1f))
+                // The whole tile is the button, so the call to action is a label, not a
+                // second nested button.
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = if (kind == HomeHeroArt.MICROPHONE) {
+                            Icons.Default.Mic
+                        } else {
+                            Icons.Default.FileUpload
+                        },
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        text = actionLabel,
+                        style = MaterialTheme.typography.labelMedium.copy(fontSize = 11.sp),
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color.White,
+                        maxLines = 1
+                    )
+                    Spacer(Modifier.width(2.dp))
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                        contentDescription = null,
+                        tint = Color.White.copy(alpha = 0.9f),
+                        modifier = Modifier.size(12.dp)
+                    )
+                }
             }
         }
     }
@@ -1570,7 +1597,11 @@ private fun reminderLabel(minutes: Int): String = when (minutes) {
 
 internal fun meetingDurationLabel(meeting: Meeting): String {
     val minutes = (meeting.durationMs.coerceAtLeast(0L) / 60_000L)
-    return "${minutes}分钟"
+    if (minutes < 60L) return "${minutes}分钟"
+    // "360分钟" is hard to read at a glance on a record card.
+    val hours = minutes / 60L
+    val remainder = minutes % 60L
+    return if (remainder == 0L) "${hours}小时" else "${hours}小时${remainder}分钟"
 }
 
 internal fun meetingOriginLabel(origin: MeetingOrigin): String = when (origin) {

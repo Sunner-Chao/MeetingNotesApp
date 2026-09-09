@@ -14,6 +14,7 @@ set "STT_COMPUTE_TYPE=float16"
 set "STT_MODEL=large-v3-turbo"
 set "STT_STREAM_MODEL=large-v3-turbo"
 set "STT_MAX_CONCURRENT=1"
+set "STREAM_AUDIO_STALL_SEC=8"
 REM Final transcripts can include stable speaker labels when the two local
 REM sherpa-onnx models exist under %STT_MODEL_ROOT%\speaker-diarization.
 set "STT_SPEAKER_DIARIZATION_ENABLED=1"

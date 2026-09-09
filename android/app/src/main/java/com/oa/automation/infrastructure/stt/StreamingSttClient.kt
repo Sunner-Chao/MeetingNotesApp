@@ -26,6 +26,7 @@ internal const val LOCAL_STREAM_FAILOVER_WINDOW_MS = 3_000L
 internal const val STREAM_PING_INTERVAL_SECONDS = 3L
 internal const val LOCAL_STREAM_READY_STATUS = "本地实时识别已就绪"
 internal const val CLOUD_STREAM_READY_STATUS = "云端实时识别已接管"
+internal const val STREAM_AUDIO_STALL_STATUS = "实时音频上传中断，正在恢复"
 
 internal fun streamingReconnectDelayMs(
     attempt: Int,
@@ -125,6 +126,8 @@ class StreamingSttClient internal constructor(
     private var connectionReady: CompletableDeferred<Unit>? = null
     private var serverReady = false
     @Volatile
+    private var audioInputPaused = false
+    @Volatile
     private var localRecoveryDeadlineScheduled = false
 
     // Callback holders (set during start(), cleared during stop())
@@ -179,6 +182,7 @@ class StreamingSttClient internal constructor(
         }
         serverSessionId = null
         serverReady = false
+        audioInputPaused = false
         localRecoveryDeadlineScheduled = false
         localRecoveryEpoch.incrementAndGet()
         providerFailureGeneration.set(-1)
@@ -248,6 +252,13 @@ class StreamingSttClient internal constructor(
                             onError = onError
                         )
                         return
+                    }
+                    // A reconnect can happen while the user has intentionally
+                    // paused the microphone. Re-apply that state immediately
+                    // so the server watchdog does not treat the pause as a
+                    // broken audio transport.
+                    if (audioInputPaused) {
+                        webSocket.send(gson.toJson(StreamControlMessage(event = "pause")))
                     }
                     var pendingFlushFailed = false
                     synchronized(audioLock) {
@@ -568,6 +579,7 @@ class StreamingSttClient internal constructor(
 
     fun sendAudio(pcmBytes: ByteArray) {
         if (pcmBytes.isEmpty()) return
+        if (audioInputPaused) return
         var failedSocket: WebSocket? = null
         synchronized(audioLock) {
             producedAudioBytes += pcmBytes.size.toLong()
@@ -588,6 +600,18 @@ class StreamingSttClient internal constructor(
             }
         }
         failedSocket?.cancel()
+    }
+
+    /** Tell the server that microphone capture is intentionally paused. */
+    fun pauseAudio() {
+        audioInputPaused = true
+        webSocket?.takeIf { isConnected }?.send(gson.toJson(StreamControlMessage(event = "pause")))
+    }
+
+    /** Resume microphone capture on the existing stream, if still connected. */
+    fun resumeAudio() {
+        audioInputPaused = false
+        webSocket?.takeIf { isConnected }?.send(gson.toJson(StreamControlMessage(event = "resume")))
     }
 
     suspend fun switchProvider(provider: StreamingSttProvider): Result<Unit> = runCatching {
@@ -709,6 +733,7 @@ class StreamingSttClient internal constructor(
         connectionReady?.cancel()
         connectionReady = null
         serverReady = false
+        audioInputPaused = false
         localRecoveryDeadlineScheduled = false
         localRecoveryEpoch.incrementAndGet()
         if (isConnected) {
@@ -781,7 +806,8 @@ class StreamingSttClient internal constructor(
         provider: StreamingSttProvider,
         language: STTLanguage = STTLanguage.CHINESE,
         contextHint: String? = null,
-        speakerDiarization: Boolean = false
+        speakerDiarization: Boolean = false,
+        audioWatchdog: Boolean = true
     ): String = gson.toJson(
         StreamControlMessage(
             event = "start",
@@ -791,7 +817,8 @@ class StreamingSttClient internal constructor(
             streamProvider = provider.wireValue,
             language = language.requestValue,
             contextHint = contextHint?.takeIf { it.isNotBlank() },
-            speakerDiarization = speakerDiarization
+            speakerDiarization = speakerDiarization,
+            audioWatchdog = audioWatchdog
         )
     )
 
@@ -853,7 +880,8 @@ class StreamingSttClient internal constructor(
         @SerializedName("stream_provider") val streamProvider: String? = null,
         val language: String? = null,
         @SerializedName("context_hint") val contextHint: String? = null,
-        @SerializedName("speaker_diarization") val speakerDiarization: Boolean? = null
+        @SerializedName("speaker_diarization") val speakerDiarization: Boolean? = null,
+        @SerializedName("audio_watchdog") val audioWatchdog: Boolean? = null
     )
 
     private data class StreamServerMessage(

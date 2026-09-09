@@ -1122,7 +1122,9 @@ internal fun RuntimeServiceSwitcher(
     onSttLanguageSelected: (STTLanguage) -> Unit
 ) {
     var sttMenuExpanded by remember { mutableStateOf(false) }
-    val sttLabel = sttEngineType.displayName
+    val liteEdition = ProductEdition.current == ProductEdition.LIGHT_ENJOY
+    val displayedEngine = if (liteEdition) STTEngineType.TENCENT_HYBRID else sttEngineType
+    val sttLabel = displayedEngine.displayName
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -1184,13 +1186,13 @@ internal fun RuntimeServiceSwitcher(
             }
             Box(modifier = Modifier.fillMaxWidth()) {
                 OutlinedButton(
-                    onClick = { sttMenuExpanded = true },
+                    onClick = { if (!liteEdition) sttMenuExpanded = true },
                     modifier = Modifier.fillMaxWidth().height(48.dp),
-                    enabled = !isSwitchingStt,
+                    enabled = !isSwitchingStt && !liteEdition,
                     shape = MaterialTheme.shapes.small
                 ) {
                     Icon(
-                        if (sttEngineType == STTEngineType.TENCENT_HYBRID) {
+                        if (displayedEngine == STTEngineType.TENCENT_HYBRID) {
                             Icons.Default.Cloud
                         } else {
                             Icons.Default.Speed
@@ -1200,9 +1202,9 @@ internal fun RuntimeServiceSwitcher(
                     )
                     Spacer(Modifier.width(6.dp))
                     Text(sttLabel, maxLines = 1)
-                    Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                    if (!liteEdition) Icon(Icons.Default.ArrowDropDown, contentDescription = null)
                 }
-                DropdownMenu(
+                if (!liteEdition) DropdownMenu(
                     expanded = sttMenuExpanded,
                     onDismissRequest = { sttMenuExpanded = false }
                 ) {
@@ -1223,7 +1225,7 @@ internal fun RuntimeServiceSwitcher(
                                 )
                             },
                             trailingIcon = {
-                                if (engine == sttEngineType) {
+                                if (engine == displayedEngine) {
                                     Icon(Icons.Default.Check, contentDescription = null)
                                 }
                             },

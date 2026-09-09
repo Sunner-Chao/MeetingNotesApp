@@ -8,6 +8,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import com.oa.automation.ui.screen.recording.isActiveRecordingSessionForMeeting
 import com.oa.automation.ui.screen.home.blocksNewRecording
+import com.oa.automation.ui.screen.home.isRecordingSessionFor
 
 class RecordingSessionStateTest {
     @Test
@@ -17,6 +18,13 @@ class RecordingSessionStateTest {
             realtimeSttRouteAfterStatus(
                 RealtimeSttRouteState.LOCAL_ACTIVE,
                 "本地快速恢复 1/3"
+            )
+        )
+        assertEquals(
+            RealtimeSttRouteState.LOCAL_RECOVERING,
+            realtimeSttRouteAfterStatus(
+                RealtimeSttRouteState.LOCAL_ACTIVE,
+                "实时音频上传中断，正在恢复实时预览"
             )
         )
         assertEquals(
@@ -79,6 +87,28 @@ class RecordingSessionStateTest {
         assertTrue(RecordingSessionState(isRecording = true).blocksNewRecording())
         assertTrue(RecordingSessionState(isStarting = true).blocksNewRecording())
         assertTrue(RecordingSessionState(isStopping = true).blocksNewRecording())
+    }
+
+    @Test
+    fun `paused target is still a disposable recording session`() {
+        val paused = RecordingSessionState(
+            meetingId = "meeting-1",
+            isRecording = true,
+            isPaused = true
+        )
+
+        assertTrue(paused.isRecordingSessionFor("meeting-1"))
+        assertFalse(paused.isRecordingSessionFor("meeting-2"))
+    }
+
+    @Test
+    fun `active target is a disposable recording session`() {
+        val active = RecordingSessionState(
+            meetingId = "meeting-1",
+            isRecording = true
+        )
+
+        assertTrue(active.isRecordingSessionFor("meeting-1"))
     }
 
     @Test

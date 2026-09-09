@@ -204,6 +204,16 @@ APP_UPDATE_LIGHT_ANDROID_APK_PATH = Path(
     )
 ).resolve()
 
+# Android products have independent install identities and OTA channels. Keep
+# the public channel metadata in one place so the API and release pages cannot
+# accidentally describe one product with another product's name.
+ANDROID_SOCIAL_PRODUCT_EDITION = "social"
+ANDROID_SOCIAL_PRODUCT_NAME = "智悟本(Pro)"
+ANDROID_SOCIAL_APPLICATION_ID = "com.oa.automation"
+ANDROID_LIGHT_PRODUCT_EDITION = "light"
+ANDROID_LIGHT_PRODUCT_NAME = "智悟本(Lite)"
+ANDROID_LIGHT_APPLICATION_ID = "com.oa.automation.light"
+
 ACCOUNT_MIGRATION_ID = "legacy-main-db-accounts-v1"
 ACCOUNT_MIGRATION_TABLES = (
     "users",
@@ -1780,6 +1790,9 @@ def android_app_update_metadata(request: Request) -> Response:
     return JSONResponse(
         content={
             **update,
+            "product_edition": ANDROID_SOCIAL_PRODUCT_EDITION,
+            "product_name": ANDROID_SOCIAL_PRODUCT_NAME,
+            "application_id": ANDROID_SOCIAL_APPLICATION_ID,
             "download_url": str(
                 request.url_for(
                     "android_app_update_download",
@@ -1803,6 +1816,9 @@ def android_app_update_light_metadata(request: Request) -> Response:
     return JSONResponse(
         content={
             **update,
+            "product_edition": ANDROID_LIGHT_PRODUCT_EDITION,
+            "product_name": ANDROID_LIGHT_PRODUCT_NAME,
+            "application_id": ANDROID_LIGHT_APPLICATION_ID,
             "download_url": str(
                 request.url_for(
                     "android_app_update_light_download",
@@ -1846,6 +1862,7 @@ def android_app_update_directory(request: Request) -> HTMLResponse:
     empty_state_class = "hidden" if artifacts else ""
     template = APK_DIRECTORY_TEMPLATE_PATH.read_text(encoding="utf-8")
     replacements = {
+        "__PRODUCT_NAME__": ANDROID_SOCIAL_PRODUCT_NAME,
         "__CURRENT_VERSION__": current_version,
         "__CURRENT_VERSION_CODE__": current_version_code,
         "__RELEASE_COUNT__": str(len(artifacts)),
@@ -1905,6 +1922,7 @@ def android_app_update_light_directory(request: Request) -> HTMLResponse:
     empty_state_class = "hidden" if artifacts else ""
     template = APK_DIRECTORY_TEMPLATE_PATH.read_text(encoding="utf-8")
     replacements = {
+        "__PRODUCT_NAME__": ANDROID_LIGHT_PRODUCT_NAME,
         "__CURRENT_VERSION__": current_version,
         "__CURRENT_VERSION_CODE__": current_version_code,
         "__RELEASE_COUNT__": str(len(artifacts)),

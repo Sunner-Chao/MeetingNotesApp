@@ -82,9 +82,6 @@ data class STTConfig(
         const val LEGACY_LOCAL_ENDPOINT = "http://localhost:8888"
         const val AVD_HOST_ENDPOINT = "http://10.0.2.2:8888"
         val DEFAULT = STTConfig()
-
-        // Common ports for STT services
-        val COMMON_PORTS = listOf(8888, 8000, 8001, 8002, 8889, 8890)
     }
 }
 

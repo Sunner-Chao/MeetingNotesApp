@@ -187,7 +187,7 @@ class SttRuntimeTest(unittest.TestCase):
         )
         self.assertEqual(result.language, "zh")
 
-    def test_long_local_audio_requires_active_diarization_for_cloud_fallback(self) -> None:
+    def test_long_local_audio_keeps_transcript_when_diarization_is_unavailable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "long-recording.wav"
@@ -216,12 +216,14 @@ class SttRuntimeTest(unittest.TestCase):
                     ),
                 ),
             ):
-                with self.assertRaisesRegex(stt.AudioChunkingError, "本地说话人分离未就绪"):
-                    stt.transcribe_local_long_audio(
-                        str(source),
-                        "zh",
-                        speaker_diarization=True,
-                    )
+                result = stt.transcribe_local_long_audio(
+                    str(source),
+                    "zh",
+                    speaker_diarization=True,
+                )
+
+        self.assertEqual(result.text, "普通转写")
+        self.assertFalse(result.diarization["active"])
 
     def test_chunked_tencent_transcription_merges_cloud_results(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -304,6 +306,7 @@ class SttRuntimeTest(unittest.TestCase):
                         ),
                     ],
                 ),
+                patch.object(stt, "TENCENT_CLOUD_SPEAKER_DIARIZATION_ENABLED", True),
             ):
                 text, payload = stt.transcribe_with_tencent_flash_chunked(
                     source,
@@ -688,12 +691,14 @@ class SttRuntimeTest(unittest.TestCase):
         self.assertEqual(text, "说话人 1：甲。\n说话人 2：乙。")
         self.assertEqual(len(rows), 2)
 
-    def test_tencent_diarization_requires_real_speaker_labels(self) -> None:
-        with self.assertRaisesRegex(ValueError, "did not return speaker diarization labels"):
-            stt.parse_tencent_flash_response(
-                {"code": 0, "flash_result": [{"text": "没有说话人标签。"}]},
-                include_speakers=True,
-            )
+    def test_tencent_without_speaker_labels_keeps_plain_transcript(self) -> None:
+        text, rows = stt.parse_tencent_flash_response(
+            {"code": 0, "flash_result": [{"text": "没有说话人标签。"}]},
+            include_speakers=True,
+        )
+
+        self.assertEqual(text, "没有说话人标签。")
+        self.assertEqual(len(rows), 1)
 
     def test_cloud_diarization_metadata_only_activates_for_speaker_ids(self) -> None:
         inactive = stt.cloud_diarization_metadata([{"text": "普通文本"}])
@@ -827,6 +832,7 @@ class SttRuntimeTest(unittest.TestCase):
             patch.object(stt, "TENCENT_ASR_APP_ID", "123456"),
             patch.object(stt, "TENCENT_ASR_SECRET_ID", "secret-id"),
             patch.object(stt, "TENCENT_ASR_SECRET_KEY", "secret-key"),
+            patch.object(stt, "TENCENT_CLOUD_SPEAKER_DIARIZATION_ENABLED", True),
         ):
             _, signature_source = stt.build_tencent_realtime_request(
                 voice_id="voice-speakers",

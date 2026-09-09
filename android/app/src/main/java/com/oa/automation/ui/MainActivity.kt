@@ -34,7 +34,7 @@ import com.oa.automation.infrastructure.service.RecordingSessionController
 import com.oa.automation.infrastructure.audio.OrphanedMeetingAudioRecovery
 import com.oa.automation.infrastructure.attachment.LegacyMeetingAttachmentRecovery
 import com.oa.automation.infrastructure.account.AccountApiService
-import com.oa.automation.infrastructure.account.LocalAccountDataMigrator
+import com.oa.automation.infrastructure.account.LocalAccountDataCleaner
 import com.oa.automation.infrastructure.update.AndroidAppUpdate
 import com.oa.automation.infrastructure.update.AppUpdateCheck
 import com.oa.automation.infrastructure.update.AppUpdateService
@@ -56,7 +56,7 @@ class MainActivity : ComponentActivity() {
     private val legacyMeetingAttachmentRecovery: LegacyMeetingAttachmentRecovery by inject()
     private val appUpdateService: AppUpdateService by inject()
     private val accountApiService: AccountApiService by inject()
-    private val localAccountDataMigrator: LocalAccountDataMigrator by inject()
+    private val localAccountDataCleaner: LocalAccountDataCleaner by inject()
     private var updateCheckJob: Job? = null
     private var pendingAppUpdate by mutableStateOf<AndroidAppUpdate?>(null)
     private var isDownloadingAppUpdate by mutableStateOf(false)
@@ -185,8 +185,10 @@ class MainActivity : ComponentActivity() {
                 val endpoint = configDataStore.accountEndpointFlow.first()
                 accountApiService.exchangeSocialAuthTicket(endpoint, ticket).fold(
                     onSuccess = { session ->
+                        if (configDataStore.localWorkspaceRequiresReset(session.user.id)) {
+                            localAccountDataCleaner.clearForAccountSwitch()
+                        }
                         configDataStore.saveAuthSession(session, endpoint)
-                        localAccountDataMigrator.migrateAsync(endpoint, session)
                         socialAuthLoginVersion += 1
                         Toast.makeText(
                             this@MainActivity,

@@ -58,7 +58,6 @@ class CloudSTTEngine(
                 )
                 .addFormDataPart("model", model)
                 .addFormDataPart("language", config.language.requestValue)
-                .addFormDataPart("speaker_diarization", config.speakerDiarizationEnabled.toString())
                 .build()
 
             val requestBuilder = Request.Builder()
@@ -200,6 +199,10 @@ class CloudSTTEngine(
         }
 
         private fun createClient() = OkHttpClient.Builder()
+            // The managed cloud service is hosted on the VPS. Keep the public
+            // hostname for TLS/SNI while pinning requests to its IPv4 relay;
+            // the same hostname also has an AAAA record for the local model.
+            .dns(STT_IPV4_RELAY_DNS)
             .connectTimeout(BuildConfig.STT_CLOUD_CONNECT_TIMEOUT_SECONDS.toLong(), TimeUnit.SECONDS)
             .readTimeout(BuildConfig.STT_CLOUD_READ_TIMEOUT_SECONDS.toLong(), TimeUnit.SECONDS)
             .writeTimeout(BuildConfig.STT_CLOUD_WRITE_TIMEOUT_SECONDS.toLong(), TimeUnit.SECONDS)
