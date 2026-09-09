@@ -3565,7 +3565,10 @@ def stt_events(limit: int = 40) -> dict:
         raise HTTPException(status_code=502, detail=f"STT stream events fetch failed: {exc}") from exc
 
 
-@app.get("/api/meetings")
+# Legacy global meeting tables predate account ownership. Keep these
+# compatibility endpoints administrator-only until all clients use the
+# account-scoped /api/account/meetings API.
+@app.get("/api/meetings", dependencies=[Depends(require_growth_admin_principal)])
 def list_meetings() -> list[dict]:
     with db_conn() as conn:
         rows = conn.execute(
@@ -3574,7 +3577,7 @@ def list_meetings() -> list[dict]:
         return [dict(row) for row in rows]
 
 
-@app.post("/api/meetings")
+@app.post("/api/meetings", dependencies=[Depends(require_growth_admin_principal)])
 def create_meeting(payload: MeetingPayload) -> dict:
     meeting_id = str(uuid.uuid4())
     with db_conn() as conn:
@@ -3585,7 +3588,7 @@ def create_meeting(payload: MeetingPayload) -> dict:
     return {"id": meeting_id, **payload.model_dump()}
 
 
-@app.patch("/api/meetings/{meeting_id}")
+@app.patch("/api/meetings/{meeting_id}", dependencies=[Depends(require_growth_admin_principal)])
 def update_meeting(meeting_id: str, payload: MeetingPayload) -> dict:
     with db_conn() as conn:
         result = conn.execute(
@@ -3597,7 +3600,7 @@ def update_meeting(meeting_id: str, payload: MeetingPayload) -> dict:
     return {"id": meeting_id, **payload.model_dump()}
 
 
-@app.get("/api/meetings/{meeting_id}/transcripts")
+@app.get("/api/meetings/{meeting_id}/transcripts", dependencies=[Depends(require_growth_admin_principal)])
 def list_transcripts(meeting_id: str) -> list[dict]:
     with db_conn() as conn:
         rows = conn.execute(
@@ -3610,7 +3613,7 @@ def list_transcripts(meeting_id: str) -> list[dict]:
         return [dict(row) for row in rows]
 
 
-@app.post("/api/transcripts")
+@app.post("/api/transcripts", dependencies=[Depends(require_growth_admin_principal)])
 def create_transcript(payload: TranscriptPayload) -> dict:
     transcript_id = str(uuid.uuid4())
     with db_conn() as conn:
@@ -3632,7 +3635,7 @@ def create_transcript(payload: TranscriptPayload) -> dict:
     return {"id": transcript_id, **payload.model_dump()}
 
 
-@app.get("/api/reports/{meeting_id}")
+@app.get("/api/reports/{meeting_id}", dependencies=[Depends(require_growth_admin_principal)])
 def get_report(meeting_id: str) -> dict:
     with db_conn() as conn:
         row = conn.execute(
@@ -3649,7 +3652,7 @@ def get_report(meeting_id: str) -> dict:
         return payload
 
 
-@app.put("/api/reports/{meeting_id}")
+@app.put("/api/reports/{meeting_id}", dependencies=[Depends(require_growth_admin_principal)])
 def upsert_report(meeting_id: str, payload: ReportPayload) -> dict:
     if payload.meeting_id != meeting_id:
         raise HTTPException(status_code=400, detail="meeting_id mismatch")

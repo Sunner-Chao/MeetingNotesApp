@@ -132,6 +132,16 @@ class BackendDatabaseTests(unittest.TestCase):
         finally:
             backend.WEB_API_TOKEN = previous_web_token
 
+    def test_legacy_global_meeting_routes_are_admin_only(self) -> None:
+        """Unscoped compatibility tables must not be reachable by a public request."""
+        previous_web_token = backend.WEB_API_TOKEN
+        backend.WEB_API_TOKEN = "web-secret"
+        try:
+            with TestClient(backend.app) as client:
+                self.assertEqual(client.get("/api/meetings").status_code, 401)
+        finally:
+            backend.WEB_API_TOKEN = previous_web_token
+
 
 if __name__ == "__main__":
     unittest.main()
