@@ -48,6 +48,8 @@ enum class RealtimeSttRouteState {
     UNAVAILABLE
 }
 
+private const val INITIAL_STREAM_READY_TIMEOUT_MS = 10_000L
+
 internal fun realtimeSttRouteAfterStatus(
     current: RealtimeSttRouteState,
     status: String
@@ -253,6 +255,11 @@ class RecordingSessionController(
                 if (streamingPreviewActive) streamingSttClient.sendAudio(pcmBytes)
             }
             if (streamingPreviewActive) {
+                // The initial stream must be accepted by the server before we
+                // report the cloud engine as active. Without a bounded wait,
+                // a half-open WebSocket or a rejected start event leaves the
+                // recording page stuck on “建立安全连接” indefinitely.
+                val initialReadiness = kotlinx.coroutines.CompletableDeferred<Unit>()
                 streamingSttClient.start(
                     endpoint = initialEndpoint,
                     meetingId = meetingId,
@@ -323,8 +330,43 @@ class RecordingSessionController(
                                 )
                             }
                         }
-                    }
+                    },
+                    connectionReady = initialReadiness
                 )
+                fallbackScope.launch {
+                    val ready = runCatching {
+                        withTimeoutOrNull(INITIAL_STREAM_READY_TIMEOUT_MS) {
+                            initialReadiness.await()
+                            true
+                        } == true
+                    }.getOrDefault(false)
+                    if (!ready) {
+                        val shouldStopInitialStream = _state.value.let { state ->
+                            state.meetingId == meetingId &&
+                                state.realtimeSttRoute in setOf(
+                                    RealtimeSttRouteState.CLOUD_CONNECTING,
+                                    RealtimeSttRouteState.LOCAL_CONNECTING
+                                )
+                        }
+                        _state.update {
+                            if ((!it.isRecording && !it.isStarting) ||
+                                it.meetingId != meetingId ||
+                                it.realtimeSttRoute !in setOf(
+                                    RealtimeSttRouteState.CLOUD_CONNECTING,
+                                    RealtimeSttRouteState.LOCAL_CONNECTING
+                                )
+                            ) it else it.copy(
+                                realtimeSttRoute = RealtimeSttRouteState.UNAVAILABLE,
+                                status = "实时识别连接超时，录音仍会保存在本机",
+                                error = "云端实时识别暂时无法建立安全连接，请稍后重试"
+                            )
+                        }
+                        if (shouldStopInitialStream) {
+                            initialReadiness.cancel()
+                            streamingSttClient.stop()
+                        }
+                    }
+                }
             }
             if (pendingStopMeetingId == meetingId) {
                 if (streamingPreviewActive) streamingSttClient.stop()
