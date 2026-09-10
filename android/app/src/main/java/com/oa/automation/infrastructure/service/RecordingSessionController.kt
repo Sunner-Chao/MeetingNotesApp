@@ -9,7 +9,6 @@ import com.oa.automation.infrastructure.account.AccountSessionSynchronizer
 import com.oa.automation.infrastructure.stt.StreamingTranscriptUpdate
 import com.oa.automation.infrastructure.stt.StreamingTranscriptAccumulator
 import com.oa.automation.infrastructure.stt.StreamingTranscriptSegment
-import com.oa.automation.infrastructure.stt.CloudSTTEngine
 import com.oa.automation.infrastructure.stt.buildSttContextHint
 import com.oa.automation.infrastructure.stt.CLOUD_STREAM_READY_STATUS
 import com.oa.automation.infrastructure.stt.LOCAL_STREAM_READY_STATUS
@@ -30,7 +29,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
@@ -230,11 +228,14 @@ class RecordingSessionController(
             }
             if (useCloudInitially) {
                 require(cloudFallbackAvailable) { "智悟增强云模型需要有效的账户令牌和服务地址" }
-                val connectionResult = withContext(Dispatchers.IO) {
-                    CloudSTTEngine.testHybridConnection(sttConfig)
-                }
-                connectionResult.getOrElse { failure ->
-                    error(failure.message ?: "STT 服务鉴权失败")
+                // Do not block microphone capture on a separate health request.
+                // Mobile networks can reset that short HTTPS probe even while
+                // the WebSocket route is usable. The streaming client below is
+                // the source of truth and already owns reconnect/failure UI.
+                // Keep only local configuration validation here; auth and
+                // transport failures are surfaced by the stream callbacks.
+                require(sttConfig.apiToken?.isNotBlank() == true) {
+                    "STT 访问令牌未配置"
                 }
             }
             audioRecorder.setOnChunkAvailableListener(null)
