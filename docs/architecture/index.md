@@ -38,6 +38,7 @@
 - 2026-09-10：Lite 实时 STT 首次 WebSocket 握手增加 10 秒有限等待；服务端未返回合法 session 时不再无限停留在“建立安全连接”，录音继续保存在本机并给出明确提示。`1.2.75/10275` 已按固定签名 OTA 发布。
 - 2026-09-11：实测 `lstwin.space` IPv4 TLS 握手因 ECDSA `bad key share` 被 reset；Lite `1.2.76/10276` 将账户、云端 STT、Agent 与 OTA 默认入口切换为已有 IP 证书 HTTPS 入口，保留域名 IPv6/本地模型路径。
 - 2026-09-11：[[Lite报告页皮肤与书签导航-20260911]] 完成 Lite 报告页纸张/涂鸦皮肤与左侧六角书签排版，保持 simple and effective。
+- 2026-09-11：Lite `1.2.77/10277` 已原子发布；公网 OTA 元数据、APK Range、STT 健康检查和双版本保留通过。
 
 ## 边界
 
