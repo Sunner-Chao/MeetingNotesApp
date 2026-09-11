@@ -1,12 +1,12 @@
 {
-  "version_code": 10277,
-  "version_name": "1.2.77",
+  "version_code": 10278,
+  "version_name": "1.2.78",
   "product_edition": "light",
   "product_name": "智悟本(Lite)",
   "application_id": "com.oa.automation.light",
   "mandatory": false,
-  "sha256": "67c62fa11742f154755fdc09154230b163429022aa7257166f611e112217aae0",
-  "release_notes": "优化 Lite 纪要页排版与会议类型书签；继续修复移动网络云端 STT 连接稳定性。",
-  "published_at": "2026-09-11T09:00:00+08:00",
-  "apk_filename": "ZhiWuBen-Android-10277.apk"
+  "sha256": "4754c4adee1dcffdf18163901467ed845410c92039c922c3965828a85fd2dc37",
+  "release_notes": "会议类型书签统一白字并优化对比度，修复长名称折叠裁切，提升左侧标签可读性。",
+  "published_at": "2026-09-11T17:40:00+08:00",
+  "apk_filename": "ZhiWuBen-Android-10278.apk"
 }

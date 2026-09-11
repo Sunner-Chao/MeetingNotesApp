@@ -31,11 +31,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onClick
@@ -46,6 +49,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.lerp
 import androidx.compose.ui.unit.sp
@@ -194,6 +198,12 @@ private fun BookmarkTab(
     val labelAlpha = ((progress - 0.42f) / 0.58f).coerceIn(0f, 1f)
     val openStroke = if (selected) mood.accent else skin.ink.copy(alpha = 0.32f)
     val stroke = lerp(mood.ink, openStroke, progress)
+    val bookmarkFill = remember(mood.accent) { bookmarkSurfaceColor(mood.accent) }
+    val collapsedFontSize = minOf(
+        11f,
+        (tabHeight.value - 4f) / mood.displayName.length.coerceAtLeast(1) /
+            LocalDensity.current.fontScale
+    ).sp
 
     // Read the latest interaction state from inside the long lived gesture loop.
     val currentPinned by rememberUpdatedState(pinned)
@@ -335,7 +345,7 @@ private fun BookmarkTab(
 
                 drawPath(
                     path = path,
-                    color = mood.accent.copy(alpha = if (progress > 0.35f) 0.96f else 0.88f)
+                    color = bookmarkFill
                 )
 
                 drawPath(
@@ -358,7 +368,7 @@ private fun BookmarkTab(
                         .width(5.dp)
                         .fillMaxHeight(0.66f)
                         .graphicsLayer { alpha = progress }
-                        .background(mood.accent, RoundedCornerShape(3.dp))
+                        .background(bookmarkFill, RoundedCornerShape(3.dp))
                 )
             }
             if (labelAlpha > 0.01f) {
@@ -380,25 +390,56 @@ private fun BookmarkTab(
                     Text(
                         text = mood.displayName,
                         color = Color.White,
-                        fontSize = 9.sp,
-                        lineHeight = 11.sp,
                         fontWeight = FontWeight.SemiBold,
+                        style = androidx.compose.material3.MaterialTheme.typography.labelSmall.copy(
+                            fontSize = 11.sp,
+                            lineHeight = 13.sp,
+                            shadow = Shadow(
+                                color = Color.Black.copy(alpha = 0.82f),
+                                blurRadius = 2.5f
+                            )
+                        ),
                         textAlign = TextAlign.Center,
                         maxLines = 1,
                         softWrap = false,
                         overflow = TextOverflow.Clip
-                )
+                    )
                 }
             }
             if (labelAlpha <= 0.01f) {
                 Text(
                     text = mood.displayName,
                     color = Color.White,
-                    fontSize = 8.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    style = androidx.compose.material3.MaterialTheme.typography.labelSmall.copy(
+                        fontSize = collapsedFontSize,
+                        lineHeight = collapsedFontSize * 1.2f,
+                        shadow = Shadow(
+                            color = Color.Black.copy(alpha = 0.88f),
+                            blurRadius = 2.5f
+                        )
+                    ),
+                    textAlign = TextAlign.Center,
                     maxLines = 1,
                     softWrap = false,
                     modifier = Modifier
                         .align(Alignment.Center)
+                        // Measure the text on its rotated axes, then report the
+                        // rotated bounds so the parent can center it correctly.
+                        .layout { measurable, constraints ->
+                            val label = measurable.measure(
+                                Constraints(
+                                    maxWidth = constraints.maxHeight,
+                                    maxHeight = constraints.maxWidth
+                                )
+                            )
+                            layout(label.height, label.width) {
+                                label.placeRelative(
+                                    (label.height - label.width) / 2,
+                                    (label.width - label.height) / 2
+                                )
+                            }
+                        }
                         .graphicsLayer { rotationZ = -90f }
                 )
             }

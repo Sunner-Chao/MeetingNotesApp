@@ -562,3 +562,8 @@ This native Ubuntu release makes final Simplified-Chinese transcription and imag
 - 服务端新增 `auth-providers.defaults.json`，内置六个平台的官方公开授权、令牌和用户信息端点；私有配置与环境变量可以逐项覆盖，Client ID、Secret、Bot Token 不进入源码。
 - 固定签名 Android Release 版本号升级为 `1.2.49/10249`，SHA-256 为 `40a3020152c416d0d4a5ce81d1c849a3bae5771360c667eab7f7158ab20f1cea`；发布后 OTA 仅保留 `10249` 与 `10248`。
 - Lite `1.2.77`（versionCode `10277`）已原子发布；报告页排版、会议类型六角书签和移动网络云端 STT 稳定性优化上线。固定签名 APK SHA-256：`67c62fa11742f154755fdc09154230b163429022aa7257166f611e112217aae0`。生产 OTA 保留 `10277` 与上一版本。
+
+## 1.2.78
+
+- 左侧会议类型书签统一使用白色文字；修复折叠态长名称被窄栏裁切的问题，并为浅色类别加深书签底色，保证浅色/深色主题下的可读性。
+- 固定签名 Android Release 版本号升级为 `1.2.78/10278`，发布后 OTA 仅保留 `10278` 与 `10277`。

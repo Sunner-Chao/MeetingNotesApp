@@ -11,6 +11,8 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.TrackChanges
 import androidx.compose.material.icons.filled.TrendingUp
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import com.oa.automation.R
 
@@ -160,3 +162,12 @@ internal fun templateMoodFor(templateName: String): TemplateMood {
 /** User-facing category label; legacy template ids remain unchanged for storage. */
 internal fun templateDisplayName(templateName: String): String =
     templateMoodFor(templateName).displayName
+
+/** Keep category hues while guaranteeing at least 4.5:1 contrast with white. */
+internal fun bookmarkSurfaceColor(accent: Color): Color {
+    var surface = accent.copy(alpha = 1f)
+    while ((1.05f / (surface.luminance() + 0.05f)) < 4.5f) {
+        surface = lerp(surface, Color.Black, 0.04f)
+    }
+    return surface
+}
