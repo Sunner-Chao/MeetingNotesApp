@@ -180,13 +180,13 @@ val debugSttEndpoint = claudeEnv["MEETINGNOTES_STT_DEBUG_ENDPOINT"]
     ?: "http://10.0.2.2:8888"
 val releaseSttEndpoint = claudeEnv["MEETINGNOTES_STT_RELEASE_ENDPOINT"]
     ?.takeIf { it.isNotBlank() }
-    .orEmpty()
+    ?: "https://lstwin.space/stt-local"
 val debugSttRelayAddress = claudeEnv["MEETINGNOTES_STT_DEBUG_IPV4_RELAY_ADDRESS"]
     ?.takeIf { it.isNotBlank() }
     .orEmpty()
 val releaseSttRelayAddress = claudeEnv["MEETINGNOTES_STT_IPV4_RELAY_ADDRESS"]
     ?.takeIf { it.isNotBlank() }
-    .orEmpty()
+    ?: "118.25.43.185"
 val productEdition = providers.gradleProperty("meetingnotesProductEdition")
     .orElse(providers.environmentVariable("MEETINGNOTES_PRODUCT_EDITION"))
     .orElse("light-enjoy")
@@ -237,8 +237,8 @@ android {
         minSdk = 26
         targetSdk = 34
         // Social and Light Enjoy are independently installable OTA channels.
-        versionCode = if (productEdition == "light-enjoy") 10275 else 10264
-        versionName = if (productEdition == "light-enjoy") "1.2.75" else "1.2.64"
+        versionCode = if (productEdition == "light-enjoy") 10276 else 10264
+        versionName = if (productEdition == "light-enjoy") "1.2.76" else "1.2.64"
         manifestPlaceholders["appLabel"] = if (productEdition == "social") "智悟本(Pro)" else "智悟本(Lite)"
         manifestPlaceholders["socialAuthScheme"] = socialAuthScheme
         manifestPlaceholders["socialAuthHost"] = socialAuthHost
@@ -407,7 +407,7 @@ android.defaultConfig {
         ?: "large-v3-turbo"
     val sttCloudEndpoint = claudeEnv["MEETINGNOTES_STT_CLOUD_ENDPOINT"]
         ?.takeIf { it.isNotBlank() }
-        ?: ""
+        ?: "https://118.25.43.185/stt-cloud"
     val sttCloudModel = claudeEnv["MEETINGNOTES_STT_CLOUD_MODEL"]
         ?.takeIf { it.isNotBlank() }
         ?: "whisper-1"
@@ -502,10 +502,10 @@ android.defaultConfig {
 
     val defaultAgentEndpoint = claudeEnv["MEETINGNOTES_AGENT_ENDPOINT"]
         ?.takeIf { it.isNotBlank() }
-        ?: "http://localhost:8090/api/agent"
+        ?: "https://118.25.43.185/api/agent"
     val defaultAccountEndpoint = claudeEnv["MEETINGNOTES_ACCOUNT_ENDPOINT"]
         ?.takeIf { it.isNotBlank() }
-        ?: "http://localhost:8090/api"
+        ?: "https://118.25.43.185/api"
     // Keep OTA channels explicit. A single shared endpoint is retained only as
     // a backwards-compatible base and is normalized to the selected channel,
     // so a Light build can never inherit the Social manifest (or vice versa).

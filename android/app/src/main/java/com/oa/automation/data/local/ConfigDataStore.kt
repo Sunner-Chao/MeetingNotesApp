@@ -346,7 +346,9 @@ class ConfigDataStore(private val context: Context) {
                     !BuildConfig.DEBUG && it.isDevelopmentOnlySttEndpoint()
             }
         val savedSttEndpoint = resolveLocalSttEndpoint(rawSavedSttEndpoint)
-        val savedCloudEndpoint = preferences[STT_CLOUD_ENDPOINT] ?: STTConfig.DEFAULT_CLOUD_ENDPOINT
+        val savedCloudEndpoint = resolveManagedServiceEndpoint(
+            preferences[STT_CLOUD_ENDPOINT], STTConfig.DEFAULT_CLOUD_ENDPOINT.orEmpty()
+        )
         val savedCloudModel = preferences[STT_CLOUD_MODEL] ?: STTConfig.DEFAULT_CLOUD_MODEL
         val savedTencentTier = preferences[STT_TENCENT_ASR_TIER]?.let {
             runCatching { TencentAsrTier.valueOf(it) }.getOrNull()
@@ -403,8 +405,8 @@ class ConfigDataStore(private val context: Context) {
                     runCatching { LLMEngineType.valueOf(it) }.getOrNull()
                 } ?: LLMEngineType.AGENT_GATEWAY,
                 agentEndpoint = resolveAgentGatewayEndpoint(
-                    savedEndpoint = preferences[LLM_AGENT_ENDPOINT],
-                    accountEndpoint = preferences[ACCOUNT_ENDPOINT],
+                    savedEndpoint = resolveManagedServiceEndpoint(preferences[LLM_AGENT_ENDPOINT], BuildConfig.DEFAULT_AGENT_ENDPOINT),
+                    accountEndpoint = resolveAccountEndpoint(preferences[ACCOUNT_ENDPOINT]),
                     defaultEndpoint = BuildConfig.DEFAULT_AGENT_ENDPOINT
                 ),
                 agentAccessToken = preferences[LLM_AGENT_ACCESS_TOKEN],
@@ -768,7 +770,16 @@ class ConfigDataStore(private val context: Context) {
                     ?.takeIf { it.isNotBlank() }
                     ?.let { preferences[STT_CLOUD_ENDPOINT] = it }
             }
-            preferences[DEFAULT_PROFILE_VERSION] = "19"
+            if (profileVersion < 20) {
+                preferences[ACCOUNT_ENDPOINT] = resolveAccountEndpoint(preferences[ACCOUNT_ENDPOINT])
+                preferences[LLM_AGENT_ENDPOINT] = resolveManagedServiceEndpoint(
+                    preferences[LLM_AGENT_ENDPOINT], BuildConfig.DEFAULT_AGENT_ENDPOINT
+                )
+                preferences[STT_CLOUD_ENDPOINT] = resolveManagedServiceEndpoint(
+                    preferences[STT_CLOUD_ENDPOINT], STTConfig.DEFAULT_CLOUD_ENDPOINT.orEmpty()
+                )
+            }
+            preferences[DEFAULT_PROFILE_VERSION] = "20"
         }
     }
 
@@ -794,16 +805,8 @@ class ConfigDataStore(private val context: Context) {
     }
 
     /** Keep the released Lite build on the same origin as its working API route. */
-    private fun resolveAccountEndpoint(savedEndpoint: String?): String {
-        val candidate = savedEndpoint?.trim()?.trimEnd('/').orEmpty()
-        if (candidate.isBlank()) return BuildConfig.DEFAULT_ACCOUNT_ENDPOINT
-        val host = runCatching { URI(candidate).host.orEmpty().lowercase() }.getOrDefault("")
-        return if (host == "auth.synthapi.asia") {
-            "https://lstwin.space/api"
-        } else {
-            candidate
-        }
-    }
+    private fun resolveAccountEndpoint(savedEndpoint: String?): String =
+        resolveManagedServiceEndpoint(savedEndpoint, BuildConfig.DEFAULT_ACCOUNT_ENDPOINT)
 
     /**
      * Update STT configuration

@@ -186,8 +186,12 @@ class RecordingSessionController(
                 it > System.currentTimeMillis() / 1_000
             } == true
             val sttTokenAvailable = !sttConfig.apiToken.isNullOrBlank()
-            accountAccessEnabled = accountSessionAvailable && sttTokenAvailable
-            cloudFallbackAvailable = accountAccessEnabled && !sttConfig.cloudEndpoint.isNullOrBlank()
+            // The signed STT token is the credential the streaming service
+            // actually verifies. Do not block a healthy token merely because
+            // the longer account session is near expiry; a 401/403 from the
+            // service will trigger the single refresh-and-reconnect path.
+            accountAccessEnabled = sttTokenAvailable
+            cloudFallbackAvailable = sttTokenAvailable && !sttConfig.cloudEndpoint.isNullOrBlank()
             Log.d(
                 "RecordingSessionController",
                 "STT start endpoint=${sttConfig.localEndpoint.trim().ifBlank { "<blank>" }} " +
@@ -358,7 +362,11 @@ class RecordingSessionController(
                             ) it else it.copy(
                                 realtimeSttRoute = RealtimeSttRouteState.UNAVAILABLE,
                                 status = "实时识别连接超时，录音仍会保存在本机",
-                                error = "云端实时识别暂时无法建立安全连接，请稍后重试"
+                                error = if (useCloudInitially) {
+                                    "云端实时识别连接超时，请检查网络后重试"
+                                } else {
+                                    "本地实时识别连接超时，录音仍会保存在本机"
+                                }
                             )
                         }
                         if (shouldStopInitialStream) {

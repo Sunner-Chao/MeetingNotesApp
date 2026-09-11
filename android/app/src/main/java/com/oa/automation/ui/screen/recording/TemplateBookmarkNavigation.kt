@@ -68,7 +68,7 @@ internal val TemplateRailOverlayWidth = 96.dp
  * There is deliberately no intermediate "slightly out" width — sticking out
  * *is* the expanded state.
  */
-private val SliverWidth = 10.dp
+private val SliverWidth = 24.dp
 private val ExpandedWidth = 86.dp
 
 /** Minimum touchable width so a hidden sliver is still comfortable to hit. */
@@ -192,8 +192,6 @@ private fun BookmarkTab(
     val tabWidth = lerp(SliverWidth, ExpandedWidth, progress)
     val hitWidth = maxOf(tabWidth, TouchTargetWidth)
     val labelAlpha = ((progress - 0.42f) / 0.58f).coerceIn(0f, 1f)
-    val openPaper = if (isDark) skin.paper else Color.White
-    val container = lerp(mood.accent, openPaper, progress)
     val openStroke = if (selected) mood.accent else skin.ink.copy(alpha = 0.32f)
     val stroke = lerp(mood.ink, openStroke, progress)
 
@@ -311,38 +309,34 @@ private fun BookmarkTab(
             ) {
                 val w = size.width
                 val h = size.height
-                // Clamp the corner so a narrow collapsed sliver cannot produce a
-                // self-crossing outline (w - corner must stay right of corner).
+                // Clamp the corner so the six-sided bookmark stays legible at
+                // both the collapsed and expanded widths.
                 val corner = minOf(12.dp.toPx(), w / 2.5f, h / 2.5f)
                 val sw = if (selected) 1.7.dp.toPx() else 1.3.dp.toPx()
-                // Jitter must stay well under the corner inset for the same reason.
-                val jitter = minOf(0.9.dp.toPx(), corner / 3f)
-                val seed = mood.family.ordinal * 3 + 2
 
-                // Fill
-                drawRect(color = container)
-
-                // Hand-drawn stroke
+                // Collapsed: a slim coloured label spine. Expanded: a single
+                // mood-coloured hexagon, with no white paper rectangle.
                 val path = androidx.compose.ui.graphics.Path()
-                val points = listOf(
-                    androidx.compose.ui.geometry.Offset(corner, 0f),
-                    androidx.compose.ui.geometry.Offset(w - corner, 0f),
-                    androidx.compose.ui.geometry.Offset(w, corner),
-                    androidx.compose.ui.geometry.Offset(w, h - corner),
-                    androidx.compose.ui.geometry.Offset(w - corner, h),
-                    androidx.compose.ui.geometry.Offset(corner, h),
-                    androidx.compose.ui.geometry.Offset(0f, h - corner),
-                    androidx.compose.ui.geometry.Offset(0f, corner)
-                )
-
-                path.moveTo(points[0].x + (seed % 2 - 1) * jitter, points[0].y)
-                for (i in 1..points.size) {
-                    val pt = points[i % points.size]
-                    val jx = ((seed + i * 7) % 3 - 1) * jitter
-                    val jy = ((seed + i * 11) % 3 - 1) * jitter
-                    path.lineTo(pt.x + jx, pt.y + jy)
+                if (progress > 0.35f) {
+                    val inset = minOf(corner, w / 3f)
+                    path.moveTo(inset, 0f)
+                    path.lineTo(w - inset, 0f)
+                    path.lineTo(w, h / 2f)
+                    path.lineTo(w - inset, h)
+                    path.lineTo(inset, h)
+                    path.lineTo(0f, h / 2f)
+                } else {
+                    path.moveTo(0f, 0f)
+                    path.lineTo(w, 0f)
+                    path.lineTo(w, h)
+                    path.lineTo(0f, h)
                 }
                 path.close()
+
+                drawPath(
+                    path = path,
+                    color = mood.accent.copy(alpha = if (progress > 0.35f) 0.96f else 0.88f)
+                )
 
                 drawPath(
                     path = path,
@@ -379,13 +373,13 @@ private fun BookmarkTab(
                     Icon(
                         imageVector = mood.icon,
                         contentDescription = null,
-                        tint = mood.accent,
+                        tint = if (progress > 0.35f) Color.White else mood.accent,
                         modifier = Modifier.size(22.dp)
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(
                         text = mood.displayName,
-                        color = if (isDark && !selected) palette.text else mood.ink,
+                        color = if (progress > 0.35f) Color.White else if (isDark && !selected) palette.text else mood.ink,
                         fontSize = 9.sp,
                         lineHeight = 11.sp,
                         fontWeight = FontWeight.SemiBold,
@@ -393,8 +387,20 @@ private fun BookmarkTab(
                         maxLines = 1,
                         softWrap = false,
                         overflow = TextOverflow.Clip
-                    )
+                )
                 }
+            }
+            if (labelAlpha <= 0.01f) {
+                Text(
+                    text = mood.displayName,
+                    color = if (isDark && !selected) palette.text else mood.ink,
+                    fontSize = 8.sp,
+                    maxLines = 1,
+                    softWrap = false,
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .graphicsLayer { rotationZ = -90f }
+                )
             }
         }
     }
