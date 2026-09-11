@@ -1662,7 +1662,7 @@ private fun MeetingTemplateStrip(
     previewTemplate?.let { template ->
         AlertDialog(
             onDismissRequest = { previewTemplate = null },
-            title = { Text(template.name) },
+            title = { Text(templateDisplayName(template.name)) },
             text = {
                 Text(
                     text = template.content.ifBlank { "模板内容为空" },
@@ -1751,7 +1751,7 @@ private fun MeetingTemplateStrip(
                                     Spacer(Modifier.width(7.dp))
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(
-                                            text = template.name,
+                                            text = templateDisplayName(template.name),
                                             color = RecordingInk,
                                             fontSize = 11.sp,
                                             lineHeight = 14.sp,

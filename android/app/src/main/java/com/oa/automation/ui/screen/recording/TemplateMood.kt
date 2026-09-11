@@ -50,7 +50,7 @@ internal data class TemplateMood(
 
 private val DirectiveMood = TemplateMood(
     family = TemplateMoodFamily.DIRECTIVE,
-    displayName = "宣贯·落实会",
+    displayName = "行政类",
     moodWord = "果断",
     accent = Color(0xFFCF2425),
     ink = Color(0xFFC72215),
@@ -60,7 +60,7 @@ private val DirectiveMood = TemplateMood(
 
 private val ProgressMood = TemplateMood(
     family = TemplateMoodFamily.PROGRESS,
-    displayName = "推演·进度会",
+    displayName = "项目管理类",
     moodWord = "稳定",
     accent = Color(0xFF61A553),
     ink = Color(0xFF4E9A45),
@@ -70,7 +70,7 @@ private val ProgressMood = TemplateMood(
 
 private val CoCreateMood = TemplateMood(
     family = TemplateMoodFamily.CO_CREATE,
-    displayName = "启迪·共创会",
+    displayName = "共创类",
     moodWord = "发散",
     accent = Color(0xFFF3B61D),
     ink = Color(0xFFDD9F05),
@@ -80,7 +80,7 @@ private val CoCreateMood = TemplateMood(
 
 private val NegotiationMood = TemplateMood(
     family = TemplateMoodFamily.NEGOTIATION,
-    displayName = "博弈·洽谈会",
+    displayName = "洽谈类",
     moodWord = "博弈",
     accent = Color(0xFF7A6DDF),
     ink = Color(0xFF6958D3),
@@ -90,7 +90,7 @@ private val NegotiationMood = TemplateMood(
 
 private val RetrospectiveMood = TemplateMood(
     family = TemplateMoodFamily.RETROSPECTIVE,
-    displayName = "复盘·分析会",
+    displayName = "复盘类",
     moodWord = "聚焦",
     accent = Color(0xFFEB852F),
     ink = Color(0xFFE26B10),
@@ -100,7 +100,7 @@ private val RetrospectiveMood = TemplateMood(
 
 private val StandupMood = TemplateMood(
     family = TemplateMoodFamily.STANDUP,
-    displayName = "敏捷·站会",
+    displayName = "敏捷类",
     moodWord = "高效",
     accent = Color(0xFF27B0AD),
     ink = Color(0xFF0A9E90),
@@ -110,7 +110,7 @@ private val StandupMood = TemplateMood(
 
 private val ForumMood = TemplateMood(
     family = TemplateMoodFamily.FORUM,
-    displayName = "论坛·共识会",
+    displayName = "论坛类",
     moodWord = "开放",
     accent = Color(0xFF3172D7),
     ink = Color(0xFF1B62D6),
@@ -130,7 +130,7 @@ private val CustomMood = TemplateMood(
 
 private val GeneralMood = TemplateMood(
     family = TemplateMoodFamily.GENERAL,
-    displayName = "通用会议",
+    displayName = "通用类",
     moodWord = "均衡",
     accent = Color(0xFF5B7A99),
     ink = Color(0xFF47617D),
@@ -150,6 +150,13 @@ internal fun templateMoodFor(templateName: String): TemplateMood {
         normalized.contains("敏捷") || normalized.contains("站会") -> StandupMood
         normalized.contains("论坛") || normalized.contains("共识") || normalized.contains("聚智") -> ForumMood
         normalized.contains("自定义") -> CustomMood
+        normalized.contains("研学") || normalized.contains("考察") ->
+            GeneralMood.copy(displayName = "研学考察类")
+        normalized.contains("通用") -> GeneralMood
         else -> GeneralMood.copy(displayName = normalized.ifBlank { GeneralMood.displayName })
     }
 }
+
+/** User-facing category label; legacy template ids remain unchanged for storage. */
+internal fun templateDisplayName(templateName: String): String =
+    templateMoodFor(templateName).displayName

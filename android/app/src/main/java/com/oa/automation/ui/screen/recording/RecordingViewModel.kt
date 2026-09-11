@@ -1,6 +1,8 @@
 package com.oa.automation.ui.screen.recording
 
 import android.content.Context
+import android.Manifest
+import android.content.pm.PackageManager
 import android.content.Intent
 import android.net.Uri
 import android.os.SystemClock
@@ -1021,6 +1023,22 @@ class RecordingViewModel(
                 recordingMarkerRecords = recordingMarkers
                 existingTranscriptText = transcriptText
                 updateState {
+                    // A user can tap a template while this asynchronous load is
+                    // still resolving. Preserve that newer interaction instead
+                    // of replacing it with the meeting's initial empty value.
+                    val interactiveTemplateName = it.selectedRecordingTemplateName
+                        ?.takeIf { name -> presetTemplates.any { it.name == name } }
+                    val selectedTemplateName = interactiveTemplateName ?: editionSafeTemplateName
+                    val selectedTemplateConfig = if (interactiveTemplateName != null) {
+                        resolveRestoredRecordingTemplateConfig(
+                            selectedName = interactiveTemplateName,
+                            presetTemplates = presetTemplates,
+                            appConfig = editionSafeAppConfig,
+                            isGlobalRecording = isGlobalRecording
+                        )
+                    } else {
+                        restoredTemplateConfig
+                    }
                     it.copy(
                         meetingTitle = meeting.displayTitle(),
                         inputMode = if (meeting.origin == MeetingOrigin.FILE_IMPORT) {
@@ -1060,8 +1078,8 @@ class RecordingViewModel(
                             else -> "流式预览"
                         },
                         presetTemplates = presetTemplates,
-                        reportTemplate = restoredTemplateConfig,
-                        selectedRecordingTemplateName = editionSafeTemplateName
+                        reportTemplate = selectedTemplateConfig,
+                        selectedRecordingTemplateName = selectedTemplateName
                     )
                 }
                 if (isGlobalRecording) {
@@ -1508,8 +1526,35 @@ class RecordingViewModel(
         }
     }
 
+    /**
+     * Keeps a denied runtime permission visible on the recording page instead
+     * of leaving the primary action looking like it did nothing.
+     */
+    fun onRecordingPermissionDenied() {
+        _uiState.update {
+            it.copy(
+                isRecordingActionPending = false,
+                error = "麦克风权限未开启，请允许后再开始录音"
+            )
+        }
+    }
+
     private fun startRecordingNow(meetingId: String) {
         if (!isCurrentMeeting(meetingId)) return
+        if (
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                appContext,
+                Manifest.permission.RECORD_AUDIO
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            _uiState.update {
+                it.copy(
+                    isRecordingActionPending = false,
+                    error = "请先允许麦克风权限，再开始录音"
+                )
+            }
+            return
+        }
         val studyJourney = isStudyJourneyState(_uiState.value)
         val currentTranscript = SimplifiedChineseText.normalize(_uiState.value.liveTranscript)
         existingTranscriptText = currentTranscript
@@ -1518,11 +1563,21 @@ class RecordingViewModel(
         previewStreamingText = ""
         preservedStreamingText = ""
         currentStreamingSessionId = ""
-        startForegroundService(
+        val startResult = startForegroundService(
             meetingId = meetingId,
             journeyStageId = if (studyJourney) null else _uiState.value.currentJourneyStage?.id,
             autoGenerateReport = !studyJourney
         )
+        if (startResult.isFailure) {
+            val failure = startResult.exceptionOrNull()
+            _uiState.update {
+                it.copy(
+                    isRecordingActionPending = false,
+                    error = "录音启动失败：${failure?.message ?: "系统未允许后台录音"}"
+                )
+            }
+            return
+        }
         _uiState.update {
             it.copy(
                 isRecording = false,
@@ -3975,7 +4030,7 @@ class RecordingViewModel(
         meetingId: String,
         journeyStageId: String?,
         autoGenerateReport: Boolean
-    ) {
+    ): Result<Unit> = runCatching {
         val intent = Intent(appContext, RecordingService::class.java).apply {
             action = RecordingService.ACTION_START
             putExtra(RecordingService.EXTRA_MEETING_ID, meetingId)
@@ -3983,7 +4038,7 @@ class RecordingViewModel(
             putExtra(RecordingService.EXTRA_JOURNEY_STAGE_ID, journeyStageId)
             putExtra(RecordingService.EXTRA_AUTO_GENERATE_REPORT, autoGenerateReport)
         }
-        appContext.startForegroundService(intent)
+        androidx.core.content.ContextCompat.startForegroundService(appContext, intent)
     }
 
     private fun stopForegroundService(meetingId: String, generateReportAfterSave: Boolean = false) {

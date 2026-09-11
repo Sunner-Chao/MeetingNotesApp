@@ -1500,7 +1500,10 @@ private fun SiriBottomControls(
     onGenerateReport: () -> Unit,
     onCancelReport: () -> Unit
 ) {
-    val mainActionEnabled = actionEnabled && (isRecording || hasSelectedTemplate)
+    // Keep the control tappable even before a template is selected. The
+    // ViewModel returns a concise selection hint; a disabled control otherwise
+    // looks like a broken recorder to first-time users.
+    val mainActionEnabled = actionEnabled
     val isDark = com.oa.automation.ui.theme.LocalAppIsDarkTheme.current
     val skin = rememberDoodleSkin(isDark)
 
@@ -1534,9 +1537,10 @@ private fun SiriBottomControls(
                 skin = skin
             )
             Text(
-                text = when {
+                    text = when {
                     isRecording && isPaused -> "继续"
                     isRecording -> "暂停"
+                    !hasSelectedTemplate -> "选择类型"
                     else -> "开始"
                 },
                 color = skin.inkMuted,

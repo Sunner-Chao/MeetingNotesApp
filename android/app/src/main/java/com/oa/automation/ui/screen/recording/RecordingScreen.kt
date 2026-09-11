@@ -1,5 +1,6 @@
 package com.oa.automation.ui.screen.recording
 
+import android.Manifest
 import android.content.ClipData
 import android.content.Intent
 import android.net.Uri
@@ -110,6 +111,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -192,10 +194,34 @@ fun RecordingScreen(
     var markerMediaChooserMarkerId by rememberSaveable(meetingId) { mutableStateOf<String?>(null) }
     var showBackgroundRecordingNotice by rememberSaveable(meetingId) { mutableStateOf(false) }
     var backgroundRecordingNoticePending by rememberSaveable(meetingId) { mutableStateOf(false) }
+    var recordingPermissionRequestPending by rememberSaveable(meetingId) { mutableStateOf(false) }
     var launchActionConsumed by rememberSaveable(meetingId, launchAction) {
         mutableStateOf(false)
     }
     val lifecycleOwner = LocalLifecycleOwner.current
+
+    val recordingPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        val shouldStart = recordingPermissionRequestPending
+        recordingPermissionRequestPending = false
+        if (granted && shouldStart) {
+            viewModel.startRecording()
+        } else if (!granted && shouldStart) {
+            viewModel.onRecordingPermissionDenied()
+        }
+    }
+
+    fun startRecordingWithPermission() {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            viewModel.startRecording()
+        } else {
+            recordingPermissionRequestPending = true
+            recordingPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
 
     DisposableEffect(lifecycleOwner, viewModel, meetingId) {
         val observer = LifecycleEventObserver { _, event ->
@@ -411,7 +437,7 @@ fun RecordingScreen(
         if (launchActionConsumed || uiState.meetingTitle.isBlank()) return@LaunchedEffect
         when (launchAction) {
             RecordingLaunchAction.STANDARD -> Unit
-            RecordingLaunchAction.START_RECORDING -> viewModel.startRecording()
+            RecordingLaunchAction.START_RECORDING -> startRecordingWithPermission()
             RecordingLaunchAction.OPEN_IMPORT -> viewModel.switchToImportMode()
         }
         launchActionConsumed = true
@@ -451,7 +477,7 @@ fun RecordingScreen(
         onCustomTemplateLayoutChange = viewModel::updateCustomTemplateLayout,
         onSttEngineSelected = viewModel::switchSttEngine,
         onSttLanguageSelected = viewModel::switchSttLanguage,
-        onStartRecording = viewModel::startRecording,
+        onStartRecording = ::startRecordingWithPermission,
         onTogglePause = viewModel::togglePauseRecording,
         onAddMarker = viewModel::addRecordingMarker,
         onGenerateStageDraft = viewModel::generateLatestStageDraft,
@@ -952,7 +978,10 @@ private fun TemplateSelectorCard(
                             fontWeight = FontWeight.SemiBold
                         )
                         Text(
-                            text = selectedTemplateName.ifBlank { "选择模板" },
+                            text = selectedTemplateName
+                                .takeIf(String::isNotBlank)
+                                ?.let(::templateDisplayName)
+                                ?: "选择模板",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.primary
                         )
@@ -999,7 +1028,7 @@ private fun TemplateSelectorCard(
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        text = template.name,
+                                        text = templateDisplayName(template.name),
                                         style = MaterialTheme.typography.labelLarge,
                                         fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
                                         color = if (isSelected)

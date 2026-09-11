@@ -379,7 +379,7 @@ private fun BookmarkTab(
                     Spacer(Modifier.height(4.dp))
                     Text(
                         text = mood.displayName,
-                        color = if (progress > 0.35f) Color.White else if (isDark && !selected) palette.text else mood.ink,
+                        color = Color.White,
                         fontSize = 9.sp,
                         lineHeight = 11.sp,
                         fontWeight = FontWeight.SemiBold,
@@ -393,7 +393,7 @@ private fun BookmarkTab(
             if (labelAlpha <= 0.01f) {
                 Text(
                     text = mood.displayName,
-                    color = if (isDark && !selected) palette.text else mood.ink,
+                    color = Color.White,
                     fontSize = 8.sp,
                     maxLines = 1,
                     softWrap = false,
