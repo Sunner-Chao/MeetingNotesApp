@@ -134,7 +134,13 @@ import com.oa.automation.infrastructure.audio.ArchivedMeetingAudioPlaybackSource
 import com.oa.automation.infrastructure.export.ReportDocumentFormatter
 import com.oa.automation.infrastructure.image.OrientedImageDecoder
 import com.oa.automation.ui.component.FlowingProgressBorder
+import com.oa.automation.ui.screen.recording.doodleCircle
+import com.oa.automation.ui.screen.recording.doodleRoundRect
 import com.oa.automation.ui.theme.LocalAppIsDarkTheme
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import com.oa.automation.domain.model.ProductEdition
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -150,16 +156,9 @@ import kotlinx.coroutines.withContext
  * after removing the device frame. On a 360 x 796 reference viewport the
  * sequence is: title 95, audio 140, images 250, report 445, controls 702.
  */
-private val ReferenceInk = Color(0xFFF7F8FF)
-private val ReferenceMuted = Color(0xFFD2E4F4)
-private val ReferenceBorder = Color(0xFF8CC8FF).copy(alpha = 0.32f)
-private val ReferenceGlassTop = Color(0xFFB9DDF5).copy(alpha = 0.16f)
-private val ReferenceGlassBottom = Color(0xFF0F3554).copy(alpha = 0.20f)
-private val ReferenceLavender = Color(0xFF8CC8FF)
-private val ReferenceSky = Color(0xFF60CDFF)
-private val ReferencePink = Color(0xFF3A96DD)
-private val ReferenceMint = Color(0xFF99D6FF)
-private val ReferenceStatusBar = Color(0xFF0F3554)
+// Palette moved to ReportSkin.kt. The Pro edition keeps the deep-blue glass
+// values (reportGlassSkin); the Lite edition swaps in the paper doodle skin.
+// Every colour below is read from LocalReportSkin.current as `skin.*`.
 
 private data class ReferenceMetrics(
     val horizontalInset: Dp,
@@ -181,27 +180,38 @@ private fun referenceMetrics(maxHeight: Dp) = if (maxHeight < 700.dp) {
 
 @Composable
 internal fun ReportReferenceFrame(content: @Composable () -> Unit) {
-    ReferenceSystemBars()
-    Box(modifier = Modifier.fillMaxSize()) {
-        ReferenceBackdrop(modifier = Modifier.fillMaxSize())
-        content()
+    val isDark = LocalAppIsDarkTheme.current
+    val skin = remember(isDark) {
+        if (ProductEdition.current == ProductEdition.LIGHT_ENJOY) {
+            reportDoodleSkin(isDark)
+        } else {
+            reportGlassSkin()
+        }
+    }
+    CompositionLocalProvider(LocalReportSkin provides skin) {
+        ReferenceSystemBars()
+        Box(modifier = Modifier.fillMaxSize()) {
+            ReferenceBackdrop(modifier = Modifier.fillMaxSize())
+            content()
+        }
     }
 }
 
 @Composable
 private fun ReferenceSystemBars() {
     val view = LocalView.current
+    val skin = LocalReportSkin.current
     val restoreLightIcons = !LocalAppIsDarkTheme.current
-    DisposableEffect(view, restoreLightIcons) {
+    DisposableEffect(view, skin) {
         val window = (view.context as? Activity)?.window
         val previousStatus = window?.statusBarColor
         val previousNavigation = window?.navigationBarColor
         if (window != null) {
-            window.statusBarColor = ReferenceStatusBar.toArgb()
-            window.navigationBarColor = Color(0xFF0A243A).toArgb()
+            window.statusBarColor = skin.statusBar.toArgb()
+            window.navigationBarColor = skin.navBar.toArgb()
             WindowCompat.getInsetsController(window, view).apply {
-                isAppearanceLightStatusBars = false
-                isAppearanceLightNavigationBars = false
+                isAppearanceLightStatusBars = skin.lightSystemIcons
+                isAppearanceLightNavigationBars = skin.lightSystemIcons
             }
         }
         onDispose {
@@ -219,7 +229,48 @@ private fun ReferenceSystemBars() {
 
 @Composable
 private fun ReferenceBackdrop(modifier: Modifier = Modifier) {
+    val skin = LocalReportSkin.current
     Canvas(modifier = modifier) {
+        if (skin.doodle) {
+            drawRect(
+                brush = Brush.linearGradient(
+                    colors = listOf(skin.paperTop, skin.paperBottom, skin.paperTop),
+                    start = Offset(0f, 0f),
+                    end = Offset(0f, size.height)
+                )
+            )
+            // Soft aurora tints echoing the recording screen's ambient backdrop.
+            drawRect(
+                brush = Brush.radialGradient(
+                    colors = listOf(skin.pink.copy(alpha = .10f), Color.Transparent),
+                    center = Offset(size.width * .12f, size.height * .10f),
+                    radius = size.width * .55f
+                )
+            )
+            drawRect(
+                brush = Brush.radialGradient(
+                    colors = listOf(skin.sky.copy(alpha = .10f), Color.Transparent),
+                    center = Offset(size.width * .96f, size.height * .28f),
+                    radius = size.width * .60f
+                )
+            )
+            drawRect(
+                brush = Brush.radialGradient(
+                    colors = listOf(skin.accentWarm.copy(alpha = .12f), Color.Transparent),
+                    center = Offset(size.width * .86f, size.height * .92f),
+                    radius = size.width * .58f
+                )
+            )
+            drawRect(
+                brush = Brush.radialGradient(
+                    colors = listOf(skin.lavender.copy(alpha = .08f), Color.Transparent),
+                    center = Offset(size.width * .08f, size.height * .70f),
+                    radius = size.width * .55f
+                )
+            )
+            drawPaperDoodads(skin)
+            return@Canvas
+        }
         drawRect(
             brush = Brush.linearGradient(
                 colors = listOf(
@@ -280,6 +331,7 @@ internal fun ReportReferenceTopBar(
             icon = Icons.AutoMirrored.Filled.ArrowBack,
             contentDescription = "返回上一页",
             modifier = Modifier.align(Alignment.CenterStart),
+            accent = true,
             onClick = onNavigateBack
         )
         Box(modifier = Modifier.align(Alignment.CenterEnd)) {
@@ -298,8 +350,37 @@ private fun ReferenceCircleButton(
     icon: ImageVector,
     contentDescription: String,
     modifier: Modifier = Modifier,
+    accent: Boolean = false,
     onClick: () -> Unit
 ) {
+    val skin = LocalReportSkin.current
+    if (skin.doodle) {
+        Box(
+            modifier = modifier
+                .size(38.dp)
+                .clickable(onClick = onClick),
+            contentAlignment = Alignment.Center
+        ) {
+            Canvas(modifier = Modifier.matchParentSize()) {
+                val c = size.width / 2f
+                doodleCircle(
+                    center = Offset(c, c),
+                    radius = c - 3.dp.toPx(),
+                    color = if (accent) skin.accentWarm else skin.cardFill,
+                    strokeWidth = 0f,
+                    filled = true
+                )
+                doodleCircle(
+                    center = Offset(c, c),
+                    radius = c - 3.dp.toPx(),
+                    color = skin.cardStroke,
+                    strokeWidth = 2.2.dp.toPx()
+                )
+            }
+            Icon(icon, contentDescription, tint = skin.cardStroke, modifier = Modifier.size(19.dp))
+        }
+        return
+    }
     Surface(
         modifier = modifier.size(34.dp),
         shape = CircleShape,
@@ -307,7 +388,7 @@ private fun ReferenceCircleButton(
         border = BorderStroke(1.dp, Color.White.copy(alpha = .22f))
     ) {
         IconButton(onClick = onClick, modifier = Modifier.fillMaxSize()) {
-            Icon(icon, contentDescription, tint = ReferenceInk, modifier = Modifier.size(19.dp))
+            Icon(icon, contentDescription, tint = skin.ink, modifier = Modifier.size(19.dp))
         }
     }
 }
@@ -480,6 +561,7 @@ private fun StructuredReportWorkspace(
     onHideWorkspaceBlock: (String) -> Unit,
     onRestoreWorkspaceLayout: () -> Unit
 ) {
+    val skin = LocalReportSkin.current
     val available = buildList {
         if (isForumReport) add(ReportWorkspaceBlocks.PARTICIPANTS)
         add(ReportWorkspaceBlocks.AUDIO)
@@ -505,19 +587,19 @@ private fun StructuredReportWorkspace(
                 modifier = Modifier.fillMaxWidth().height(30.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(Icons.Default.DragHandle, "拖拽调整纪要区块顺序", tint = ReferenceMuted, modifier = Modifier.size(17.dp))
+                Icon(Icons.Default.DragHandle, "拖拽调整纪要区块顺序", tint = skin.muted, modifier = Modifier.size(17.dp))
                 Spacer(Modifier.width(5.dp))
-                Text("纪要结构", color = ReferenceMuted, fontSize = 11.sp)
+                Text("纪要结构", color = skin.muted, fontSize = 11.sp)
                 Spacer(Modifier.weight(1f))
                 if (hidden.isNotEmpty()) {
-                    Text("已隐藏 ${hidden.size} 个区块", color = ReferenceMuted, fontSize = 10.sp)
+                    Text("已隐藏 ${hidden.size} 个区块", color = skin.muted, fontSize = 10.sp)
                     Spacer(Modifier.width(4.dp))
                 }
                 IconButton(
                     onClick = onRestoreWorkspaceLayout,
                     modifier = Modifier.size(30.dp)
                 ) {
-                    Icon(Icons.Default.Restore, "恢复默认布局", tint = ReferenceInk, modifier = Modifier.size(17.dp))
+                    Icon(Icons.Default.Restore, "恢复默认布局", tint = skin.ink, modifier = Modifier.size(17.dp))
                 }
             }
         }
@@ -585,6 +667,7 @@ private fun StructuredReportWorkspace(
 
 @Composable
 private fun ReferenceRiskCard(items: List<RiskItem>) {
+    val skin = LocalReportSkin.current
     ReferenceGlassCard(
         modifier = Modifier
             .fillMaxWidth()
@@ -594,11 +677,11 @@ private fun ReferenceRiskCard(items: List<RiskItem>) {
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(Icons.Default.Warning, null, tint = ReferencePink, modifier = Modifier.size(18.dp))
+            Icon(Icons.Default.Warning, null, tint = skin.pink, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(7.dp))
-            Text("风险与阻塞", color = ReferenceInk, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            Text("风险与阻塞", color = skin.ink, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.weight(1f))
-            Text("${items.size} 项", color = ReferenceMuted, fontSize = 10.sp)
+            Text("${items.size} 项", color = skin.muted, fontSize = 10.sp)
         }
         Column(
             modifier = Modifier.padding(top = 10.dp),
@@ -613,21 +696,21 @@ private fun ReferenceRiskCard(items: List<RiskItem>) {
                     Surface(
                         modifier = Modifier.padding(top = 4.dp).size(6.dp),
                         shape = CircleShape,
-                        color = ReferencePink
+                        color = skin.pink
                     ) {}
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(item.content, color = ReferenceInk, fontSize = 12.sp, lineHeight = 17.sp)
+                        Text(item.content, color = skin.ink, fontSize = 12.sp, lineHeight = 17.sp)
                         val meta = listOfNotNull(item.detail, item.status)
                             .filter(String::isNotBlank)
                             .joinToString(" · ")
                         if (meta.isNotBlank()) {
-                            Text(meta, color = ReferenceMuted, fontSize = 10.sp, lineHeight = 14.sp)
+                            Text(meta, color = skin.muted, fontSize = 10.sp, lineHeight = 14.sp)
                         }
                     }
                 }
             }
             if (items.size > 8) {
-                Text("其余 ${items.size - 8} 项可在完整纪要中查看", color = ReferenceMuted, fontSize = 10.sp)
+                Text("其余 ${items.size - 8} 项可在完整纪要中查看", color = skin.muted, fontSize = 10.sp)
             }
         }
     }
@@ -635,6 +718,7 @@ private fun ReferenceRiskCard(items: List<RiskItem>) {
 
 @Composable
 private fun ReferenceInteractionSignalsCard(items: List<InteractionSignal>) {
+    val skin = LocalReportSkin.current
     ReferenceGlassCard(
         modifier = Modifier
             .fillMaxWidth()
@@ -644,15 +728,15 @@ private fun ReferenceInteractionSignalsCard(items: List<InteractionSignal>) {
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(Icons.Default.GraphicEq, null, tint = ReferenceSky, modifier = Modifier.size(18.dp))
+            Icon(Icons.Default.GraphicEq, null, tint = skin.sky, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(7.dp))
-            Text("互动信号", color = ReferenceInk, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            Text("互动信号", color = skin.ink, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.weight(1f))
-            Text("${items.size} 项", color = ReferenceMuted, fontSize = 10.sp)
+            Text("${items.size} 项", color = skin.muted, fontSize = 10.sp)
         }
         Text(
             text = "仅展示可核对的语速、停顿、打断等现象，不代表情绪结论",
-            color = ReferenceMuted,
+            color = skin.muted,
             fontSize = 10.sp,
             lineHeight = 14.sp,
             modifier = Modifier.padding(top = 5.dp)
@@ -670,21 +754,21 @@ private fun ReferenceInteractionSignalsCard(items: List<InteractionSignal>) {
                     Surface(
                         modifier = Modifier.padding(top = 5.dp).size(6.dp),
                         shape = CircleShape,
-                        color = ReferenceSky
+                        color = skin.sky
                     ) {}
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(item.content, color = ReferenceInk, fontSize = 12.sp, lineHeight = 17.sp)
+                        Text(item.content, color = skin.ink, fontSize = 12.sp, lineHeight = 17.sp)
                         val meta = listOfNotNull(item.detail, item.source)
                             .filter(String::isNotBlank)
                             .joinToString(" · ")
                         if (meta.isNotBlank()) {
-                            Text(meta, color = ReferenceMuted, fontSize = 10.sp, lineHeight = 14.sp)
+                            Text(meta, color = skin.muted, fontSize = 10.sp, lineHeight = 14.sp)
                         }
                     }
                 }
             }
             if (items.size > 8) {
-                Text("其余 ${items.size - 8} 项可在完整纪要中查看", color = ReferenceMuted, fontSize = 10.sp)
+                Text("其余 ${items.size - 8} 项可在完整纪要中查看", color = skin.muted, fontSize = 10.sp)
             }
         }
     }
@@ -699,6 +783,7 @@ private fun DraggableWorkspaceBlock(
     onMove: (Int, Int) -> Unit,
     content: @Composable () -> Unit
 ) {
+    val skin = LocalReportSkin.current
     var dragging by remember(blockId) { mutableStateOf(false) }
     var dragDistance by remember(blockId) { mutableStateOf(0f) }
     val currentIndex by rememberUpdatedState(index)
@@ -740,7 +825,7 @@ private fun DraggableWorkspaceBlock(
             },
         shape = RoundedCornerShape(12.dp),
         color = if (dragging) Color.White.copy(alpha = .16f) else Color.Transparent,
-        border = if (dragging) BorderStroke(1.dp, ReferenceSky.copy(alpha = .7f)) else null
+        border = if (dragging) BorderStroke(1.dp, skin.sky.copy(alpha = .7f)) else null
     ) {
         Column(modifier = Modifier.padding(if (dragging) 2.dp else 0.dp)) {
             Row(
@@ -750,13 +835,13 @@ private fun DraggableWorkspaceBlock(
                 Icon(
                     Icons.Default.DragHandle,
                     "拖拽调整区块顺序",
-                    tint = ReferenceMuted.copy(alpha = .74f),
+                    tint = skin.muted.copy(alpha = .74f),
                     modifier = Modifier.size(16.dp)
                 )
                 Spacer(Modifier.weight(1f))
                 onHide?.let {
                     IconButton(onClick = it, modifier = Modifier.size(26.dp)) {
-                        Icon(Icons.Default.VisibilityOff, "隐藏此区块", tint = ReferenceInk, modifier = Modifier.size(16.dp))
+                        Icon(Icons.Default.VisibilityOff, "隐藏此区块", tint = skin.ink, modifier = Modifier.size(16.dp))
                     }
                 }
             }
@@ -835,6 +920,7 @@ private fun ReferenceStudyJourneyCard(
     attachments: List<MeetingAttachment>,
     onStageSelected: (ReferenceJourneyStageSummary) -> Unit
 ) {
+    val skin = LocalReportSkin.current
     val stages = remember(journeyStages, attachments) {
         referenceJourneyStageSummaries(attachments, journeyStages)
     }
@@ -844,13 +930,13 @@ private fun ReferenceStudyJourneyCard(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(Icons.Default.Timeline, null, tint = ReferenceInk, modifier = Modifier.size(18.dp))
+            Icon(Icons.Default.Timeline, null, tint = skin.ink, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(7.dp))
-            Text("考察轨迹", color = ReferenceInk, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            Text("考察轨迹", color = skin.ink, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.weight(1f))
             Text(
                 text = "${stages.size} 段 · ${attachments.size} 条影像 · $locationCount 个地点",
-                color = ReferenceMuted,
+                color = skin.muted,
                 fontSize = 10.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -872,7 +958,7 @@ private fun ReferenceStudyJourneyCard(
                             modifier = Modifier
                                 .width(22.dp)
                                 .height(2.dp)
-                                .background(ReferenceMint.copy(alpha = .72f), RoundedCornerShape(50))
+                                .background(skin.mint.copy(alpha = .72f), RoundedCornerShape(50))
                         )
                     }
                     Column(
@@ -887,15 +973,15 @@ private fun ReferenceStudyJourneyCard(
                             modifier = Modifier
                                 .size(12.dp)
                                 .background(
-                                    if (stage.status == JourneyStageStatus.ACTIVE) ReferenceSky else ReferenceMint,
+                                    if (stage.status == JourneyStageStatus.ACTIVE) skin.sky else skin.mint,
                                     CircleShape
                                 )
-                                .border(2.dp, ReferenceMint.copy(alpha = .28f), CircleShape)
+                                .border(2.dp, skin.mint.copy(alpha = .28f), CircleShape)
                         )
                         Spacer(Modifier.height(2.dp))
                         Text(
                             text = stage.title.ifBlank { "第${stage.sequenceNumber}段" },
-                            color = ReferenceInk,
+                            color = skin.ink,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Medium,
                             maxLines = 1,
@@ -903,14 +989,14 @@ private fun ReferenceStudyJourneyCard(
                         )
                         Text(
                             text = "${if (stage.status == JourneyStageStatus.ACTIVE) "记录中" else "已暂存"} · ${stage.attachmentCount}影像",
-                            color = ReferenceMuted,
+                            color = skin.muted,
                             fontSize = 9.sp,
                             maxLines = 1
                         )
                         referenceJourneyStageTime(stage)?.let { time ->
                             Text(
                                 text = time,
-                                color = ReferenceMuted.copy(alpha = .78f),
+                                color = skin.muted.copy(alpha = .78f),
                                 fontSize = 8.sp,
                                 maxLines = 1
                             )
@@ -1014,6 +1100,7 @@ private fun ReferenceSummaryHeader(
     durationMs: Long,
     height: Dp
 ) {
+    val skin = LocalReportSkin.current
     Column(
         modifier = Modifier.fillMaxWidth().height(height),
         verticalArrangement = Arrangement.spacedBy(2.dp)
@@ -1021,33 +1108,65 @@ private fun ReferenceSummaryHeader(
         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(
                 text = title,
-                color = ReferenceInk,
+                color = skin.ink,
                 fontSize = 20.sp,
                 lineHeight = 24.sp,
-                fontWeight = FontWeight.SemiBold,
+                fontWeight = if (skin.doodle) FontWeight.ExtraBold else FontWeight.SemiBold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier
+                    .weight(1f)
+                    .then(
+                        if (skin.doodle) {
+                            Modifier.drawBehind {
+                                drawWavyUnderline(
+                                    width = size.width * 0.82f,
+                                    y = size.height - 1.dp.toPx(),
+                                    color = skin.accentWarm,
+                                    amplitude = 1.6.dp.toPx()
+                                )
+                            }
+                        } else {
+                            Modifier
+                        }
+                    )
             )
             Spacer(Modifier.width(8.dp))
-            Surface(
-                shape = RoundedCornerShape(50),
-                color = Color.White.copy(alpha = .15f),
-                border = BorderStroke(1.dp, Color.White.copy(alpha = .28f))
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+            if (skin.doodle) {
+                Surface(
+                    shape = RoundedCornerShape(50),
+                    color = skin.sticky1,
+                    border = BorderStroke(1.4.dp, skin.cardStroke)
                 ) {
-                    Icon(Icons.Default.AutoAwesome, null, tint = ReferenceInk, modifier = Modifier.size(13.dp))
-                    Text("生成完成", color = ReferenceInk, fontSize = 10.sp, fontWeight = FontWeight.Medium)
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Icon(Icons.Default.AutoAwesome, null, tint = skin.ink, modifier = Modifier.size(13.dp))
+                        Text("生成完成", color = skin.ink, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            } else {
+                Surface(
+                    shape = RoundedCornerShape(50),
+                    color = Color.White.copy(alpha = .15f),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = .28f))
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Icon(Icons.Default.AutoAwesome, null, tint = skin.ink, modifier = Modifier.size(13.dp))
+                        Text("生成完成", color = skin.ink, fontSize = 10.sp, fontWeight = FontWeight.Medium)
+                    }
                 }
             }
         }
         Text(
             text = formatMeetingMeta(createdAt, durationMs, endedAt),
-            color = ReferenceMuted,
+            color = skin.muted,
             fontSize = 10.sp,
             lineHeight = 14.sp,
             maxLines = 1,
@@ -1067,6 +1186,7 @@ private fun ReferenceAudioCard(
     onDelete: () -> Unit
 ) {
     val context = LocalContext.current
+    val skin = LocalReportSkin.current
     val scope = rememberCoroutineScope()
     var moreExpanded by remember { mutableStateOf(false) }
     var showDeleteConfirmation by remember { mutableStateOf(false) }
@@ -1192,10 +1312,10 @@ private fun ReferenceAudioCard(
     }
     ReferenceGlassCard(modifier = Modifier.fillMaxWidth().height(height)) {
         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Default.GraphicEq, null, tint = ReferenceInk, modifier = Modifier.size(20.dp))
+            Icon(Icons.Default.GraphicEq, null, tint = skin.ink, modifier = Modifier.size(20.dp))
             Spacer(Modifier.width(7.dp))
             Column(modifier = Modifier.weight(1f)) {
-                Text("会议音频", color = ReferenceInk, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                Text("会议音频", color = skin.ink, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                 Text(
                     text = when {
                         playbackError != null -> playbackError.orEmpty()
@@ -1208,14 +1328,14 @@ private fun ReferenceAudioCard(
                         isLoading -> "正在加载"
                         else -> "暂无音频"
                     },
-                    color = if (playbackError == null) ReferenceMuted else ReferencePink,
+                    color = if (playbackError == null) skin.muted else skin.pink,
                     fontSize = 11.sp,
                     modifier = Modifier.padding(top = 1.dp)
                 )
             }
             Box {
                 IconButton(onClick = { moreExpanded = true }, modifier = Modifier.size(30.dp)) {
-                    Icon(Icons.Default.Expand, "音频操作", tint = ReferenceInk, modifier = Modifier.size(17.dp))
+                    Icon(Icons.Default.Expand, "音频操作", tint = skin.ink, modifier = Modifier.size(17.dp))
                 }
                 DropdownMenu(expanded = moreExpanded, onDismissRequest = { moreExpanded = false }) {
                     DropdownMenuItem(
@@ -1288,6 +1408,7 @@ private fun ReferenceWaveform(
     playbackActive: Boolean,
     modifier: Modifier = Modifier
 ) {
+    val skin = LocalReportSkin.current
     val bars = remember {
         listOf(10, 16, 12, 24, 18, 30, 16, 38, 23, 15, 31, 18, 40, 25, 15, 34, 20, 42, 28, 16, 37, 25, 44, 22, 18, 32, 27, 20, 38, 17, 31, 22, 28, 18, 34, 20, 26, 17, 30, 20)
     }
@@ -1295,9 +1416,9 @@ private fun ReferenceWaveform(
         val step = size.width / bars.size
         bars.forEachIndexed { index, halfHeight ->
             val barColor = when {
-                index < bars.size / 3 -> ReferenceSky
-                index < bars.size * 2 / 3 -> ReferenceLavender
-                else -> ReferencePink
+                index < bars.size / 3 -> skin.sky
+                index < bars.size * 2 / 3 -> skin.lavender
+                else -> skin.pink
             }
             val x = step * index + step / 2f
             val played = index.toFloat() / bars.lastIndex.coerceAtLeast(1) <= progress
@@ -1321,6 +1442,7 @@ private fun ReferenceImagesCard(
     onCaptureImage: () -> Unit,
     isStudyReport: Boolean
 ) {
+    val skin = LocalReportSkin.current
     var galleryIndex by remember { mutableStateOf<Int?>(null) }
     galleryIndex?.let { selectedIndex ->
         ReferenceImageGalleryDialog(
@@ -1333,24 +1455,24 @@ private fun ReferenceImagesCard(
     }
     ReferenceGlassCard(modifier = Modifier.fillMaxWidth().height(height)) {
         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Default.Image, null, tint = ReferenceInk, modifier = Modifier.size(18.dp))
+            Icon(Icons.Default.Image, null, tint = skin.ink, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(7.dp))
             Text(
                 if (isStudyReport) "影像集锦" else "会议图片",
-                color = ReferenceInk,
+                color = skin.ink,
                 fontSize = 15.sp,
                 fontWeight = FontWeight.SemiBold
             )
             Spacer(Modifier.weight(1f))
             IconButton(onClick = onCaptureImage, modifier = Modifier.size(30.dp)) {
-                Icon(Icons.Default.PhotoCamera, "拍摄照片", tint = ReferenceInk, modifier = Modifier.size(17.dp))
+                Icon(Icons.Default.PhotoCamera, "拍摄照片", tint = skin.ink, modifier = Modifier.size(17.dp))
             }
             IconButton(onClick = onAddImages, modifier = Modifier.size(30.dp)) {
-                Icon(Icons.Default.AddPhotoAlternate, "从相册选择", tint = ReferenceInk, modifier = Modifier.size(17.dp))
+                Icon(Icons.Default.AddPhotoAlternate, "从相册选择", tint = skin.ink, modifier = Modifier.size(17.dp))
             }
             Text(
                 text = "查看全部图片  ›",
-                color = if (attachments.isEmpty()) ReferenceMuted.copy(alpha = .55f) else ReferenceMuted,
+                color = if (attachments.isEmpty()) skin.muted.copy(alpha = .55f) else skin.muted,
                 fontSize = 10.sp,
                 modifier = Modifier.clickable(enabled = attachments.isNotEmpty()) { galleryIndex = 0 }
             )
@@ -1398,6 +1520,7 @@ private fun ReferenceImagePlaceholder(
     onAddImages: (() -> Unit)? = null,
     onCaptureImage: (() -> Unit)? = null
 ) {
+    val skin = LocalReportSkin.current
     val interactiveModifier = if (onCaptureImage == null && onAddImages != null) {
         modifier.clickable(onClick = onAddImages)
     } else {
@@ -1426,7 +1549,7 @@ private fun ReferenceImagePlaceholder(
             Icon(
                 if (addAction) Icons.Default.AddPhotoAlternate else Icons.Default.Image,
                 if (addAction) "添加图片" else null,
-                tint = ReferenceInk.copy(alpha = if (addAction) .56f else .34f),
+                tint = skin.ink.copy(alpha = if (addAction) .56f else .34f),
                 modifier = Modifier.size(18.dp)
             )
         }
@@ -1439,13 +1562,14 @@ private fun ReferenceImageActionButton(
     contentDescription: String,
     onClick: () -> Unit
 ) {
+    val skin = LocalReportSkin.current
     Surface(
         modifier = Modifier.size(32.dp),
         shape = CircleShape,
         color = Color.White.copy(alpha = .12f)
     ) {
         IconButton(onClick = onClick, modifier = Modifier.fillMaxSize()) {
-            Icon(icon, contentDescription, tint = ReferenceInk, modifier = Modifier.size(17.dp))
+            Icon(icon, contentDescription, tint = skin.ink, modifier = Modifier.size(17.dp))
         }
     }
 }
@@ -1504,6 +1628,7 @@ internal fun ReferenceImageGalleryDialog(
     title: String? = null,
     onDismiss: () -> Unit
 ) {
+    val skin = LocalReportSkin.current
     var selectedIndex by remember(initialIndex, attachments) {
         mutableStateOf(initialIndex.coerceIn(0, (attachments.lastIndex).coerceAtLeast(0)))
     }
@@ -1527,15 +1652,15 @@ internal fun ReferenceImageGalleryDialog(
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                     Text(
                         title ?: if (isStudyReport) "影像集锦" else "会议图片",
-                        color = ReferenceInk,
+                        color = skin.ink,
                         fontSize = 17.sp,
                         fontWeight = FontWeight.SemiBold
                     )
                     Spacer(Modifier.weight(1f))
-                    Text("${selectedIndex + 1}/${attachments.size}", color = ReferenceMuted, fontSize = 12.sp)
+                    Text("${selectedIndex + 1}/${attachments.size}", color = skin.muted, fontSize = 12.sp)
                     Spacer(Modifier.width(4.dp))
                     IconButton(onClick = onDismiss, modifier = Modifier.size(34.dp)) {
-                        Icon(Icons.Default.Close, "关闭图片浏览", tint = ReferenceInk, modifier = Modifier.size(19.dp))
+                        Icon(Icons.Default.Close, "关闭图片浏览", tint = skin.ink, modifier = Modifier.size(19.dp))
                     }
                 }
                 Box(
@@ -1572,7 +1697,7 @@ internal fun ReferenceImageGalleryDialog(
                                 .background(Color.White.copy(alpha = .1f))
                                 .border(
                                     width = if (index == selectedIndex) 2.dp else 1.dp,
-                                    color = if (index == selectedIndex) ReferencePink else Color.White.copy(alpha = .2f),
+                                    color = if (index == selectedIndex) skin.pink else Color.White.copy(alpha = .2f),
                                     shape = RoundedCornerShape(9.dp)
                                 )
                                 .clickable { selectedIndex = index }
@@ -1597,9 +1722,9 @@ internal fun ReferenceImageGalleryDialog(
                         },
                         modifier = Modifier.align(Alignment.End)
                     ) {
-                        Icon(Icons.Default.DeleteOutline, null, tint = ReferencePink, modifier = Modifier.size(16.dp))
+                        Icon(Icons.Default.DeleteOutline, null, tint = skin.pink, modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(4.dp))
-                        Text("删除图片", color = ReferencePink, fontSize = 12.sp)
+                        Text("删除图片", color = skin.pink, fontSize = 12.sp)
                     }
                 }
             }
@@ -1618,6 +1743,7 @@ private fun ReferenceReportCard(
     height: Dp,
     onPreviewFullReport: () -> Unit
 ) {
+    val skin = LocalReportSkin.current
     val attendees = remember(initiatorName) { listOf(initiatorName.trim()).filter(String::isNotBlank) }
     FlowingProgressBorder(
         active = isProcessing,
@@ -1625,17 +1751,17 @@ private fun ReferenceReportCard(
         cornerRadius = 17.dp,
         inset = 1.dp,
         strokeWidth = 1.8.dp,
-        colors = listOf(ReferenceSky, ReferencePink, ReferenceLavender)
+        colors = listOf(skin.sky, skin.pink, skin.lavender)
     ) {
     ReferenceGlassCard(modifier = Modifier.fillMaxSize()) {
         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Default.Description, null, tint = ReferenceInk, modifier = Modifier.size(18.dp))
+            Icon(Icons.Default.Description, null, tint = skin.ink, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(7.dp))
             Text(
                 if (isStudyReport) "参观纪要" else "会议纪要",
-                color = ReferenceInk,
+                color = skin.ink,
                 fontSize = 15.sp,
-                fontWeight = FontWeight.SemiBold
+                fontWeight = if (skin.doodle) FontWeight.ExtraBold else FontWeight.SemiBold
             )
             Spacer(Modifier.weight(1f))
         }
@@ -1648,14 +1774,41 @@ private fun ReferenceReportCard(
                     .verticalScroll(contentScrollState),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                ReferenceSectionLabel("纪要全文")
-                SelectionContainer {
+                if (skin.doodle) {
+                    val summary = remember(report) { reportPreviewSummary(report) }
+                    val points = remember(report) { reportPreviewPoints(report) }
+                    ReferenceSectionLabel("会议主题", tone = skin.sticky2)
                     Text(
-                        text = reportPreviewDocument(report),
-                        color = ReferenceInk.copy(alpha = .91f),
-                        fontSize = 11.sp,
-                        lineHeight = 16.sp
+                        text = summary,
+                        color = skin.ink,
+                        fontSize = 12.sp,
+                        lineHeight = 18.sp,
+                        modifier = Modifier.drawBehind {
+                            drawWavyUnderline(
+                                width = size.width,
+                                y = size.height - 1.dp.toPx(),
+                                color = skin.pink.copy(alpha = .55f),
+                                amplitude = 1.4.dp.toPx()
+                            )
+                        }
                     )
+                    if (points.isNotEmpty()) {
+                        Spacer(Modifier.height(2.dp))
+                        ReferenceSectionLabel("关键要点", tone = skin.sticky1)
+                        points.forEachIndexed { index, point ->
+                            DoodlePointRow(point = point, index = index, highlight = index == 0)
+                        }
+                    }
+                } else {
+                    ReferenceSectionLabel("纪要全文")
+                    SelectionContainer {
+                        Text(
+                            text = reportPreviewDocument(report),
+                            color = skin.ink.copy(alpha = .91f),
+                            fontSize = 11.sp,
+                            lineHeight = 16.sp
+                        )
+                    }
                 }
             }
             ReferenceVerticalScrollIndicator(
@@ -1668,7 +1821,7 @@ private fun ReferenceReportCard(
                 modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("参会人员（${attendees.size}人）", color = ReferenceMuted, fontSize = 10.sp)
+                Text("参会人员（${attendees.size}人）", color = skin.muted, fontSize = 10.sp)
                 if (attendees.isNotEmpty()) {
                     Spacer(Modifier.width(8.dp))
                     ReferenceAttendeeStrip(attendees, initiatorAvatarDataUrl)
@@ -1676,7 +1829,7 @@ private fun ReferenceReportCard(
                 Spacer(Modifier.weight(1f))
                 Text(
                     text = "查看完整纪要  ›",
-                    color = ReferenceMuted,
+                    color = skin.muted,
                     fontSize = 10.sp,
                     modifier = Modifier.clickable(onClick = onPreviewFullReport)
                 )
@@ -1687,9 +1840,50 @@ private fun ReferenceReportCard(
 }
 
 @Composable
+private fun DoodlePointRow(point: String, index: Int, highlight: Boolean) {
+    val skin = LocalReportSkin.current
+    val dotColor = listOf(skin.pink, skin.sky, skin.mint, skin.lavender)[index % 4]
+    Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+        if (index % 2 == 1) {
+            Icon(
+                Icons.Default.TaskAlt,
+                null,
+                tint = skin.mint,
+                modifier = Modifier.padding(top = 1.dp).size(14.dp)
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .padding(top = 5.dp)
+                    .size(7.dp)
+                    .clip(CircleShape)
+                    .background(dotColor)
+            )
+        }
+        Text(
+            text = point,
+            color = skin.ink,
+            fontSize = 12.sp,
+            lineHeight = 17.sp,
+            modifier = Modifier
+                .weight(1f)
+                .then(
+                    if (highlight) {
+                        Modifier.background(skin.sticky1.copy(alpha = .7f), RoundedCornerShape(4.dp))
+                    } else {
+                        Modifier
+                    }
+                )
+                .padding(horizontal = if (highlight) 4.dp else 0.dp, vertical = if (highlight) 1.dp else 0.dp)
+        )
+    }
+}
+
+@Composable
 private fun ReferenceForumParticipantWall(
     participants: List<ForumParticipant>
 ) {
+    val skin = LocalReportSkin.current
     val visibleParticipants = participants.take(24)
     ReferenceGlassCard(
         modifier = Modifier
@@ -1701,9 +1895,9 @@ private fun ReferenceForumParticipantWall(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(Icons.Default.Person, null, tint = ReferenceInk, modifier = Modifier.size(18.dp))
+            Icon(Icons.Default.Person, null, tint = skin.ink, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(7.dp))
-            Text("论坛参会名录", color = ReferenceInk, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            Text("论坛参会名录", color = skin.ink, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.weight(1f))
             Text(
                 text = if (participants.size > visibleParticipants.size) {
@@ -1711,14 +1905,14 @@ private fun ReferenceForumParticipantWall(
                 } else {
                     "照片墙 · ${participants.size} 人"
                 },
-                color = ReferenceMuted,
+                color = skin.muted,
                 fontSize = 10.sp
             )
         }
         if (participants.isEmpty()) {
             Text(
                 text = "暂未从转写或已确认资料中提取参会人员",
-                color = ReferenceMuted,
+                color = skin.muted,
                 fontSize = 11.sp,
                 modifier = Modifier.padding(top = 20.dp)
             )
@@ -1751,6 +1945,7 @@ private fun ReferenceForumParticipantCell(
     participant: ForumParticipant,
     modifier: Modifier = Modifier
 ) {
+    val skin = LocalReportSkin.current
     val image = remember(participant.avatarDataUrl, participant.photoAuthorized) {
         if (!participant.photoAuthorized) return@remember null
         runCatching {
@@ -1770,8 +1965,8 @@ private fun ReferenceForumParticipantCell(
         Surface(
             modifier = Modifier.size(42.dp),
             shape = CircleShape,
-            color = ReferenceSky,
-            border = BorderStroke(1.dp, ReferenceSky.copy(alpha = .5f))
+            color = skin.sky,
+            border = BorderStroke(1.dp, skin.sky.copy(alpha = .5f))
         ) {
             if (image != null) {
                 Image(
@@ -1793,7 +1988,7 @@ private fun ReferenceForumParticipantCell(
         }
         Text(
             text = participant.name,
-            color = ReferenceInk,
+            color = skin.ink,
             fontSize = 10.sp,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
@@ -1804,7 +1999,7 @@ private fun ReferenceForumParticipantCell(
         if (meta.isNotBlank()) {
             Text(
                 text = meta,
-                color = ReferenceMuted,
+                color = skin.muted,
                 fontSize = 8.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -1814,22 +2009,40 @@ private fun ReferenceForumParticipantCell(
 }
 
 @Composable
-private fun ReferenceSectionLabel(text: String) {
+private fun ReferenceSectionLabel(text: String, tone: Color? = null) {
+    val skin = LocalReportSkin.current
+    if (skin.doodle) {
+        Surface(
+            shape = RoundedCornerShape(6.dp),
+            color = tone ?: skin.sticky2,
+            border = BorderStroke(1.2.dp, skin.cardStroke.copy(alpha = .55f))
+        ) {
+            Text(
+                text,
+                color = skin.ink,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(horizontal = 9.dp, vertical = 2.dp)
+            )
+        }
+        return
+    }
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
         Box(
             modifier = Modifier
                 .width(2.dp)
                 .height(13.dp)
                 .clip(RoundedCornerShape(2.dp))
-                .background(ReferenceLavender)
+                .background(skin.lavender)
         )
-        Text(text, color = ReferencePink, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        Text(text, color = skin.pink, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
     }
 }
 
 @Composable
 private fun ReferencePointRow(point: String, index: Int) {
-    val pointColor = listOf(ReferencePink, ReferenceSky, ReferenceMint, ReferenceLavender)[index % 4]
+    val skin = LocalReportSkin.current
+    val pointColor = listOf(skin.pink, skin.sky, skin.mint, skin.lavender)[index % 4]
     Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
         Box(
             modifier = Modifier
@@ -1840,7 +2053,7 @@ private fun ReferencePointRow(point: String, index: Int) {
         )
         Text(
             text = point.cleanReportText(),
-            color = ReferenceMuted,
+            color = skin.muted,
             fontSize = 10.sp,
             lineHeight = 14.sp,
             modifier = Modifier.weight(1f)
@@ -1902,6 +2115,7 @@ private fun ReferenceAttendeeAvatar(
     size: Dp,
     showBorder: Boolean
 ) {
+    val skin = LocalReportSkin.current
     val image = remember(avatarDataUrl) {
         runCatching {
             val encoded = avatarDataUrl
@@ -1915,7 +2129,7 @@ private fun ReferenceAttendeeAvatar(
     Surface(
         modifier = Modifier.size(size),
         shape = CircleShape,
-        color = ReferenceSky,
+        color = skin.sky,
         border = if (showBorder) BorderStroke(1.dp, Color.White.copy(alpha = .62f)) else null
     ) {
         if (image != null) {
@@ -1960,21 +2174,22 @@ private fun ReferenceVerticalScrollIndicator(scrollState: ScrollState, modifier:
 
 @Composable
 private fun ReferenceTranscriptCard(text: String, onCollapse: () -> Unit, onExport: () -> Unit) {
+    val skin = LocalReportSkin.current
     ReferenceGlassCard(modifier = Modifier.fillMaxWidth().animateContentSize()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("转写原文", color = ReferenceInk, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            Text("转写原文", color = skin.ink, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.weight(1f))
             TextButton(onClick = onExport, contentPadding = PaddingValues(horizontal = 6.dp)) {
-                Text("分享", color = ReferencePink, fontSize = 11.sp)
+                Text("分享", color = skin.pink, fontSize = 11.sp)
             }
             IconButton(onClick = onCollapse, modifier = Modifier.size(28.dp)) {
-                Icon(Icons.Default.Close, "收起转写原文", tint = ReferenceMuted, modifier = Modifier.size(16.dp))
+                Icon(Icons.Default.Close, "收起转写原文", tint = skin.muted, modifier = Modifier.size(16.dp))
             }
         }
         SelectionContainer {
             Text(
                 text = text,
-                color = ReferenceMuted,
+                color = skin.muted,
                 fontSize = 11.sp,
                 lineHeight = 16.sp,
                 modifier = Modifier.heightIn(max = 280.dp).padding(top = 6.dp)
@@ -1985,72 +2200,49 @@ private fun ReferenceTranscriptCard(text: String, onCollapse: () -> Unit, onExpo
 
 @Composable
 private fun ReferenceGlassCard(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
+    val skin = LocalReportSkin.current
+    if (skin.doodle) {
+        Box(
+            modifier = modifier
+                .drawBehind {
+                    val radius = CornerRadius(18.dp.toPx(), 18.dp.toPx())
+                    doodleRoundRect(
+                        topLeft = Offset.Zero,
+                        size = size,
+                        cornerRadius = radius,
+                        color = skin.cardFill,
+                        strokeWidth = 0f,
+                        filled = true
+                    )
+                    doodleRoundRect(
+                        topLeft = Offset.Zero,
+                        size = size,
+                        cornerRadius = radius,
+                        color = skin.cardStroke,
+                        strokeWidth = 2.2.dp.toPx()
+                    )
+                }
+                .padding(horizontal = 14.dp, vertical = 12.dp)
+        ) {
+            Column(modifier = Modifier.fillMaxSize(), content = content)
+        }
+        return
+    }
     val shape = RoundedCornerShape(17.dp)
     Box(
         modifier = modifier
             .clip(shape)
             .background(
                 Brush.linearGradient(
-                    colors = listOf(ReferenceGlassTop, ReferenceGlassBottom),
+                    colors = listOf(skin.glassTop, skin.glassBottom),
                     start = Offset.Zero,
                     end = Offset.Infinite
                 )
             )
-            .border(1.dp, ReferenceBorder, shape)
+            .border(1.dp, skin.border, shape)
             .padding(horizontal = 12.dp, vertical = 10.dp)
     ) {
         Column(modifier = Modifier.fillMaxSize(), content = content)
-    }
-}
-
-@Composable
-private fun ReferenceBottomAction(
-    icon: ImageVector,
-    label: String,
-    height: Dp,
-    onClick: () -> Unit
-) {
-    val shape = RoundedCornerShape(50)
-    Box(
-        modifier = Modifier
-            .width(102.dp)
-            .height(height),
-        contentAlignment = Alignment.Center
-    ) {
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val inset = 2.dp.toPx()
-            drawRoundRect(
-                brush = Brush.linearGradient(listOf(ReferenceSky.copy(alpha = .95f), ReferencePink.copy(alpha = .95f))),
-                topLeft = Offset(inset, inset),
-                size = size.copy(width = size.width - inset * 2, height = size.height - inset * 2),
-                cornerRadius = androidx.compose.ui.geometry.CornerRadius(size.height / 2f),
-                style = Stroke(width = 2.dp.toPx())
-            )
-            drawRoundRect(
-                color = ReferenceSky.copy(alpha = .16f),
-                topLeft = Offset(-8.dp.toPx(), -8.dp.toPx()),
-                size = size.copy(width = size.width + 16.dp.toPx(), height = size.height + 16.dp.toPx()),
-                cornerRadius = androidx.compose.ui.geometry.CornerRadius(size.height / 2f + 10.dp.toPx()),
-                style = Stroke(width = 8.dp.toPx())
-            )
-        }
-        Surface(
-            modifier = Modifier
-                .fillMaxSize()
-                .clickable(onClick = onClick),
-            shape = shape,
-            color = Color(0xFF005A9E).copy(alpha = .54f),
-            border = BorderStroke(1.dp, Color.White.copy(alpha = .70f))
-        ) {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
-            ) {
-                Icon(icon, label, tint = ReferenceInk, modifier = Modifier.size(27.dp))
-                Spacer(Modifier.height(2.dp))
-                Text(label, color = ReferenceInk, fontSize = 12.sp, fontWeight = FontWeight.Medium)
-            }
-        }
     }
 }
 
@@ -2065,6 +2257,7 @@ internal fun ReportPdfPreviewDialog(
     file: File,
     onDismiss: () -> Unit
 ) {
+    val skin = LocalReportSkin.current
     var pages by remember(file.absolutePath) { mutableStateOf<List<Bitmap>>(emptyList()) }
     var error by remember(file.absolutePath) { mutableStateOf<String?>(null) }
     var loading by remember(file.absolutePath) { mutableStateOf(true) }
@@ -2115,39 +2308,39 @@ internal fun ReportPdfPreviewDialog(
                 .heightIn(max = 760.dp),
             shape = RoundedCornerShape(16.dp),
             color = Color(0xFF17284C),
-            border = BorderStroke(1.dp, ReferenceBorder)
+            border = BorderStroke(1.dp, skin.border)
         ) {
             Column(modifier = Modifier.fillMaxSize().padding(12.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(Icons.Default.Description, null, tint = ReferenceInk, modifier = Modifier.size(18.dp))
+                    Icon(Icons.Default.Description, null, tint = skin.ink, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(7.dp))
                     Text(
                         "完整纪要预览",
-                        color = ReferenceInk,
+                        color = skin.ink,
                         fontSize = 16.sp,
                         fontWeight = FontWeight.SemiBold
                     )
                     Spacer(Modifier.weight(1f))
                     if (!loading && pages.isNotEmpty()) {
-                        Text("${pages.size} 页", color = ReferenceMuted, fontSize = 11.sp)
+                        Text("${pages.size} 页", color = skin.muted, fontSize = 11.sp)
                         Spacer(Modifier.width(4.dp))
                     }
                     IconButton(onClick = onDismiss, modifier = Modifier.size(32.dp)) {
-                        Icon(Icons.Default.Close, "关闭完整纪要预览", tint = ReferenceInk, modifier = Modifier.size(18.dp))
+                        Icon(Icons.Default.Close, "关闭完整纪要预览", tint = skin.ink, modifier = Modifier.size(18.dp))
                     }
                 }
                 when {
                     loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator(color = ReferenceSky)
+                        CircularProgressIndicator(color = skin.sky)
                     }
                     error != null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Text(error.orEmpty(), color = Color(0xFF8E2C3B), fontSize = 13.sp)
                     }
                     pages.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("暂无可预览页面", color = ReferenceMuted, fontSize = 13.sp)
+                        Text("暂无可预览页面", color = skin.muted, fontSize = 13.sp)
                     }
                     else -> LazyColumn(
                         modifier = Modifier.fillMaxSize(),
