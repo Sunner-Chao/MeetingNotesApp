@@ -54,9 +54,12 @@ def main():
                 try:
                     for line in channel.makefile("rb"):
                         event = json.loads(line)
-                        if event["type"] == "preview" and state["started"] is not None:
+                        if event["type"] in {"preview", "summary"} and state["started"] is not None:
                             event["client_received_ms"] = round((time.monotonic() - state["started"]) * 1000, 2)
-                            event["client_delay_ms"] = round(event["client_received_ms"] - event["end_ms"], 2)
+                            if event["type"] == "preview":
+                                event["client_delay_ms"] = round(event["client_received_ms"] - event["end_ms"], 2)
+                            else:
+                                event["client_drain_ms"] = round(event["client_received_ms"] - len(pcm) / 32, 2)
                         output.write(json.dumps(event, ensure_ascii=False) + "\n")
                         output.flush()
                         if event["type"] == "ready":
@@ -85,10 +88,11 @@ def main():
                     raise RuntimeError("Resident probe did not report ready")
             state["started"] = time.monotonic()
             for offset in range(0, len(pcm), 3200):
-                delay = state["started"] + offset / 32000 - time.monotonic()
+                frame = pcm[offset:offset + 3200]
+                # A microphone cannot transmit a frame before it has recorded it.
+                delay = state["started"] + (offset + len(frame)) / 32000 - time.monotonic()
                 if delay > 0:
                     time.sleep(delay)
-                frame = pcm[offset:offset + 3200]
                 channel.sendall(struct.pack("<I", len(frame) // 2) + frame)
             channel.sendall(struct.pack("<I", 0))
             channel.shutdown_write()
