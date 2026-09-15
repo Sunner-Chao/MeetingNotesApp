@@ -1,0 +1,163 @@
+[
+  {
+    "run": "base-4s-full",
+    "settings": {
+      "type": "ready",
+      "load_ms": 1088.28,
+      "step_ms": 4000,
+      "window_ms": 8000,
+      "audio_ctx": 0
+    },
+    "calls": 7,
+    "audio_s": 25.29044,
+    "first_preview_s": 13.772549999999999,
+    "includes_client_receipt": false,
+    "mean_inference_s": 8.961641428571427,
+    "p95_inference_s": 9.70459,
+    "median_delay_s": 24.643729999999998,
+    "p95_delay_s": 41.51023,
+    "max_delay_s": 41.51023,
+    "final_delay_s": 41.51023,
+    "rss_first_mb": 291.79,
+    "rss_last_mb": 293.3,
+    "failures": 0
+  },
+  {
+    "run": "base-4s-dynamic",
+    "settings": {
+      "type": "ready",
+      "load_ms": 1098.78,
+      "step_ms": 4000,
+      "window_ms": 8000,
+      "audio_ctx": -1
+    },
+    "calls": 7,
+    "audio_s": 25.29044,
+    "first_preview_s": 7.16767,
+    "includes_client_receipt": false,
+    "mean_inference_s": 3.493534285714286,
+    "p95_inference_s": 3.97543,
+    "median_delay_s": 3.26021,
+    "p95_delay_s": 5.4338299999999995,
+    "max_delay_s": 5.4338299999999995,
+    "final_delay_s": 5.4338299999999995,
+    "rss_first_mb": 168.86,
+    "rss_last_mb": 186.65,
+    "failures": 0
+  },
+  {
+    "run": "base-2s-dynamic",
+    "settings": {
+      "type": "ready",
+      "load_ms": 1098.16,
+      "step_ms": 2000,
+      "window_ms": 4000,
+      "audio_ctx": -1
+    },
+    "calls": 13,
+    "audio_s": 25.29044,
+    "first_preview_s": 4.9480900000000005,
+    "includes_client_receipt": false,
+    "mean_inference_s": 2.057818461538462,
+    "p95_inference_s": 3.07451,
+    "median_delay_s": 2.67401,
+    "p95_delay_s": 3.33616,
+    "max_delay_s": 3.33616,
+    "final_delay_s": 3.33616,
+    "rss_first_mb": 168.16,
+    "rss_last_mb": 171.51,
+    "failures": 0
+  },
+  {
+    "run": "small-4s-dynamic",
+    "settings": {
+      "type": "ready",
+      "load_ms": 1242.33,
+      "step_ms": 4000,
+      "window_ms": 6000,
+      "audio_ctx": -1
+    },
+    "calls": 7,
+    "audio_s": 25.29044,
+    "first_preview_s": 10.735,
+    "includes_client_receipt": true,
+    "mean_inference_s": 7.320939999999999,
+    "p95_inference_s": 8.43701,
+    "median_delay_s": 16.813,
+    "p95_delay_s": 29.865560000000002,
+    "max_delay_s": 29.865560000000002,
+    "final_delay_s": 29.865560000000002,
+    "rss_first_mb": 328.14,
+    "rss_last_mb": 340.09,
+    "failures": 0
+  },
+  {
+    "run": "base-60s",
+    "settings": {
+      "type": "ready",
+      "load_ms": 1135.11,
+      "step_ms": 2000,
+      "window_ms": 4000,
+      "audio_ctx": -1
+    },
+    "calls": 30,
+    "audio_s": 60,
+    "first_preview_s": 5.39,
+    "includes_client_receipt": true,
+    "mean_inference_s": 1.8475533333333336,
+    "p95_inference_s": 2.22214,
+    "median_delay_s": 1.859,
+    "p95_delay_s": 3.125,
+    "max_delay_s": 3.39,
+    "final_delay_s": 1.984,
+    "rss_first_mb": 168.46,
+    "rss_last_mb": 173.33,
+    "failures": 0
+  },
+  {
+    "run": "base-3s-2threads",
+    "settings": {
+      "type": "ready",
+      "load_ms": 1092.85,
+      "step_ms": 3000,
+      "window_ms": 6000,
+      "audio_ctx": -1
+    },
+    "calls": 9,
+    "audio_s": 25.29044,
+    "first_preview_s": 6.032,
+    "includes_client_receipt": true,
+    "mean_inference_s": 3.0691144444444443,
+    "p95_inference_s": 3.3144099999999996,
+    "median_delay_s": 5.282,
+    "p95_delay_s": 11.282,
+    "max_delay_s": 11.282,
+    "final_delay_s": 5.56956,
+    "rss_first_mb": 168.04,
+    "rss_last_mb": 177.99,
+    "failures": 0
+  },
+  {
+    "run": "base-180s",
+    "settings": {
+      "type": "ready",
+      "load_ms": 1091.58,
+      "step_ms": 4000,
+      "window_ms": 6000,
+      "audio_ctx": -1
+    },
+    "calls": 45,
+    "audio_s": 180,
+    "first_preview_s": 7.266,
+    "includes_client_receipt": true,
+    "mean_inference_s": 2.8265462222222224,
+    "p95_inference_s": 3.3587399999999996,
+    "median_delay_s": 2.875,
+    "p95_delay_s": 4.797,
+    "max_delay_s": 5.203,
+    "final_delay_s": 2.906,
+    "rss_first_mb": 169.57,
+    "rss_last_mb": 186.77,
+    "failures": 0
+  }
+]
