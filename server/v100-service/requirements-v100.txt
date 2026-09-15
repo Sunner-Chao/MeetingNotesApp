@@ -1,0 +1,12 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+funasr==1.2.6
+modelscope==1.40.0
+torch==2.3.1+cu118
+torchaudio==2.3.1+cu118
+numpy<2
+soundfile==0.13.1
+sentencepiece==0.1.99
+imageio-ffmpeg==0.6.0
+httpx==0.28.1

@@ -779,7 +779,19 @@ class ConfigDataStore(private val context: Context) {
                     preferences[STT_CLOUD_ENDPOINT], STTConfig.DEFAULT_CLOUD_ENDPOINT.orEmpty()
                 )
             }
-            preferences[DEFAULT_PROFILE_VERSION] = "20"
+            if (profileVersion < 21 && !BuildConfig.DEBUG) {
+                // Mainland IPv4 networks can reset lstwin.space SNI before
+                // HTTP reaches Nginx; use the IP certificate release path.
+                val savedEndpoint = preferences[STT_LOCAL_ENDPOINT]
+                    ?.trim()
+                    ?.trimEnd('/')
+                    .orEmpty()
+                val savedHost = runCatching { URI(savedEndpoint).host.orEmpty().lowercase() }.getOrDefault("")
+                if (savedHost in setOf("lstwin.space", "lstwin.cloud") || savedEndpoint.isBlank()) {
+                    preferences[STT_LOCAL_ENDPOINT] = STTConfig.DEFAULT_LOCAL_ENDPOINT
+                }
+            }
+            preferences[DEFAULT_PROFILE_VERSION] = "21"
         }
     }
 

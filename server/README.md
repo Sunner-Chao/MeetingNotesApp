@@ -18,15 +18,14 @@
 - WebSocket 实时 PCM 转写，支持 partial、committed、stop 和有界滑动音频窗口。
 - 腾讯云混合模式分为标准档（`16k_zh`）与高精度付费档（`16k_zh_en`）；旧客户端协议只映射到标准档。
 - 标准云模型不做应用侧额度预留或时长限制；实时会话正常停止或异常断开会立即关闭云端连接。仅管理员显式启用的臻享付费档保留录音文件时长账本。
-- CPU `int8` 和 NVIDIA CUDA；本次冻结生产配置固定为 CPU `int8`。
-- 本地模型优先，生产环境固定使用 `small`，启动时校验 `model.bin` SHA-256。
+- Ubuntu 服务保留腾讯云与历史 Faster-Whisper 兼容能力；当前生产本地 STT 已迁移到独立 V100 FunASR 服务，使用 CUDA 推理，不再把 Windows CPU 节点作为生产模型。
 - 长录音按服务端动态策略分段处理：默认超过 45 分钟按 30 分钟片段、3 秒重叠顺序合并；腾讯云同时遵守单次 100 MiB 请求限制。上传接收上限默认 1 GiB，实际部署可通过环境变量调整。
 - 上传按 1 MB 分块落盘，限制单文件大小，推理完成后清理临时文件。
 - 可配置音频归档在最终推理前保存完整录音，按账户和会议隔离，并按保留天数和总容量清理。
 - 启动及周期性清理服务专属的过期临时文件，不处理其他应用文件。
 - Bearer Token 鉴权；生产配置禁止空 Token。
 - 运行时模型切换接口会暂停接单并排空已经接受的任务。
-- Windows 本地节点提供独立 Web 管理台，用 Basic 鉴权查看状态、事件和日志，并执行受控模型切换。
+- V100 服务提供健康、就绪和账户隔离诊断接口；说话人分离暂未启用，仅保留 CAM++ 后续接入位。
 
 ### 并发与过载保护
 
@@ -45,7 +44,7 @@
 - 独立 HTML 运维控制台：服务健康、模型/队列指标、引擎切换、会议表格、流式事件和日志维护。
 - Bearer Token 与可配置用户名的 HTTP Basic 鉴权；当前远端用户名为 `ubuntu`，密码为独立 `WEB_API_TOKEN`。
 - 私有 Agent API 使用独立 Bearer Token、按令牌配额、提供方权限、有效期和停用控制。
-- Agent 请求支持 Codex CLI、Claude CLI、任意数量图片附件（默认不设张数上限，仍受单图/总上传字节保护）、单任务执行和最多 8 个排队任务。
+- Agent 请求支持 Codex CLI、Claude CLI、任意数量图片附件（默认不设张数上限，Android 会将超过 `1MB` 的图片压缩后上传；服务端保留单图 `12MB` 兼容性兜底和总计 `32MB` 字节保护）、单任务执行和最多 8 个排队任务。
 - Android 默认使用 Codex；Codex 与 Claude 推理强度可在 Android 服务设置中分别调整，服务端默认均为 `medium`。
 - 实时 PCM 会在 Server 同步归档，正常停止后直接就地生成 beam=5 最终稿；连接异常时 Android 自动回退完整文件上传。浏览器用户端通过 WSS 连接后发送一次性鉴权消息建立同一实时预览链路（令牌不出现在 URL 或代理访问日志），原生客户端继续使用 Bearer 头。
 - Android 已接入账户、短期凭证、Agent 和额度 API；会议正文数据仍以本地 Room 为采集过程可信源，完整会议成果云同步仍在演进。
@@ -60,11 +59,11 @@ Android
    |                                      |--> Codex CLI  --> 中转站 API
    |                                      `--> Claude CLI --> 中转站 API
    |
-   `-- STT HTTP/WS --> :8888 --> meetingnotes-stt.service
-                                      |--> 腾讯实时 ASR --> 可修订预览
-                                      |--> 腾讯极速版   --> 最终稿
-                                      `--> 有界 FIFO (active=2, queue=16)
-                                           `--> Faster-Whisper small / CPU int8 回退
+   |-- STT HTTP/WS --> /stt-local --> Nginx --> 127.0.0.1:18889
+   |                                      `--> V100 4x Tesla V100
+   |                                           |--> FunASR Paraformer-Large online
+   |                                           `--> Paraformer-Large offline + VAD + punctuation
+   `-- STT HTTP/WS --> /stt-cloud --> 腾讯云实时/文件 ASR（兜底）
 ```
 
 systemd 约束：
@@ -170,7 +169,7 @@ STT_AUDIO_ARCHIVE_MAX_GB=10
 
 ## STT 运行策略
 
-默认链路使用本地 Faster-Whisper `small`。Windows 临时服务使用 CPU `int8`，后续迁移到 LS-Server 后使用 Tesla V100 的 CUDA `float16`。腾讯云是唯一保留的云端方案，只在用户明确选择云端识别或本地链路失败时使用。
+实时预览和文件转写默认优先使用 V100 上的 FunASR Paraformer-Large；实时使用 online 模型，文件使用 offline 模型并配合 FSMN VAD 与 CT-Transformer 标点。V100 通过仅监听 VPS 回环的反向 SSH 隧道接入 `/stt-local`，腾讯云 `/stt-cloud` 继续作为用户选择或本地失败时的唯一云端兜底。GE4 AMD 与本机 Windows CUDA 节点不属于生产链路。
 
 Windows 本机启动：
 
@@ -178,7 +177,7 @@ Windows 本机启动：
 server\stt-service\start-windows-local.bat
 ```
 
-Windows 本机 Caddy 继续承载 `lstwin.space` 的 IPv6 TLS 入口和本地 STT WebSocket；统一 Web/API/管理路径通过 WireGuard HTTPS 回源到 Backend VPS `10.77.0.1:443`。`/health` 与 `/ws/transcribe-stream` 保持本地 STT 语义，用户端 Web 使用 `/app/`，管理端使用 `/admin/`，API 使用 `/api/`。`lstwin.space` 使用 AliDNS DNS-01 自动续期的 Let’s Encrypt 公网证书，证书和 ACME 账户只保存在用户私有目录；管理账号从私有环境文件读取，不写入仓库。`lstwin.cloud` 仍按原链路运行。
+Windows 本机 Caddy 继续承载 `lstwin.space` 的 IPv6 TLS 入口和 Web/API 兼容路径；统一 Web/API/管理路径通过 WireGuard HTTPS 回源到 Backend VPS `10.77.0.1:443`。生产 `/stt-local` 已改由 VPS Nginx 转发到 `127.0.0.1:18889` 的 V100 反向 SSH 隧道，`/stt-cloud` 保持腾讯云兜底。`lstwin.space` 使用 AliDNS DNS-01 自动续期的 Let’s Encrypt 公网证书，证书和 ACME 账户只保存在用户私有目录；管理账号从私有环境文件读取，不写入仓库。`lstwin.cloud` 仍按原链路运行。
 
 > [!note] Web 入口迁移（2026-08-31）
 > 统一域名已切换：`https://lstwin.space/app/` 为用户端 Web，`https://lstwin.space/admin/` 为 Backend 管理端，`https://lstwin.space/api/` 为同源 API；`https://118.25.43.185/app/` 与 `/web` 保留为兼容入口。Windows Caddy 通过 WireGuard 回源 Web/API，`/health` 和 `/ws/transcribe-stream` 仍保留本地 STT 兼容语义。

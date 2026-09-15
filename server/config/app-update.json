@@ -1,11 +1,12 @@
 {
-  "version_code": 10264,
-  "version_name": "1.2.64",
+  "version_code": 10265,
+  "version_name": "1.2.65",
   "product_edition": "social",
   "product_name": "智悟本(Pro)",
   "application_id": "com.oa.automation",
   "mandatory": false,
-  "release_notes": "首页统一为两列布局：入口磁贴与记录卡同宽同圆角；最近记录改为双列卡片，新增波形与文稿缩略图、状态徽标和筛选统计；会议时长超过一小时改用小时显示；修复设置页底部版本与操作按钮被截断的问题。",
-  "published_at": "2026-09-07T21:20:00+08:00",
-  "apk_filename": "ZhiWuBen-Android-10264.apk"
+  "published_at": "2026-09-15T18:45:00+08:00",
+  "apk_filename": "ZhiWuBen-Android-10265.apk",
+  "release_notes": "V100 Paraformer 本地 STT 主链路：实时流式与文件转写优先走 GPU 服务，腾讯云继续兜底；修复 IPv4 网络域名连接重置并迁移旧本地地址。",
+  "sha256": "8a5142d3dea46848ed3268ecf534946bb1c3d154ad0e1df35a31b7ab7701cc46"
 }
