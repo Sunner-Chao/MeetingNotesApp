@@ -68,7 +68,12 @@ def main():
         consumed += len(audio)
         fragment = result[0].get("text", "") if result else ""
         if fragment:
-            transcript += fragment
+            # Online Paraformer emits short deltas, but may repeat a suffix
+            # while revising a chunk. Merge the largest suffix/prefix overlap.
+            overlap = min(len(transcript), len(fragment))
+            while overlap and not transcript.endswith(fragment[:overlap]):
+                overlap -= 1
+            transcript += fragment[overlap:]
             elapsed = (time.perf_counter() - started) * 1000
             if first_ms is None:
                 first_ms = elapsed
