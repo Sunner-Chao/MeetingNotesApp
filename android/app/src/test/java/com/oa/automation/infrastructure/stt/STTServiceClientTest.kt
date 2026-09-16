@@ -32,14 +32,14 @@ class STTServiceClientTest {
     }
 
     @Test
-    fun `connection test validates health and bearer token`() {
-        server.enqueue(MockResponse().setResponseCode(200).setBody("{\"status\":\"ok\"}"))
+    fun `connection test validates V100 readiness and bearer token`() {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"ready":true,"engine":"funasr-paraformer"}"""))
         server.enqueue(MockResponse().setResponseCode(200).setBody("{\"events\":[]}"))
 
         val result = STTServiceClient.testConnection(endpoint(), "valid-token")
 
         assertTrue(result.isSuccess)
-        assertEquals("/health", server.takeRequest().path)
+        assertEquals("/ready", server.takeRequest().path)
         val authRequest = server.takeRequest()
         assertEquals("/debug/stream-events?limit=1", authRequest.path)
         assertEquals("Bearer valid-token", authRequest.getHeader("Authorization"))
@@ -47,7 +47,7 @@ class STTServiceClientTest {
 
     @Test
     fun `connection test reports an invalid bearer token`() {
-        server.enqueue(MockResponse().setResponseCode(200).setBody("{\"status\":\"ok\"}"))
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"ready":true,"engine":"funasr-paraformer"}"""))
         server.enqueue(MockResponse().setResponseCode(401).setBody("{\"detail\":\"Unauthorized\"}"))
 
         val result = STTServiceClient.testConnection(endpoint(), "wrong-token")

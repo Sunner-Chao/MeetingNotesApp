@@ -16,6 +16,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -76,6 +77,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
@@ -184,6 +186,7 @@ internal fun SiriRecorderContent(
     onManageImages: () -> Unit,
     onShareAudio: (ArchivedMeetingAudio) -> Unit,
     onSttEngineSelected: (STTEngineType) -> Unit,
+    onTestLocalStt: () -> Unit,
     onSelectTemplate: (PresetReportTemplate) -> Unit,
     templateWorkflowReducedMotion: Boolean,
     templateWorkflowSeen: Set<String>,
@@ -330,7 +333,12 @@ internal fun SiriRecorderContent(
                 realtimeSttRoute = uiState.realtimeSttRoute,
                 sttEngineType = displayedSttEngine,
                 isSwitchingSttEngine = uiState.isSwitchingSttEngine,
+                sttSwitchEnabled = !uiState.isRecordingActionPending && !uiState.isFinalizingRecording,
+                isTestingLocalStt = uiState.isTestingLocalStt,
+                localSttAvailable = uiState.localSttAvailable,
+                sttSwitchStatus = uiState.sttSwitchStatus,
                 onSttEngineSelected = onSttEngineSelected,
+                onTestLocalStt = onTestLocalStt,
                 palette = palette,
                 onCancelTranscription = onCancelTranscription,
                 onCancelReport = onCancelReport,
@@ -1057,7 +1065,12 @@ private fun SiriTranscriptCard(
     realtimeSttRoute: com.oa.automation.infrastructure.service.RealtimeSttRouteState,
     sttEngineType: STTEngineType,
     isSwitchingSttEngine: Boolean,
+    sttSwitchEnabled: Boolean,
+    isTestingLocalStt: Boolean,
+    localSttAvailable: Boolean?,
+    sttSwitchStatus: String,
     onSttEngineSelected: (STTEngineType) -> Unit,
+    onTestLocalStt: () -> Unit,
     palette: SiriRecorderPalette,
     onCancelTranscription: () -> Unit,
     onCancelReport: () -> Unit,
@@ -1102,9 +1115,37 @@ private fun SiriTranscriptCard(
                 Spacer(Modifier.weight(1f))
                 LocalCloudSttSegmentedControl(
                     sttEngineType = sttEngineType,
-                    enabled = !isSwitchingSttEngine && !isTranscribing && !isGeneratingReport,
+                    palette = palette,
+                    enabled = sttSwitchEnabled && !isSwitchingSttEngine && !isTranscribing && !isGeneratingReport,
                     onSttEngineSelected = onSttEngineSelected
                 )
+            }
+            if (ProductEdition.current.supportsLocalStt) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (isSwitchingSttEngine || isTestingLocalStt) {
+                        CircularProgressIndicator(modifier = Modifier.size(12.dp), strokeWidth = 1.5.dp, color = palette.muted)
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    Text(
+                        text = sttSwitchStatus.ifBlank {
+                            when {
+                                isTestingLocalStt -> "正在检测本地模型"
+                                localSttAvailable == true -> "本地模型已就绪"
+                                localSttAvailable == false -> "本地暂不可用 · 可选云端"
+                                else -> "本地识别 · 云端兜底"
+                            }
+                        },
+                        color = if (localSttAvailable == false && !isTestingLocalStt && !isSwitchingSttEngine) palette.red else palette.muted,
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 2,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(
+                        onClick = onTestLocalStt,
+                        enabled = !isTestingLocalStt && !isSwitchingSttEngine,
+                        modifier = Modifier.height(32.dp)
+                    ) { Text("检测", color = palette.muted, style = MaterialTheme.typography.labelSmall) }
+                }
             }
             Spacer(Modifier.height(10.dp))
             if (isRecording) {
@@ -1218,6 +1259,7 @@ private fun SiriTranscriptCard(
 @Composable
 private fun LocalCloudSttSegmentedControl(
     sttEngineType: STTEngineType,
+    palette: SiriRecorderPalette,
     enabled: Boolean,
     onSttEngineSelected: (STTEngineType) -> Unit
 ) {
@@ -1242,7 +1284,11 @@ private fun LocalCloudSttSegmentedControl(
         return
     }
     val selectedCloud = sttEngineType == STTEngineType.TENCENT_HYBRID
-    val skin = rememberDoodleSkin(com.oa.automation.ui.theme.LocalAppIsDarkTheme.current)
+    val skin = rememberDoodleSkin(com.oa.automation.ui.theme.LocalAppIsDarkTheme.current).copy(
+        ink = palette.text,
+        inkMuted = palette.muted,
+        accentCyan = palette.cyan
+    )
     Box(
         modifier = Modifier
             .width(126.dp)
@@ -1310,7 +1356,7 @@ private fun SiriSttSegment(
     Box(
         modifier = modifier
             .fillMaxHeight()
-            .clickable(enabled = enabled && !selected, onClick = onClick),
+            .selectable(selected = selected, enabled = enabled, role = Role.Tab, onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
         if (fillAlpha > 0.01f) {

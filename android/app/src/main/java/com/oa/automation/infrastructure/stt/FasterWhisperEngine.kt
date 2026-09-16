@@ -211,6 +211,12 @@ class FasterWhisperEngine(
     )
 }
 
+internal fun parseLocalSttReadiness(body: String): Result<Unit> = runCatching {
+    val json = com.google.gson.JsonParser.parseString(body).asJsonObject
+    check(json.get("ready")?.asBoolean == true) { "本地模型仍在加载，请稍后重试" }
+    check(json.get("engine")?.asString == "funasr-paraformer") { "本地服务尚未切换到 V100 模型" }
+}
+
 private class ProgressRequestBody(
     private val delegate: RequestBody,
     private val onProgress: (written: Long, total: Long) -> Unit
@@ -259,8 +265,39 @@ object STTServiceClient {
         .build()
 
     /**
-     * Test connection to STT service
+     * Verify that the configured V100 service has finished loading its models.
+     * `/ready` is intentionally public and contains no account or management
+     * data, so the recording page can use it as a short preflight check.
      */
+    fun testLocalReadiness(endpoint: String): Result<Unit> {
+        return try {
+            val normalizedEndpoint = endpoint.trim().trimEnd('/')
+            if (normalizedEndpoint.isBlank()) {
+                return Result.failure(IOException("本地 V100 服务地址未配置"))
+            }
+            val request = Request.Builder()
+                .url("$normalizedEndpoint/ready")
+                .get()
+                .build()
+            localClient.newBuilder()
+                .connectTimeout(4, TimeUnit.SECONDS)
+                .readTimeout(4, TimeUnit.SECONDS)
+                .callTimeout(5, TimeUnit.SECONDS)
+                .build()
+                .newCall(request)
+                .execute()
+                .use { response ->
+                    if (response.isSuccessful) {
+                        parseLocalSttReadiness(response.body?.string().orEmpty())
+                    } else {
+                        Result.failure(response.toSttFailure(response.body?.string().orEmpty()))
+                    }
+                }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     fun testConnection(endpoint: String, apiToken: String?): Result<Unit> {
         return try {
             val normalizedEndpoint = endpoint.trim().trimEnd('/')
@@ -272,17 +309,9 @@ object STTServiceClient {
                 return Result.failure(IOException("STT 访问令牌未配置"))
             }
 
-            val healthRequest = Request.Builder()
-                .url("$normalizedEndpoint/health")
-                .get()
-                .build()
-            localClient.newCall(healthRequest).execute().use { response ->
-                if (!response.isSuccessful) {
-                    return Result.failure(response.toSttFailure(response.body?.string().orEmpty()))
-                }
-            }
+            testLocalReadiness(normalizedEndpoint).getOrThrow()
 
-            // /health is intentionally anonymous. This protected endpoint confirms
+            // /ready is intentionally anonymous. This protected endpoint confirms
             // that the token used by recording/transcription is accepted as well.
             val authRequest = Request.Builder()
                 .url("$normalizedEndpoint/debug/stream-events?limit=1")

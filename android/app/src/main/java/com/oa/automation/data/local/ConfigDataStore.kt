@@ -1,7 +1,6 @@
 package com.oa.automation.data.local
 
 import android.content.Context
-import android.os.Build
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
@@ -115,14 +114,6 @@ class ConfigDataStore(private val context: Context) {
     private val defaultLlmCloudApiKey = BuildConfig.DEFAULT_LLM_CLOUD_API_KEY.takeIf { it.isNotBlank() }
     private val defaultLlmCloudModel = BuildConfig.DEFAULT_LLM_CLOUD_MODEL.takeIf { it.isNotBlank() }
     private val defaultRelayBaseUrl = BuildConfig.DEFAULT_RELAY_BASE_URL.takeIf { it.isNotBlank() }
-    private val isAndroidEmulator: Boolean =
-        Build.FINGERPRINT.startsWith("generic") ||
-            Build.FINGERPRINT.startsWith("unknown") ||
-            Build.MODEL.contains("google_sdk", ignoreCase = true) ||
-            Build.MODEL.contains("emulator", ignoreCase = true) ||
-            Build.MANUFACTURER.contains("Genymotion", ignoreCase = true) ||
-            Build.PRODUCT.contains("sdk_gphone", ignoreCase = true) ||
-            Build.DEVICE.startsWith("emu", ignoreCase = true)
 
     init {
         CoroutineScope(Dispatchers.IO).launch {
@@ -372,8 +363,7 @@ class ConfigDataStore(private val context: Context) {
                 runCatching { STTEngineType.valueOf(it) }.getOrNull()
             } ?: STTEngineType.FASTER_WHISPER
         }
-        // Lite is a cloud-only product. Keep this normalization at the storage
-        // boundary so legacy preferences cannot re-enable the local model.
+        // Honor the deployment kill switch at the storage boundary too.
         val effectiveSttEngine = if (ProductEdition.current.supportsLocalStt) {
             configuredSttEngine
         } else {
@@ -799,17 +789,15 @@ class ConfigDataStore(private val context: Context) {
     private fun resolveLocalSttEndpoint(savedEndpoint: String?): String {
         val candidate = savedEndpoint?.trim()?.trimEnd('/').orEmpty()
         if (candidate.isBlank() || candidate == STTConfig.LEGACY_LOCAL_ENDPOINT) {
-            return if (BuildConfig.DEBUG && isAndroidEmulator) {
-                STTConfig.AVD_HOST_ENDPOINT
-            } else {
-                STTConfig.DEFAULT_LOCAL_ENDPOINT
-            }
+            return STTConfig.DEFAULT_LOCAL_ENDPOINT
+        }
+        if (candidate.isDevelopmentOnlySttEndpoint() &&
+            !STTConfig.DEFAULT_LOCAL_ENDPOINT.isDevelopmentOnlySttEndpoint()
+        ) {
+            return STTConfig.DEFAULT_LOCAL_ENDPOINT
         }
         val host = runCatching { URI(candidate).host.orEmpty().lowercase() }.getOrDefault("")
         val path = runCatching { URI(candidate).path.orEmpty().trimEnd('/') }.getOrDefault("")
-        if (BuildConfig.DEBUG && isAndroidEmulator && candidate.isKnownPublicSttEndpoint()) {
-            return STTConfig.AVD_HOST_ENDPOINT
-        }
         if (!BuildConfig.DEBUG && candidate.isKnownPublicSttEndpoint() && path != "/stt-local") {
             return STTConfig.DEFAULT_LOCAL_ENDPOINT
         }

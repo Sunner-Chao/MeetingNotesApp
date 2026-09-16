@@ -488,11 +488,16 @@ class StreamingSttClientTest {
         val localStarted = CountDownLatch(1)
         val cloudStarted = CountDownLatch(1)
         val cloudStartPayload = AtomicReference<com.google.gson.JsonObject>()
+        val cloudPaused = CountDownLatch(1)
+        val cloudAudio = CountDownLatch(1)
 
         fun response(latch: CountDownLatch, sessionId: String) = MockResponse().withWebSocketUpgrade(
             object : WebSocketListener() {
                     override fun onMessage(webSocket: WebSocket, text: String) {
                         val payload = JsonParser.parseString(text).asJsonObject
+                        if (sessionId == "b".repeat(32) && payload.get("event")?.asString == "pause") {
+                            cloudPaused.countDown()
+                        }
                         if (payload.get("event")?.asString == "start") {
                             cloudStartPayload.set(payload)
                             webSocket.send(
@@ -500,6 +505,10 @@ class StreamingSttClientTest {
                         )
                         latch.countDown()
                     }
+                }
+
+                override fun onMessage(webSocket: WebSocket, bytes: okio.ByteString) {
+                    if (sessionId == "b".repeat(32)) cloudAudio.countDown()
                 }
 
                 override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
@@ -530,6 +539,7 @@ class StreamingSttClientTest {
                 onError = {}
             )
             assertTrue(localStarted.await(5, TimeUnit.SECONDS))
+            client.pauseAudio()
 
             assertTrue(
                 client.switchService(
@@ -538,6 +548,12 @@ class StreamingSttClientTest {
                 ).isSuccess
             )
             assertTrue(cloudStarted.await(5, TimeUnit.SECONDS))
+            assertTrue("paused state must reach the new provider", cloudPaused.await(5, TimeUnit.SECONDS))
+            client.sendAudio(ByteArray(3200))
+            org.junit.Assert.assertFalse("switching must not resume PCM upload", cloudAudio.await(150, TimeUnit.MILLISECONDS))
+            client.resumeAudio()
+            client.sendAudio(ByteArray(3200))
+            assertTrue("PCM upload must resume on the new provider", cloudAudio.await(5, TimeUnit.SECONDS))
             assertEquals("/cloud/ws/transcribe-stream", cloudServer.takeRequest().path)
             assertEquals("大佛寺研学考察", cloudStartPayload.get().get("context_hint").asString)
             assertTrue(cloudStartPayload.get().get("speaker_diarization").asBoolean)
@@ -546,6 +562,40 @@ class StreamingSttClientTest {
             client.stop()
             localServer.shutdown()
             cloudServer.shutdown()
+        }
+    }
+
+    @Test
+    fun `failed same endpoint connection can be retried without restarting recording`() = runBlocking {
+        val server = MockWebServer()
+        val failed = CountDownLatch(1)
+        val ready = CountDownLatch(1)
+        server.enqueue(MockResponse().setResponseCode(401))
+        server.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                if (JsonParser.parseString(text).asJsonObject.get("event")?.asString == "start") {
+                    webSocket.send("""{"type":"status","session_id":"${"c".repeat(32)}","message":"ready"}""")
+                    ready.countDown()
+                }
+            }
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                webSocket.close(code, reason)
+            }
+        }))
+        server.start()
+        val client = StreamingSttClient(client = OkHttpClient(), debugLog = {}, warningLog = {})
+        try {
+            val endpoint = server.url("/local").toString()
+            client.start(endpoint = endpoint, meetingId = "retry-meeting", apiToken = "expired-test-token",
+                onPartialText = {}, onStatus = {}, onError = {}, onProviderFailure = { _, _ -> failed.countDown() })
+            assertTrue(failed.await(5, TimeUnit.SECONDS))
+            assertTrue(client.switchService(endpoint, StreamingSttProvider.LOCAL, apiTokenOverride = "renewed-test-token").isSuccess)
+            assertTrue(ready.await(5, TimeUnit.SECONDS))
+            server.takeRequest()
+            assertEquals("Bearer renewed-test-token", server.takeRequest().getHeader("Authorization"))
+        } finally {
+            client.stop()
+            server.shutdown()
         }
     }
 }

@@ -345,6 +345,15 @@ class RecordingSessionController(
                         } == true
                     }.getOrDefault(false)
                     if (!ready) {
+                        val pending = _state.value
+                        if (pending.meetingId == meetingId &&
+                            (pending.isStarting || pending.isRecording) && !pending.isStopping &&
+                            pending.realtimeSttRoute in setOf(RealtimeSttRouteState.LOCAL_CONNECTING, RealtimeSttRouteState.LOCAL_RECOVERING) &&
+                            cloudFallbackAvailable
+                        ) {
+                            requestAutomaticCloudFallback("本地实时识别连接超时")
+                            return@launch
+                        }
                         val shouldStopInitialStream = _state.value.let { state ->
                             state.meetingId == meetingId &&
                                 state.realtimeSttRoute in setOf(
@@ -604,7 +613,8 @@ class RecordingSessionController(
 
     suspend fun switchStreamingProvider(
         engineType: STTEngineType,
-        forceReconnect: Boolean = false
+        forceReconnect: Boolean = false,
+        explicitChoice: Boolean = false
     ): Result<Unit> =
         operationMutex.withLock {
             runCatching {
@@ -629,12 +639,14 @@ class RecordingSessionController(
                         "智悟本地识别服务地址未配置"
                     }
                 }
+                if (explicitChoice) automaticCloudFallbackAttempted = false
+                streamingPreviewActive = true
                 _state.update {
                     val previousRoute = it.realtimeSttRoute
                     val nextRoute = when {
                         engineType != STTEngineType.TENCENT_HYBRID ->
                             RealtimeSttRouteState.LOCAL_CONNECTING
-                        previousRoute in LOCAL_ROUTE_STATES || automaticCloudFallbackAttempted ->
+                        !explicitChoice && (previousRoute in LOCAL_ROUTE_STATES || automaticCloudFallbackAttempted) ->
                             RealtimeSttRouteState.SWITCHING_TO_CLOUD
                         else -> RealtimeSttRouteState.CLOUD_CONNECTING
                     }
@@ -645,6 +657,7 @@ class RecordingSessionController(
                             "正在连接${engineType.displayName}"
                         },
                         realtimeSttRoute = nextRoute,
+                        cloudFallbackEngaged = if (explicitChoice) false else it.cloudFallbackEngaged,
                         error = null
                     )
                 }
@@ -654,6 +667,7 @@ class RecordingSessionController(
                     forceReconnect = forceReconnect,
                     apiTokenOverride = sttConfig.apiToken
                 ).getOrThrow()
+                streamingPreviewActive = true
                 _state.update {
                     val connectedRoute = when {
                         engineType != STTEngineType.TENCENT_HYBRID ->
@@ -673,12 +687,14 @@ class RecordingSessionController(
                     )
                 }
             }.onFailure { error ->
-                streamingPreviewActive = false
                 _state.update {
                     it.copy(
                         realtimeSttRoute = RealtimeSttRouteState.UNAVAILABLE,
                         error = "识别引擎切换失败: ${error.message}"
                     )
+                }
+                if (explicitChoice && engineType == STTEngineType.FASTER_WHISPER && cloudFallbackAvailable) {
+                    requestAutomaticCloudFallback("本地模型连接失败")
                 }
             }
         }

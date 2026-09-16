@@ -123,7 +123,7 @@ internal fun SttDetailSheetContent(
     }
 
     val modelOptions = when (displayedEngine) {
-        STTEngineType.FASTER_WHISPER -> listOf("large-v3-turbo", "large-v3", "medium", "small", "base", "tiny")
+        STTEngineType.FASTER_WHISPER -> listOf(STTEngineType.FASTER_WHISPER.defaultModel)
         STTEngineType.TENCENT_HYBRID -> emptyList()
     }
 
@@ -812,23 +812,22 @@ internal fun ModelDropdown(
 ) {
     ExposedDropdownMenuBox(
         expanded = expanded,
-        onExpandedChange = onExpandedChange
+        onExpandedChange = { if (options.size > 1) onExpandedChange(it) }
     ) {
         OutlinedTextField(
             value = localModelDisplayName(currentModel),
             onValueChange = {},
             readOnly = true,
-            label = { Text("本地智悟通用模型") },
+            label = { Text("本地模型") },
             leadingIcon = {
                 Icon(Icons.Default.Memory, contentDescription = null, modifier = Modifier.size(20.dp))
             },
             supportingText = {
                 Text(
-                    if (currentModel == "large-v3-turbo") "中文会议优先，兼顾速度与准确度"
-                    else "平衡速度与准确度"
+                    "实时与文件转写由服务器自动选择模型"
                 )
             },
-            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+            trailingIcon = { if (options.size > 1) ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
             modifier = Modifier
                 .fillMaxWidth()
                 .menuAnchor(),

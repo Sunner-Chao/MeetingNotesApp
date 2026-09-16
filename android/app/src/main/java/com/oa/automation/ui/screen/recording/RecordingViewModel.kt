@@ -100,6 +100,9 @@ data class RecordingUiState(
     val sttLanguage: STTLanguage = STTLanguage.CHINESE,
     val agentProvider: AgentProvider = AgentProvider.CODEX_CLI,
     val isSwitchingSttEngine: Boolean = false,
+    val isTestingLocalStt: Boolean = false,
+    val localSttAvailable: Boolean? = null,
+    val sttSwitchStatus: String = "",
     val isSwitchingSttLanguage: Boolean = false,
     val isSavingAgentProvider: Boolean = false,
     val isRecordingActionPending: Boolean = false,
@@ -312,6 +315,7 @@ internal fun isStudyJourneyTemplateName(templateName: String): Boolean =
 
 internal fun isRecordingActionEnabled(state: RecordingUiState): Boolean =
     !state.isRecordingActionPending &&
+        !state.isSwitchingSttEngine &&
         !state.isFinalizingRecording &&
         !state.isJourneyActionPending &&
         !state.isGeneratingReport
@@ -375,7 +379,7 @@ private fun STTConfig.withEngineType(engineType: STTEngineType): STTConfig {
     val usesTencent = effectiveEngine == STTEngineType.TENCENT_HYBRID
     return copy(
         engineType = effectiveEngine,
-        localModel = effectiveEngine.defaultModel.ifBlank { localModel },
+        localModel = if (usesTencent) localModel else effectiveEngine.defaultModel,
         cloudEndpoint = if (usesTencent) {
             cloudEndpoint ?: STTConfig.DEFAULT_CLOUD_ENDPOINT
         } else {
@@ -485,6 +489,7 @@ internal fun recordingMainAction(state: RecordingUiState): RecordingMainAction =
 internal fun RecordingUiState.resetForMeetingChange(): RecordingUiState = copy(
     meetingTitle = "",
     isSwitchingSttEngine = false,
+    sttSwitchStatus = "",
     isSwitchingSttLanguage = false,
     isSavingAgentProvider = false,
     isRecordingActionPending = false,
@@ -634,6 +639,7 @@ class RecordingViewModel(
     private val recoveredTranscriptionMeetingIds = mutableSetOf<String>()
     private var persistedDurationSeconds: Long = 0L
     private var preferredSttEngineType: STTEngineType = STTEngineType.FASTER_WHISPER
+    private var localSttTestJob: Job? = null
 
     /**
      * Engine this meeting resolved to after an automatic local→cloud fallback.
@@ -752,6 +758,11 @@ class RecordingViewModel(
                             it.liveTranscript
                         },
                         realtimeSttRoute = session.realtimeSttRoute,
+                        localSttAvailable = when {
+                            session.realtimeSttRoute == RealtimeSttRouteState.LOCAL_ACTIVE -> true
+                            session.cloudFallbackEngaged -> false
+                            else -> it.localSttAvailable
+                        },
                         isTranscribing = if (clearTranscriptionState) false else it.isTranscribing,
                         transcriptionProgressPercent = if (clearTranscriptionState) {
                             null
@@ -1252,6 +1263,23 @@ class RecordingViewModel(
         }
     }
 
+    fun testLocalSttAvailability() {
+        if (!ProductEdition.current.supportsLocalStt || localSttTestJob?.isActive == true ||
+            _uiState.value.isSwitchingSttEngine) return
+        localSttTestJob = viewModelScope.launch {
+            _uiState.update { it.copy(isTestingLocalStt = true) }
+            try {
+                val config = configDataStore.appConfigFlow.first().sttConfig
+                val result = withContext(Dispatchers.IO) {
+                    STTServiceClient.testLocalReadiness(config.localEndpoint)
+                }
+                _uiState.update { it.copy(localSttAvailable = result.isSuccess) }
+            } finally {
+                _uiState.update { it.copy(isTestingLocalStt = false) }
+            }
+        }
+    }
+
     fun switchSttEngine(engineType: STTEngineType) {
         if (!ProductEdition.current.supportsLocalStt && engineType != STTEngineType.TENCENT_HYBRID) {
             _uiState.update {
@@ -1266,65 +1294,101 @@ class RecordingViewModel(
             isRecording = currentState.isRecording,
             supportsLocalStt = ProductEdition.current.supportsLocalStt
         )
-        if (engineType == actualEngine || currentState.isSwitchingSttEngine) {
+        if (currentState.isSwitchingSttEngine || currentState.isRecordingActionPending ||
+            currentState.isFinalizingRecording || currentState.isTranscribing || currentState.isGeneratingReport ||
+            (engineType == actualEngine && currentState.realtimeSttRoute != RealtimeSttRouteState.UNAVAILABLE)) {
             return
         }
         val requestedMeetingId = currentMeetingId
+        localSttTestJob?.cancel()
+        _uiState.update { it.copy(isSwitchingSttEngine = true, isTestingLocalStt = false, error = null) }
         viewModelScope.launch {
-            val appConfig = configDataStore.appConfigFlow.first()
-            val currentConfig = appConfig.sttConfig
-            val nextConfig = currentConfig.withEngineType(engineType)
-            _uiState.update {
-                it.copy(
-                    isSwitchingSttEngine = true,
-                    transcriptPreviewMode = "正在切换至${engineType.displayName}",
-                    error = null
-                )
-            }
-            val session = recordingController.state.value
-            val isCurrentMeetingRecording = session.meetingId == requestedMeetingId &&
-                session.isRecording &&
-                !session.isStopping
-            if (isCurrentMeetingRecording) preserveCurrentStreamingSegment()
-            val switchResult = if (isCurrentMeetingRecording) {
-                recordingController.switchStreamingProvider(engineType)
-            } else {
-                Result.success(Unit)
-            }
-            switchResult.fold(
-                onSuccess = {
-                    configDataStore.updateSTTConfig(nextConfig)
-                    preferredSttEngineType = engineType
-                    // An explicit choice replaces any automatic fallback.
-                    meetingSttEngineOverride = engineType
-                    persistMeetingSttEngine(requestedMeetingId, engineType)
-                    if (isCurrentMeeting(requestedMeetingId)) {
-                        _uiState.update {
-                            it.copy(
-                                sttEngineType = engineType,
-                                sttEngineLabel = engineType.displayName,
-                                isSwitchingSttEngine = false,
-                                transcriptPreviewMode = if (isCurrentMeetingRecording) {
-                                    "${engineType.displayName}实时预览"
-                                } else {
-                                    it.transcriptPreviewMode
-                                },
-                                error = null
-                            )
-                        }
+            try {
+                val appConfig = configDataStore.appConfigFlow.first()
+                val currentConfig = appConfig.sttConfig
+                val nextConfig = currentConfig.withEngineType(engineType)
+                _uiState.update {
+                    it.copy(
+                        isSwitchingSttEngine = true,
+                        sttSwitchStatus = if (engineType == STTEngineType.FASTER_WHISPER) "正在检测本地模型" else "正在切换云端识别",
+                        error = null
+                    )
+                }
+                if (engineType == STTEngineType.FASTER_WHISPER) {
+                    val readiness = withContext(Dispatchers.IO) {
+                        STTServiceClient.testLocalReadiness(nextConfig.localEndpoint)
                     }
-                },
-                onFailure = { error ->
-                    if (isCurrentMeeting(requestedMeetingId)) {
+                    if (!isCurrentMeeting(requestedMeetingId)) return@launch
+                    _uiState.update { it.copy(localSttAvailable = readiness.isSuccess) }
+                    if (readiness.isFailure) {
                         _uiState.update {
-                            it.copy(
-                                isSwitchingSttEngine = false,
-                                error = "识别引擎切换失败: ${error.message}"
-                            )
+                            it.copy(isSwitchingSttEngine = false, sttSwitchStatus = "",
+                                error = "本地模型暂不可用，已保留当前识别方式")
                         }
+                        return@launch
                     }
                 }
-            )
+                _uiState.update { it.copy(sttSwitchStatus = "正在切换至${engineType.displayName}") }
+                val session = recordingController.state.value
+                val isCurrentMeetingRecording = session.meetingId == requestedMeetingId &&
+                    session.isRecording &&
+                    !session.isStopping
+                if (isCurrentMeetingRecording) preserveCurrentStreamingSegment()
+                val switchResult = if (isCurrentMeetingRecording) {
+                    recordingController.switchStreamingProvider(engineType, explicitChoice = true)
+                } else {
+                    Result.success(Unit)
+                }
+                switchResult.fold(
+                    onSuccess = {
+                        if (!isCurrentMeeting(requestedMeetingId)) return@fold
+                        // A session refresh may have updated credentials while the
+                        // socket was connecting; only replace the engine selection.
+                        configDataStore.updateSTTConfig(configDataStore.appConfigFlow.first().sttConfig.withEngineType(engineType))
+                        preferredSttEngineType = engineType
+                        // An explicit choice replaces any automatic fallback.
+                        meetingSttEngineOverride = engineType
+                        persistMeetingSttEngine(requestedMeetingId, engineType)
+                        if (isCurrentMeeting(requestedMeetingId)) {
+                            _uiState.update {
+                                it.copy(
+                                    sttEngineType = engineType,
+                                    sttEngineLabel = engineType.displayName,
+                                    isSwitchingSttEngine = false,
+                                    sttSwitchStatus = "",
+                                    transcriptPreviewMode = if (isCurrentMeetingRecording) {
+                                        "${engineType.displayName}实时预览"
+                                    } else {
+                                        it.transcriptPreviewMode
+                                    },
+                                    error = null
+                                )
+                            }
+                        }
+                    },
+                    onFailure = { error ->
+                        if (isCurrentMeeting(requestedMeetingId)) {
+                            _uiState.update {
+                                it.copy(
+                                    isSwitchingSttEngine = false,
+                                    sttSwitchStatus = "",
+                                    error = "识别引擎切换失败: ${error.message}"
+                                )
+                            }
+                        }
+                    }
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                if (isCurrentMeeting(requestedMeetingId)) {
+                    _uiState.update { it.copy(error = "识别方式未能保存，请重试") }
+                }
+            } finally {
+                if (isCurrentMeeting(requestedMeetingId)) {
+                    _uiState.update { it.copy(isSwitchingSttEngine = false, sttSwitchStatus = "") }
+                }
+            }
         }
     }
 

@@ -150,7 +150,8 @@ class StreamingSttClient internal constructor(
         onError: (String) -> Unit,
         onProviderFailure: (StreamingSttProvider, String) -> Unit = { _, _ -> },
         connectionReady: CompletableDeferred<Unit>? = null,
-        preserveAudioBuffer: Boolean = false
+        preserveAudioBuffer: Boolean = false,
+        initiallyPaused: Boolean = false
     ) {
         // A provider switch reuses the same meeting and should keep its
         // speaker labels. A completed meeting (or a different meeting) starts
@@ -182,7 +183,7 @@ class StreamingSttClient internal constructor(
         }
         serverSessionId = null
         serverReady = false
-        audioInputPaused = false
+        audioInputPaused = initiallyPaused
         localRecoveryDeadlineScheduled = false
         localRecoveryEpoch.incrementAndGet()
         providerFailureGeneration.set(-1)
@@ -646,7 +647,7 @@ class StreamingSttClient internal constructor(
     ): Result<Unit> {
         val normalizedEndpoint = nextEndpoint.trim().trimEnd('/')
         require(normalizedEndpoint.isNotBlank()) { "STT 服务地址未配置" }
-        if (!forceReconnect && normalizedEndpoint == endpoint.trim().trimEnd('/')) {
+        if (!forceReconnect && isConnected && normalizedEndpoint == endpoint.trim().trimEnd('/')) {
             return switchProvider(provider)
         }
 
@@ -657,6 +658,7 @@ class StreamingSttClient internal constructor(
             val activeMeetingId = meetingId
             val activeApiToken = apiTokenOverride?.takeIf { it.isNotBlank() } ?: apiToken
             val activeLanguage = language
+            val wasPaused = audioInputPaused
             val providerFailureCallback = onProviderFailureCallback
             require(activeMeetingId.isNotBlank()) { "实时预览会话无效" }
 
@@ -678,7 +680,8 @@ class StreamingSttClient internal constructor(
                 // A provider switch closes the old socket, but PCM queued while
                 // it is closing still belongs to this meeting and must be sent
                 // to the new socket after its handshake.
-                preserveAudioBuffer = true
+                preserveAudioBuffer = true,
+                initiallyPaused = wasPaused
             )
             try {
                 withTimeout(BuildConfig.STT_STREAM_SWITCH_TIMEOUT_SECONDS * 1_000L) {
@@ -687,7 +690,9 @@ class StreamingSttClient internal constructor(
             } catch (error: Throwable) {
                 // Do not leave a failed cloud socket reconnecting in the
                 // background after the fallback operation has been reported.
-                if (connectionReady === readiness) stop()
+                if (connectionReady === readiness) {
+                    stopInternal(clearSpeakerLabels = false, preserveAudioBuffer = true, preserveSession = true)
+                }
                 throw error
             }
         }
@@ -721,7 +726,8 @@ class StreamingSttClient internal constructor(
 
     private fun stopInternal(
         clearSpeakerLabels: Boolean,
-        preserveAudioBuffer: Boolean = false
+        preserveAudioBuffer: Boolean = false,
+        preserveSession: Boolean = false
     ): String? {
         var finalizationSession = serverSessionId?.takeIf { isConnected && streamCanFinalize }
         sessionGeneration.incrementAndGet()
@@ -733,7 +739,7 @@ class StreamingSttClient internal constructor(
         connectionReady?.cancel()
         connectionReady = null
         serverReady = false
-        audioInputPaused = false
+        if (!preserveSession) audioInputPaused = false
         localRecoveryDeadlineScheduled = false
         localRecoveryEpoch.incrementAndGet()
         if (isConnected) {
@@ -751,15 +757,17 @@ class StreamingSttClient internal constructor(
                 pendingAudioBytes = 0
             }
         }
-        onPartialTextCallback = null
-        onStatusCallback = null
-        onErrorCallback = null
-        onProviderFailureCallback = null
-        apiToken = null
-        meetingId = ""
-        streamProvider = StreamingSttProvider.LOCAL
-        language = STTLanguage.CHINESE
-        contextHint = ""
+        if (!preserveSession) {
+            onPartialTextCallback = null
+            onStatusCallback = null
+            onErrorCallback = null
+            onProviderFailureCallback = null
+            apiToken = null
+            meetingId = ""
+            streamProvider = StreamingSttProvider.LOCAL
+            language = STTLanguage.CHINESE
+            contextHint = ""
+        }
         authorizationRejected = false
         serverSessionId = null
         streamCanFinalize = false

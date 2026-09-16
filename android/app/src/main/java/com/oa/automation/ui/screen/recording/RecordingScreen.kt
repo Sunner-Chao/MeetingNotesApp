@@ -337,6 +337,7 @@ fun RecordingScreen(
 
     LaunchedEffect(meetingId) {
         viewModel.loadMeeting(meetingId)
+        viewModel.testLocalSttAvailability()
     }
 
     LaunchedEffect(viewModel) {
@@ -476,6 +477,7 @@ fun RecordingScreen(
         onTemplateWorkflowSeen = viewModel::markTemplateWorkflowSeen,
         onCustomTemplateLayoutChange = viewModel::updateCustomTemplateLayout,
         onSttEngineSelected = viewModel::switchSttEngine,
+        onTestLocalStt = viewModel::testLocalSttAvailability,
         onSttLanguageSelected = viewModel::switchSttLanguage,
         onStartRecording = ::startRecordingWithPermission,
         onTogglePause = viewModel::togglePauseRecording,
@@ -1147,11 +1149,14 @@ internal fun RuntimeServiceSwitcher(
     sttLanguage: STTLanguage,
     isSwitchingStt: Boolean,
     isSwitchingLanguage: Boolean,
+    isTestingLocalStt: Boolean,
+    localSttAvailable: Boolean?,
+    sttSwitchStatus: String,
     onSttEngineSelected: (STTEngineType) -> Unit,
     onSttLanguageSelected: (STTLanguage) -> Unit
 ) {
     var sttMenuExpanded by remember { mutableStateOf(false) }
-    val liteEdition = ProductEdition.current == ProductEdition.LIGHT_ENJOY
+    val liteEdition = !ProductEdition.current.supportsLocalStt
     val displayedEngine = if (liteEdition) STTEngineType.TENCENT_HYBRID else sttEngineType
     val sttLabel = displayedEngine.displayName
 
@@ -1212,6 +1217,19 @@ internal fun RuntimeServiceSwitcher(
                         }
                     }
                 }
+            }
+            if (ProductEdition.current.supportsLocalStt) {
+                Text(
+                    text = sttSwitchStatus.ifBlank {
+                        when {
+                            isTestingLocalStt -> "正在检测本地模型"
+                            localSttAvailable == true -> "本地 V100 可用"
+                            localSttAvailable == false -> "本地 V100 暂不可用"
+                            else -> "选择本地时自动检测可用性"
+                        }
+                    },
+                    style = MaterialTheme.typography.labelSmall
+                )
             }
             Box(modifier = Modifier.fillMaxWidth()) {
                 OutlinedButton(

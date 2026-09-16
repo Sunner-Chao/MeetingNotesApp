@@ -7,7 +7,7 @@ enum class ProductEdition {
     LIGHT_ENJOY,
     SOCIAL;
 
-    /** Lite ships with the managed Tencent route only. */
+    /** Deployment can temporarily disable the local V100 route in Lite. */
     val supportsLocalStt: Boolean
         get() = this != LIGHT_ENJOY || BuildConfig.LITE_LOCAL_STT_ENABLED
 

@@ -294,6 +294,7 @@ internal fun RecordingReferenceScaffold(
     onTemplateWorkflowSeen: (String) -> Unit,
     onCustomTemplateLayoutChange: (CustomTemplateLayout) -> Unit,
     onSttEngineSelected: (STTEngineType) -> Unit,
+    onTestLocalStt: () -> Unit,
     onSttLanguageSelected: (STTLanguage) -> Unit,
     onStartRecording: () -> Unit,
     onTogglePause: () -> Unit,
@@ -400,6 +401,9 @@ internal fun RecordingReferenceScaffold(
                 sttLanguage = uiState.sttLanguage,
                 isSwitchingStt = uiState.isSwitchingSttEngine,
                 isSwitchingLanguage = uiState.isSwitchingSttLanguage,
+                isTestingLocalStt = uiState.isTestingLocalStt,
+                localSttAvailable = uiState.localSttAvailable,
+                sttSwitchStatus = uiState.sttSwitchStatus,
                 onSttEngineSelected = onSttEngineSelected,
                 onSttLanguageSelected = onSttLanguageSelected
             )
@@ -496,6 +500,7 @@ internal fun RecordingReferenceScaffold(
                     onManageImages = { imageDialogVisible = true },
                     onShareAudio = onShareAudio,
                     onSttEngineSelected = onSttEngineSelected,
+                    onTestLocalStt = onTestLocalStt,
                     onSelectTemplate = onSelectTemplate,
                     templateWorkflowReducedMotion = templateWorkflowReducedMotion,
                     templateWorkflowSeen = templateWorkflowSeen,

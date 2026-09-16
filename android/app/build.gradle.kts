@@ -194,12 +194,10 @@ val productEdition = providers.gradleProperty("meetingnotesProductEdition")
     .trim()
     .lowercase()
     .also { require(it in setOf("light-enjoy", "social")) { "Unsupported product edition: $it" } }
-// Lite local STT remains an internal preview capability. Keep the switch
-// build-time configurable so it can be reopened later without redesigning the
-// product surface; production defaults to disabled.
+// V100 is now available to both editions. Keep a deployment kill switch.
 val liteLocalSttEnabled = providers.gradleProperty("meetingnotesLiteLocalSttEnabled")
     .orElse(providers.environmentVariable("MEETINGNOTES_LITE_LOCAL_STT_ENABLED"))
-    .orElse("false")
+    .orElse("true")
     .get()
     .trim()
     .lowercase()
@@ -404,7 +402,7 @@ android.defaultConfig {
         ?: ""
     val sttModel = claudeEnv["MEETINGNOTES_STT_MODEL"]
         ?.takeIf { it.isNotBlank() }
-        ?: "large-v3-turbo"
+        ?: "paraformer-large-online"
     val sttCloudEndpoint = claudeEnv["MEETINGNOTES_STT_CLOUD_ENDPOINT"]
         ?.takeIf { it.isNotBlank() }
         ?: "https://118.25.43.185/stt-cloud"

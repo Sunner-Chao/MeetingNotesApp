@@ -11,7 +11,9 @@ import com.oa.automation.BuildConfig
  * - P2: Zhiwu enhanced cloud model
  */
 enum class STTEngineType(val displayName: String, val defaultModel: String) {
-    FASTER_WHISPER("本地智悟通用模型", "large-v3-turbo"),
+    // Keep the enum name for persisted-meeting compatibility. The production
+    // local route is now the V100 FunASR Paraformer service.
+    FASTER_WHISPER("本地 V100 · FunASR", "paraformer-large-online"),
     TENCENT_HYBRID("云端智悟增强模型", "tencent-standard")
 }
 

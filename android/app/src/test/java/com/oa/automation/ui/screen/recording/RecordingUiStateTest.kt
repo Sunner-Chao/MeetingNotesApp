@@ -492,6 +492,7 @@ class RecordingUiStateTest {
     fun `final transcription does not block the next recording`() {
         assertTrue(isRecordingActionEnabled(RecordingUiState(isTranscribing = true)))
         assertFalse(isRecordingActionEnabled(RecordingUiState(isRecordingActionPending = true)))
+        assertFalse(isRecordingActionEnabled(RecordingUiState(isSwitchingSttEngine = true)))
         assertFalse(isRecordingActionEnabled(RecordingUiState(isFinalizingRecording = true)))
         assertFalse(isRecordingActionEnabled(RecordingUiState(isJourneyActionPending = true)))
         assertFalse(isRecordingActionEnabled(RecordingUiState(isGeneratingReport = true)))
