@@ -208,7 +208,8 @@ internal fun SiriRecorderContent(
     onCancelReport: () -> Unit,
     onDismissError: () -> Unit
 ) {
-    val palette = if (com.oa.automation.ui.theme.LocalAppIsDarkTheme.current) {
+    val litePaper = ProductEdition.current == ProductEdition.LIGHT_ENJOY
+    val palette = if (litePaper) LiteRecorderPalette else if (com.oa.automation.ui.theme.LocalAppIsDarkTheme.current) {
         SiriDarkPalette
     } else {
         SiriLightPalette
@@ -261,17 +262,18 @@ internal fun SiriRecorderContent(
     }
 
     val doodleSkin = rememberDoodleSkin(isDark)
+    if (litePaper) LiteRecorderSystemBars()
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Brush.verticalGradient(palette.background))
     ) {
-        SiriAmbientBackdrop(palette = palette, modifier = Modifier.matchParentSize())
+        if (!litePaper) SiriAmbientBackdrop(palette = palette, modifier = Modifier.matchParentSize())
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(start = 26.dp, end = 22.dp, top = 4.dp, bottom = 4.dp)
+                .padding(start = if (litePaper) 14.dp else 26.dp, end = if (litePaper) 12.dp else 22.dp, top = 4.dp, bottom = 4.dp)
         ) {
             SiriTopBar(
                 palette = palette,
@@ -315,6 +317,7 @@ internal fun SiriRecorderContent(
             Spacer(Modifier.height(10.dp))
             SiriTranscriptCard(
                 transcript = uiState.liveTranscript,
+                transcriptTimeline = uiState.transcriptTimeline,
                 markerAnchors = uiState.recordingMarkerAnchors,
                 attachments = uiState.attachments,
                 hasActivePhotoMarker = uiState.activePhotoMarker != null,
@@ -370,7 +373,21 @@ internal fun SiriRecorderContent(
             )
             Spacer(Modifier.height(2.dp))
         }
-        TemplateBookmarkRail(
+        if (litePaper) LiteTemplateBookmarkRail(
+            templates = uiState.presetTemplates,
+            selectedName = uiState.selectedRecordingTemplateName.orEmpty(),
+            onSelect = onSelectTemplate,
+            reducedMotion = templateWorkflowReducedMotion,
+            // Start exactly where the torn-paper canvas begins so the coloured
+            // bookmarks sit flush with its left edge and overlap its paper lip.
+            modifier = Modifier
+                .align(Alignment.CenterStart)
+                .fillMaxHeight()
+                // Match the actual torn-paper edge, not the card's rectangular
+                // layout bounds. This keeps the first/last bookmark flush with
+                // the paper's visible top and bottom.
+                .padding(top = 62.dp + LitePaperTornInset, bottom = 120.dp + LitePaperTornInset)
+        ) else TemplateBookmarkRail(
             templates = uiState.presetTemplates,
             selectedTemplateName = uiState.selectedRecordingTemplateName.orEmpty(),
             palette = palette,
@@ -421,19 +438,22 @@ private fun SiriTopBar(
     onWithdrawPublishedPost: () -> Unit
 ) {
     val skin = rememberDoodleSkin(com.oa.automation.ui.theme.LocalAppIsDarkTheme.current)
+    val litePaper = ProductEdition.current == ProductEdition.LIGHT_ENJOY
     Row(
-        modifier = Modifier.fillMaxWidth().height(40.dp),
+        modifier = Modifier.fillMaxWidth().height(if (litePaper) 48.dp else 40.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        DoodleIconButton(
+        if (litePaper) IconButton(onClick = onNavigateBack) {
+            Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回上一页", tint = Color(0xFFF0EEE8))
+        } else DoodleIconButton(
             icon = Icons.AutoMirrored.Filled.ArrowBack,
             contentDescription = "返回上一页",
             onClick = onNavigateBack,
             skin = skin,
             size = 40.dp
         )
-        Box(
+        if (litePaper) LiteRecorderTimer(durationSeconds, isRecording) else Box(
             modifier = Modifier
                 .height(36.dp)
                 .clickable(
@@ -476,7 +496,9 @@ private fun SiriTopBar(
             }
         }
         Box {
-            DoodleIconButton(
+            if (litePaper) IconButton(onClick = { onMenuExpandedChange(true) }) {
+                Icon(Icons.Default.MoreHoriz, "更多选项", tint = Color(0xFFF0EEE8))
+            } else DoodleIconButton(
                 icon = Icons.Default.MoreHoriz,
                 contentDescription = "更多选项",
                 onClick = { onMenuExpandedChange(true) },
@@ -1051,6 +1073,7 @@ private fun buildMarkerAwareTranscriptText(
 @Composable
 private fun SiriTranscriptCard(
     transcript: String,
+    transcriptTimeline: List<TranscriptTimelineRow> = emptyList(),
     markerAnchors: List<String>,
     attachments: List<MeetingAttachment>,
     hasActivePhotoMarker: Boolean,
@@ -1097,12 +1120,11 @@ private fun SiriTranscriptCard(
         scrollState.scrollTo(scrollState.maxValue)
     }
     val skin = rememberDoodleSkin(isDark)
-    DoodleCard(
+    RecorderTranscriptSurface(
         skin = skin,
-        modifier = modifier.fillMaxWidth(),
-        filled = false
+        modifier = modifier.fillMaxWidth()
     ) {
-        Column(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 14.dp)) {
+        Column(modifier = Modifier.fillMaxSize().padding(start = if (ProductEdition.current == ProductEdition.LIGHT_ENJOY) 24.dp else 16.dp, end = 16.dp, top = 14.dp, bottom = 14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 SiriSignalGlyph(palette = palette, active = isRecording, modifier = Modifier.size(22.dp, 24.dp))
                 Spacer(Modifier.width(8.dp))
@@ -1200,7 +1222,20 @@ private fun SiriTranscriptCard(
                 !isTranscribing &&
                 !isGeneratingReport &&
                 !workflowTemplateName.isNullOrBlank()
-            if (showWorkflowDoodle) {
+            if (ProductEdition.current == ProductEdition.LIGHT_ENJOY && showWorkflowDoodle) {
+                LaunchedEffect(workflowTemplateName) {
+                    if (workflowTemplateName !in workflowSeen) onWorkflowViewed(workflowTemplateName.orEmpty())
+                }
+                if (templateMoodFor(workflowTemplateName.orEmpty()).family == TemplateMoodFamily.CUSTOM) {
+                    Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+                        Text("自定义会议", color = palette.text, style = MaterialTheme.typography.titleLarge)
+                        Spacer(Modifier.height(12.dp))
+                        CustomModuleEditor(customTemplateLayout, templateMoodFor("自定义会议"), onCustomTemplateLayoutChange)
+                    }
+                } else {
+                    LiteWorkflowIllustration(workflowTemplateName, Modifier.fillMaxWidth().weight(1f))
+                }
+            } else if (showWorkflowDoodle) {
                 TemplateWorkflowDoodlePanel(
                     templateName = workflowTemplateName.orEmpty(),
                     hasBeenSeen = workflowTemplateName.orEmpty() in workflowSeen,
@@ -1227,6 +1262,48 @@ private fun SiriTranscriptCard(
                         color = palette.muted.copy(alpha = 0.84f),
                         style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp, lineHeight = 23.sp)
                     )
+                }
+            } else if (transcriptTimeline.isNotEmpty()) {
+                SelectionContainer(
+                    modifier = Modifier.fillMaxWidth().weight(1f)
+                ) {
+                    Column(
+                        modifier = Modifier.fillMaxSize().verticalScroll(scrollState),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        transcriptTimeline.forEach { row ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.Top
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .width(3.dp)
+                                        .height(62.dp)
+                                        .clip(RoundedCornerShape(2.dp))
+                                        .background(if (row.isPreview) palette.muted else palette.cyan)
+                                )
+                                Spacer(Modifier.width(10.dp))
+                                Column(Modifier.weight(1f)) {
+                                    val time = row.startTimeMs?.let(::transcriptTimestamp)
+                                    if (time != null) {
+                                        Text(time, color = palette.cyan, style = MaterialTheme.typography.labelMedium)
+                                        Spacer(Modifier.height(2.dp))
+                                    }
+                                    if (!row.speaker.isNullOrBlank()) {
+                                        Text(row.speaker, color = palette.muted, style = MaterialTheme.typography.labelSmall)
+                                    }
+                                    Text(
+                                        row.text,
+                                        color = palette.text,
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        fontSize = 16.sp,
+                                        lineHeight = 26.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             } else {
                 SelectionContainer(
@@ -1263,6 +1340,13 @@ private fun LocalCloudSttSegmentedControl(
     enabled: Boolean,
     onSttEngineSelected: (STTEngineType) -> Unit
 ) {
+    if (ProductEdition.current == ProductEdition.LIGHT_ENJOY && !ProductEdition.current.supportsLocalStt) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+            Icon(Icons.Default.Cloud, contentDescription = null, tint = LiteRecorderPalette.text, modifier = Modifier.size(21.dp))
+            Text("云端", color = LiteRecorderPalette.text, fontSize = 15.sp)
+        }
+        return
+    }
     if (!ProductEdition.current.supportsLocalStt) {
         // Lite has one managed route; keep the status visible without exposing
         // a control that cannot be used.
@@ -1546,6 +1630,14 @@ private fun SiriBottomControls(
     onGenerateReport: () -> Unit,
     onCancelReport: () -> Unit
 ) {
+    if (ProductEdition.current == ProductEdition.LIGHT_ENJOY) {
+        LiteRecorderActions(
+            isRecording, isPaused, actionEnabled, hasSelectedTemplate, hasActivePhotoMarker,
+            canGenerate, isTranscribing, isGeneratingReport,
+            onAddMarker, onMainAction, onGenerateReport, onCancelReport
+        )
+        return
+    }
     // Keep the control tappable even before a template is selected. The
     // ViewModel returns a concise selection hint; a disabled control otherwise
     // looks like a broken recorder to first-time users.

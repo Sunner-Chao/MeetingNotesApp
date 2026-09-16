@@ -1557,12 +1557,12 @@ class TencentRealtimeTranscriptState:
                 "end": end_ms / 1000.0,
                 "text": text,
                 "speaker": speaker,
+                "committed": slice_type == 2,
             }
             if slice_type == 2:
                 if text:
                     self.stable_sentences[index] = text
-                    if speaker is not None:
-                        self.stable_segments[index] = segment
+                    self.stable_segments[index] = segment
                 if self.preview_index == index:
                     self.preview_index = None
                     self.preview_text = ""
@@ -1570,7 +1570,7 @@ class TencentRealtimeTranscriptState:
             elif slice_type in {0, 1}:
                 self.preview_index = index
                 self.preview_text = text
-                self.preview_segment = segment if text and speaker is not None else None
+                self.preview_segment = segment if text else None
 
         self.final = self.final or int(payload.get("final", 0)) == 1
         committed = normalize_preview_text(
@@ -1580,12 +1580,12 @@ class TencentRealtimeTranscriptState:
 
     def speaker_segments(self) -> list[dict[str, Any]]:
         segments = [
-            segment
+            {key: segment[key] for key in ("start", "end", "text", "speaker")}
             for index, segment in sorted(self.stable_segments.items())
             if str(segment.get("text") or "").strip()
         ]
         if self.preview_segment is not None:
-            segments.append(self.preview_segment)
+            segments.append({key: self.preview_segment[key] for key in ("start", "end", "text", "speaker")})
         return segments
 
 

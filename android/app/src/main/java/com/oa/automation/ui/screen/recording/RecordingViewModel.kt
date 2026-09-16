@@ -114,6 +114,7 @@ data class RecordingUiState(
     val recordingDuration: Long = 0,
     val audioLevel: Float = 0f,
     val liveTranscript: String = "",
+    val transcriptTimeline: List<TranscriptTimelineRow> = emptyList(),
     val isTranscribing: Boolean = false,
     val transcriptionProgressPercent: Int? = null,
     val transcriptionProgressStage: String = "",
@@ -501,6 +502,7 @@ internal fun RecordingUiState.resetForMeetingChange(): RecordingUiState = copy(
     recordingDuration = 0,
     audioLevel = 0f,
     liveTranscript = "",
+    transcriptTimeline = emptyList(),
     isTranscribing = false,
     transcriptionProgressPercent = null,
     transcriptionProgressStage = "",
@@ -638,6 +640,8 @@ class RecordingViewModel(
     // failed recovery remains visible to the user and can be retried manually.
     private val recoveredTranscriptionMeetingIds = mutableSetOf<String>()
     private var persistedDurationSeconds: Long = 0L
+    private var savedTimelineRows: List<TranscriptTimelineRow> = emptyList()
+    private var liveTimelineOffsetMs: Long = 0L
     private var preferredSttEngineType: STTEngineType = STTEngineType.FASTER_WHISPER
     private var localSttTestJob: Job? = null
 
@@ -823,6 +827,8 @@ class RecordingViewModel(
         preservedStreamingText = ""
         currentStreamingSessionId = ""
         existingTranscriptText = ""
+        savedTimelineRows = emptyList()
+        liveTimelineOffsetMs = 0L
     }
 
     private fun synchronizeRecordingTimer(session: RecordingSessionState) {
@@ -1033,6 +1039,8 @@ class RecordingViewModel(
                 }
                 recordingMarkerRecords = recordingMarkers
                 existingTranscriptText = transcriptText
+                savedTimelineRows = transcripts.canonicalMeetingTranscripts().toTimelineRows()
+                liveTimelineOffsetMs = meeting.durationMs
                 updateState {
                     // A user can tap a template while this asynchronous load is
                     // still resolving. Preserve that newer interaction instead
@@ -1077,6 +1085,9 @@ class RecordingViewModel(
                             isGlobalRecording && it.liveTranscript.isNotBlank() -> it.liveTranscript
                             else -> transcriptText
                         },
+                        transcriptTimeline = savedTimelineRows + if (isGlobalRecording) {
+                            streamingTimelineRows(recordingState.transcriptSegments, liveTimelineOffsetMs)
+                        } else emptyList(),
                         recordingMarkers = recordingMarkers
                             .map { marker -> marker.timestampMs / 1_000L }
                             .distinct(),
@@ -1622,6 +1633,8 @@ class RecordingViewModel(
         val studyJourney = isStudyJourneyState(_uiState.value)
         val currentTranscript = SimplifiedChineseText.normalize(_uiState.value.liveTranscript)
         existingTranscriptText = currentTranscript
+        savedTimelineRows = _uiState.value.transcriptTimeline
+        liveTimelineOffsetMs = persistedDurationSeconds * 1_000L
         latestStreamingText = ""
         committedStreamingText = ""
         previewStreamingText = ""
@@ -3044,6 +3057,7 @@ class RecordingViewModel(
                 isFinalizingRecording = false,
                 hasRecording = existingTranscriptText.isNotBlank(),
                 liveTranscript = existingTranscriptText,
+                transcriptTimeline = savedTimelineRows,
                 isTranscribing = false,
                 transcriptionProgressPercent = null,
                 transcriptionProgressStage = "",
@@ -4026,6 +4040,11 @@ class RecordingViewModel(
     }
 
     private fun updateStreamingPreview(update: StreamingTranscriptUpdate) {
+        val session = recordingController.state.value
+        if (session.meetingId == currentMeetingId) {
+            val rows = savedTimelineRows + streamingTimelineRows(session.transcriptSegments, liveTimelineOffsetMs)
+            _uiState.update { it.copy(transcriptTimeline = rows) }
+        }
         val text = SimplifiedChineseText.normalize(update.text).normalizePreviewText()
         val committedText = SimplifiedChineseText.normalize(update.committedText).normalizePreviewText()
         val previewText = SimplifiedChineseText.normalize(update.previewText).normalizePreviewText()

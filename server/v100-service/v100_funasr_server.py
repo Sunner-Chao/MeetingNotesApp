@@ -569,9 +569,14 @@ async def stream(websocket: WebSocket) -> None:
                                     result = offline_model.generate(input=samples, batch_size_s=60, sentence_timestamp=True, disable_pbar=True)
                                 return build_file_result(samples, result, round(len(samples) / 16))
                             finalized = await asyncio.get_running_loop().run_in_executor(offline_executor, finalize_stream)
-                            if finalized["diarization"].get("active"):
+                            if finalized.get("text"):
+                                # Return sentence timestamps even when the
+                                # diarizer cannot confidently assign a speaker.
+                                # Android can render the timeline immediately;
+                                # speaker labels remain opt-in and evidence-based.
                                 final_text = finalized["text"]
                                 final_segments = finalized.get("segments") or []
+                            if finalized["diarization"].get("active"):
                                 diarization.update(finalized["diarization"])
                         await websocket.send_json({"type": "final", "text": final_text,
                                                    "segments": final_segments, "diarization": diarization,

@@ -340,16 +340,15 @@ class RecordingService : Service() {
             // and continue report generation after signing in.
             val segmentOffsetMs = meeting.durationMs.coerceAtLeast(0L)
             val structuredSegments = stopped.speakerSegments
-                .toPersistableSpeakerSegments(stopped.durationMs)
+                .toPersistableTranscriptSegments(stopped.durationMs)
             if (structuredSegments.isNotEmpty()) {
                 structuredSegments.forEach { segment ->
-                    val speakerId = segment.speaker ?: return@forEach
                     meetingRepository.saveTranscript(
                         Transcript(
                             id = UUID.randomUUID().toString(),
                             meetingId = stopped.meetingId,
                             journeyStageId = if (autoGenerateReport) journeyStageId else null,
-                            speakerName = "说话人 ${speakerId + 1}",
+                            speakerName = segment.speaker?.let { "说话人 ${it + 1}" },
                             content = segment.text,
                             startTimeMs = segmentOffsetMs + (segment.startSeconds * 1_000).toLong(),
                             endTimeMs = segmentOffsetMs + (segment.endSeconds * 1_000).toLong()
@@ -529,28 +528,12 @@ class RecordingService : Service() {
     }
 }
 
-private fun List<StreamingTranscriptSegment>.toPersistableSpeakerSegments(
+internal fun List<StreamingTranscriptSegment>.toPersistableTranscriptSegments(
     recordingDurationMs: Long
 ): List<StreamingTranscriptSegment> =
     asSequence()
-        .filter { it.speaker != null && it.text.isNotBlank() }
+        .filter { it.text.isNotBlank() }
         .sortedBy { it.startSeconds }
-        .fold(mutableListOf<StreamingTranscriptSegment>()) { grouped, next ->
-            val previous = grouped.lastOrNull()
-            if (
-                previous != null &&
-                previous.speaker == next.speaker &&
-                next.startSeconds - previous.endSeconds <= 1.5f
-            ) {
-                grouped[grouped.lastIndex] = previous.copy(
-                    endSeconds = maxOf(previous.endSeconds, next.endSeconds),
-                    text = mergeTranscriptContent(previous.text, next.text)
-                )
-            } else {
-                grouped += next
-            }
-            grouped
-        }
         .map { segment ->
             segment.copy(
                 startSeconds = segment.startSeconds.coerceAtLeast(0f),
@@ -562,8 +545,3 @@ private fun List<StreamingTranscriptSegment>.toPersistableSpeakerSegments(
         .filter { it.endSeconds > it.startSeconds }
         .toList()
 
-private fun mergeTranscriptContent(existing: String, incoming: String): String = when {
-    existing.contains(incoming) -> existing
-    incoming.contains(existing) -> incoming
-    else -> "$existing $incoming".trim()
-}

@@ -78,6 +78,7 @@ data class RecordingSessionState(
     val audioLevel: Float = 0f,
     val streamUpdate: StreamingTranscriptUpdate? = null,
     val accumulatedTranscript: String = "",
+    val transcriptSegments: List<StreamingTranscriptSegment> = emptyList(),
     val status: String = "流式预览",
     val realtimeSttRoute: RealtimeSttRouteState = RealtimeSttRouteState.IDLE,
     /**
@@ -274,6 +275,7 @@ class RecordingSessionController(
                     speakerDiarization = sttConfig.speakerDiarizationEnabled,
                     onPartialText = { update ->
                         val accumulatedText = transcriptAccumulator.update(update)
+                        val transcriptSegments = transcriptAccumulator.snapshotSegments()
                         _state.update {
                             val route = when (it.realtimeSttRoute) {
                                 RealtimeSttRouteState.SWITCHING_TO_CLOUD ->
@@ -288,6 +290,7 @@ class RecordingSessionController(
                             it.copy(
                                 streamUpdate = update,
                                 accumulatedTranscript = accumulatedText,
+                                transcriptSegments = transcriptSegments,
                                 realtimeSttRoute = route,
                                 status = "实时预览（可修订）"
                             )

@@ -13,6 +13,7 @@ internal class StreamingTranscriptAccumulator {
     private var currentSessionDurationSeconds = 0f
     private val preservedSegments = mutableListOf<StreamingTranscriptSegment>()
     private val currentSegments = mutableListOf<StreamingTranscriptSegment>()
+    private var audioTimeline = StreamingAudioTimeline()
 
     @Synchronized
     fun reset() {
@@ -25,6 +26,7 @@ internal class StreamingTranscriptAccumulator {
         currentSessionDurationSeconds = 0f
         preservedSegments.clear()
         currentSegments.clear()
+        audioTimeline = StreamingAudioTimeline()
     }
 
     @Synchronized
@@ -35,7 +37,7 @@ internal class StreamingTranscriptAccumulator {
         val incomingSessionId = update.sessionId.trim()
         val incomingTimelineOffsetSeconds = update.timelineOffsetSeconds.coerceAtLeast(0f)
         val incomingSessionText = sessionText(incomingText, incomingCommitted, incomingPreview)
-        val incomingSegments = update.segments
+        var incomingSegments = update.segments
             .asSequence()
             .mapNotNull(::normalizeSegment)
             .toList()
@@ -49,6 +51,7 @@ internal class StreamingTranscriptAccumulator {
             preservedText = mergeStreamingTranscriptText(preservedText, previousSessionText)
             preservedSegments += currentSegments
             currentSegments.clear()
+            audioTimeline = StreamingAudioTimeline()
             currentSessionOffsetSeconds = maxOf(
                 currentSessionOffsetSeconds + currentSessionDurationSeconds,
                 preservedSegments.maxOfOrNull { it.endSeconds } ?: 0f,
@@ -73,6 +76,9 @@ internal class StreamingTranscriptAccumulator {
         latestText = incomingText
         committedText = incomingCommitted
         previewText = incomingPreview
+        if (incomingSegments.isEmpty() && update.audioEndSeconds != null) {
+            incomingSegments = audioTimeline.update(incomingSessionText, update.audioEndSeconds)
+        }
         if (incomingSegments.isNotEmpty()) {
             currentSessionDurationSeconds = maxOf(
                 currentSessionDurationSeconds,
@@ -94,7 +100,7 @@ internal class StreamingTranscriptAccumulator {
     @Synchronized
     fun snapshot(): String = snapshotLocked()
 
-    /** Speaker rows are persisted independently of the revisable display text. */
+    /** Timed rows are retained even when speaker attribution is unavailable. */
     @Synchronized
     fun snapshotSegments(): List<StreamingTranscriptSegment> =
         mergeAdjacentSegments(preservedSegments + currentSegments)
@@ -107,7 +113,7 @@ internal class StreamingTranscriptAccumulator {
 
 private fun normalizeSegment(segment: StreamingTranscriptSegment): StreamingTranscriptSegment? {
     val text = normalizeStreamingTranscript(segment.text)
-    if (text.isBlank() || segment.speaker == null) return null
+    if (text.isBlank() || !segment.startSeconds.isFinite() || !segment.endSeconds.isFinite()) return null
     val start = segment.startSeconds.coerceAtLeast(0f)
     val end = segment.endSeconds.coerceAtLeast(start)
     return segment.copy(startSeconds = start, endSeconds = end, text = text)
@@ -117,12 +123,23 @@ private fun mergeSegments(
     target: MutableList<StreamingTranscriptSegment>,
     incoming: List<StreamingTranscriptSegment>
 ) {
-    incoming.forEach { next ->
-        target.removeAll { existing -> shouldReplaceSegment(existing, next) }
-        target += next
+    val sortedIncoming = incoming.sortedBy { it.startSeconds }
+    var cursor = 0
+    val retained = target.filter { existing ->
+        while (cursor < sortedIncoming.size && sortedIncoming[cursor].endSeconds < existing.startSeconds) cursor++
+        var index = cursor
+        var replaced = false
+        while (index < sortedIncoming.size && sortedIncoming[index].startSeconds <= existing.endSeconds) {
+            val next = sortedIncoming[index++]
+            if (existing.startSeconds == next.startSeconds || shouldReplaceSegment(existing, next)) {
+                replaced = true
+                break
+            }
+        }
+        !replaced
     }
-    target.sortBy { it.startSeconds }
-    while (target.size > 160) target.removeAt(0)
+    target.clear()
+    target.addAll((retained + sortedIncoming).sortedBy { it.startSeconds })
 }
 
 private fun shouldReplaceSegment(
@@ -149,6 +166,9 @@ private fun mergeAdjacentSegments(
         if (
             previous != null &&
             previous.speaker == next.speaker &&
+            previous.committed && next.committed &&
+            next.endSeconds - previous.startSeconds <= 12f &&
+            previous.text.length + next.text.length <= 160 &&
             next.startSeconds - previous.endSeconds <= 1.5f
         ) {
             grouped[grouped.lastIndex] = previous.copy(

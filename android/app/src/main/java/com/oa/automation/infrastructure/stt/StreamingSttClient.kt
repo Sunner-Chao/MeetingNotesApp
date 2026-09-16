@@ -334,9 +334,40 @@ class StreamingSttClient internal constructor(
                                         previewText = displayPreview,
                                         sessionId = serverSessionId.orEmpty(),
                                         timelineOffsetSeconds = connectionTimelineOffsetSeconds,
+                                        audioEndSeconds = message.audioEndMs?.div(1_000f),
                                         segments = segments,
                                         diarizationEnabled = message.diarization?.enabled ?: false,
                                         diarizationActive = message.diarization?.active ?: segments.any { it.speaker != null }
+                                    )
+                                )
+                            }
+                        }
+                        "final" -> {
+                            val segments = message.segments.orEmpty().mapNotNull { segment ->
+                                val textValue = SimplifiedChineseText.normalize(segment.text.orEmpty()).trim()
+                                textValue.takeIf { it.isNotBlank() }?.let {
+                                    StreamingTranscriptSegment(
+                                        startSeconds = segment.start?.coerceAtLeast(0f) ?: 0f,
+                                        endSeconds = (segment.end ?: segment.start ?: 0f).coerceAtLeast(0f),
+                                        text = it,
+                                        speaker = normalizeSpeakerId(segment.speaker ?: segment.speakerId),
+                                        committed = true
+                                    )
+                                }
+                            }
+                            val finalText = SimplifiedChineseText.normalize(message.text.orEmpty())
+                            if (finalText.isNotBlank() || segments.isNotEmpty()) {
+                                onPartialText(
+                                    StreamingTranscriptUpdate(
+                                        text = finalText,
+                                        committedText = finalText,
+                                        previewText = "",
+                                        sessionId = serverSessionId.orEmpty(),
+                                        timelineOffsetSeconds = connectionTimelineOffsetSeconds,
+                                        segments = segments,
+                                        diarizationEnabled = message.diarization?.enabled ?: false,
+                                        diarizationActive = message.diarization?.active ?: segments.any { it.speaker != null },
+                                        audioEndSeconds = segments.maxOfOrNull { it.endSeconds }
                                     )
                                 )
                             }
@@ -897,11 +928,13 @@ class StreamingSttClient internal constructor(
         val text: String? = null,
         @SerializedName("committed_text") val committedText: String? = null,
         @SerializedName("preview_text") val previewText: String? = null,
+        @SerializedName("audio_end_ms") val audioEndMs: Float? = null,
         @SerializedName("session_id") val sessionId: String? = null,
         @SerializedName("stream_provider") val streamProvider: String? = null,
         val language: String? = null,
         val message: String? = null,
         val segments: List<StreamSegment>? = null,
+        val finalText: String? = null,
         val diarization: StreamDiarization? = null
     )
 
@@ -947,7 +980,8 @@ data class StreamingTranscriptUpdate(
     val timelineOffsetSeconds: Float = 0f,
     val segments: List<StreamingTranscriptSegment> = emptyList(),
     val diarizationEnabled: Boolean = false,
-    val diarizationActive: Boolean = false
+    val diarizationActive: Boolean = false,
+    val audioEndSeconds: Float? = null
 )
 
 data class StreamingTranscriptSegment(
@@ -964,9 +998,11 @@ private fun formatStreamingSpeakerPreview(segments: List<StreamingTranscriptSegm
         .sortedBy { it.startSeconds }
         .groupByConsecutive { it.speaker }
         .mapNotNull { group ->
-            val speaker = group.first().speaker ?: return@mapNotNull null
+            val speaker = group.first().speaker
             val content = group.joinToString(" ") { it.text }.trim()
-            content.takeIf { it.isNotBlank() }?.let { "说话人 ${speaker + 1}：$it" }
+            content.takeIf { it.isNotBlank() }?.let {
+                if (speaker == null) it else "说话人 ${speaker + 1}：$it"
+            }
         }
         .joinToString("\n")
 }
