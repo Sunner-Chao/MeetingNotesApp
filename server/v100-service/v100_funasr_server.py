@@ -306,7 +306,12 @@ def generate_file(path: Path) -> dict[str, Any]:
     duration_ms = round(len(audio) / 16)
     with torch.inference_mode():
         # Keep sentence boundaries so local diarization can align speakers to text.
-        result = offline_model.generate(input=audio, batch_size_s=60, disable_pbar=True)
+        result = offline_model.generate(
+            input=audio,
+            batch_size_s=60,
+            sentence_timestamp=True,
+            disable_pbar=True,
+        )
     inference_calls += 1
     return build_file_result(audio, result, duration_ms)
 
