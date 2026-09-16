@@ -118,10 +118,12 @@ def load_models() -> None:
         torch.set_num_threads(int(os.getenv("V100_CPU_THREADS", "4")))
         online_model = AutoModel(model=str(ONLINE_MODEL), device=DEVICE, disable_update=True,
                                  disable_pbar=True, disable_log=True)
+        # The shipped Paraformer checkpoint does not expose the timestamp shape
+        # expected by FunASR's VAD wrapper (it raises KeyError('timestamp')).
+        # Keep file transcription reliable by decoding the checkpoint directly;
+        # streaming remains VAD-free and low-latency as before.
         offline_model = AutoModel(model=str(OFFLINE_MODEL), device=FILE_DEVICE, disable_update=True,
-                                  disable_pbar=True, disable_log=True,
-                                  vad_model=str(VAD_MODEL) if VAD_MODEL.exists() else None,
-                                  punc_model=str(PUNC_MODEL) if PUNC_MODEL.exists() else None)
+                                  disable_pbar=True, disable_log=True)
         # Warm up the online graph before advertising readiness.
         online_model.generate(input=np.zeros(CHUNK_SAMPLES, dtype=np.float32), cache={}, is_final=True,
                               chunk_size=[0, CHUNK_MS // 60, 5], encoder_chunk_look_back=4,
@@ -225,17 +227,7 @@ def generate_file(path: Path) -> dict[str, Any]:
     duration_ms = round(len(audio) / 16)
     with torch.inference_mode():
         # Keep sentence boundaries so local diarization can align speakers to text.
-        try:
-            result = offline_model.generate(
-                input=audio,
-                batch_size_s=60,
-                sentence_timestamp=True,
-                disable_pbar=True,
-            )
-        except (KeyError, TypeError):
-            # Older Paraformer checkpoints do not expose timestamp metadata.
-            # Fall back to plain decoding instead of turning the request into 500.
-            result = offline_model.generate(input=audio, batch_size_s=60, disable_pbar=True)
+        result = offline_model.generate(input=audio, batch_size_s=60, disable_pbar=True)
     inference_calls += 1
     return build_file_result(audio, result, duration_ms)
 
