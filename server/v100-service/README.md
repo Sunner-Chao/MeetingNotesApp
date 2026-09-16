@@ -26,3 +26,11 @@ routes proxy to that loopback listener. The tunnel is maintained by the
 `MeetingNotesApp-V100-ReverseTunnel` startup task on the V100 host; the
 service itself is maintained by `MeetingNotesApp-V100-STT`. Do not expose
 the Tailscale address or the relay port directly to the public Internet.
+
+The complete local STT surface now lives on V100. The public operations page is
+`https://lstwin.space/stt-admin/` (HTTP Basic credentials are deployment-only
+`V100_ADMIN_USERNAME` / `V100_ADMIN_TOKEN`), and it proxies to the V100
+`/admin/` page through the same loopback tunnel. `/stt-local/health`,
+`/stt-local/ready`, `/stt-local/transcribe` and
+`/stt-local/ws/transcribe-stream` all terminate at the V100 service. The old
+Windows Faster-Whisper service is no longer part of the production route.

@@ -177,7 +177,7 @@ Windows 本机启动：
 server\stt-service\start-windows-local.bat
 ```
 
-Windows 本机 Caddy 继续承载 `lstwin.space` 的 IPv6 TLS 入口和 Web/API 兼容路径；统一 Web/API/管理路径通过 WireGuard HTTPS 回源到 Backend VPS `10.77.0.1:443`。生产 `/stt-local` 已改由 VPS Nginx 转发到 `127.0.0.1:18889` 的 V100 反向 SSH 隧道，`/stt-cloud` 保持腾讯云兜底。`lstwin.space` 使用 AliDNS DNS-01 自动续期的 Let’s Encrypt 公网证书，证书和 ACME 账户只保存在用户私有目录；管理账号从私有环境文件读取，不写入仓库。`lstwin.cloud` 仍按原链路运行。
+Windows 本机 Caddy 继续承载 `lstwin.space` 的 IPv6 TLS 入口并将 Web/API/STT 管理路径回源到 Backend VPS `10.77.0.1:443`。生产 `/stt-local`、`/health`、`/ready` 与 `/stt-admin/` 均由 VPS Nginx 转发到 `127.0.0.1:18889` 的 V100 反向 SSH 隧道，`/stt-cloud` 保持腾讯云兜底。`lstwin.space` 使用 AliDNS DNS-01 自动续期的 Let’s Encrypt 公网证书，证书和 ACME 账户只保存在用户私有目录；管理账号从私有环境文件读取，不写入仓库。`lstwin.cloud` 仍按原链路运行。
 
 > [!note] Web 入口迁移（2026-08-31）
 > 统一域名已切换：`https://lstwin.space/app/` 为用户端 Web，`https://lstwin.space/admin/` 为 Backend 管理端，`https://lstwin.space/api/` 为同源 API；`https://118.25.43.185/app/` 与 `/web` 保留为兼容入口。Windows Caddy 通过 WireGuard 回源 Web/API，`/health` 和 `/ws/transcribe-stream` 仍保留本地 STT 兼容语义。

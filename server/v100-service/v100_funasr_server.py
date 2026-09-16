@@ -27,7 +27,9 @@ from typing import Any
 
 import numpy as np
 import torch
-from fastapi import FastAPI, File, Header, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.responses import JSONResponse
 import uvicorn
 from funasr import AutoModel
@@ -65,6 +67,9 @@ CHUNK_SAMPLES = 16000 * CHUNK_MS // 1000
 MAX_STREAMS = int(os.getenv("V100_MAX_STREAMS", "2"))
 MAX_UPLOAD_BYTES = int(os.getenv("V100_MAX_UPLOAD_MB", "1024")) * 1024 * 1024
 TEMP_DIR = os.getenv("V100_TEMP_DIR") or None
+WEB_ADMIN_USERNAME = os.getenv("V100_ADMIN_USERNAME", "admin").strip() or "admin"
+WEB_ADMIN_TOKEN = os.getenv("V100_ADMIN_TOKEN", "").strip()
+LOG_DIR = Path(os.getenv("V100_LOG_DIR", str(Path(__file__).resolve().parent / "logs")))
 AUDIO_ENHANCEMENT_ENABLED = os.getenv("V100_AUDIO_ENHANCEMENT_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 DIARIZATION_ENABLED = os.getenv("V100_DIARIZATION_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 DIARIZATION_SEGMENTATION_MODEL = Path(os.getenv(
@@ -88,6 +93,7 @@ inference_calls = 0
 events: deque[dict[str, Any]] = deque(maxlen=200)
 
 app = FastAPI(title="MeetingNotesApp V100 STT", version="v100-paraformer-2")
+web_admin_security = HTTPBasic(auto_error=False)
 online_model: Any = None
 offline_model: Any = None
 model_error = ""
@@ -105,6 +111,48 @@ def require_token(value: str | None) -> str:
     if owner:
         return owner
     raise HTTPException(status_code=401, detail="Missing or invalid bearer token")
+
+
+def require_web_admin(credentials: HTTPBasicCredentials | None = Depends(web_admin_security)) -> str:
+    """Protect the V100 operations page without exposing model credentials."""
+    if not WEB_ADMIN_TOKEN or credentials is None:
+        raise HTTPException(status_code=401, detail="STT admin authentication required",
+                            headers={"WWW-Authenticate": "Basic"})
+    valid_user = hmac.compare_digest(credentials.username, WEB_ADMIN_USERNAME)
+    valid_password = hmac.compare_digest(credentials.password, WEB_ADMIN_TOKEN)
+    if not (valid_user and valid_password):
+        raise HTTPException(status_code=401, detail="Invalid STT admin credentials",
+                            headers={"WWW-Authenticate": "Basic"})
+    return credentials.username
+
+
+def read_log_tail(limit: int = 160) -> dict[str, list[str]]:
+    safe_limit = max(1, min(int(limit), 400))
+    files = sorted(LOG_DIR.glob("*.log"), key=lambda path: path.stat().st_mtime, reverse=True)
+    stdout: list[str] = []
+    stderr: list[str] = []
+    for path in files[:6]:
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        target = stderr if "stderr" in path.name else stdout
+        target.extend(lines[-safe_limit:])
+    return {"stdout": stdout[-safe_limit:], "stderr": stderr[-safe_limit:]}
+
+
+@app.get("/admin", include_in_schema=False)
+async def admin_redirect() -> RedirectResponse:
+    return RedirectResponse(url="/admin/", status_code=307)
+
+
+@app.get("/admin/", include_in_schema=False, dependencies=[Depends(require_web_admin)])
+async def admin_page() -> FileResponse:
+    page = Path(__file__).resolve().with_name("v100_admin.html")
+    if not page.is_file():
+        raise HTTPException(status_code=503, detail="V100 STT management page is unavailable")
+    return FileResponse(page, media_type="text/html; charset=utf-8",
+                        headers={"Cache-Control": "no-store"})
 
 
 def load_models() -> None:
@@ -196,6 +244,37 @@ async def stream_events(limit: int = 20, authorization: str | None = Header(defa
     visible = [{k: v for k, v in event.items() if k != "owner"}
                for event in events if owner == "management" or event["owner"] == owner]
     return {"events": visible[-max(1, min(limit, 100)):], "engine": "funasr-paraformer"}
+
+
+@app.get("/admin/api/status", dependencies=[Depends(require_web_admin)])
+async def admin_status() -> dict[str, Any]:
+    payload = (await health()).body
+    data = json.loads(payload.decode("utf-8"))
+    data["management"] = {
+        "domain": "lstwin.space",
+        "node": "V100",
+        "log_available": LOG_DIR.is_dir(),
+    }
+    return data
+
+
+@app.get("/admin/api/events", dependencies=[Depends(require_web_admin)])
+async def admin_events(limit: int = 40) -> dict[str, Any]:
+    safe_limit = max(1, min(int(limit), 100))
+    return {"events": list(events)[-safe_limit:], "limit": safe_limit, "buffer_limit": events.maxlen}
+
+
+@app.get("/admin/api/logs", dependencies=[Depends(require_web_admin)])
+async def admin_logs(limit: int = 160) -> dict[str, list[str]]:
+    return read_log_tail(limit)
+
+
+@app.post("/admin/api/stt/switch", dependencies=[Depends(require_web_admin)])
+async def admin_switch_stt() -> dict[str, Any]:
+    # V100 uses a fixed FunASR online/offline pair. A runtime Faster-Whisper
+    # switch would unload the GPU models and break the low-latency stream.
+    raise HTTPException(status_code=409,
+                        detail="V100 当前使用 FunASR Paraformer，模型切换请通过部署配置完成")
 
 
 def generate_online(data: bytes, cache: dict[str, Any], final: bool) -> tuple[str, float]:
