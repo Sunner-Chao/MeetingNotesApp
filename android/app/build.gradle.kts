@@ -235,8 +235,8 @@ android {
         minSdk = 26
         targetSdk = 34
         // Social and Light Enjoy are independently installable OTA channels.
-        versionCode = if (productEdition == "light-enjoy") 10283 else 10265
-        versionName = if (productEdition == "light-enjoy") "1.2.83" else "1.2.65"
+        versionCode = if (productEdition == "light-enjoy") 10286 else 10265
+        versionName = if (productEdition == "light-enjoy") "1.2.86" else "1.2.65"
         manifestPlaceholders["appLabel"] = if (productEdition == "social") "智悟本(Pro)" else "智悟本(Lite)"
         manifestPlaceholders["socialAuthScheme"] = socialAuthScheme
         manifestPlaceholders["socialAuthHost"] = socialAuthHost
