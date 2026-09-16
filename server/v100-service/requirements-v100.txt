@@ -10,3 +10,5 @@ soundfile==0.13.1
 sentencepiece==0.1.99
 imageio-ffmpeg==0.6.0
 httpx==0.28.1
+sherpa-onnx==1.13.6
+sherpa-onnx-core==1.13.6

@@ -702,13 +702,21 @@ private fun SttOverviewCard(
             ValuePill(label = "当前引擎", value = displayedEngine.displayName, onClick = onOpenDetail)
             CompactToggleRow(
                 title = "语音增强",
-                subtitle = "默认开启 · 降噪与音量优化",
+                subtitle = if (config.audioEnhancementEnabled) {
+                    "录音时启用降噪与音量优化"
+                } else {
+                    "录音时使用原始采集音频"
+                },
                 checked = config.audioEnhancementEnabled,
                 onChange = onAudioEnhancementChange
             )
             CompactToggleRow(
                 title = "说话人分离",
-                subtitle = "实时按发言人整理",
+                subtitle = if (config.speakerDiarizationEnabled) {
+                    "结束录音后整理为说话人 1、2…"
+                } else {
+                    "关闭发言人标注"
+                },
                 checked = config.speakerDiarizationEnabled,
                 onChange = onSpeakerDiarizationChange
             )
@@ -1074,13 +1082,13 @@ private fun TemplateWorkflowMotionRow(
             }
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "模板流程动效",
+                    text = "减少模板动效",
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold,
                     color = SettingsText
                 )
                 Text(
-                    text = if (reducedMotion) "已减少节点切换动画" else "录音前展示流程节点和轻量动画",
+                    text = if (reducedMotion) "已关闭节点切换动画" else "保留录音前的轻量节点动画",
                     style = MaterialTheme.typography.bodySmall,
                     color = SettingsMutedText,
                     maxLines = 1,

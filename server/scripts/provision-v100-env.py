@@ -29,6 +29,11 @@ def main():
     values = {"ACCOUNT_TOKEN_SECRET": account_secret, "V100_STT_TOKEN": secrets.token_urlsafe(32),
               "V100_MODEL_ROOT": args.model_root, "V100_PORT": "8889", "V100_DEVICE": "cuda:0",
               "V100_FILE_DEVICE": args.file_device, "V100_BIND": args.bind,
+              "V100_DIARIZATION_ENABLED": "1",
+              "V100_DIARIZATION_SEGMENTATION_MODEL": args.model_root + r"\speaker-diarization\sherpa-onnx-pyannote-segmentation-3-0\model.int8.onnx",
+              "V100_DIARIZATION_EMBEDDING_MODEL": args.model_root + r"\speaker-diarization\3dspeaker-eres2net-base-zh-16k.onnx",
+              "V100_DIARIZATION_MAX_SPEAKERS": "8", "V100_DIARIZATION_MIN_TURN_SEC": "0.7",
+              "V100_AUDIO_ENHANCEMENT_ENABLED": "1",
               "V100_STREAM_CHUNK_MS": "300", "V100_MAX_STREAMS": "2", "V100_CPU_THREADS": "4"}
     with tempfile.NamedTemporaryFile("w", suffix=".json", encoding="utf-8", delete=False) as handle:
         json.dump(values, handle)

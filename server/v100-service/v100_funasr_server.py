@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import threading
 from uuid import uuid4
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
@@ -64,6 +65,19 @@ CHUNK_SAMPLES = 16000 * CHUNK_MS // 1000
 MAX_STREAMS = int(os.getenv("V100_MAX_STREAMS", "2"))
 MAX_UPLOAD_BYTES = int(os.getenv("V100_MAX_UPLOAD_MB", "1024")) * 1024 * 1024
 TEMP_DIR = os.getenv("V100_TEMP_DIR") or None
+AUDIO_ENHANCEMENT_ENABLED = os.getenv("V100_AUDIO_ENHANCEMENT_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+DIARIZATION_ENABLED = os.getenv("V100_DIARIZATION_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+DIARIZATION_SEGMENTATION_MODEL = Path(os.getenv(
+    "V100_DIARIZATION_SEGMENTATION_MODEL",
+    str(ROOT / "speaker-diarization" / "sherpa-onnx-pyannote-segmentation-3-0" / "model.int8.onnx"),
+))
+DIARIZATION_EMBEDDING_MODEL = Path(os.getenv(
+    "V100_DIARIZATION_EMBEDDING_MODEL",
+    str(ROOT / "speaker-diarization" / "3dspeaker-eres2net-base-zh-16k.onnx"),
+))
+DIARIZATION_MAX_SPEAKERS = int(os.getenv("V100_DIARIZATION_MAX_SPEAKERS", "8"))
+DIARIZATION_MIN_TURN_SEC = float(os.getenv("V100_DIARIZATION_MIN_TURN_SEC", "0.7"))
+DIARIZATION_CLUSTER_THRESHOLD = float(os.getenv("V100_DIARIZATION_CLUSTER_THRESHOLD", "0.9"))
 # FunASR mutates per-model kwargs. Each executor serializes one model, while
 # file inference cannot block the event loop or the streaming model.
 online_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="stt-online")
@@ -78,6 +92,9 @@ online_model: Any = None
 offline_model: Any = None
 model_error = ""
 model_started_at = 0.0
+speaker_diarizer: Any = None
+speaker_diarizer_error = ""
+speaker_diarizer_lock = threading.Lock()
 
 
 def require_token(value: str | None) -> str:
@@ -144,9 +161,17 @@ async def health() -> JSONResponse:
         "inference_calls": inference_calls,
         "file_requests": file_requests,
         "stream_chunk_ms": CHUNK_MS,
-        "diarization": {"enabled": False, "active": False, "models_present": False, "planned_provider": "CAM++"},
+        "diarization": {
+            "enabled": DIARIZATION_ENABLED,
+            "active": speaker_diarizer is not None,
+            "models_present": DIARIZATION_SEGMENTATION_MODEL.is_file() and DIARIZATION_EMBEDDING_MODEL.is_file(),
+            "provider": "local-sherpa-onnx",
+            "error": speaker_diarizer_error,
+            "max_speakers": DIARIZATION_MAX_SPEAKERS,
+        },
         "model_error": model_error,
         "cuda": torch.cuda.is_available(),
+        "audio_enhancement": {"enabled": AUDIO_ENHANCEMENT_ENABLED, "mode": "ffmpeg-adaptive"},
     })
 
 
@@ -185,9 +210,13 @@ def generate_online(data: bytes, cache: dict[str, Any], final: bool) -> tuple[st
 def generate_file(path: Path) -> dict[str, Any]:
     global inference_calls
     from imageio_ffmpeg import get_ffmpeg_exe
+    filters = ["highpass=f=80", "lowpass=f=7600", "afftdn=nr=8dB"] if AUDIO_ENHANCEMENT_ENABLED else []
+    command = [get_ffmpeg_exe(), "-v", "error", "-nostdin", "-i", str(path), "-vn", "-ac", "1", "-ar", "16000"]
+    if filters:
+        command.extend(["-af", ",".join(filters)])
+    command.extend(["-f", "f32le", "pipe:1"])
     decoded = subprocess.run(
-        [get_ffmpeg_exe(), "-v", "error", "-nostdin", "-i", str(path), "-vn", "-ac", "1",
-         "-ar", "16000", "-f", "f32le", "pipe:1"],
+        command,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600, check=True,
     )
     audio = np.frombuffer(decoded.stdout, dtype="<f4").copy()
@@ -197,9 +226,139 @@ def generate_file(path: Path) -> dict[str, Any]:
     with torch.inference_mode():
         result = offline_model.generate(input=audio, batch_size_s=60, disable_pbar=True)
     inference_calls += 1
-    return {"text": "".join(str(item.get("text", "")) for item in (result or [])).strip(),
-            "language": "zh", "provider": "v100-paraformer", "duration_ms": duration_ms,
-            "diarization": {"enabled": False, "active": False}}
+    return build_file_result(audio, result, duration_ms)
+
+
+def _asr_rows(result: Any) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for item in result or []:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        timestamp = item.get("timestamp") or item.get("timestamps") or []
+        start = end = 0.0
+        if isinstance(timestamp, list) and timestamp:
+            pairs = [pair for pair in timestamp if isinstance(pair, (list, tuple)) and len(pair) >= 2]
+            if pairs:
+                start = float(pairs[0][0]) / 1000.0
+                end = float(pairs[-1][1]) / 1000.0
+        rows.append({"text": text, "start": start, "end": max(start, end)})
+    return rows
+
+
+def _speaker_label(value: object) -> str:
+    try:
+        return f"说话人 {int(value) + 1}"
+    except (TypeError, ValueError):
+        return "说话人 1"
+
+
+def _format_rows(rows: list[dict[str, Any]]) -> str:
+    grouped: list[dict[str, Any]] = []
+    for row in rows:
+        text = str(row.get("text") or "").strip()
+        if not text:
+            continue
+        speaker = row.get("speaker")
+        if grouped and grouped[-1].get("speaker") == speaker:
+            grouped[-1]["text"] += text
+        else:
+            grouped.append({"speaker": speaker, "text": text})
+    return "\n".join(
+        f"{_speaker_label(row['speaker'])}：{row['text']}" if row.get("speaker") is not None else row["text"]
+        for row in grouped
+    )
+
+
+def _load_speaker_diarizer() -> Any:
+    global speaker_diarizer, speaker_diarizer_error
+    if not DIARIZATION_ENABLED:
+        return None
+    if speaker_diarizer is not None:
+        return speaker_diarizer
+    with speaker_diarizer_lock:
+        if speaker_diarizer is not None:
+            return speaker_diarizer
+        if not DIARIZATION_SEGMENTATION_MODEL.is_file() or not DIARIZATION_EMBEDDING_MODEL.is_file():
+            speaker_diarizer_error = "说话人分离模型文件缺失"
+            return None
+        try:
+            import sherpa_onnx
+
+            segmentation = sherpa_onnx.OfflineSpeakerSegmentationModelConfig(
+                pyannote=sherpa_onnx.OfflineSpeakerSegmentationPyannoteModelConfig(
+                    model=str(DIARIZATION_SEGMENTATION_MODEL)
+                ),
+                num_threads=max(1, min(8, int(os.getenv("V100_DIARIZATION_CPU_THREADS", "4")))),
+                provider="cpu",
+            )
+            embedding = sherpa_onnx.SpeakerEmbeddingExtractorConfig(
+                model=str(DIARIZATION_EMBEDDING_MODEL),
+                num_threads=max(1, min(8, int(os.getenv("V100_DIARIZATION_CPU_THREADS", "4")))),
+                provider="cpu",
+            )
+            config = sherpa_onnx.OfflineSpeakerDiarizationConfig(
+                segmentation=segmentation,
+                embedding=embedding,
+                clustering=sherpa_onnx.FastClusteringConfig(
+                    num_clusters=-1, threshold=DIARIZATION_CLUSTER_THRESHOLD
+                ),
+                min_duration_on=DIARIZATION_MIN_TURN_SEC,
+                min_duration_off=0.5,
+            )
+            if not config.validate():
+                raise RuntimeError("说话人分离配置无效")
+            speaker_diarizer = sherpa_onnx.OfflineSpeakerDiarization(config)
+            speaker_diarizer_error = ""
+            return speaker_diarizer
+        except Exception as exc:
+            speaker_diarizer_error = str(exc)
+            return None
+
+
+def _speaker_turns(audio: np.ndarray) -> list[dict[str, Any]]:
+    diarizer = _load_speaker_diarizer()
+    if diarizer is None or not len(audio):
+        return []
+    with speaker_diarizer_lock:
+        result = diarizer.process(audio.astype(np.float32, copy=False))
+    turns = [
+        {"start": float(segment.start), "end": float(segment.end), "speaker": int(segment.speaker)}
+        for segment in result.sort_by_start_time()
+        if float(segment.end) - float(segment.start) >= DIARIZATION_MIN_TURN_SEC
+    ]
+    labels = list(dict.fromkeys(turn["speaker"] for turn in turns))
+    if len(labels) > DIARIZATION_MAX_SPEAKERS:
+        allowed = set(labels[:DIARIZATION_MAX_SPEAKERS])
+        for turn in turns:
+            if turn["speaker"] not in allowed:
+                turn["speaker"] = labels[DIARIZATION_MAX_SPEAKERS - 1]
+    return turns
+
+
+def _attach_speakers(rows: list[dict[str, Any]], turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not turns or not any(float(row.get("end") or 0) > float(row.get("start") or 0) for row in rows):
+        return rows
+    enriched: list[dict[str, Any]] = []
+    for row in rows:
+        start, end = float(row.get("start") or 0), float(row.get("end") or 0)
+        best = max(turns, key=lambda turn: max(0.0, min(end, turn["end"]) - max(start, turn["start"])))
+        enriched.append({**row, "speaker": best["speaker"]})
+    return enriched
+
+
+def build_file_result(audio: np.ndarray, result: Any, duration_ms: int) -> dict[str, Any]:
+    rows = _asr_rows(result)
+    diarization = {"enabled": False, "active": False, "provider": "local-sherpa-onnx"}
+    if DIARIZATION_ENABLED and _load_speaker_diarizer() is not None:
+        rows = _attach_speakers(rows, _speaker_turns(audio))
+        active = any(row.get("speaker") is not None for row in rows)
+        diarization.update({"enabled": True, "active": active, "speaker_count": len({row["speaker"] for row in rows if row.get("speaker") is not None})})
+    text = _format_rows(rows) if rows else "".join(str(item.get("text", "")) for item in (result or [])).strip()
+    return {"text": text, "segments": rows, "language": "zh", "provider": "v100-paraformer", "duration_ms": duration_ms,
+            "diarization": diarization}
 
 
 @app.post("/transcribe")
@@ -281,6 +440,7 @@ async def stream(websocket: WebSocket) -> None:
         await status("智悟本地模型已连接")
         cache: dict[str, Any] = {}
         buffer = bytearray()
+        stream_audio = bytearray()
         transcript = ""
         segment_has_audio = False
         paused = False
@@ -318,7 +478,22 @@ async def stream(websocket: WebSocket) -> None:
                     await flush()
                     paused = True
                     if event == "stop":
-                        await websocket.send_json({"type": "final", "text": transcript.strip(), "provider": "v100-paraformer"})
+                        final_text = transcript.strip()
+                        final_segments: list[dict[str, Any]] = []
+                        if diarization["enabled"] and DIARIZATION_ENABLED and stream_audio:
+                            def finalize_stream() -> dict[str, Any]:
+                                samples = pcm_to_float32(bytes(stream_audio))
+                                with torch.inference_mode():
+                                    result = offline_model.generate(input=samples, batch_size_s=60, sentence_timestamp=True, disable_pbar=True)
+                                return build_file_result(samples, result, round(len(samples) / 16))
+                            finalized = await asyncio.get_running_loop().run_in_executor(offline_executor, finalize_stream)
+                            if finalized["diarization"].get("active"):
+                                final_text = finalized["text"]
+                                final_segments = finalized.get("segments") or []
+                                diarization.update(finalized["diarization"])
+                        await websocket.send_json({"type": "final", "text": final_text,
+                                                   "segments": final_segments, "diarization": diarization,
+                                                   "provider": "v100-paraformer"})
                         await websocket.close(code=1000)
                         return
                     await status("已暂停，文字已保留")
@@ -340,6 +515,7 @@ async def stream(websocket: WebSocket) -> None:
             if len(frame) % 2:
                 raise ValueError("PCM16 payload must contain an even number of bytes")
             audio_bytes += len(frame)
+            stream_audio.extend(frame)
             segment_has_audio = True
             buffer.extend(frame)
             while len(buffer) >= CHUNK_SAMPLES * 2:
