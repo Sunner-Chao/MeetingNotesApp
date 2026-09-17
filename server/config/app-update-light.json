@@ -1,12 +1,12 @@
 {
-  "version_code": 10286,
-  "version_name": "1.2.86",
+  "version_code": 10287,
+  "version_name": "1.2.87",
   "product_edition": "light",
   "product_name": "智悟本(Lite)",
   "application_id": "com.oa.automation.light",
   "mandatory": false,
-  "sha256": "ed9888aa4d0a6f756831711eaadae453805a17ac7d6ae604c689c183c520fca1",
-  "release_notes": "实时转录支持按时间段清晰展示，保留实时预览；增强说话人片段与本地 V100、腾讯云链路的转写保存。",
-  "published_at": "2026-09-16T00:00:00+08:00",
-  "apk_filename": "ZhiWuBen-Android-10286.apk"
+  "sha256": "e93068fd5911e9c170c55e14f296b1fbed567b3440b18d53c66e16ccdd358efb",
+  "release_notes": "统一实时转录与顷刻成稿的牛皮纸和书签；书签完整露出文字，收起时根部藏入纸下，并移除多余透明长框。",
+  "published_at": "2026-09-17T10:06:00+08:00",
+  "apk_filename": "ZhiWuBen-Android-10287.apk"
 }

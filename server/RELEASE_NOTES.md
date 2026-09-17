@@ -624,3 +624,11 @@ This native Ubuntu release makes final Simplified-Chinese transcription and imag
 - 实时转录保留服务端时间片段，按时间、段落和左侧细线展示；当前可修订片段不阻塞实时预览。
 - 本地 V100 与腾讯云返回的说话人片段进入同一保存、恢复和最终结果管线；无说话人字段时仍保留时间线文字。
 - 固定签名 Release APK `1.2.86/10286`（`com.oa.automation.light`）通过版本、包名、证书和非 debuggable 校验。
+## 1.2.87 (Lite Android) · 牛皮纸录音页统一
+
+- 即刻倾听与顷刻成稿共用牛皮纸主体、书签导航和模板工作流。
+- 收起书签完整露出竖排白字，根部藏于纸张下；展开时仅当前书签抽出。
+- 移除固定宽度的透明书签长框，窄屏和大字体下模型切换、导入操作自动适配。
+- 固定签名 Release APK `1.2.87/10287`（`com.oa.automation.light`）通过发布前包名、签名、非 debug、测试和 lint 校验。
+- 已通过 Lite OTA 原子发布；公网完整下载 SHA-256 为 `e93068fd5911e9c170c55e14f296b1fbed567b3440b18d53c66e16ccdd358efb`，服务器仅保留 `10287` 与 `10286`，`10285` 返回 404。
+- 发布脚本补齐公网清单/完整 APK 健康检查及旧包移出失败回滚，10 项发布测试全部通过。

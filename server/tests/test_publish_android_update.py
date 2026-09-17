@@ -6,7 +6,10 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Thread
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -51,7 +54,7 @@ class PublishAndroidUpdateTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
 
-    def publish(self, version_code: int, payload: bytes, *, sha256: str | None = None) -> subprocess.CompletedProcess[str]:
+    def publish(self, version_code: int, payload: bytes, *, sha256: str | None = None, metadata_url: str = "", shell_setup: str = "") -> subprocess.CompletedProcess[str]:
         self.apk.write_bytes(payload)
         self.manifest.write_text(
             json.dumps(
@@ -66,6 +69,9 @@ class PublishAndroidUpdateTests(unittest.TestCase):
         return subprocess.run(
             [
                 find_bash(),
+                "-c",
+                shell_setup + '\nsource "$@"',
+                "publish-test",
                 str(PUBLISH_SCRIPT),
                 "--apk",
                 str(self.apk),
@@ -75,6 +81,7 @@ class PublishAndroidUpdateTests(unittest.TestCase):
                 str(self.downloads),
                 "--config",
                 str(self.config),
+                *(["--metadata-url", metadata_url] if metadata_url else []),
             ],
             check=False,
             text=True,
@@ -92,6 +99,70 @@ class PublishAndroidUpdateTests(unittest.TestCase):
             for path in self.downloads.glob("ZhiWuBen-Android-*.apk")
         )
 
+    @contextmanager
+    def public_channel(self, *, stale_metadata: bool = False, corrupt_apk: bool = False):
+        owner = self
+        observed_versions = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                observed_versions.append(owner.published_versions())
+                metadata = json.loads(owner.config.read_text(encoding="utf-8"))
+                if self.path == "/metadata":
+                    metadata["download_url"] = f"http://127.0.0.1:{self.server.server_port}/apk"
+                    if stale_metadata:
+                        metadata["version_code"] -= 1
+                    body = json.dumps(metadata).encode()
+                else:
+                    body = b"corrupted" if corrupt_apk else (owner.downloads / metadata["apk_filename"]).read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            yield f"http://127.0.0.1:{server.server_port}/metadata", observed_versions
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
+    def test_public_health_checks_run_before_retiring_old_apks(self) -> None:
+        for version in (100, 101):
+            self.assertEqual(self.publish(version, f"apk-{version}".encode()).returncode, 0)
+        with self.public_channel() as (url, observed):
+            result = self.publish(102, b"apk-102", metadata_url=url)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(observed, [[100, 101, 102], [100, 101, 102]])
+        self.assertEqual(self.published_versions(), [101, 102])
+
+    def test_public_metadata_failure_restores_previous_release(self) -> None:
+        self.assertEqual(self.publish(101, b"apk-101").returncode, 0)
+        before = self.config.read_bytes()
+        with self.public_channel(stale_metadata=True) as (url, _):
+            result = self.publish(102, b"apk-102", metadata_url=url)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("public metadata mismatch", result.stderr)
+        self.assertEqual(self.config.read_bytes(), before)
+        self.assertEqual(self.published_versions(), [101])
+
+    def test_public_apk_failure_keeps_both_old_releases(self) -> None:
+        for version in (100, 101):
+            self.assertEqual(self.publish(version, f"apk-{version}".encode()).returncode, 0)
+        before = self.config.read_bytes()
+        with self.public_channel(corrupt_apk=True) as (url, _):
+            result = self.publish(102, b"apk-102", metadata_url=url)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("public APK sha256 mismatch", result.stderr)
+        self.assertEqual(self.config.read_bytes(), before)
+        self.assertEqual(self.published_versions(), [100, 101])
+
     def test_multiple_releases_keep_only_latest_and_previous_by_version_code(self) -> None:
         for version_code in (100, 101, 102):
             result = self.publish(version_code, f"apk-{version_code}".encode())
@@ -101,6 +172,33 @@ class PublishAndroidUpdateTests(unittest.TestCase):
         published = json.loads(self.config.read_text(encoding="utf-8"))
         self.assertEqual(published["version_code"], 102)
         self.assertEqual(published["apk_filename"], "ZhiWuBen-Android-102.apk")
+
+    def test_retirement_failure_restores_manifest_and_already_moved_apks(self) -> None:
+        for version in (100, 101):
+            self.assertEqual(self.publish(version, f"apk-{version}".encode()).returncode, 0)
+        before = self.config.read_bytes()
+        legacy_apk = self.downloads / "ZhiWuBen-Android.apk"
+        legacy_apk.write_bytes(b"legacy-apk")
+        # A shell function also intercepts mv when Git Bash prepends /usr/bin to PATH.
+        failing_mv = (
+            'mv() {\n'
+            'if [[ "$2" == */ZhiWuBen-Android.apk && "$3" == */.android-update-retain.*/* ]]; then\n'
+            '  echo "simulated retirement failure" >&2\n'
+            '  return 1\n'
+            'fi\n'
+            'command mv "$@"\n'
+            '}\n'
+        )
+
+        with self.public_channel() as (url, _):
+            result = self.publish(102, b"apk-102", metadata_url=url, shell_setup=failing_mv)
+
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertIn("simulated retirement failure", result.stderr)
+        self.assertEqual(self.config.read_bytes(), before)
+        self.assertEqual(self.published_versions(), [100, 101])
+        self.assertEqual((self.downloads / "ZhiWuBen-Android-100.apk").read_bytes(), b"apk-100")
+        self.assertEqual(legacy_apk.read_bytes(), b"legacy-apk")
 
     def test_same_or_lower_version_cannot_overwrite_current_release(self) -> None:
         self.assertEqual(self.publish(102, b"apk-102").returncode, 0)

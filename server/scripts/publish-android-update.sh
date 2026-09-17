@@ -7,6 +7,7 @@ DOWNLOADS_DIR="/var/lib/meetingnotes-stt/downloads"
 CONFIG="/var/lib/meetingnotes-stt/app-update.json"
 OWNER=""
 RETAIN_COUNT=2
+METADATA_URL=""
 
 usage() {
   cat <<'EOF'
@@ -20,6 +21,7 @@ Options:
   --config PATH         Published update manifest path.
   --owner USER:GROUP    Ownership for the published files.
   --retain COUNT        Compatibility option; only 2 is accepted.
+  --metadata-url URL    Verify public metadata and APK before deleting old releases.
 EOF
 }
 
@@ -36,6 +38,7 @@ while [[ $# -gt 0 ]]; do
     --config) CONFIG="${2:-}"; shift 2 ;;
     --owner) OWNER="${2:-}"; shift 2 ;;
     --retain) RETAIN_COUNT="${2:-}"; shift 2 ;;
+    --metadata-url) METADATA_URL="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) fail "Unknown argument: $1" ;;
   esac
@@ -62,6 +65,13 @@ flock -x 9 || fail "Could not acquire the Android update publication lock"
 
 CONFIG_STAGE="$(mktemp "$CONFIG_DIR/.app-update.XXXXXX.json")"
 APK_STAGE="$(mktemp "$DOWNLOADS_DIR/.android-update.XXXXXX.apk")"
+CONFIG_BACKUP="$(mktemp "$CONFIG_DIR/.app-update-backup.XXXXXX.json")"
+CONFIG_EXISTED=0
+CONFIG_SWITCHED=0
+if [[ -f "$CONFIG" ]]; then
+  cp -p -- "$CONFIG" "$CONFIG_BACKUP"
+  CONFIG_EXISTED=1
+fi
 QUARANTINE_DIR=""
 PUBLISHED_APK=""
 PUBLISHED=0
@@ -70,6 +80,15 @@ cleanup() {
   set +e
   rm -f -- "$CONFIG_STAGE" "$APK_STAGE"
   if [[ "$PUBLISHED" -ne 1 ]]; then
+    if [[ "$CONFIG_SWITCHED" -eq 1 ]]; then
+      if [[ "$CONFIG_EXISTED" -eq 1 ]]; then
+        mv -f -- "$CONFIG_BACKUP" "$CONFIG"
+        sync -f "$CONFIG"
+      else
+        rm -f -- "$CONFIG"
+      fi
+      sync -f "$CONFIG_DIR"
+    fi
     [[ -n "$PUBLISHED_APK" ]] && rm -f -- "$PUBLISHED_APK"
     if [[ -n "$QUARANTINE_DIR" && -d "$QUARANTINE_DIR" ]]; then
       shopt -s nullglob
@@ -78,6 +97,7 @@ cleanup() {
       done
     fi
   fi
+  rm -f -- "$CONFIG_BACKUP"
   [[ -n "$QUARANTINE_DIR" ]] && rm -rf -- "$QUARANTINE_DIR"
   exit "$status"
 }
@@ -158,8 +178,46 @@ if [[ -n "$OWNER" ]]; then
   chown "$OWNER" "$APK_STAGE" "$CONFIG_STAGE"
 fi
 
-# Move obsolete artifacts aside before publishing. The trap restores them if
-# staging fails, so a bad release leaves the old manifest and retained APKs intact.
+# Keep every previous artifact available until the new public release is healthy.
+mv -- "$APK_STAGE" "$TARGET_APK"
+PUBLISHED_APK="$TARGET_APK"
+sync -f "$TARGET_APK"
+sync -f "$DOWNLOADS_DIR"
+mv -f -- "$CONFIG_STAGE" "$CONFIG"
+CONFIG_SWITCHED=1
+sync -f "$CONFIG"
+sync -f "$CONFIG_DIR"
+
+if [[ -n "$METADATA_URL" ]]; then
+  python3 - "$METADATA_URL" "$CONFIG" <<'PY'
+import hashlib
+import json
+import sys
+import urllib.request
+from pathlib import Path
+
+metadata_url, config_path = sys.argv[1:]
+expected = json.loads(Path(config_path).read_text(encoding="utf-8"))
+request = urllib.request.Request(metadata_url, headers={"Cache-Control": "no-cache"})
+with urllib.request.urlopen(request, timeout=30) as response:
+    actual = json.load(response)
+for field in ("version_code", "version_name", "sha256", "application_id", "product_edition"):
+    if actual.get(field) != expected.get(field):
+        raise SystemExit(f"public metadata mismatch: {field}")
+download_url = actual.get("download_url", "")
+if not download_url.startswith(("https://", "http://")):
+    raise SystemExit("public metadata has no valid APK URL")
+digest = hashlib.sha256()
+with urllib.request.urlopen(download_url, timeout=60) as response:
+    for chunk in iter(lambda: response.read(1024 * 1024), b""):
+        digest.update(chunk)
+if digest.hexdigest() != expected["sha256"]:
+    raise SystemExit("public APK sha256 mismatch")
+print("Public metadata and APK SHA-256 verified.")
+PY
+fi
+
+# Only a healthy release may retire obsolete APKs.
 QUARANTINE_DIR="$(mktemp -d "$DOWNLOADS_DIR/.android-update-retain.XXXXXX")"
 mapfile -t RETAINED_APKS < <(
   {
@@ -176,15 +234,10 @@ if [[ -f "$DOWNLOADS_DIR/ZhiWuBen-Android.apk" ]]; then
   mv -- "$DOWNLOADS_DIR/ZhiWuBen-Android.apk" "$QUARANTINE_DIR/ZhiWuBen-Android.apk"
 fi
 
-mv -- "$APK_STAGE" "$TARGET_APK"
-PUBLISHED_APK="$TARGET_APK"
-sync -f "$TARGET_APK"
 sync -f "$DOWNLOADS_DIR"
-mv -f -- "$CONFIG_STAGE" "$CONFIG"
+# Until all retirement moves succeed, cleanup can restore the complete old channel.
+# Deleting quarantined files is irreversible, so commit only at this boundary.
 PUBLISHED=1
-sync -f "$CONFIG"
-sync -f "$CONFIG_DIR"
-
 rm -rf -- "$QUARANTINE_DIR"
 QUARANTINE_DIR=""
 find "$DOWNLOADS_DIR" -maxdepth 1 -type f -name '.android-update.*.apk' -delete
