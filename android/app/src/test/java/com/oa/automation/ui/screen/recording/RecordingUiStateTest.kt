@@ -22,6 +22,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import com.oa.automation.infrastructure.service.RecordingSessionState
 import com.oa.automation.infrastructure.service.RealtimeSttRouteState
+import com.oa.automation.infrastructure.stt.StreamingTranscriptSegment
 
 class RecordingUiStateTest {
     @Test
@@ -208,6 +209,35 @@ class RecordingUiStateTest {
     }
 
     @Test
+    fun `listening planning meeting restores its template and meeting level engine`() {
+        val meeting = Meeting(
+            title = "聆听·策划会 09-19",
+            selectedTemplateName = "聆听·策划会",
+            selectedSttEngineName = STTEngineType.TENCENT_HYBRID.name
+        )
+
+        assertEquals(
+            "聆听·策划会",
+            resolveRestoredRecordingTemplateName(
+                meeting = meeting,
+                appConfig = ReportTemplateConfig(
+                    selectedName = "通用会议",
+                    content = "通用内容"
+                ),
+                isGlobalRecording = false
+            )
+        )
+        assertEquals(
+            STTEngineType.TENCENT_HYBRID,
+            resolveRestoredSttEngineType(
+                meeting = meeting,
+                appEngineType = STTEngineType.FASTER_WHISPER,
+                isGlobalRecording = false
+            )
+        )
+    }
+
+    @Test
     fun `cloud only product ignores local meeting engine`() {
         assertEquals(
             STTEngineType.TENCENT_HYBRID,
@@ -270,6 +300,55 @@ class RecordingUiStateTest {
                 )
             )
         )
+    }
+
+    @Test
+    fun `paused listening planning recording can generate from the existing timeline`() {
+        val state = RecordingUiState(
+            selectedRecordingTemplateName = "聆听·策划会",
+            isRecording = true,
+            isPaused = true,
+            hasRecording = true,
+            liveTranscript = "讨论已经暂停，保留当前策划判断。",
+            transcriptTimeline = listOf(
+                TranscriptTimelineRow(
+                    key = "live:0:0.0:0",
+                    startTimeMs = 0L,
+                    text = "讨论已经暂停，保留当前策划判断。",
+                    speaker = "说话人 1"
+                )
+            )
+        )
+
+        assertTrue(canGenerateReportFromRecording(state))
+    }
+
+    @Test
+    fun `listening planning streaming timeline keeps timestamp speaker and preview state`() {
+        val rows = streamingTimelineRows(
+            segments = listOf(
+                StreamingTranscriptSegment(
+                    startSeconds = 1.25f,
+                    endSeconds = 3.5f,
+                    text = "先确认目标。",
+                    speaker = 0,
+                    committed = true
+                ),
+                StreamingTranscriptSegment(
+                    startSeconds = 4.0f,
+                    endSeconds = 5.25f,
+                    text = "我补充一个约束。",
+                    speaker = 1,
+                    committed = false
+                )
+            ),
+            offsetMs = 60_000L
+        )
+
+        assertEquals(listOf(61_250L, 64_000L), rows.map { it.startTimeMs })
+        assertEquals(listOf("说话人 1", "说话人 2"), rows.map { it.speaker })
+        assertEquals(listOf(false, true), rows.map { it.isPreview })
+        assertEquals(listOf("先确认目标。", "我补充一个约束。"), rows.map { it.text })
     }
 
     @Test
