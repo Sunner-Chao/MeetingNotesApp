@@ -25,6 +25,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.runBlocking
 import org.koin.android.ext.android.inject
 import java.util.UUID
@@ -50,6 +52,16 @@ class RecordingService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        serviceScope.launch {
+            recordingController.state
+                .map { it.meetingId to roomRecordingPauseNotice(it) }
+                .distinctUntilChanged()
+                .collect { (meetingId, notice) ->
+                    if (notice != null && activeMeetingId == meetingId) {
+                        updateNotification("录音已暂停", notice, meetingId)
+                    }
+                }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -233,7 +245,9 @@ class RecordingService : Service() {
 
     private fun launchRecording(meetingId: String, meetingTitle: String, startId: Int) {
         startJob = serviceScope.launch {
-            recordingController.start(meetingId, meetingTitle)
+            val input = meetingRepository.findById(meetingId).getOrNull()?.preferredCaptureInput
+                ?: com.oa.automation.domain.model.CaptureInput.PHONE
+            recordingController.start(meetingId, meetingTitle, input)
                 .onSuccess {
                     updateNotification(
                         "正在录音：$meetingTitle",
@@ -307,7 +321,17 @@ class RecordingService : Service() {
             meetingRepository.save(
                 meeting.copy(
                     audioFilePath = mergedAudio.absolutePath,
-                    durationMs = meeting.durationMs + stopped.durationMs
+                    durationMs = meeting.durationMs + stopped.durationMs,
+                    audioSource = if (meeting.origin == com.oa.automation.domain.model.MeetingOrigin.FILE_IMPORT) {
+                        meeting.audioSource
+                    } else {
+                        stopped.captureRoute.source
+                    },
+                    captureDeviceName = stopped.captureRoute.deviceName ?: meeting.captureDeviceName,
+                    detectedSpeakerCount = maxOf(
+                        meeting.detectedSpeakerCount,
+                        stopped.speakerSegments.mapNotNull { it.speaker }.distinct().size
+                    )
                 )
             ).getOrThrow()
 

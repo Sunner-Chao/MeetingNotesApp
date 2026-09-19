@@ -1,12 +1,14 @@
 package com.oa.automation.infrastructure.db
 
 import androidx.room.Entity
+import androidx.room.ColumnInfo
 import androidx.room.Index
 import androidx.room.PrimaryKey
 import com.oa.automation.domain.model.Meeting
 import com.oa.automation.domain.model.MeetingAttachment
 import com.oa.automation.domain.model.MeetingAudioSegment
 import com.oa.automation.domain.model.MeetingOrigin
+import com.oa.automation.domain.model.MeetingAudioSource
 import com.oa.automation.domain.model.RecordingMarker
 import com.oa.automation.domain.model.Report
 import com.oa.automation.domain.model.Task
@@ -22,8 +24,17 @@ data class MeetingEntity(
     val origin: String,
     val selectedTemplateName: String? = null,
     val selectedSttEngineName: String? = null,
+    @ColumnInfo(defaultValue = "'UNKNOWN'")
+    val audioSource: String = MeetingAudioSource.UNKNOWN.name,
+    val captureDeviceName: String? = null,
+    val externalSessionId: String? = null,
+    @ColumnInfo(defaultValue = "0")
+    val detectedSpeakerCount: Int = 0,
+    @ColumnInfo(defaultValue = "'PHONE'")
+    val preferredCaptureInput: String = "PHONE",
     /** Account that owns this local row. Null is retained for legacy/anonymous rows. */
-    val ownerId: String? = null
+    val ownerId: String? = null,
+    val meetingRoomId: String? = null
 )
 
 @Entity(
@@ -141,7 +152,15 @@ fun MeetingEntity.toDomain() = Meeting(
     origin = MeetingOrigin.fromPersisted(origin),
     selectedTemplateName = selectedTemplateName,
     selectedSttEngineName = selectedSttEngineName,
-    ownerId = ownerId
+    audioSource = runCatching { MeetingAudioSource.valueOf(audioSource) }
+        .getOrDefault(MeetingAudioSource.UNKNOWN),
+    captureDeviceName = captureDeviceName,
+    externalSessionId = externalSessionId,
+    detectedSpeakerCount = detectedSpeakerCount,
+    preferredCaptureInput = runCatching { com.oa.automation.domain.model.CaptureInput.valueOf(preferredCaptureInput) }
+        .getOrDefault(com.oa.automation.domain.model.CaptureInput.PHONE),
+    ownerId = ownerId,
+    meetingRoomId = meetingRoomId
 )
 
 fun MeetingAudioSegmentEntity.toDomain() = MeetingAudioSegment(
@@ -173,7 +192,13 @@ fun Meeting.toEntity() = MeetingEntity(
     origin = origin.name,
     selectedTemplateName = selectedTemplateName,
     selectedSttEngineName = selectedSttEngineName,
-    ownerId = ownerId
+    audioSource = audioSource.name,
+    captureDeviceName = captureDeviceName,
+    externalSessionId = externalSessionId,
+    detectedSpeakerCount = detectedSpeakerCount,
+    preferredCaptureInput = preferredCaptureInput.name,
+    ownerId = ownerId,
+    meetingRoomId = meetingRoomId
 )
 
 fun TranscriptEntity.toDomain() = Transcript(

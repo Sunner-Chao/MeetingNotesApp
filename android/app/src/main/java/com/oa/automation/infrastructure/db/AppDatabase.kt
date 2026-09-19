@@ -30,7 +30,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ProjectDecisionRefEntity::class,
         ProjectAggregateSnapshotEntity::class
     ],
-    version = 26,
+    version = 28,
     exportSchema = false
 )
 @TypeConverters(DbConverters::class)
@@ -50,6 +50,23 @@ abstract class AppDatabase : RoomDatabase() {
         val MIGRATION_25_26 = object : Migration(25, 26) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("CREATE TABLE IF NOT EXISTS report_generations (meetingId TEXT NOT NULL PRIMARY KEY, ownerId TEXT NOT NULL, requestId TEXT NOT NULL, templateName TEXT NOT NULL, reportId TEXT NOT NULL, cancelled INTEGER NOT NULL, completed INTEGER NOT NULL)")
+            }
+        }
+
+        val MIGRATION_26_27 = object : Migration(26, 27) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE meetings ADD COLUMN audioSource TEXT NOT NULL DEFAULT 'UNKNOWN'")
+                db.execSQL("ALTER TABLE meetings ADD COLUMN captureDeviceName TEXT")
+                db.execSQL("ALTER TABLE meetings ADD COLUMN externalSessionId TEXT")
+                db.execSQL("ALTER TABLE meetings ADD COLUMN detectedSpeakerCount INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE meetings ADD COLUMN preferredCaptureInput TEXT NOT NULL DEFAULT 'PHONE'")
+                db.execSQL("UPDATE meetings SET audioSource = 'IMPORTED_FILE' WHERE origin = 'FILE_IMPORT'")
+            }
+        }
+
+        val MIGRATION_27_28 = object : Migration(27, 28) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE meetings ADD COLUMN meetingRoomId TEXT")
             }
         }
 

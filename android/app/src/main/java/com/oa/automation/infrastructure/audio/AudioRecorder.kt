@@ -7,8 +7,11 @@ import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.media.audiofx.AutomaticGainControl
 import android.media.audiofx.NoiseSuppressor
+import android.os.Build
 import android.util.Log
 import androidx.core.content.ContextCompat
+import com.oa.automation.domain.model.MeetingAudioSource
+import com.oa.automation.domain.model.CaptureInput
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -31,6 +34,10 @@ class AudioRecorder(private val context: android.content.Context) {
     private var automaticGainControl: AutomaticGainControl? = null
     private var captureBufferSize = 0
     private var audioEnhancementEnabled = true
+    private val captureRouter = AudioCaptureRouter(context)
+    @Volatile private var lastCaptureRoute = AudioCaptureRoute(MeetingAudioSource.UNKNOWN, null)
+
+    fun prepareCaptureInput(input: CaptureInput) = captureRouter.prepare(input)
 
     @Volatile
     private var isRecording = false
@@ -77,6 +84,20 @@ class AudioRecorder(private val context: android.content.Context) {
     /** True when the native AudioRecord instance is alive and initialized. */
     fun isAudioRecordReady(): Boolean = audioRecord != null
 
+    /** Snapshot the route before stop() releases AudioRecord. */
+    fun currentCaptureRoute(): AudioCaptureRoute {
+        val device = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            audioRecord?.routedDevice
+        } else {
+            null
+        }
+        if (device != null) lastCaptureRoute = AudioCaptureRoute(
+            source = captureSourceForDevice(device.type),
+            deviceName = device.productName?.toString()?.trim()?.takeIf { it.isNotBlank() }
+        )
+        return lastCaptureRoute
+    }
+
     /**
      * Start recording audio and return the final WAV file that will be completed on stop().
      */
@@ -95,6 +116,7 @@ class AudioRecorder(private val context: android.content.Context) {
 
         try {
             cleanupStaleChunks()
+            lastCaptureRoute = AudioCaptureRoute(MeetingAudioSource.UNKNOWN, null)
             Log.d(TAG, "Initializing AudioRecord at $SAMPLE_RATE Hz")
             val minBufferSize = AudioRecord.getMinBufferSize(
                 SAMPLE_RATE,
@@ -103,6 +125,7 @@ class AudioRecorder(private val context: android.content.Context) {
             )
             if (minBufferSize == AudioRecord.ERROR || minBufferSize == AudioRecord.ERROR_BAD_VALUE) {
                 Log.e(TAG, "Invalid AudioRecord buffer size: $minBufferSize")
+                captureRouter.release()
                 return null
             }
 
@@ -192,6 +215,7 @@ class AudioRecorder(private val context: android.content.Context) {
             releaseAudioEffects()
             audioRecord?.release()
             audioRecord = null
+            captureRouter.release()
         }
 
         flushChunk(force = true)
@@ -212,17 +236,21 @@ class AudioRecorder(private val context: android.content.Context) {
     /** Temporarily suspends microphone capture while keeping the current WAV open. */
     @Synchronized
     fun pause(): Boolean {
-        if (!isRecording || isPaused) return false
-        val recorder = audioRecord ?: return false
+        if (!isRecording) return false
+        if (isPaused) return true
         // Set the flag before stopping the native recorder. Otherwise the
         // capture thread can enter read() while AudioRecord is being stopped,
         // leaving some devices in a state that cannot be resumed.
         isPaused = true
-        return runCatching {
-            recorder.stop()
+        runCatching {
+            currentCaptureRoute()
+            audioRecord?.stop()
         }.onFailure {
-            isPaused = false
-        }.isSuccess
+            // Keep the logical pause even if a device refuses stop(). The PCM
+            // loop must not save or forward audio after the user withdraws consent.
+            Log.w(TAG, "Native recorder stop failed; PCM capture remains paused", it)
+        }
+        return true
     }
 
     /** Resumes capture into the same WAV file after a pause. */
@@ -232,15 +260,23 @@ class AudioRecorder(private val context: android.content.Context) {
         val recorder = audioRecord ?: return false
         return runCatching {
             check(recorder.state == AudioRecord.STATE_INITIALIZED)
+            // A failed native pause may have kept collecting buffered audio.
+            // Stop it successfully before restarting so paused audio is discarded.
+            if (recorder.recordingState == AudioRecord.RECORDSTATE_RECORDING) recorder.stop()
             recorder.startRecording()
             check(recorder.recordingState == AudioRecord.RECORDSTATE_RECORDING)
             isPaused = false
+        }.onFailure {
+            // Do not leave a partially restarted native recorder behind. The logical
+            // pause remains true so callers can show a recoverable error and retry.
+            runCatching { recorder.stop() }
         }.isSuccess
     }
 
     fun isPaused(): Boolean = isPaused
 
     fun cancel(deleteFile: Boolean = true) {
+        captureRouter.release()
         if (!isRecording && audioRecord == null && outputStream == null) {
             if (deleteFile) {
                 outputFile?.delete()
@@ -363,27 +399,25 @@ class AudioRecorder(private val context: android.content.Context) {
             }
             emptyReadSinceMs = null
 
-            // pause() stops AudioRecord while a read may still be in flight.
-            // Discard that tail frame so pausing never appends another PCM
-            // buffer to the persisted WAV or the streaming STT route.
-            if (isPaused || !isRecording) {
-                continue
-            }
+            // Serialize delivery with pause()/resume(). Native read stays outside
+            // this lock so pause can stop a blocking read, while a returned frame
+            // cannot be persisted or forwarded after pause has completed.
+            synchronized(this) {
+                if (isPaused || !isRecording) return@synchronized
+                synchronized(fileLock) {
+                    outputStream?.write(buffer, 0, readBytes)
+                    totalAudioBytes += readBytes
+                }
+                pcmListener?.invoke(buffer.copyOf(readBytes), readBytes)
 
-            synchronized(fileLock) {
-                outputStream?.write(buffer, 0, readBytes)
-                totalAudioBytes += readBytes
-            }
-
-            pcmListener?.invoke(buffer.copyOf(readBytes), readBytes)
-
-            val listener = chunkListener
-            if (listener != null) {
-                synchronized(chunkLock) {
-                    chunkBuffer.write(buffer, 0, readBytes)
-                    if (chunkBuffer.size() >= chunkSizeBytes) {
-                        emitChunk(chunkBuffer.toByteArray(), listener)
-                        chunkBuffer.reset()
+                val listener = chunkListener
+                if (listener != null) {
+                    synchronized(chunkLock) {
+                        chunkBuffer.write(buffer, 0, readBytes)
+                        if (chunkBuffer.size() >= chunkSizeBytes) {
+                            emitChunk(chunkBuffer.toByteArray(), listener)
+                            chunkBuffer.reset()
+                        }
                     }
                 }
             }
@@ -483,6 +517,7 @@ class AudioRecorder(private val context: android.content.Context) {
             }.getOrNull() ?: continue
 
             if (candidate.state == AudioRecord.STATE_INITIALIZED) {
+                captureRouter.apply(candidate)
                 Log.i(
                     TAG,
                     "Audio capture ready: source=$audioSource, enhancement=$enableAudioEnhancement"
@@ -529,6 +564,7 @@ class AudioRecorder(private val context: android.content.Context) {
     }
 
     private fun releaseRecorder() {
+        captureRouter.release()
         isRecording = false
         isPaused = false
         prefs.edit().putBoolean(PREFS_RECORDING_KEY, false).apply()
@@ -578,6 +614,11 @@ class AudioRecorder(private val context: android.content.Context) {
         }
     }
 }
+
+data class AudioCaptureRoute(
+    val source: MeetingAudioSource,
+    val deviceName: String?
+)
 
 internal fun audioSourceCandidates(enableAudioEnhancement: Boolean): List<Int> =
     if (enableAudioEnhancement) {

@@ -3,6 +3,7 @@ package com.oa.automation.infrastructure.service
 import android.os.SystemClock
 import com.oa.automation.data.local.ConfigDataStore
 import com.oa.automation.infrastructure.audio.AudioRecorder
+import com.oa.automation.infrastructure.audio.AudioCaptureRoute
 import com.oa.automation.infrastructure.stt.StreamingSttClient
 import com.oa.automation.infrastructure.stt.StreamingSttProvider
 import com.oa.automation.infrastructure.account.AccountSessionSynchronizer
@@ -14,6 +15,7 @@ import com.oa.automation.infrastructure.stt.CLOUD_STREAM_READY_STATUS
 import com.oa.automation.infrastructure.stt.LOCAL_STREAM_READY_STATUS
 import com.oa.automation.infrastructure.stt.STREAM_AUDIO_STALL_STATUS
 import com.oa.automation.domain.model.STTEngineType
+import com.oa.automation.domain.model.CaptureInput
 import com.oa.automation.domain.model.ProductEdition
 import com.oa.automation.domain.model.STTLanguage
 import com.oa.automation.domain.model.TencentAsrTier
@@ -32,6 +34,9 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import android.util.Log
 import kotlin.math.log10
 import kotlin.math.sqrt
@@ -76,6 +81,7 @@ data class RecordingSessionState(
     val startedAtElapsedRealtimeMs: Long? = null,
     val recordedDurationSeconds: Long = 0,
     val audioLevel: Float = 0f,
+    val captureRoute: AudioCaptureRoute? = null,
     val streamUpdate: StreamingTranscriptUpdate? = null,
     val accumulatedTranscript: String = "",
     val transcriptSegments: List<StreamingTranscriptSegment> = emptyList(),
@@ -99,20 +105,31 @@ data class RecordingStopResult(
     val transcriptText: String,
     val speakerSegments: List<StreamingTranscriptSegment>,
     val durationMs: Long,
-    val requiresLogin: Boolean
+    val requiresLogin: Boolean,
+    val captureRoute: AudioCaptureRoute = AudioCaptureRoute(
+        source = com.oa.automation.domain.model.MeetingAudioSource.MICROPHONE,
+        deviceName = null
+    )
 )
+
+internal fun roomRecordingPauseNotice(state: RecordingSessionState): String? =
+    state.error?.takeIf { state.isPaused && state.status == "房间录音已暂停" }
 
 class RecordingSessionController(
     private val audioRecorder: AudioRecorder,
     private val streamingSttClient: StreamingSttClient,
     private val configDataStore: ConfigDataStore,
-    private val accountSessionSynchronizer: AccountSessionSynchronizer
+    private val accountSessionSynchronizer: AccountSessionSynchronizer,
+    private val roomRecordingAccess: MeetingRoomRecordingAccess
 ) {
     private val operationMutex = Mutex()
     private val fallbackScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var streamingPreviewActive = false
     private var accountAccessEnabled = false
     private var cloudFallbackAvailable = false
+    private var roomBinding: RoomRecordingBinding? = null
+    private var roomMonitor: Job? = null
+    private var recordingOwnerId: String? = null
     @Volatile private var automaticCloudFallbackAttempted = false
     @Volatile private var sessionRecoveryAttempted = false
     private val transcriptAccumulator = StreamingTranscriptAccumulator()
@@ -143,7 +160,7 @@ class RecordingSessionController(
         }
     }
 
-    suspend fun start(meetingId: String, meetingTitle: String): Result<Unit> = operationMutex.withLock {
+    suspend fun start(meetingId: String, meetingTitle: String, captureInput: CaptureInput = CaptureInput.PHONE): Result<Unit> = operationMutex.withLock {
         runCatching {
             require(meetingId.isNotBlank()) { "会议标识缺失" }
             if (pendingStopMeetingId == meetingId) {
@@ -157,6 +174,11 @@ class RecordingSessionController(
             }
             if (audioRecorder.isRecording() && _state.value.meetingId == meetingId) return@runCatching
             if (audioRecorder.isRecording()) error("已有其他会议正在录音")
+
+            roomMonitor?.cancel()
+            roomBinding = null
+            _state.value = RecordingSessionState(meetingId = meetingId, meetingTitle = meetingTitle,
+                isStarting = true, status = "正在准备录音")
 
             var sttConfig = configDataStore.appConfigFlow.first().sttConfig
             val usesTencentHybrid = !ProductEdition.current.supportsLocalStt ||
@@ -183,6 +205,8 @@ class RecordingSessionController(
                 }
             }
             val currentSession = configDataStore.authSessionFlow.first()
+            recordingOwnerId = currentSession?.user?.id
+            roomBinding = roomRecordingAccess.forStart(meetingId)
             val accountSessionAvailable = currentSession?.expiresAt?.let {
                 it > System.currentTimeMillis() / 1_000
             } == true
@@ -252,7 +276,10 @@ class RecordingSessionController(
                 smoothedAudioLevel = smoothedAudioLevel * 0.72f + measuredLevel * 0.28f
                 _state.update {
                     if (it.isRecording || it.isStarting) {
-                        it.copy(audioLevel = smoothedAudioLevel.coerceIn(0f, 1f))
+                        it.copy(
+                            audioLevel = smoothedAudioLevel.coerceIn(0f, 1f),
+                            captureRoute = audioRecorder.currentCaptureRoute()
+                        )
                     } else {
                         it
                     }
@@ -395,6 +422,15 @@ class RecordingSessionController(
                 pendingStopMeetingId = null
                 throw CancellationException("录音启动已取消")
             }
+            try {
+                roomBinding?.let { roomRecordingAccess.validate(it) }
+                audioRecorder.prepareCaptureInput(captureInput)
+            } catch (error: Exception) {
+                if (streamingPreviewActive) streamingSttClient.stop()
+                streamingPreviewActive = false
+                audioRecorder.setOnPcmDataListener(null)
+                throw error
+            }
             val audioFile = audioRecorder.start(
                 enableAudioEnhancement = sttConfig.audioEnhancementEnabled
             )
@@ -423,6 +459,7 @@ class RecordingSessionController(
                     error = null
                 )
             }
+            monitorRoomConsent()
         }.onFailure { error ->
             _state.update {
                 if (error is CancellationException) {
@@ -448,7 +485,10 @@ class RecordingSessionController(
                 throw CancellationException("录音会话已切换")
             }
             require(meetingId.isNotBlank() && audioRecorder.isRecording()) { "没有在录音" }
+            roomMonitor?.cancel()
+            roomMonitor = null
             _state.update { it.copy(isStopping = true, status = "正在整理录音") }
+            val captureRoute = audioRecorder.currentCaptureRoute()
             val audioFile = audioRecorder.stop()
                 ?: error("录音文件不可用")
             audioRecorder.setOnPcmDataListener(null)
@@ -483,7 +523,8 @@ class RecordingSessionController(
                 transcriptText,
                 speakerSegments,
                 durationMs,
-                requiresLogin = !accountAccessEnabled
+                requiresLogin = !accountAccessEnabled,
+                captureRoute = captureRoute
             )
         }.onFailure { error ->
             if (_state.value.meetingId == expectedMeetingId) pendingStopMeetingId = null
@@ -508,6 +549,8 @@ class RecordingSessionController(
                 "当前没有可暂停的录音"
             }
             check(audioRecorder.pause()) { "录音暂停失败" }
+            roomMonitor?.cancel()
+            roomMonitor = null
             if (streamingPreviewActive) streamingSttClient.pauseAudio()
             val elapsed = SystemClock.elapsedRealtime()
             _state.update {
@@ -542,6 +585,9 @@ class RecordingSessionController(
                 require(current.isRecording && current.isPaused && !current.isStopping) {
                     "只有已暂停的录音可以切换"
                 }
+                roomMonitor?.cancel()
+                roomMonitor = null
+                val captureRoute = audioRecorder.currentCaptureRoute()
                 val audioFile = audioRecorder.stop() ?: error("录音文件不可用")
                 audioRecorder.setOnPcmDataListener(null)
                 val streamSessionId = if (streamingPreviewActive) streamingSttClient.stop() else null
@@ -575,7 +621,8 @@ class RecordingSessionController(
                     transcriptText = transcriptText,
                     speakerSegments = speakerSegments,
                     durationMs = durationMs,
-                    requiresLogin = !accountAccessEnabled
+                    requiresLogin = !accountAccessEnabled,
+                    captureRoute = captureRoute
                 )
             }.onFailure { error ->
                 _state.update {
@@ -599,6 +646,8 @@ class RecordingSessionController(
             require(current.isRecording && current.isPaused && !current.isStopping) {
                 "当前录音没有暂停"
             }
+            require(configDataStore.authSessionFlow.first()?.user?.id == recordingOwnerId) { "账号已切换，请重新打开记录" }
+            roomBinding = roomRecordingAccess.forStart(current.meetingId)
             check(audioRecorder.resume()) { "录音恢复失败" }
             if (streamingPreviewActive) streamingSttClient.resumeAudio()
             _state.update {
@@ -609,9 +658,19 @@ class RecordingSessionController(
                     error = null
                 )
             }
+            monitorRoomConsent()
         }.onFailure { error ->
             _state.update { it.copy(error = "恢复录音失败: ${error.message}") }
         }
+    }
+
+    /** The same mutex prevents a binding write from racing microphone start/resume. */
+    suspend fun bindMeetingRoom(meetingId: String, roomId: String?) = operationMutex.withLock {
+        val current = _state.value
+        require(current.meetingId != meetingId || (!current.isStarting && !current.isStopping &&
+            (!current.isRecording || current.isPaused))) { "请先暂停，再修改会议房间" }
+        roomRecordingAccess.bind(meetingId, roomId)
+        if (current.meetingId == meetingId) roomBinding = null
     }
 
     suspend fun switchStreamingProvider(
@@ -801,6 +860,9 @@ class RecordingSessionController(
         }
 
     suspend fun cancelSession(deleteFile: Boolean = false) = operationMutex.withLock {
+        roomMonitor?.cancel()
+        roomMonitor = null
+        roomBinding = null
         audioRecorder.setOnPcmDataListener(null)
         if (streamingPreviewActive) streamingSttClient.stop()
         streamingPreviewActive = false
@@ -822,6 +884,44 @@ class RecordingSessionController(
                 realtimeSttRoute = RealtimeSttRouteState.IDLE,
                 error = null
             )
+        }
+    }
+
+    private fun monitorRoomConsent() {
+        roomMonitor?.cancel()
+        val binding = roomBinding ?: return
+        roomMonitor = fallbackScope.launch {
+            while (isActive) {
+                delay(5_000)
+                val failure = try {
+                    roomRecordingAccess.validate(binding)
+                    null
+                } catch (error: Exception) {
+                    if (error is CancellationException) throw error
+                    error
+                }
+                if (failure != null) {
+                    operationMutex.withLock {
+                        val current = _state.value
+                        if (roomBinding != binding || current.meetingId != binding.meetingId ||
+                            !current.isRecording || current.isPaused || current.isStopping) return@withLock
+                        // Pause capture before changing UI, so persisted PCM and STT both stop.
+                        // A device may already have released AudioRecord (for example after
+                        // another app takes the microphone). In that case keep the session in
+                        // a paused, recoverable UI state instead of killing the monitor job.
+                        audioRecorder.pause()
+                        if (streamingPreviewActive) streamingSttClient.pauseAudio()
+                        val elapsed = SystemClock.elapsedRealtime()
+                        _state.update { it.copy(
+                            isRecording = audioRecorder.isRecording(), isPaused = audioRecorder.isPaused(),
+                            audioLevel = 0f, startedAtElapsedRealtimeMs = null,
+                            recordedDurationSeconds = it.durationSecondsAt(elapsed),
+                            status = "房间录音已暂停", error = "房间录音已暂停：${failure.message ?: "请检查房间状态"}"
+                        ) }
+                    }
+                    break
+                }
+            }
         }
     }
 }

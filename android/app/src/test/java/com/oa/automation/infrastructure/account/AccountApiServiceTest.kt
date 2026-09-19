@@ -427,4 +427,51 @@ class AccountApiServiceTest {
             server.takeRequest().path
         )
     }
+
+    @Test
+    fun meetingRoomLifecycleUsesAccountTokenAndExposesMediaBoundary() = runBlocking {
+        val room = """{"id":"room-1","code":"123456789","title":"策划会","host_id":"u1","state":"open","created_at":1800000000,"ended_at":null,"members":[{"user_id":"u1","display_name":"小张","joined_at":1800000000,"left_at":null,"recording_consent":true}],"all_recording_consented":true,"media_ready":false}"""
+        server.enqueue(MockResponse().setResponseCode(201).setBody(room))
+        server.enqueue(MockResponse().setResponseCode(200).setBody(room))
+        server.enqueue(MockResponse().setResponseCode(200).setBody(room))
+        server.enqueue(MockResponse().setResponseCode(200).setBody("{\"rooms\":[$room],\"media_ready\":false}"))
+        server.enqueue(MockResponse().setResponseCode(200).setBody(room))
+        server.enqueue(MockResponse().setResponseCode(200).setBody(room.replace("\"open\"", "\"ended\"")))
+        server.enqueue(MockResponse().setResponseCode(200).setBody("{\"left\":true}"))
+        val endpoint = server.url("/api").toString().trimEnd('/')
+
+        val created = service.createMeetingRoom(endpoint, "current-user", " 策划会 ", true).getOrThrow()
+        assertEquals("room-1", created.id)
+        assertEquals(false, created.mediaReady)
+        assertTrue(created.members.single().recordingConsent)
+        service.joinMeetingRoom(endpoint, "current-user", "123456789", false).getOrThrow()
+        service.meetingRoom(endpoint, "current-user", "room-1").getOrThrow()
+        assertEquals(1, service.meetingRooms(endpoint, "current-user").getOrThrow().rooms.size)
+        service.consentMeetingRoomRecording(endpoint, "current-user", "room-1", true).getOrThrow()
+        assertEquals("ended", service.endMeetingRoom(endpoint, "current-user", "room-1").getOrThrow().state)
+        service.leaveMeetingRoom(endpoint, "current-user", "room-1").getOrThrow()
+
+        val paths = listOf("", "/join", "/room-1", "", "/room-1/consent", "/room-1/end", "/room-1/leave")
+        val methods = listOf("POST", "POST", "GET", "GET", "POST", "POST", "POST")
+        val bodies = listOf(
+            """{"title":"策划会","recording_consent":true}""",
+            """{"code":"123456789","recording_consent":false}""",
+            "", "", """{"recording_consent":true}""", "{}", "{}"
+        )
+        paths.forEachIndexed { index, path ->
+            val request = server.takeRequest()
+            assertEquals("/api/account/rooms$path", request.path)
+            assertEquals(methods[index], request.method)
+            assertEquals("Bearer current-user", request.getHeader("Authorization"))
+            assertEquals(bodies[index], request.body.readUtf8())
+        }
+    }
+
+    @Test
+    fun roomErrorsRetainServerLifecycleMessage() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(409).setBody("""{"detail":"主持人请先结束会议"}"""))
+        val result = service.leaveMeetingRoom(server.url("/api").toString(), "current-user", "room-1")
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull()?.message.orEmpty().contains("主持人请先结束会议"))
+    }
 }

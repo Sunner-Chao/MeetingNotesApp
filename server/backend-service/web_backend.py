@@ -65,6 +65,7 @@ from social_auth import (
     provider_field,
 )
 from community_api import build_community_router, build_public_community_router
+from meeting_rooms import RoomService, build_room_router
 from community_service import CommunityService
 
 
@@ -1067,6 +1068,8 @@ async def app_lifespan(_app: FastAPI):
         AGENT_GATEWAY.initialize()
     elif ACCOUNT_SERVICE is not None:
         ACCOUNT_SERVICE.initialize()
+    if ACCOUNT_SERVICE is not None:
+        RoomService(Path(account_db_path)).initialize()
     community_db_path = (
         Path(ACCOUNT_SERVICE.db_path).resolve()
         if ACCOUNT_SERVICE is not None
@@ -1483,6 +1486,7 @@ def configured_community_db_path() -> Path:
 
 
 app.include_router(build_community_router(configured_community_db_path, require_account_principal))
+app.include_router(build_room_router(lambda: configured_account_service().db_path, require_account_principal))
 app.include_router(build_public_community_router(configured_community_db_path))
 
 

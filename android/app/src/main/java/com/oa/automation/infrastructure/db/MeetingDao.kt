@@ -63,6 +63,9 @@ interface MeetingDao {
     @Query("UPDATE meetings SET title = :title WHERE id = :id")
     suspend fun updateMeetingTitle(id: String, title: String): Int
 
+    @Query("UPDATE meetings SET meetingRoomId = :roomId WHERE id = :id AND ownerId = :ownerId")
+    suspend fun updateMeetingRoom(id: String, roomId: String?, ownerId: String): Int
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertTranscript(entity: TranscriptEntity)
 

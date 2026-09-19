@@ -43,6 +43,8 @@ import com.oa.automation.domain.model.CommunityCollectionRemoval
 import com.oa.automation.domain.model.CommunityCollectionShare
 import com.oa.automation.domain.model.MyCommunityPost
 import com.oa.automation.domain.model.PublicCommunityPost
+import com.oa.automation.domain.model.MeetingRoom
+import com.oa.automation.domain.model.MeetingRoomList
 import com.oa.automation.infrastructure.stt.STT_IPV4_RELAY_DNS
 import java.io.IOException
 import java.net.URLEncoder
@@ -1014,6 +1016,74 @@ class AccountApiService(
         method = "GET"
     ) { body -> gson.fromJson(body, AccountProfile::class.java) }
 
+    suspend fun meetingRooms(endpoint: String, token: String): Result<MeetingRoomList> = request(
+        endpoint = endpoint,
+        path = "account/rooms",
+        token = token,
+        method = "GET"
+    ) { body -> gson.fromJson(body, MeetingRoomList::class.java) }
+
+    suspend fun createMeetingRoom(
+        endpoint: String,
+        token: String,
+        title: String,
+        recordingConsent: Boolean
+    ): Result<MeetingRoom> = request(
+        endpoint = endpoint,
+        path = "account/rooms",
+        token = token,
+        method = "POST",
+        jsonBody = gson.toJson(mapOf("title" to title.trim(), "recording_consent" to recordingConsent))
+    ) { body -> gson.fromJson(body, MeetingRoom::class.java) }
+
+    suspend fun joinMeetingRoom(
+        endpoint: String,
+        token: String,
+        code: String,
+        recordingConsent: Boolean
+    ): Result<MeetingRoom> = request(
+        endpoint = endpoint,
+        path = "account/rooms/join",
+        token = token,
+        method = "POST",
+        jsonBody = gson.toJson(mapOf("code" to code.trim(), "recording_consent" to recordingConsent))
+    ) { body -> gson.fromJson(body, MeetingRoom::class.java) }
+
+    suspend fun meetingRoom(endpoint: String, token: String, roomId: String): Result<MeetingRoom> = request(
+        endpoint = endpoint,
+        path = "account/rooms/${encodeQueryValue(roomId)}",
+        token = token,
+        method = "GET",
+        timeoutMillis = 5_000
+    ) { body -> gson.fromJson(body, MeetingRoom::class.java) }
+
+    suspend fun consentMeetingRoomRecording(
+        endpoint: String,
+        token: String,
+        roomId: String,
+        consent: Boolean
+    ): Result<MeetingRoom> = request(
+        endpoint = endpoint,
+        path = "account/rooms/${encodeQueryValue(roomId)}/consent",
+        token = token,
+        method = "POST",
+        jsonBody = gson.toJson(mapOf("recording_consent" to consent))
+    ) { body -> gson.fromJson(body, MeetingRoom::class.java) }
+
+    suspend fun leaveMeetingRoom(endpoint: String, token: String, roomId: String): Result<Unit> = request(
+        endpoint = endpoint,
+        path = "account/rooms/${encodeQueryValue(roomId)}/leave",
+        token = token,
+        method = "POST"
+    ) { Unit }
+
+    suspend fun endMeetingRoom(endpoint: String, token: String, roomId: String): Result<MeetingRoom> = request(
+        endpoint = endpoint,
+        path = "account/rooms/${encodeQueryValue(roomId)}/end",
+        token = token,
+        method = "POST"
+    ) { body -> gson.fromJson(body, MeetingRoom::class.java) }
+
     suspend fun upsertAccountMeeting(
         endpoint: String,
         token: String,
@@ -1298,6 +1368,7 @@ class AccountApiService(
         token: String? = null,
         method: String,
         jsonBody: String? = null,
+        timeoutMillis: Long? = null,
         parser: (String) -> T
     ): Result<T> = withContext(Dispatchers.IO) {
         runCatching {
@@ -1319,7 +1390,9 @@ class AccountApiService(
                 "DELETE" -> builder.delete()
                 else -> error("Unsupported HTTP method: $method")
             }
-            client.newCall(builder.build()).execute().use { response ->
+            val call = client.newCall(builder.build())
+            timeoutMillis?.let { call.timeout().timeout(it, TimeUnit.MILLISECONDS) }
+            call.execute().use { response ->
                 val body = response.body?.string().orEmpty()
                 if (!response.isSuccessful) throw IOException(response.toAccountError(body))
                 parser(body)

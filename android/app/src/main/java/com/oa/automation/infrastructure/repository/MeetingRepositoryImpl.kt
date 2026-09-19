@@ -84,6 +84,13 @@ class MeetingRepositoryImpl(
         }
     }
 
+    override suspend fun bindRoom(id: String, roomId: String?, expectedOwnerId: String): Result<Unit> = runCatching {
+        require(expectedOwnerId.isNotBlank() && configDataStore.currentLocalWorkspaceAccountId() == expectedOwnerId) {
+            "账号已切换，请重新打开记录"
+        }
+        check(meetingDao.updateMeetingRoom(id, roomId, expectedOwnerId) == 1) { "记录不存在或不属于当前账号" }
+    }
+
     override suspend fun saveTranscript(transcript: Transcript): Result<Transcript> {
         return runCatching {
             meetingDao.upsertTranscript(transcript.toEntity())

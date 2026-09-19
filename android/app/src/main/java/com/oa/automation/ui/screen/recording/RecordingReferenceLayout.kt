@@ -139,6 +139,8 @@ import com.oa.automation.BuildConfig
 import com.oa.automation.R
 import com.oa.automation.domain.model.MeetingAttachment
 import com.oa.automation.domain.model.ProductEdition
+import com.oa.automation.domain.model.CaptureInput
+import com.oa.automation.domain.model.MeetingAudioSource
 import com.oa.automation.domain.model.PresetReportTemplate
 import com.oa.automation.domain.model.CustomTemplateLayout
 import com.oa.automation.domain.model.StageDraftStatus
@@ -301,6 +303,8 @@ internal fun RecordingReferenceScaffold(
     onSttEngineSelected: (STTEngineType) -> Unit,
     onTestLocalStt: () -> Unit,
     onSttLanguageSelected: (STTLanguage) -> Unit,
+    onSaveSessionSource: (CaptureInput, MeetingAudioSource, String) -> Unit,
+    onBindMeetingRoom: (String?) -> Unit,
     onStartRecording: () -> Unit,
     onTogglePause: () -> Unit,
     onAddMarker: () -> Unit,
@@ -343,6 +347,7 @@ internal fun RecordingReferenceScaffold(
     var moreMenuExpanded by remember { mutableStateOf(false) }
     var serviceDialogVisible by remember { mutableStateOf(false) }
     var imageDialogVisible by remember { mutableStateOf(false) }
+    var sessionDialogVisible by rememberSaveable { mutableStateOf(false) }
     val recordingColors = if (LocalAppIsDarkTheme.current) DarkRecordingColors else LightRecordingColors
     val visibleTemplates = uiState.presetTemplates.filter { template ->
         productPolicy.shouldShowMeetingTemplate(
@@ -429,6 +434,13 @@ internal fun RecordingReferenceScaffold(
         }
     }
 
+    if (sessionDialogVisible) {
+        MeetingSessionSourceDialog(
+            uiState, onSaveSessionSource,
+            onDismiss = { sessionDialogVisible = false }
+        )
+    }
+
     if (uiState.showTranscriptPicker) {
         TranscriptPickerDialog(
             streamingText = uiState.pendingStreamingText,
@@ -494,6 +506,7 @@ internal fun RecordingReferenceScaffold(
             if (displayedUiState.inputMode == InputMode.VOICE) {
                 SiriRecorderContent(
                     uiState = displayedUiState,
+                    onOpenSessionSource = { sessionDialogVisible = true },
                     productPolicy = productPolicy,
                     onNavigateBack = onNavigateBack,
                     onOpenReport = onNavigateToReport,
@@ -504,6 +517,7 @@ internal fun RecordingReferenceScaffold(
                     },
                     onManageImages = { imageDialogVisible = true },
                     onShareAudio = onShareAudio,
+                    onBindMeetingRoom = onBindMeetingRoom,
                     onSttEngineSelected = onSttEngineSelected,
                     onTestLocalStt = onTestLocalStt,
                     onSelectTemplate = onSelectTemplate,
@@ -530,6 +544,7 @@ internal fun RecordingReferenceScaffold(
             } else {
                 ImportRecordingContent(
                     uiState = displayedUiState,
+                    onOpenSessionSource = { sessionDialogVisible = true },
                     layout = layout,
                     onSttEngineSelected = onSttEngineSelected,
                     onTestLocalStt = onTestLocalStt,
@@ -1098,6 +1113,7 @@ private fun VoiceRecordingContent(
 @OptIn(ExperimentalLayoutApi::class)
 private fun ImportRecordingContent(
     uiState: RecordingUiState,
+    onOpenSessionSource: () -> Unit,
     layout: RecordingLayoutSpec,
     onSttEngineSelected: (STTEngineType) -> Unit,
     onTestLocalStt: () -> Unit,
@@ -1216,6 +1232,7 @@ private fun ImportRecordingContent(
                                 onTest = onTestLocalStt
                             )
                         }
+                        MeetingSessionSourceRow(uiState, palette.muted, onOpenSessionSource)
                         AnimatedVisibility(visible = uiState.error != null) {
                             uiState.error?.let { CompactErrorBanner(error = it, onDismiss = onDismissError) }
                         }

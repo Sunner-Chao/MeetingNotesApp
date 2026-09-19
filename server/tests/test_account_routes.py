@@ -557,6 +557,124 @@ class AccountRouteTests(unittest.TestCase):
             self.assertEqual(cleared.json()["deleted"], 1)
             self.assertEqual(client.get(image_path, headers=first_headers).status_code, 404)
 
+    def test_meeting_rooms_are_account_scoped_and_require_host_lifecycle_permissions(self) -> None:
+        with TestClient(backend.app) as client:
+            host = self.register_with_email(client, "room_host").json()
+            guest = self.register_with_email(client, "room_guest").json()
+            host_headers = {"Authorization": f"Bearer {host['access_token']}"}
+            guest_headers = {"Authorization": f"Bearer {guest['access_token']}"}
+            host_id = client.get("/api/account/me", headers=host_headers).json()["id"]
+
+            created = client.post(
+                "/api/account/rooms",
+                headers=host_headers,
+                json={"title": "策划会测试", "recording_consent": True},
+            )
+            self.assertEqual(created.status_code, 201, created.text)
+            room = created.json()
+            self.assertEqual(room["title"], "策划会测试")
+            self.assertEqual(room["host_id"], host_id)
+            self.assertTrue(room["all_recording_consented"])
+            self.assertFalse(room["media_ready"])
+            self.assertEqual(len(room["members"]), 1)
+
+            code = room["code"]
+            joined = client.post(
+                "/api/account/rooms/join",
+                headers=guest_headers,
+                json={"code": code, "recording_consent": False},
+            )
+            self.assertEqual(joined.status_code, 200, joined.text)
+            self.assertFalse(joined.json()["all_recording_consented"])
+            self.assertEqual(len(joined.json()["members"]), 2)
+
+            guest_room = client.get(
+                f"/api/account/rooms/{room['id']}", headers=guest_headers
+            )
+            self.assertEqual(guest_room.status_code, 200)
+            self.assertEqual(
+                [item["id"] for item in client.get("/api/account/rooms", headers=guest_headers).json()["rooms"]],
+                [room["id"]],
+            )
+            self.assertEqual(
+                client.get("/api/account/rooms", headers={"Authorization": "Bearer " + host["access_token"]}).status_code,
+                200,
+            )
+
+            denied_end = client.post(
+                f"/api/account/rooms/{room['id']}/end", headers=guest_headers
+            )
+            self.assertEqual(denied_end.status_code, 403)
+            denied_leave = client.post(
+                f"/api/account/rooms/{room['id']}/leave", headers=host_headers
+            )
+            self.assertEqual(denied_leave.status_code, 409)
+
+            consented = client.post(
+                f"/api/account/rooms/{room['id']}/consent",
+                headers=guest_headers,
+                json={"recording_consent": True},
+            )
+            self.assertEqual(consented.status_code, 200)
+            self.assertTrue(consented.json()["all_recording_consented"])
+
+            left = client.post(f"/api/account/rooms/{room['id']}/leave", headers=guest_headers)
+            self.assertEqual(left.status_code, 200)
+            self.assertEqual(client.get("/api/account/rooms", headers=guest_headers).json()["rooms"], [])
+            self.assertEqual(client.get(f"/api/account/rooms/{room['id']}", headers=guest_headers).status_code, 404)
+            self.assertEqual(client.post(
+                f"/api/account/rooms/{room['id']}/consent", headers=guest_headers,
+                json={"recording_consent": True},
+            ).status_code, 404)
+            rejoined = client.post("/api/account/rooms/join", headers=guest_headers,
+                                   json={"code": code, "recording_consent": False})
+            self.assertEqual(rejoined.status_code, 200)
+            self.assertEqual(len(rejoined.json()["members"]), 2)
+            self.assertFalse(rejoined.json()["all_recording_consented"])
+
+            ended = client.post(
+                f"/api/account/rooms/{room['id']}/end", headers=host_headers
+            )
+            self.assertEqual(ended.status_code, 200)
+            self.assertEqual(ended.json()["state"], "ended")
+            repeated = client.post(f"/api/account/rooms/{room['id']}/end", headers=host_headers)
+            self.assertEqual(repeated.json()["ended_at"], ended.json()["ended_at"])
+            self.assertEqual(client.post(
+                f"/api/account/rooms/{room['id']}/consent", headers=guest_headers,
+                json={"recording_consent": True},
+            ).status_code, 409)
+            self.assertEqual(
+                client.post(
+                    "/api/account/rooms/join",
+                    headers=guest_headers,
+                    json={"code": code, "recording_consent": True},
+                ).status_code,
+                404,
+            )
+
+            # A room id from another account is never disclosed through the scoped route.
+            other = self.register_with_email(client, "room_other").json()
+            other_headers = {"Authorization": f"Bearer {other['access_token']}"}
+            self.assertEqual(
+                client.get(f"/api/account/rooms/{room['id']}", headers=other_headers).status_code,
+                404,
+            )
+            self.assertEqual(client.get("/api/account/rooms").status_code, 401)
+            self.assertEqual(client.post("/api/account/rooms/join", headers=other_headers,
+                                        json={"code": "12345"}).status_code, 422)
+
+            # Account deletion cascades room membership and owned rooms as well.
+            self.assertEqual(client.delete("/api/account/me", headers=guest_headers).status_code, 200)
+            remaining = client.get(f"/api/account/rooms/{room['id']}", headers=host_headers).json()
+            self.assertEqual(len(remaining["members"]), 1)
+            self.assertEqual(client.post("/api/account/rooms", headers=host_headers, json={}).status_code, 201)
+            self.assertEqual(client.delete("/api/account/me", headers=host_headers).status_code, 200)
+            from contextlib import closing
+            import sqlite3
+            with closing(sqlite3.connect(self.db_path)) as db:
+                self.assertEqual(db.execute("SELECT count(*) FROM meeting_rooms").fetchone()[0], 0)
+                self.assertEqual(db.execute("SELECT count(*) FROM meeting_room_members").fetchone()[0], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

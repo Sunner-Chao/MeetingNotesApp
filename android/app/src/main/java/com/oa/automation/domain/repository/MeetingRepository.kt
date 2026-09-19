@@ -25,6 +25,8 @@ interface MeetingRepository {
     suspend fun saveAudioSegment(segment: MeetingAudioSegment): Result<MeetingAudioSegment>
     suspend fun findAudioSegmentsByMeetingId(meetingId: String): Result<List<MeetingAudioSegment>>
     suspend fun updateTitle(id: String, title: String): Result<Meeting>
+    suspend fun bindRoom(id: String, roomId: String?, expectedOwnerId: String): Result<Unit> =
+        Result.failure(UnsupportedOperationException("当前存储不支持房间关联"))
     suspend fun saveTranscript(transcript: Transcript): Result<Transcript>
     suspend fun findTranscriptsByMeetingId(meetingId: String): Result<List<Transcript>>
     suspend fun findTranscriptsByJourneyStageId(journeyStageId: String): Result<List<Transcript>>

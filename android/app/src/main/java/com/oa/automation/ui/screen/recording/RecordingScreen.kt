@@ -127,6 +127,7 @@ import com.oa.automation.infrastructure.image.OrientedImageDecoder
 import com.oa.automation.ui.location.ImageLocationPermission
 import com.oa.automation.ui.location.MeetingGalleryPermission
 import com.oa.automation.domain.model.ProductEdition
+import com.oa.automation.domain.model.CaptureInput
 import com.oa.automation.ui.navigation.ProductEntryPolicy
 import java.io.File
 import java.text.SimpleDateFormat
@@ -479,6 +480,8 @@ fun RecordingScreen(
         onSttEngineSelected = viewModel::switchSttEngine,
         onTestLocalStt = viewModel::testLocalSttAvailability,
         onSttLanguageSelected = viewModel::switchSttLanguage,
+        onSaveSessionSource = viewModel::saveSessionSource,
+        onBindMeetingRoom = viewModel::bindMeetingRoom,
         onStartRecording = ::startRecordingWithPermission,
         onTogglePause = viewModel::togglePauseRecording,
         onAddMarker = viewModel::addRecordingMarker,

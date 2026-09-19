@@ -26,6 +26,29 @@ import com.oa.automation.infrastructure.stt.StreamingTranscriptSegment
 
 class RecordingUiStateTest {
     @Test
+    fun `room binding is editable while idle or paused and locked during capture or saving`() {
+        assertTrue(canEditMeetingRoom(RecordingUiState()))
+        assertTrue(canEditMeetingRoom(RecordingUiState(isRecording = true, isPaused = true)))
+        assertFalse(canEditMeetingRoom(RecordingUiState(isRecording = true)))
+        assertFalse(canEditMeetingRoom(RecordingUiState(isRecordingActionPending = true)))
+        assertFalse(canEditMeetingRoom(RecordingUiState(isFinalizingRecording = true)))
+        assertFalse(canEditMeetingRoom(RecordingUiState(isSavingRoomBinding = true)))
+        assertFalse(canEditMeetingRoom(RecordingUiState(isSavingSession = true)))
+        assertFalse(canEditSessionSource(RecordingUiState(isSavingRoomBinding = true)))
+        assertFalse(isRecordingActionEnabled(RecordingUiState(isSavingRoomBinding = true)))
+        assertFalse(isRecordingActionEnabled(RecordingUiState(isSavingSession = true)))
+    }
+
+    @Test
+    fun `another meeting never inherits old room binding or its pending request`() {
+        val next = RecordingUiState(meetingRoomId = "previous-room", isSavingRoomBinding = true,
+            roomBindingError = "previous-error").resetForMeetingChange()
+        assertNull(next.meetingRoomId)
+        assertNull(next.roomBindingError)
+        assertFalse(next.isSavingRoomBinding)
+    }
+
+    @Test
     fun `unfinished meeting restores its saved template while new meeting stays unselected`() {
         val presets = listOf(
             PresetReportTemplate("通用会议", "通用内容"),

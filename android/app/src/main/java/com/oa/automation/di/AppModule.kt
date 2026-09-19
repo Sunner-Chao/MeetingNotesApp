@@ -105,6 +105,8 @@ val appModule = module {
             .addMigrations(AppDatabase.MIGRATION_23_24)
             .addMigrations(AppDatabase.MIGRATION_24_25)
             .addMigrations(AppDatabase.MIGRATION_25_26)
+            .addMigrations(AppDatabase.MIGRATION_26_27)
+            .addMigrations(AppDatabase.MIGRATION_27_28)
             .build()
     }
     single { get<AppDatabase>().meetingDao() }
@@ -144,7 +146,8 @@ val appModule = module {
     single { StreamingSttClient() }
     single { BackgroundTaskScheduler(androidContext(), get()) }
     single { ScheduledMeetingNotificationScheduler(androidContext()) }
-    single { RecordingSessionController(get(), get(), get(), get()) }
+    single { com.oa.automation.infrastructure.service.MeetingRoomRecordingAccess(get(), get(), get()) }
+    single { RecordingSessionController(get(), get(), get(), get(), get()) }
     single { SharedTextImportCoordinator(androidContext()) }
     single { ExternalTextSourceLauncher(androidContext()) }
     single { LLMEngine(get()) }
@@ -172,6 +175,7 @@ val appModule = module {
     viewModel { RegisterViewModel(get(), get(), get()) }
     viewModel { HomeViewModel(get(), get(), get(), get(), get(), get(), get(), get(), androidContext()) }
     viewModel { AccountViewModel(get(), get(), get(), get(), get()) }
+    viewModel { com.oa.automation.ui.screen.recording.MeetingRoomsViewModel(get(), get()) }
     viewModel { GrowthCenterViewModel(get(), get()) }
     viewModel { PointsPlansViewModel(get(), get()) }
     viewModel { CommunityModerationViewModel(get(), get()) }

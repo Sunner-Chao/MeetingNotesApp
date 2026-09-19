@@ -41,6 +41,10 @@ import com.oa.automation.domain.model.ProductEdition
 import com.oa.automation.domain.model.Transcript
 import com.oa.automation.domain.model.MeetingAttachment
 import com.oa.automation.domain.model.MeetingOrigin
+import com.oa.automation.domain.model.CaptureInput
+import com.oa.automation.domain.model.displayName
+import com.oa.automation.domain.model.MeetingAudioSource
+import com.oa.automation.domain.model.isImportedAudio
 import com.oa.automation.domain.model.RecordingMarker
 import com.oa.automation.domain.model.canonicalMeetingTranscripts
 import com.oa.automation.domain.model.renderedContent
@@ -80,6 +84,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.flow.sample
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -98,6 +103,11 @@ data class RecordingUiState(
     val sttEngineLabel: String = "",
     val sttEngineType: STTEngineType = STTEngineType.FASTER_WHISPER,
     val sttLanguage: STTLanguage = STTLanguage.CHINESE,
+    val preferredCaptureInput: CaptureInput = CaptureInput.PHONE,
+    val audioSource: MeetingAudioSource = MeetingAudioSource.UNKNOWN,
+    val captureDeviceName: String? = null,
+    val externalSessionId: String = "",
+    val isSavingSession: Boolean = false,
     val agentProvider: AgentProvider = AgentProvider.CODEX_CLI,
     val isSwitchingSttEngine: Boolean = false,
     val isTestingLocalStt: Boolean = false,
@@ -177,7 +187,10 @@ data class RecordingUiState(
     val isImportingAudio: Boolean = false,
     val recordingMarkers: List<Long> = emptyList(),
     val recordingMarkerAnchors: List<String> = emptyList(),
-    val activePhotoMarker: RecordingMarker? = null
+    val activePhotoMarker: RecordingMarker? = null,
+    val meetingRoomId: String? = null,
+    val isSavingRoomBinding: Boolean = false,
+    val roomBindingError: String? = null
 )
 
 internal enum class RecordingMediaRequest {
@@ -316,10 +329,19 @@ internal fun isStudyJourneyTemplateName(templateName: String): Boolean =
 
 internal fun isRecordingActionEnabled(state: RecordingUiState): Boolean =
     !state.isRecordingActionPending &&
+        !state.isSavingSession &&
+        !state.isSavingRoomBinding &&
         !state.isSwitchingSttEngine &&
         !state.isFinalizingRecording &&
         !state.isJourneyActionPending &&
         !state.isGeneratingReport
+
+internal fun canEditMeetingRoom(state: RecordingUiState): Boolean =
+    (!state.isRecording || state.isPaused) &&
+        !state.isRecordingActionPending &&
+        !state.isFinalizingRecording &&
+        !state.isSavingSession &&
+        !state.isSavingRoomBinding
 
 internal fun isRecordingMainActionEnabled(state: RecordingUiState): Boolean =
     isRecordingActionEnabled(state) &&
@@ -489,6 +511,11 @@ internal fun recordingMainAction(state: RecordingUiState): RecordingMainAction =
 
 internal fun RecordingUiState.resetForMeetingChange(): RecordingUiState = copy(
     meetingTitle = "",
+    preferredCaptureInput = CaptureInput.PHONE,
+    audioSource = MeetingAudioSource.UNKNOWN,
+    captureDeviceName = null,
+    externalSessionId = "",
+    isSavingSession = false,
     isSwitchingSttEngine = false,
     sttSwitchStatus = "",
     isSwitchingSttLanguage = false,
@@ -557,7 +584,10 @@ internal fun RecordingUiState.resetForMeetingChange(): RecordingUiState = copy(
     isImportingAudio = false,
     recordingMarkers = emptyList(),
     recordingMarkerAnchors = emptyList(),
-    activePhotoMarker = null
+    activePhotoMarker = null,
+    meetingRoomId = null,
+    isSavingRoomBinding = false,
+    roomBindingError = null
 )
 
 enum class InputMode { VOICE, IMPORT }
@@ -644,6 +674,7 @@ class RecordingViewModel(
     private var liveTimelineOffsetMs: Long = 0L
     private var preferredSttEngineType: STTEngineType = STTEngineType.FASTER_WHISPER
     private var localSttTestJob: Job? = null
+    private var roomBindingJob: Job? = null
 
     /**
      * Engine this meeting resolved to after an automatic local→cloud fallback.
@@ -676,6 +707,16 @@ class RecordingViewModel(
     }
 
     init {
+        viewModelScope.launch {
+            var initialized = false
+            configDataStore.authSessionFlow.map { it?.user?.id }.distinctUntilChanged().collect {
+                if (initialized) {
+                    roomBindingJob?.cancel()
+                    _uiState.update { state -> state.copy(meetingRoomId = null, isSavingRoomBinding = false, roomBindingError = null) }
+                }
+                initialized = true
+            }
+        }
         _uiState.update {
             it.copy(externalTextSources = externalTextSourceLauncher.availableSources())
         }
@@ -752,6 +793,8 @@ class RecordingViewModel(
                             session = session
                         ),
                         audioLevel = session.audioLevel,
+                        audioSource = session.captureRoute?.source ?: it.audioSource,
+                        captureDeviceName = session.captureRoute?.deviceName ?: it.captureDeviceName,
                         transcriptPreviewMode = session.status,
                         sttEngineType = actualEngine,
                         sttEngineLabel = actualEngine.displayName,
@@ -872,6 +915,7 @@ class RecordingViewModel(
         if (meetingId.isBlank()) return
         val meetingChanged = currentMeetingId != meetingId
         if (meetingChanged) {
+            roomBindingJob?.cancel()
             if (currentMeetingId.isNotBlank()) {
                 requestRecordingStop(showNoRecordingError = false)
             }
@@ -923,6 +967,7 @@ class RecordingViewModel(
         observeJourney(meetingId)
 
         viewModelScope.launch {
+            val loadOwner = configDataStore.currentLocalWorkspaceAccountId()
             var meeting = meetingRepository.findById(meetingId).getOrNull()
             if (meeting?.origin == MeetingOrigin.FILE_IMPORT && meeting.durationMs <= 0L) {
                 val audioFile = meeting.audioFilePath?.let(::File)?.takeIf { it.isFile }
@@ -1025,7 +1070,7 @@ class RecordingViewModel(
             if (meeting != null && meeting.selectedSttEngineName == null) {
                 persistMeetingSttEngine(meetingId, restoredSttEngineType)
             }
-            if (meeting != null && isCurrentMeeting(meetingId)) {
+            if (meeting != null && isCurrentMeeting(meetingId) && configDataStore.currentLocalWorkspaceAccountId() == loadOwner) {
                 persistedDurationSeconds = maxOf(
                     meeting.durationMs.div(1_000L).coerceAtLeast(0L),
                     if (recordingState.meetingId == meetingId &&
@@ -1080,6 +1125,11 @@ class RecordingViewModel(
                         sttEngineLabel = restoredSttEngineType.displayName,
                         sttEngineType = restoredSttEngineType,
                         sttLanguage = restoredSttConfig.language,
+                        preferredCaptureInput = meeting.preferredCaptureInput,
+                        audioSource = if (isGlobalRecording) recordingState.captureRoute?.source ?: meeting.audioSource else meeting.audioSource,
+                        captureDeviceName = if (isGlobalRecording) recordingState.captureRoute?.deviceName else meeting.captureDeviceName,
+                        externalSessionId = meeting.externalSessionId.orEmpty(),
+                        meetingRoomId = meeting.meetingRoomId,
                         isRecording = isGlobalRecording,
                         isPaused = recordingState.isPaused,
                         hasRecording = isGlobalRecording ||
@@ -1567,7 +1617,7 @@ class RecordingViewModel(
             return
         }
         val state = _uiState.value
-        if (state.isRecordingActionPending || state.isJourneyActionPending) return
+        if (state.isRecordingActionPending || state.isJourneyActionPending || state.isSavingRoomBinding || state.isSavingSession) return
         if (state.selectedRecordingTemplateName.isNullOrBlank()) {
             _uiState.update {
                 it.copy(error = RECORDING_TEMPLATE_REQUIRED_MESSAGE)
@@ -1732,6 +1782,51 @@ class RecordingViewModel(
 
     fun addRecordingMarker() {
         requestMarkerMedia(RecordingMediaRequest.CHOOSE_SOURCE)
+    }
+
+    fun saveSessionSource(input: CaptureInput, source: MeetingAudioSource, externalId: String) {
+        val meetingId = currentMeetingId
+        val state = _uiState.value
+        if (meetingId.isBlank() || !canEditSessionSource(state)) return
+        _uiState.update { it.copy(isSavingSession = true, error = null) }
+        viewModelScope.launch {
+            try {
+                val meeting = meetingRepository.findById(meetingId).getOrThrow() ?: error("记录不存在")
+                val importedSource = if (state.inputMode == InputMode.IMPORT && source.isImportedAudio()) source else meeting.audioSource
+                val saved = meeting.copy(
+                    preferredCaptureInput = input,
+                    audioSource = importedSource,
+                    externalSessionId = externalId.trim().take(120).takeIf(String::isNotBlank)
+                )
+                meetingRepository.save(saved).getOrThrow()
+                if (isCurrentMeeting(meetingId)) _uiState.update { it.copy(
+                    preferredCaptureInput = input, audioSource = importedSource,
+                    externalSessionId = saved.externalSessionId.orEmpty(), isSavingSession = false
+                ) }
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                if (isCurrentMeeting(meetingId)) _uiState.update { it.copy(isSavingSession = false, error = "保存来源失败，请重试") }
+            }
+        }
+    }
+
+    /** Binds this local record to the selected first-party planning room. */
+    fun bindMeetingRoom(roomId: String?) {
+        val meetingId = currentMeetingId
+        if (meetingId.isBlank() || !canEditMeetingRoom(_uiState.value)) return
+        val selectedId = roomId?.trim()?.takeIf(String::isNotBlank)
+        _uiState.update { it.copy(isSavingRoomBinding = true, roomBindingError = null) }
+        roomBindingJob = viewModelScope.launch {
+            try {
+                recordingController.bindMeetingRoom(meetingId, selectedId)
+                if (isCurrentMeeting(meetingId)) _uiState.update { it.copy(meetingRoomId = selectedId, isSavingRoomBinding = false) }
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                if (isCurrentMeeting(meetingId)) _uiState.update {
+                    it.copy(isSavingRoomBinding = false, roomBindingError = error.message ?: "保存房间关联失败，请重试")
+                }
+            }
+        }
     }
 
     fun requestPhotoCapture() {
@@ -3523,7 +3618,9 @@ class RecordingViewModel(
                             meetingRepository.save(meeting.copy(
                                 audioFilePath = imported.file.absolutePath,
                                 durationMs = maxOf(meeting.durationMs, imported.durationMs),
-                                selectedSttEngineName = state.sttEngineType.name
+                                selectedSttEngineName = state.sttEngineType.name,
+                                audioSource = state.audioSource.takeIf { it.isImportedAudio() } ?: MeetingAudioSource.IMPORTED_FILE,
+                                captureDeviceName = null
                             ))
                                 .getOrThrow()
                             taskScheduler.enqueueTranscription(
@@ -3539,6 +3636,8 @@ class RecordingViewModel(
                                         hasRecording = true,
                                         inputMode = InputMode.IMPORT,
                                         importedAudioDisplayName = imported.displayName,
+                                        audioSource = state.audioSource.takeIf { it.isImportedAudio() } ?: MeetingAudioSource.IMPORTED_FILE,
+                                        captureDeviceName = null,
                                         textImportStatus = "${imported.displayName} · 正在生成最终转写",
                                         transcriptionProgressStage = "最终转录正在排队",
                                         transcriptPreviewMode = "正在识别导入音频"

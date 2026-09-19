@@ -6,7 +6,8 @@ import com.oa.automation.domain.model.Task
 import com.oa.automation.domain.model.canonicalMeetingTranscripts
 import com.oa.automation.domain.model.extractForumParticipants
 import com.oa.automation.domain.model.isForumMeetingTemplate
-import com.oa.automation.domain.model.renderedContent
+import com.oa.automation.domain.model.renderedTimelineContent
+import com.oa.automation.domain.model.buildMeetingSessionContext
 import com.oa.automation.domain.repository.MeetingRepository
 import com.oa.automation.domain.repository.ReportRepository
 import com.oa.automation.infrastructure.llm.LLMEngine
@@ -57,7 +58,7 @@ class GenerateReportUseCase(
             }
 
             val transcriptContent = SimplifiedChineseText.normalize(
-                transcripts.canonicalMeetingTranscripts().joinToString("\n") { it.renderedContent() }
+                transcripts.canonicalMeetingTranscripts().joinToString("\n") { it.renderedTimelineContent() }
             )
             onProgress(ProcessingProgress(20, "准备模板和会议图片"))
             val meetingTemplateName = generation.templateName
@@ -65,7 +66,12 @@ class GenerateReportUseCase(
                 meetingRepository.observeAttachments(meetingId).first()
             )
             onProgress(ProcessingProgress(35, "Agent 正在分析会议内容", isIndeterminate = true))
-            val reportTranscript = buildMarkerAwareTranscript(transcriptContent, attachments)
+            val meeting = meetingRepository.findById(meetingId).getOrThrow()
+                ?: return Result.failure(Exception("会议不存在或当前账号无权访问"))
+            val reportTranscript = buildMarkerAwareTranscript(
+                buildMeetingSessionContext(meeting, transcripts) + "\n\n转写原文：\n" + transcriptContent,
+                attachments
+            )
             val usageKey = "report:$meetingId:$requestId"
             var reportResult = runReportRequest(reportTranscript, attachments, meetingId, usageKey, meetingTemplateName)
             if (reportResult.exceptionOrNull()?.isAuthenticationFailure() == true) {

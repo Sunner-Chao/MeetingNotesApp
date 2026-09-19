@@ -17,8 +17,22 @@ data class Meeting(
      * the app default so a resumed meeting keeps its original local/cloud route.
      */
     val selectedSttEngineName: String? = null,
+    /** Actual audio source used by the meeting session. */
+    val audioSource: MeetingAudioSource = when (origin) {
+        MeetingOrigin.FILE_IMPORT -> MeetingAudioSource.IMPORTED_FILE
+        else -> MeetingAudioSource.MICROPHONE
+    },
+    /** Human-readable route/device detail, never a credential. */
+    val captureDeviceName: String? = null,
+    /** Provider session id when the source supplies one. */
+    val externalSessionId: String? = null,
+    /** Number of anonymous speaker labels observed in the session. */
+    val detectedSpeakerCount: Int = 0,
+    val preferredCaptureInput: CaptureInput = CaptureInput.PHONE,
     /** Local account owner; populated by account-aware repositories. */
-    val ownerId: String? = null
+    val ownerId: String? = null,
+    /** First-party 聆听·策划会 room bound to this recording, if any. */
+    val meetingRoomId: String? = null
 )
 
 enum class MeetingOrigin {

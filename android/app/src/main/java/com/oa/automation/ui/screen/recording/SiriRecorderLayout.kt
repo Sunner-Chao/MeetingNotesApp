@@ -50,6 +50,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Headphones
+import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MoreHoriz
@@ -79,6 +80,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -109,6 +111,7 @@ import androidx.compose.ui.unit.sp
 import com.oa.automation.BuildConfig
 import com.oa.automation.domain.model.CustomTemplateLayout
 import com.oa.automation.domain.model.MeetingAttachment
+import com.oa.automation.domain.model.MeetingMode
 import com.oa.automation.domain.model.PresetReportTemplate
 import com.oa.automation.domain.model.Journey
 import com.oa.automation.domain.model.JourneyStage
@@ -190,6 +193,8 @@ internal fun siriLightPalette(): SiriRecorderPalette = SiriLightPalette
 @Composable
 internal fun SiriRecorderContent(
     uiState: RecordingUiState,
+    onOpenSessionSource: () -> Unit,
+    onBindMeetingRoom: (String?) -> Unit,
     productPolicy: ProductEntryPolicy = ProductEntryPolicy.forEdition(ProductEdition.current),
     onNavigateBack: () -> Unit,
     onOpenReport: () -> Unit,
@@ -230,6 +235,8 @@ internal fun SiriRecorderContent(
     val isDark = com.oa.automation.ui.theme.LocalAppIsDarkTheme.current
     var savedAudioDialogVisible by remember { mutableStateOf(false) }
     var journeyDialogVisible by remember { mutableStateOf(false) }
+    var meetingRoomsVisible by rememberSaveable { mutableStateOf(false) }
+    val showMeetingRooms = uiState.meetingRoomId != null || MeetingMode.fromTemplateName(uiState.selectedRecordingTemplateName.orEmpty()) == MeetingMode.LISTENING_PLANNING
     val canGenerate = canGenerateReportFromRecording(uiState)
     val savedAudio = uiState.archivedAudio.firstOrNull()
     val displayedSttEngine = effectiveSttEngineType(
@@ -274,6 +281,16 @@ internal fun SiriRecorderContent(
     }
 
     val doodleSkin = rememberDoodleSkin(isDark)
+    if (meetingRoomsVisible && showMeetingRooms) {
+        MeetingRoomsDialog(
+            onDismiss = { meetingRoomsVisible = false },
+            boundRoomId = uiState.meetingRoomId,
+            bindingEnabled = canEditMeetingRoom(uiState),
+            bindingBusy = uiState.isSavingRoomBinding,
+            bindingError = uiState.roomBindingError,
+            onRoomSelected = onBindMeetingRoom
+        )
+    }
     if (litePaper) LiteRecorderSystemBars()
 
     Box(
@@ -303,6 +320,8 @@ internal fun SiriRecorderContent(
                 hasJourney = uiState.journey != null,
                 showStudyJourney = productPolicy.showStudyJourneyTemplate,
                 onOpenJourney = { journeyDialogVisible = true },
+                showMeetingRooms = showMeetingRooms,
+                onOpenMeetingRooms = { meetingRoomsVisible = true },
                 journey = uiState.journey,
                 latestSavedJourneyStage = uiState.latestSavedJourneyStage,
                 latestStageDraft = uiState.latestStageDraft,
@@ -328,6 +347,17 @@ internal fun SiriRecorderContent(
             )
             Spacer(Modifier.height(10.dp))
             SiriTranscriptCard(
+                sessionSource = {
+                    MeetingSessionSourceRow(uiState, palette.muted, onOpenSessionSource)
+                    if (uiState.meetingRoomId != null) TextButton(
+                        onClick = { meetingRoomsVisible = true },
+                        modifier = Modifier.heightIn(min = 40.dp)
+                    ) {
+                        Icon(Icons.Default.Groups, contentDescription = null, modifier = Modifier.size(16.dp), tint = palette.muted)
+                        Spacer(Modifier.width(6.dp))
+                        Text("已关联会议房间 · 查看成员", color = palette.muted, style = MaterialTheme.typography.labelSmall)
+                    }
+                },
                 templates = uiState.presetTemplates,
                 onSelectTemplate = onSelectTemplate,
                 reducedMotion = templateWorkflowReducedMotion,
@@ -420,6 +450,8 @@ private fun SiriTopBar(
     showStudyJourney: Boolean,
     hasJourney: Boolean,
     onOpenJourney: () -> Unit,
+    showMeetingRooms: Boolean,
+    onOpenMeetingRooms: () -> Unit,
     journey: Journey?,
     latestSavedJourneyStage: JourneyStage?,
     latestStageDraft: StageDraftVersion?,
@@ -512,6 +544,9 @@ private fun SiriTopBar(
             ) {
                 SiriMenuItem(Icons.Default.Edit, "修改会议名称", onEditTitle, onMenuExpandedChange)
                 SiriMenuItem(Icons.Default.PhotoLibrary, "管理插图", onManageImages, onMenuExpandedChange)
+                if (showMeetingRooms) {
+                    SiriMenuItem(Icons.Default.Groups, "会议房间", onOpenMeetingRooms, onMenuExpandedChange)
+                }
                 if (savedAudio != null) {
                     SiriMenuItem(
                         Icons.Default.Headphones,
@@ -1074,6 +1109,7 @@ private fun buildMarkerAwareTranscriptText(
 @Composable
 @OptIn(ExperimentalLayoutApi::class)
 private fun SiriTranscriptCard(
+    sessionSource: @Composable () -> Unit,
     templates: List<PresetReportTemplate>,
     onSelectTemplate: (PresetReportTemplate) -> Unit,
     reducedMotion: Boolean,
@@ -1195,7 +1231,8 @@ private fun SiriTranscriptCard(
                     ) { Text("检测", color = palette.muted, style = MaterialTheme.typography.labelSmall) }
                 }
             }
-            Spacer(Modifier.height(10.dp))
+            sessionSource()
+            Spacer(Modifier.height(6.dp))
             if (isRecording) {
                 RealtimeSttStatusBar(route = realtimeSttRoute)
                 Spacer(Modifier.height(9.dp))
