@@ -2,6 +2,8 @@ package com.oa.automation.infrastructure.llm
 
 import com.oa.automation.data.local.ConfigDataStore
 import com.oa.automation.domain.model.LLMConfig
+import com.oa.automation.domain.model.PresetReportTemplate
+import com.oa.automation.domain.model.ReportTemplateConfig
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
@@ -27,19 +29,25 @@ class LLMEngine(
         transcript: String,
         attachments: List<AgentAttachment> = emptyList(),
         meetingId: String? = null,
-        usageKey: String? = null
+        usageKey: String? = null,
+        meetingTemplateName: String? = null
     ): ReportData {
         val appConfig = configDataStore.appConfigFlow.first()
         val config = appConfig.llmConfig
         val accountAccessToken = configDataStore.authSessionFlow.first()?.accessToken
         val engine = LLMReportEngine.fromConfig(config, accountAccessToken)
+        val template = resolveMeetingReportTemplate(
+            meetingTemplateName,
+            appConfig.reportTemplateConfig,
+            configDataStore.loadPresetTemplates() + configDataStore.loadVipTemplates()
+        )
 
         val usageContext = meetingId?.takeIf { it.isNotBlank() }?.let {
             AgentUsageContext(it, usageKey?.takeIf(String::isNotBlank) ?: java.util.UUID.randomUUID().toString())
         }
         return engine.generateReport(
             transcript,
-            appConfig.reportTemplateConfig,
+            template,
             attachments,
             usageContext
         )
@@ -71,4 +79,17 @@ class LLMEngine(
     fun generateReportSync(transcript: String): ReportData {
         return runBlocking { generateReport(transcript) }
     }
+}
+
+/** A background job belongs to its meeting, independently of other screens' selection. */
+internal fun resolveMeetingReportTemplate(
+    meetingTemplateName: String?,
+    current: ReportTemplateConfig,
+    presets: List<PresetReportTemplate>
+): ReportTemplateConfig {
+    val name = meetingTemplateName?.takeIf { it.isNotBlank() } ?: return current
+    if (name == current.selectedName) return current
+    val preset = presets.firstOrNull { it.name == name }
+        ?: error("此会议模板暂不可用，请重新选择模板")
+    return ReportTemplateConfig(selectedName = preset.name, content = preset.content)
 }

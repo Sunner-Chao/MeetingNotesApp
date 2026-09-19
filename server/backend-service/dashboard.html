@@ -788,10 +788,12 @@
         const applicationsHost = document.getElementById('growth-channel-applications');
         applicationsHost.innerHTML = applications.length ? applications.map((item) => {
           const answers = item.answers || {};
+          const surveyFields = { usage_scene: '主要使用场景', usage_frequency: '使用频率', current_method: '当前整理方式', pain_points: '最想解决的问题', payment_preference: '付费偏好', suggestion: '补充建议' };
+          const survey = Object.entries(surveyFields).filter(([key]) => answers[key]).map(([key, label]) => `<p>${label}：${growthEscape(answers[key])}</p>`).join('');
           const statusText = { pending: '待审核', approved: '已通过', rejected: '已拒绝' }[item.status] || item.status;
           const statusClass = item.status === 'approved' ? 'ok' : item.status === 'rejected' ? 'danger' : 'warn';
           const action = item.status === 'pending' ? `<div class="row-actions"><button class="button primary" type="button" data-action="decide-channel-application" data-application-id="${growthEscape(item.id)}" data-decision="approved">通过</button><button class="button danger" type="button" data-action="decide-channel-application" data-application-id="${growthEscape(item.id)}" data-decision="rejected">拒绝</button></div>` : `<span class="status-text">${growthEscape(item.review_note || '已处理')}</span>`;
-          return `<article class="campaign-dashboard-item"><header><strong>${growthEscape(item.user_name || item.username || '用户')}</strong><span class="badge ${statusClass}">${statusText}</span></header><p>地区：${growthEscape(answers.city || '未填写')} · 目的：${growthEscape(answers.purpose || '未填写')}</p><p>联系：${growthEscape(answers.contact || '未提供')} · 提交于 ${growthEscape(formatDate(item.created_at))}</p><footer>${action}</footer></article>`;
+          return `<article class="campaign-dashboard-item"><header><strong>${growthEscape(answers.name || item.user_name || item.username || '用户')}</strong><span class="badge ${statusClass}">${statusText}</span></header><p>地区：${growthEscape(answers.city || '未填写')} · 目的：${growthEscape(answers.purpose || '未填写')}</p>${survey}<p>联系：${growthEscape(answers.contact || '未提供')} · 提交于 ${growthEscape(formatDate(item.created_at))}</p><footer>${action}</footer></article>`;
         }).join('') : '<div class="empty">暂无入群申请</div>';
         document.getElementById('growth-campaign-list').innerHTML = campaigns.length ? campaigns.map((item) => {
           const statusText = { active: '进行中', running: '进行中', settled: '已结算', draft: '草稿', paused: '已暂停' }[item.status] || item.status;

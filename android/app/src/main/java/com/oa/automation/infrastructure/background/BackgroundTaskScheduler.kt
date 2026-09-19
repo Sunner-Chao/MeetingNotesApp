@@ -10,11 +10,16 @@ import androidx.work.OutOfQuotaPolicy
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.workDataOf
+import androidx.work.await
+import com.oa.automation.domain.repository.ReportRepository
 import java.io.File
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 enum class BackgroundTaskState { NONE, QUEUED, RUNNING, SUCCEEDED, FAILED, CANCELLED }
 
@@ -31,7 +36,8 @@ data class BackgroundTaskStatus(
         get() = state == BackgroundTaskState.QUEUED || state == BackgroundTaskState.RUNNING
 }
 
-class BackgroundTaskScheduler(context: Context) {
+class BackgroundTaskScheduler(context: Context, private val reportRepository: ReportRepository) {
+    private val reportEnqueueMutex = Mutex()
     private val workManager = WorkManager.getInstance(context.applicationContext)
     private val networkConstraint = Constraints.Builder()
         .setRequiredNetworkType(NetworkType.CONNECTED)
@@ -68,20 +74,29 @@ class BackgroundTaskScheduler(context: Context) {
         return request.id
     }
 
-    fun enqueueReport(meetingId: String, replaceRunning: Boolean = false): UUID {
+    suspend fun enqueueReport(meetingId: String, replaceRunning: Boolean = false, templateName: String? = null): UUID = reportEnqueueMutex.withLock {
+        if (!replaceRunning) {
+            val active = workManager.getWorkInfosForUniqueWorkFlow(reportWorkName(meetingId))
+                .first().firstOrNull { !it.state.isFinished }
+            if (active != null) return@withLock active.id
+        }
         val request = OneTimeWorkRequestBuilder<GenerateReportWorker>()
             .setInputData(workDataOf(GenerateReportWorker.KEY_MEETING_ID to meetingId))
             .setConstraints(networkConstraint)
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 15, TimeUnit.SECONDS)
             .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
             .addTag(reportTag(meetingId))
+            .addTag("report-created:${System.currentTimeMillis()}")
             .build()
+        // Invalidate the previous result before a new worker can start. Its late
+        // response can no longer commit after this transaction changes requestId.
+        reportRepository.beginGeneration(meetingId, request.id.toString(), templateName)
         workManager.enqueueUniqueWork(
             reportWorkName(meetingId),
             if (replaceRunning) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP,
             request
-        )
-        return request.id
+        ).await()
+        request.id
     }
 
     fun observeTranscription(meetingId: String): Flow<BackgroundTaskStatus> =
@@ -92,6 +107,11 @@ class BackgroundTaskScheduler(context: Context) {
         workManager.getWorkInfosForUniqueWorkFlow(reportWorkName(meetingId))
             .map(::latestStatus)
 
+    fun observeReportRequest(requestId: UUID): Flow<BackgroundTaskStatus> =
+        workManager.getWorkInfoByIdFlow(requestId).map { latestStatus(listOfNotNull(it)) }
+
+    suspend fun reportStatus(meetingId: String): BackgroundTaskStatus = observeReport(meetingId).first()
+
     fun cancelTranscription(meetingId: String) {
         workManager.cancelUniqueWork(transcriptionWorkName(meetingId))
     }
@@ -101,7 +121,7 @@ class BackgroundTaskScheduler(context: Context) {
     }
 
     private fun latestStatus(workInfos: List<WorkInfo>): BackgroundTaskStatus {
-        val workInfo = workInfos.lastOrNull() ?: return BackgroundTaskStatus()
+        val workInfo = selectLatestWorkInfo(workInfos) ?: return BackgroundTaskStatus()
         return BackgroundTaskStatus(
             id = workInfo.id,
             state = when (workInfo.state) {
@@ -130,3 +150,9 @@ class BackgroundTaskScheduler(context: Context) {
         private fun reportTag(meetingId: String) = "report:$meetingId"
     }
 }
+
+internal fun selectLatestWorkInfo(workInfos: List<WorkInfo>): WorkInfo? =
+    workInfos.filter { !it.state.isFinished }.ifEmpty { workInfos }.maxByOrNull { info ->
+        info.tags.firstNotNullOfOrNull { it.removePrefix("report-created:").toLongOrNull() }
+            ?: info.nextScheduleTimeMillis.takeIf { it != Long.MAX_VALUE } ?: 0L
+    }

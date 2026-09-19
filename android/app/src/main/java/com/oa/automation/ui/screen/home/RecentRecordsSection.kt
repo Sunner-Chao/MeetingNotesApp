@@ -1,15 +1,10 @@
 package com.oa.automation.ui.screen.home
 
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -26,6 +21,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -40,18 +36,19 @@ import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Schedule
-import androidx.compose.material.icons.filled.Sort
+import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -157,89 +154,37 @@ private fun recordAccent(
 internal fun surfaceLift(elevation: Dp): Dp =
     if (LocalAppIsDarkTheme.current) 0.dp else elevation
 
-/**
- * Section header for 最近记录: a sparkle wordmark, an encouraging subtitle, and
- * the clear-all / show-all affordances. The running tally lives in the filter
- * card below so this line stays a stable, calm title.
- */
+/** A quiet heading and one clear route into the complete record list. */
 @Composable
 internal fun RecentRecordsHeader(
-    hasMeetings: Boolean,
-    showAllAction: Boolean,
+    count: Int,
     onShowAll: () -> Unit,
-    onClearAll: () -> Unit,
     layout: HomeLayoutSpec
 ) {
     val colors = homeColors()
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(
-            imageVector = Icons.Default.AutoAwesome,
-            contentDescription = null,
-            tint = BrandBlue,
-            modifier = Modifier.size(if (layout.compact) 21.dp else 23.dp)
+        Text(
+            "最近记录",
+            modifier = Modifier.weight(1f),
+            fontSize = if (layout.compact) 19.sp else 21.sp,
+            fontWeight = FontWeight.Bold,
+            color = colors.ink
         )
-        Spacer(Modifier.width(8.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = "最近记录",
-                style = MaterialTheme.typography.headlineSmall.copy(
-                    fontSize = if (layout.compact) 20.sp else 22.sp
-                ),
-                fontWeight = FontWeight.Bold,
-                color = colors.ink
-            )
-            Text(
-                text = "你的灵感，都在这里继续生长",
-                style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
-                color = colors.mutedInk,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-        if (hasMeetings) {
-            Surface(
-                onClick = onClearAll,
-                modifier = Modifier.size(34.dp),
-                shape = RoundedCornerShape(10.dp),
-                color = colors.meetingSurface,
-                border = BorderStroke(1.dp, colors.mutedInk.copy(alpha = 0.20f))
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        imageVector = Icons.Default.DeleteSweep,
-                        contentDescription = "清空会议记录",
-                        tint = colors.mutedInk,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-            }
-        }
-        if (showAllAction) {
-            TextButton(
-                onClick = onShowAll,
-                contentPadding = PaddingValues(horizontal = 8.dp)
-            ) {
-                Text("查看全部", color = BrandBlue, fontSize = 12.sp)
-                Spacer(Modifier.width(2.dp))
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                    contentDescription = null,
-                    tint = BrandBlue,
-                    modifier = Modifier.size(15.dp)
-                )
+        if (count > 0) {
+            Text(count.toString(), fontSize = 12.sp, color = colors.mutedInk)
+            TextButton(onClick = onShowAll) {
+                Text("查看全部", fontSize = 13.sp, color = colors.mutedInk)
+                Spacer(Modifier.width(4.dp))
+                Icon(Icons.AutoMirrored.Filled.ArrowForward, null, tint = colors.mutedInk, modifier = Modifier.size(16.dp))
             }
         }
     }
 }
 
-/**
- * Collapsible filter card. Closed it costs one row and still reports what is
- * being hidden; open it lays out 类型 / 状态 / 时间 as labelled hairline-separated
- * rows so the active choice is obvious at a glance.
- */
+/** One compact menu keeps filters out of the home preview. */
 @Composable
 internal fun RecentRecordsFilterBar(
     filter: RecentRecordFilter,
@@ -249,127 +194,56 @@ internal fun RecentRecordsFilterBar(
     onFilterChange: (RecentRecordFilter) -> Unit
 ) {
     val colors = homeColors()
-    val hairline = colors.mutedInk.copy(alpha = 0.14f)
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        color = colors.meetingSurface,
-        border = BorderStroke(1.dp, hairline),
-        shadowElevation = surfaceLift(1.dp)
-    ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { onExpandedChange(!expanded) }
-                    .padding(horizontal = 12.dp, vertical = 9.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    imageVector = Icons.Default.FilterList,
-                    contentDescription = null,
-                    tint = if (filter.isDefault) colors.mutedInk else BrandBlue,
-                    modifier = Modifier.size(16.dp)
-                )
-                Spacer(Modifier.width(7.dp))
-                Text(
-                    text = "筛选条件",
-                    style = MaterialTheme.typography.labelLarge.copy(fontSize = 13.sp),
-                    fontWeight = FontWeight.SemiBold,
-                    color = colors.ink
-                )
-                Spacer(Modifier.width(10.dp))
-                Box(modifier = Modifier.weight(1f)) {
-                    if (filter.isDefault) {
-                        RecordTally(counts = counts, colors = colors)
-                    } else {
-                        // A narrowed list must say what is being hidden, open or closed.
-                        Text(
-                            text = listOfNotNull(
-                                filter.type.takeIf { it != RecentRecordType.ALL }?.label,
-                                filter.status.takeIf { it != RecentRecordStatus.ALL }?.label,
-                                filter.sort.takeIf { it != RecentRecordSort.NEWEST }?.label
-                            ).joinToString(" · "),
-                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
-                            color = BrandBlue,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                }
-                Icon(
-                    imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                    contentDescription = if (expanded) "收起筛选" else "展开筛选",
-                    tint = colors.mutedInk,
-                    modifier = Modifier.size(20.dp)
-                )
+    val summary = if (filter.isDefault) {
+        "共 ${counts.total} 条"
+    } else {
+        listOfNotNull(
+            filter.type.takeIf { it != RecentRecordType.ALL }?.label,
+            filter.status.takeIf { it != RecentRecordStatus.ALL }?.label,
+            filter.sort.takeIf { it != RecentRecordSort.NEWEST }?.label
+        ).joinToString(" · ")
+    }
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            summary, modifier = Modifier.weight(1f),
+            color = if (filter.isDefault) colors.mutedInk else BrandBlue,
+            fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis
+        )
+        Box {
+            TextButton(onClick = { onExpandedChange(!expanded) }) {
+                Icon(Icons.Default.FilterList, null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("筛选", fontSize = 12.sp)
             }
-            AnimatedVisibility(
-                visible = expanded,
-                enter = fadeIn(tween(140)) + expandVertically(tween(180)),
-                exit = fadeOut(tween(120)) + shrinkVertically(tween(160))
-            ) {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    HorizontalDivider(color = hairline)
-                    FilterRow(label = "类型") {
-                        FilterChip(
-                            text = RecentRecordType.ALL.label,
-                            badge = counts.total,
-                            selected = filter.type == RecentRecordType.ALL,
-                            onClick = { onFilterChange(filter.copy(type = RecentRecordType.ALL)) }
-                        )
-                        FilterChip(
-                            text = RecentRecordType.LISTEN.label,
-                            badge = counts.listen,
-                            selected = filter.type == RecentRecordType.LISTEN,
-                            onClick = { onFilterChange(filter.copy(type = RecentRecordType.LISTEN)) }
-                        )
-                        FilterChip(
-                            text = RecentRecordType.IMPORT.label,
-                            badge = counts.importParsed,
-                            selected = filter.type == RecentRecordType.IMPORT,
-                            onClick = { onFilterChange(filter.copy(type = RecentRecordType.IMPORT)) }
-                        )
-                    }
-                    HorizontalDivider(color = hairline)
-                    FilterRow(label = "状态") {
-                        FilterChip(
-                            text = RecentRecordStatus.ALL.label,
-                            badge = null,
-                            selected = filter.status == RecentRecordStatus.ALL,
-                            onClick = { onFilterChange(filter.copy(status = RecentRecordStatus.ALL)) }
-                        )
-                        FilterChip(
-                            text = RecentRecordStatus.DONE.label,
-                            badge = counts.done,
-                            selected = filter.status == RecentRecordStatus.DONE,
-                            onClick = { onFilterChange(filter.copy(status = RecentRecordStatus.DONE)) }
-                        )
-                        FilterChip(
-                            text = RecentRecordStatus.PENDING.label,
-                            badge = counts.pending,
-                            selected = filter.status == RecentRecordStatus.PENDING,
-                            onClick = { onFilterChange(filter.copy(status = RecentRecordStatus.PENDING)) }
-                        )
-                    }
-                    HorizontalDivider(color = hairline)
-                    FilterRow(label = "时间") {
-                        SortToggle(
-                            sort = filter.sort,
-                            onSortChange = { onFilterChange(filter.copy(sort = it)) }
-                        )
-                        TextButton(
-                            onClick = { onFilterChange(RecentRecordFilter()) },
-                            enabled = !filter.isDefault,
-                            contentPadding = PaddingValues(horizontal = 8.dp)
-                        ) {
-                            Text(
-                                text = "重置",
-                                color = if (filter.isDefault) colors.mutedInk else BrandBlue,
-                                fontSize = 12.sp
-                            )
-                        }
-                    }
+            DropdownMenu(expanded = expanded, onDismissRequest = { onExpandedChange(false) }) {
+                RecentRecordType.entries.forEach { option ->
+                    DropdownMenuItem(
+                        text = { Text(if (option == RecentRecordType.ALL) "全部类型" else option.label) },
+                        trailingIcon = { if (filter.type == option) Icon(Icons.Default.Check, "已选择") },
+                        onClick = { onFilterChange(filter.copy(type = option)); onExpandedChange(false) }
+                    )
+                }
+                HorizontalDivider()
+                RecentRecordStatus.entries.forEach { option ->
+                    DropdownMenuItem(
+                        text = { Text(if (option == RecentRecordStatus.ALL) "全部状态" else option.label) },
+                        trailingIcon = { if (filter.status == option) Icon(Icons.Default.Check, "已选择") },
+                        onClick = { onFilterChange(filter.copy(status = option)); onExpandedChange(false) }
+                    )
+                }
+                HorizontalDivider()
+                RecentRecordSort.entries.forEach { option ->
+                    DropdownMenuItem(
+                        text = { Text(option.label) },
+                        trailingIcon = { if (filter.sort == option) Icon(Icons.Default.Check, "已选择") },
+                        onClick = { onFilterChange(filter.copy(sort = option)); onExpandedChange(false) }
+                    )
+                }
+                if (!filter.isDefault) {
+                    DropdownMenuItem(
+                        text = { Text("重置筛选") },
+                        onClick = { onFilterChange(RecentRecordFilter()); onExpandedChange(false) }
+                    )
                 }
             }
         }
@@ -484,7 +358,7 @@ private fun SortToggle(sort: RecentRecordSort, onSortChange: (RecentRecordSort) 
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 Icon(
-                    imageVector = Icons.Default.Sort,
+                    imageVector = Icons.AutoMirrored.Filled.Sort,
                     contentDescription = null,
                     tint = BrandBlue,
                     modifier = Modifier.size(13.dp)
@@ -528,16 +402,13 @@ private fun SortToggle(sort: RecentRecordSort, onSortChange: (RecentRecordSort) 
 }
 
 /**
- * A record card sized for the two-column grid: an artwork band that shows at a
- * glance whether this was spoken or imported, the status badge, the title, the
- * Beijing-time stamp with its length metric, and a trailing affordance that
- * reads 继续完善 while the record still needs work.
+ * A compact single-column row: title and time carry the record, while the
+ * status/type remain available at the trailing edge.
  */
 @Composable
 @OptIn(ExperimentalFoundationApi::class)
 internal fun RecentRecordCard(
     item: MeetingWithReport,
-    layout: HomeLayoutSpec,
     activeRecording: ActiveRecordingSummary?,
     onClick: () -> Unit,
     onEdit: () -> Unit,
@@ -550,7 +421,6 @@ internal fun RecentRecordCard(
     val isActive = activeRecording != null
     val type = item.meeting.origin.toRecentRecordType()
     val accent = recordAccent(isActive = isActive, hasReport = item.hasReport, type = type)
-    val artHeight = if (layout.compact) 52.dp else 58.dp
     val stripeWidth = 4.dp
 
     val pulse = rememberInfiniteTransition(label = "activeRecordCard")
@@ -596,9 +466,6 @@ internal fun RecentRecordCard(
         ),
         shadowElevation = surfaceLift(2.dp)
     ) {
-        // The stripe is painted rather than laid out: a grid item is measured with
-        // an unbounded height, where fillMaxHeight() is a no-op and would collapse
-        // a sibling Box to zero.
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -607,72 +474,23 @@ internal fun RecentRecordCard(
                 }
                 .padding(start = stripeWidth)
         ) {
-            Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(artHeight)
-                        .background(accent.artTint)
+                    modifier = Modifier.size(36.dp).background(accent.artTint, CircleShape),
+                    contentAlignment = Alignment.Center
                 ) {
-                    if (type == RecentRecordType.IMPORT) {
-                        DocumentBandArtwork(
-                            ink = accent.artInk,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(horizontal = 14.dp, vertical = 10.dp)
-                        )
-                    } else {
-                        WaveformBandArtwork(
-                            ink = accent.artInk,
-                            seed = item.meeting.id.hashCode(),
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(horizontal = 12.dp, vertical = 10.dp)
-                        )
-                    }
-                    StatusBadge(
-                        text = when {
-                            isActive && activeRecording?.isPaused == true -> "已暂停"
-                            isActive -> "录音中"
-                            item.hasReport -> "已完成"
-                            else -> "待完善"
-                        },
-                        icon = when {
-                            isActive -> Icons.Default.Mic
-                            item.hasReport -> Icons.Default.CheckCircle
-                            else -> Icons.Default.Edit
-                        },
-                        accent = accent,
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(top = 6.dp, end = 6.dp)
+                    Icon(
+                        imageVector = if (type == RecentRecordType.IMPORT) Icons.Default.Description else Icons.Default.GraphicEq,
+                        contentDescription = null,
+                        tint = accent.artInk,
+                        modifier = Modifier.size(18.dp)
                     )
-                    // Type emblem, echoing the reference card's circular accent.
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.BottomEnd)
-                            .padding(end = 8.dp, bottom = 6.dp)
-                            .size(20.dp)
-                            .background(accent.artInk, CircleShape),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = if (type == RecentRecordType.IMPORT) {
-                                Icons.Default.Description
-                            } else {
-                                Icons.Default.GraphicEq
-                            },
-                            contentDescription = null,
-                            tint = Color.White,
-                            modifier = Modifier.size(12.dp)
-                        )
-                    }
                 }
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(start = 10.dp, end = 10.dp, top = 8.dp, bottom = 8.dp)
-                ) {
+                Spacer(Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text(
                         text = displayTitle,
                         style = MaterialTheme.typography.titleMedium.copy(
@@ -681,11 +499,9 @@ internal fun RecentRecordCard(
                         ),
                         color = colors.ink,
                         fontWeight = FontWeight.SemiBold,
-                        minLines = 2,
-                        maxLines = 2,
+                        maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    Spacer(Modifier.height(3.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
                             imageVector = Icons.Default.Schedule,
@@ -703,52 +519,31 @@ internal fun RecentRecordCard(
                             overflow = TextOverflow.Ellipsis
                         )
                     }
-                    Spacer(Modifier.height(7.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Box(
-                            modifier = Modifier.weight(1f),
-                            contentAlignment = Alignment.CenterStart
-                        ) {
-                            TypeChip(text = type.label, accent = accent)
-                        }
-                        Spacer(Modifier.width(6.dp))
-                        if (item.hasReport || isActive) {
-                            Box(
-                                modifier = Modifier
-                                    .size(26.dp)
-                                    .background(colors.arrowSurface, CircleShape)
-                                    .border(1.dp, colors.mutedInk.copy(alpha = 0.18f), CircleShape),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                                    contentDescription = "打开会议",
-                                    tint = colors.mutedInk,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                            }
-                        } else {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    text = "继续完善",
-                                    style = MaterialTheme.typography.labelMedium.copy(fontSize = 11.sp),
-                                    color = colors.pendingContent,
-                                    fontWeight = FontWeight.Medium,
-                                    maxLines = 1
-                                )
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                                    contentDescription = null,
-                                    tint = colors.pendingContent,
-                                    modifier = Modifier.size(13.dp)
-                                )
-                            }
-                        }
-                    }
                 }
+                Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    StatusBadge(
+                        text = when {
+                            isActive && activeRecording?.isPaused == true -> "已暂停"
+                            isActive -> "录音中"
+                            item.hasReport -> "已完成"
+                            else -> "待完善"
+                        },
+                        icon = when {
+                            isActive -> Icons.Default.Mic
+                            item.hasReport -> Icons.Default.CheckCircle
+                            else -> Icons.Default.Edit
+                        },
+                        accent = accent
+                    )
+                    TypeChip(text = type.label, accent = accent)
+                }
+                Spacer(Modifier.width(6.dp))
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                    contentDescription = "打开会议",
+                    tint = colors.mutedInk,
+                    modifier = Modifier.size(16.dp)
+                )
             }
             Box(modifier = Modifier.size(1.dp)) {
                 DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {

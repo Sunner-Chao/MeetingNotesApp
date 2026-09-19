@@ -89,6 +89,7 @@ private enum class NotificationFilter(val label: String) {
 @Composable
 fun NotificationCenterScreen(
     onNavigateBack: () -> Unit,
+    onLogin: () -> Unit,
     onOpenMeeting: (String, Boolean) -> Unit,
     initialTab: String = "messages",
     viewModel: HomeViewModel = koinViewModel(),
@@ -263,11 +264,13 @@ fun NotificationCenterScreen(
                         }
                     }
                     NotificationCenterTab.ACTIVITIES -> GrowthCenterScreen(
+                        onLogin = onLogin,
                         section = GrowthCenterSection.ACTIVITIES,
                         embedded = true,
                         viewModel = growthViewModel
                     )
                     NotificationCenterTab.BENEFITS -> GrowthCenterScreen(
+                        onLogin = onLogin,
                         section = GrowthCenterSection.BENEFITS,
                         embedded = true,
                         viewModel = growthViewModel

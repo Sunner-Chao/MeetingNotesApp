@@ -27,7 +27,7 @@ from typing import Any
 
 import numpy as np
 import torch
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.responses import JSONResponse
@@ -96,6 +96,8 @@ app = FastAPI(title="MeetingNotesApp V100 STT", version="v100-paraformer-2")
 web_admin_security = HTTPBasic(auto_error=False)
 online_model: Any = None
 offline_model: Any = None
+file_vad_model: Any = None
+file_punc_model: Any = None
 model_error = ""
 model_started_at = 0.0
 speaker_diarizer: Any = None
@@ -156,7 +158,7 @@ async def admin_page() -> FileResponse:
 
 
 def load_models() -> None:
-    global online_model, offline_model, model_error, model_started_at
+    global online_model, offline_model, file_vad_model, file_punc_model, model_error, model_started_at
     model_started_at = time.time()
     try:
         if not all((path / "model.pt").is_file() for path in (ONLINE_MODEL, OFFLINE_MODEL, VAD_MODEL, PUNC_MODEL)):
@@ -166,12 +168,15 @@ def load_models() -> None:
         torch.set_num_threads(int(os.getenv("V100_CPU_THREADS", "4")))
         online_model = AutoModel(model=str(ONLINE_MODEL), device=DEVICE, disable_update=True,
                                  disable_pbar=True, disable_log=True)
-        # The shipped Paraformer checkpoint does not expose the timestamp shape
-        # expected by FunASR's VAD wrapper (it raises KeyError('timestamp')).
-        # Keep file transcription reliable by decoding the checkpoint directly;
-        # streaming remains VAD-free and low-latency as before.
+        # This checkpoint has no token timestamps. Run VAD and punctuation
+        # explicitly so long audio stays bounded without the wrapper's
+        # assumption that every ASR result contains a timestamp array.
         offline_model = AutoModel(model=str(OFFLINE_MODEL), device=FILE_DEVICE, disable_update=True,
                                   disable_pbar=True, disable_log=True)
+        file_vad_model = AutoModel(model=str(VAD_MODEL), device=FILE_DEVICE, disable_update=True,
+                                   disable_pbar=True, disable_log=True)
+        file_punc_model = AutoModel(model=str(PUNC_MODEL), device=FILE_DEVICE, disable_update=True,
+                                    disable_pbar=True, disable_log=True)
         # Warm up the online graph before advertising readiness.
         online_model.generate(input=np.zeros(CHUNK_SAMPLES, dtype=np.float32), cache={}, is_final=True,
                               chunk_size=[0, CHUNK_MS // 60, 5], encoder_chunk_look_back=4,
@@ -182,6 +187,8 @@ def load_models() -> None:
     except Exception as exc:  # keep /health available for diagnosis
         online_model = None
         offline_model = None
+        file_vad_model = None
+        file_punc_model = None
         model_error = str(exc)
 
 
@@ -288,10 +295,10 @@ def generate_online(data: bytes, cache: dict[str, Any], final: bool) -> tuple[st
     return "".join(str(item.get("text", "")) for item in (result or [])), (time.perf_counter() - started) * 1000
 
 
-def generate_file(path: Path) -> dict[str, Any]:
+def generate_file(path: Path, speaker_diarization: bool = True, audio_enhancement: bool = True) -> dict[str, Any]:
     global inference_calls
     from imageio_ffmpeg import get_ffmpeg_exe
-    filters = ["highpass=f=80", "lowpass=f=7600", "afftdn=nr=8dB"] if AUDIO_ENHANCEMENT_ENABLED else []
+    filters = ["highpass=f=80", "lowpass=f=7600", "afftdn=nr=8dB"] if AUDIO_ENHANCEMENT_ENABLED and audio_enhancement else []
     command = [get_ffmpeg_exe(), "-v", "error", "-nostdin", "-i", str(path), "-vn", "-ac", "1", "-ar", "16000"]
     if filters:
         command.extend(["-af", ",".join(filters)])
@@ -303,17 +310,56 @@ def generate_file(path: Path) -> dict[str, Any]:
     audio = np.frombuffer(decoded.stdout, dtype="<f4").copy()
     if not len(audio):
         raise ValueError("Decoded audio is empty")
-    duration_ms = round(len(audio) / 16)
-    with torch.inference_mode():
-        # Keep sentence boundaries so local diarization can align speakers to text.
-        result = offline_model.generate(
-            input=audio,
-            batch_size_s=60,
-            sentence_timestamp=True,
-            disable_pbar=True,
-        )
+    result = generate_file_audio(audio, speaker_diarization=speaker_diarization)
     inference_calls += 1
-    return build_file_result(audio, result, duration_ms)
+    return result
+
+
+def bounded_speech_ranges(audio: np.ndarray) -> list[tuple[int, int]]:
+    """VAD timestamps are milliseconds; every ASR input is at most 20 seconds."""
+    ranges: list[tuple[int, int]] = []
+    window_samples, max_samples = 60 * 16000, 20 * 16000
+    for offset in range(0, len(audio), window_samples):
+        window = audio[offset:offset + window_samples]
+        with torch.inference_mode():
+            detected = file_vad_model.generate(input=window, cache={}, disable_pbar=True)
+        for item in detected or []:
+            for pair in item.get("value") or []:
+                if len(pair) != 2:
+                    continue
+                start = max(offset, offset + int(float(pair[0]) * 16))
+                end = min(offset + len(window), offset + int(float(pair[1]) * 16))
+                if ranges:
+                    start = max(start, ranges[-1][1])
+                while start < end:
+                    boundary = min(end, start + max_samples)
+                    if boundary < end:
+                        # Cut sustained speech at the quietest 20 ms frame in
+                        # the final two seconds, never beyond the ASR ceiling.
+                        candidates = range(boundary - 2 * 16000, boundary, 320)
+                        boundary = min(candidates, key=lambda pos: float(np.mean(audio[pos:pos + 320] ** 2))) + 160
+                    ranges.append((start, boundary))
+                    start = boundary
+    return ranges
+
+
+def generate_file_audio(audio: np.ndarray, speaker_diarization: bool = True) -> dict[str, Any]:
+    if file_vad_model is None or file_punc_model is None:
+        raise RuntimeError("File VAD/punctuation models are not ready")
+    results: list[dict[str, Any]] = []
+    for start, end in bounded_speech_ranges(audio):
+        with torch.inference_mode():
+            decoded = offline_model.generate(input=audio[start:end], cache={}, disable_pbar=True)
+            text = "".join(str(item.get("text") or "") for item in decoded or []).strip()
+            if not text:
+                continue
+            punctuated = file_punc_model.generate(input=text, cache={}, disable_pbar=True)
+        text = "".join(str(item.get("text") or "") for item in punctuated or []).strip() or text
+        results.append({"text": text, "timestamp": [[start / 16, end / 16]]})
+    output = build_file_result(audio, results, round(len(audio) / 16), speaker_diarization)
+    output["segmentation"] = {"provider": "fsmn-vad", "max_segment_seconds": 20,
+                               "timestamp_source": "vad", "punctuation": "ct-transformer"}
+    return output
 
 
 def _asr_rows(result: Any) -> list[dict[str, Any]]:
@@ -417,11 +463,14 @@ def _speaker_turns(audio: np.ndarray) -> list[dict[str, Any]]:
         if float(segment.end) - float(segment.start) >= DIARIZATION_MIN_TURN_SEC
     ]
     labels = list(dict.fromkeys(turn["speaker"] for turn in turns))
-    if len(labels) > DIARIZATION_MAX_SPEAKERS:
-        allowed = set(labels[:DIARIZATION_MAX_SPEAKERS])
-        for turn in turns:
-            if turn["speaker"] not in allowed:
-                turn["speaker"] = labels[DIARIZATION_MAX_SPEAKERS - 1]
+    # sherpa-onnx cluster ids are opaque and may be sparse (for example
+    # 0,1,6,9). Normalize them to the compact 0..N-1 labels exposed to the
+    # app. Clusters beyond the display limit remain unassigned; never merge
+    # unrelated voices merely to fit a display limit.
+    labels = labels[:DIARIZATION_MAX_SPEAKERS]
+    label_map = {value: index for index, value in enumerate(labels)}
+    for turn in turns:
+        turn["speaker"] = label_map.get(turn["speaker"])
     return turns
 
 
@@ -431,15 +480,22 @@ def _attach_speakers(rows: list[dict[str, Any]], turns: list[dict[str, Any]]) ->
     enriched: list[dict[str, Any]] = []
     for row in rows:
         start, end = float(row.get("start") or 0), float(row.get("end") or 0)
-        best = max(turns, key=lambda turn: max(0.0, min(end, turn["end"]) - max(start, turn["start"])))
-        enriched.append({**row, "speaker": best["speaker"]})
+        def overlap(turn: dict[str, Any]) -> float:
+            return max(0.0, min(end, turn["end"]) - max(start, turn["start"]))
+        best = max(turns, key=overlap)
+        enriched.append({**row, "speaker": best["speaker"]} if overlap(best) > 0 else dict(row))
+    labels: dict[int, int] = {}
+    for row in enriched:
+        speaker = row.get("speaker")
+        if speaker is not None:
+            row["speaker"] = labels.setdefault(speaker, len(labels))
     return enriched
 
 
-def build_file_result(audio: np.ndarray, result: Any, duration_ms: int) -> dict[str, Any]:
+def build_file_result(audio: np.ndarray, result: Any, duration_ms: int, speaker_diarization: bool = True) -> dict[str, Any]:
     rows = _asr_rows(result)
     diarization = {"enabled": False, "active": False, "provider": "local-sherpa-onnx"}
-    if DIARIZATION_ENABLED and _load_speaker_diarizer() is not None:
+    if speaker_diarization and DIARIZATION_ENABLED and rows and _load_speaker_diarizer() is not None:
         rows = _attach_speakers(rows, _speaker_turns(audio))
         active = any(row.get("speaker") is not None for row in rows)
         diarization.update({"enabled": True, "active": active, "speaker_count": len({row["speaker"] for row in rows if row.get("speaker") is not None})})
@@ -449,7 +505,9 @@ def build_file_result(audio: np.ndarray, result: Any, duration_ms: int) -> dict[
 
 
 @app.post("/transcribe")
-async def transcribe(file: UploadFile = File(...), authorization: str | None = Header(default=None)) -> dict[str, Any]:
+async def transcribe(file: UploadFile = File(...), authorization: str | None = Header(default=None),
+                     speaker_diarization: bool = Form(default=True),
+                     audio_enhancement: bool = Form(default=True)) -> dict[str, Any]:
     global file_requests
     require_token(authorization)
     if offline_model is None:
@@ -470,7 +528,8 @@ async def transcribe(file: UploadFile = File(...), authorization: str | None = H
                 target.write(chunk)
         if not size:
             raise HTTPException(status_code=400, detail="Audio file is empty")
-        return await asyncio.get_running_loop().run_in_executor(offline_executor, generate_file, path)
+        return await asyncio.get_running_loop().run_in_executor(
+            offline_executor, generate_file, path, speaker_diarization, audio_enhancement)
     except (ValueError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         raise HTTPException(status_code=422, detail="Unable to decode this audio file") from exc
     finally:
@@ -570,9 +629,7 @@ async def stream(websocket: WebSocket) -> None:
                         if diarization["enabled"] and DIARIZATION_ENABLED and stream_audio:
                             def finalize_stream() -> dict[str, Any]:
                                 samples = pcm_to_float32(bytes(stream_audio))
-                                with torch.inference_mode():
-                                    result = offline_model.generate(input=samples, batch_size_s=60, sentence_timestamp=True, disable_pbar=True)
-                                return build_file_result(samples, result, round(len(samples) / 16))
+                                return generate_file_audio(samples, speaker_diarization=True)
                             finalized = await asyncio.get_running_loop().run_in_executor(offline_executor, finalize_stream)
                             if finalized.get("text"):
                                 # Return sentence timestamps even when the

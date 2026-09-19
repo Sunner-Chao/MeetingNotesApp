@@ -124,6 +124,73 @@ class AgentGatewayEngineTest {
     }
 
     @Test
+    fun imagePreparationFailureFallsBackToTranscriptOnlyGeneration() = runBlocking {
+        val image = File.createTempFile("unreadable-large-image", ".jpg").apply {
+            writeBytes(ByteArray(1_100_000))
+        }
+        try {
+            MockWebServer().use { server ->
+                server.enqueue(MockResponse().setBody("{\"text\":\"text-only report\"}"))
+                val config = LLMConfig(
+                    agentEndpoint = server.url("/").toString(),
+                    agentAccessToken = "token",
+                    agentProvider = AgentProvider.CODEX_CLI
+                )
+
+                val result = AgentGatewayEngine(config).generateReport(
+                    transcript = "会议正文\n\n照片定位标记（仅用于确定照片在正文中的插入位置，不是新的事实材料）：\n- 图 1：录音标记 00:10",
+                    template = ReportTemplateConfig(),
+                    attachments = listOf(AgentAttachment(image, "image/jpeg", "损坏图片.jpg"))
+                )
+
+                assertTrue(result.isSuccess)
+                assertEquals("text-only report", result.getOrThrow().rawContent)
+                val request = server.takeRequest(5, TimeUnit.SECONDS)
+                val body = request?.body?.readUtf8().orEmpty()
+                assertTrue(body.contains("会议正文"))
+                assertTrue(body.contains("name=\"request\""))
+                assertTrue(!body.contains("name=\"attachments\""))
+                assertTrue(!body.contains("照片定位标记"))
+            }
+        } finally {
+            image.delete()
+        }
+    }
+
+    @Test
+    fun imageUploadRejectionRetriesTranscriptOnlyGeneration() = runBlocking {
+        val image = File.createTempFile("image-rejected-by-gateway", ".jpg").apply {
+            writeBytes(byteArrayOf(1, 2, 3))
+        }
+        try {
+            MockWebServer().use { server ->
+                server.enqueue(MockResponse().setResponseCode(413).setBody("{\"detail\":\"image too large\"}"))
+                server.enqueue(MockResponse().setBody("{\"text\":\"fallback report\"}"))
+                val config = LLMConfig(
+                    agentEndpoint = server.url("/").toString(),
+                    agentAccessToken = "token",
+                    agentProvider = AgentProvider.CODEX_CLI
+                )
+
+                val result = AgentGatewayEngine(config).generateReport(
+                    transcript = "会议正文",
+                    template = ReportTemplateConfig(),
+                    attachments = listOf(AgentAttachment(image, "image/jpeg", "现场.jpg"))
+                )
+
+                assertTrue(result.isSuccess)
+                assertEquals("fallback report", result.getOrThrow().rawContent)
+                val first = server.takeRequest(5, TimeUnit.SECONDS)
+                val second = server.takeRequest(5, TimeUnit.SECONDS)
+                assertTrue(first?.body?.readUtf8().orEmpty().contains("name=\"attachments\""))
+                assertTrue(!second?.body?.readUtf8().orEmpty().contains("name=\"attachments\""))
+            }
+        } finally {
+            image.delete()
+        }
+    }
+
+    @Test
     fun cancellingCoroutineCancelsInFlightAgentRequest() = runBlocking {
         MockWebServer().use { server ->
             server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))

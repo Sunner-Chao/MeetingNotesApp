@@ -78,6 +78,9 @@ internal class StreamingTranscriptAccumulator {
         previewText = incomingPreview
         if (incomingSegments.isEmpty() && update.audioEndSeconds != null) {
             incomingSegments = audioTimeline.update(incomingSessionText, update.audioEndSeconds)
+            // This is a complete snapshot; replacing it also removes an old
+            // paragraph whose text was revised across its former boundary.
+            currentSegments.clear()
         }
         if (incomingSegments.isNotEmpty()) {
             currentSessionDurationSeconds = maxOf(

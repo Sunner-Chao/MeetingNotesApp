@@ -15,6 +15,7 @@ object ReportTitleResolver {
             .takeUnless { it.isGenericHeading() }
             .orEmpty()
         val topic = report.rawContent.topicSectionTitle()
+            .ifBlank { report.rawContent.topicTableValue() }
         val summaryTitle = report.summary.lineSequence()
             .firstOrNull(String::isNotBlank)
             .orEmpty()
@@ -40,7 +41,13 @@ object ReportTitleResolver {
             }
             .orEmpty()
 
-        return markdownTitle
+        val usableMarkdownTitle = markdownTitle.takeUnless {
+            it == report.templateName.cleanTitle() ||
+                it == MeetingMode.fromTemplateName(report.templateName).displayName ||
+                it.isGenericHeading()
+        }.orEmpty()
+
+        return usableMarkdownTitle
             .ifBlank { topic }
             .ifBlank { summaryTitle }
             .ifBlank { fallback }
@@ -51,7 +58,8 @@ object ReportTitleResolver {
     private fun String.topicSectionTitle(): String {
         val lines = lineSequence().map(String::trim).toList()
         val headingIndex = lines.indexOfFirst { line ->
-            line.trimStart('#').trim().cleanTitle() in setOf("会议主题", "主题")
+            line.trimStart('#').trim().replaceFirst(Regex("^\\d+[.、]\\s*"), "").cleanTitle() in
+                setOf("会议主题", "主题", "论坛主题", "洽谈主题")
         }
         if (headingIndex < 0) return ""
         return lines.asSequence()
@@ -64,6 +72,20 @@ object ReportTitleResolver {
             .trim()
     }
 
+    private fun String.topicTableValue(): String {
+        val labels = setOf("会议主题", "论坛主题", "洽谈主题", "事件名称", "项目名称", "主题")
+        return lineSequence()
+            .map { it.trim().trim('|') }
+            .filter { it.contains('|') }
+            .map { it.split('|').map(String::trim) }
+            .firstOrNull { cells -> cells.size >= 2 && cells[0].cleanTitle() in labels &&
+                cells[1].cleanTitle() !in setOf("", "未提及", "待确认") }
+            ?.getOrNull(1)
+            ?.cleanTitle()
+            ?.take(72)
+            .orEmpty()
+    }
+
     private fun String.cleanTitle(): String = trim()
         .trimStart('-', '*', '>', '#')
         .trim()
@@ -71,8 +93,10 @@ object ReportTitleResolver {
         .replace(Regex("\\s+"), " ")
         .trim()
 
-    private fun String.isGenericHeading(): Boolean = when (trim()) {
-        "会议纪要", "会议主题", "主题", "会议报告", "纪要报告" -> true
-        else -> false
-    }
+    private fun String.isGenericHeading(): Boolean =
+        trim() in setOf("会议纪要", "会议主题", "主题", "会议报告", "纪要报告") ||
+            MeetingMode.entries.any {
+                trim() in setOf(it.templateName + "纪要", it.displayName + "纪要",
+                    it.templateName + "会议纪要", it.displayName + "会议纪要")
+            }
 }

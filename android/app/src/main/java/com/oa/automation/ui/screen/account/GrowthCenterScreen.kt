@@ -18,6 +18,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -56,6 +59,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -70,6 +74,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -77,6 +82,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -93,6 +99,9 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.oa.automation.domain.model.GrowthCampaign
 import com.oa.automation.domain.model.GrowthCampaignDetail
 import com.oa.automation.domain.model.GrowthPrivateChannel
@@ -119,12 +128,14 @@ enum class GrowthCenterSection {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun GrowthCenterScreen(
+    onLogin: () -> Unit,
     onNavigateBack: () -> Unit = {},
     section: GrowthCenterSection = GrowthCenterSection.ALL,
     embedded: Boolean = false,
     viewModel: GrowthCenterViewModel = koinViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val lifecycleOwner = LocalLifecycleOwner.current
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
@@ -133,8 +144,16 @@ fun GrowthCenterScreen(
     }
     var showAssetPreview by remember { mutableStateOf(false) }
     var previewManagerCard by remember { mutableStateOf(false) }
-    var showApplicationSheet by remember { mutableStateOf(false) }
+    var showApplicationSheet by rememberSaveable { mutableStateOf(false) }
     var pendingManagerCardSave by remember { mutableStateOf(false) }
+
+    DisposableEffect(lifecycleOwner, viewModel) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) viewModel.refresh()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     val performAssetSave: () -> Unit = {
         val bytes = if (pendingManagerCardSave) uiState.managerCardImageBytes else uiState.qrImageBytes
@@ -179,9 +198,14 @@ fun GrowthCenterScreen(
         }
     }
     LaunchedEffect(uiState.errorMessage) {
-        uiState.errorMessage?.let { message ->
+        uiState.errorMessage?.takeIf { !showApplicationSheet }?.let { message ->
             snackbarHostState.showSnackbar(message)
             viewModel.clearError()
+        }
+    }
+    LaunchedEffect(uiState.overview?.privateChannel?.application?.status) {
+        if (uiState.overview?.privateChannel?.application?.status in listOf("pending", "approved")) {
+            showApplicationSheet = false
         }
     }
 
@@ -193,7 +217,7 @@ fun GrowthCenterScreen(
                 TopAppBar(
                     title = {
                         Text(
-                             if (section == GrowthCenterSection.BENEFITS) "福利群" else "活动与福利",
+                             if (section == GrowthCenterSection.BENEFITS) "企微群与问卷" else "活动与福利",
                             fontWeight = FontWeight.Bold
                         )
                     },
@@ -264,7 +288,7 @@ fun GrowthCenterScreen(
                             showAssetPreview = true
                         },
                         onSaveManagerCard = { requestAssetSave(true) },
-                        onApply = { showApplicationSheet = true },
+                        onApply = { if (canUseAccountFeatures) showApplicationSheet = true else onLogin() },
                         onOpenLink = {
                             overview.privateChannel?.let { channel ->
                                 openUrl(context, channel.joinUrl.ifBlank { channel.shortUrl })
@@ -320,7 +344,7 @@ fun GrowthCenterScreen(
                                         showAssetPreview = true
                                     },
                                     onSaveManagerCard = { requestAssetSave(true) },
-                                    onApply = { showApplicationSheet = true },
+                                    onApply = { if (canUseAccountFeatures) showApplicationSheet = true else onLogin() },
                                     onOpenLink = {
                                         openUrl(context, channel.joinUrl.ifBlank { channel.shortUrl })
                                         viewModel.recordChannelEvent(channel.id, "click")
@@ -434,10 +458,9 @@ fun GrowthCenterScreen(
         ChannelApplicationSheet(
             isSubmitting = uiState.isSubmittingApplication,
             onDismiss = { if (!uiState.isSubmittingApplication) showApplicationSheet = false },
-            onSubmit = { answers ->
-                viewModel.submitChannelApplication(answers)
-                showApplicationSheet = false
-            }
+            initialAnswers = uiState.overview?.privateChannel?.application?.answers.orEmpty(),
+            errorMessage = uiState.errorMessage,
+            onSubmit = viewModel::submitChannelApplication
         )
     }
 }
@@ -460,9 +483,9 @@ private fun CompactBenefitsContent(
 ) {
     BoxWithConstraints(modifier = modifier) {
         val cardHeight = when {
-            maxHeight < 620.dp -> 220.dp
-            maxHeight < 760.dp -> 280.dp
-            else -> 320.dp
+            maxHeight < 620.dp -> 340.dp
+            maxHeight < 760.dp -> 380.dp
+            else -> 420.dp
         }
         if (channel == null) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -472,6 +495,7 @@ private fun CompactBenefitsContent(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
                     .padding(horizontal = 16.dp, vertical = 10.dp),
                 verticalArrangement = Arrangement.spacedBy(7.dp)
             ) {
@@ -763,7 +787,7 @@ private fun PrivateChannelPanel(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text("群主名片", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text("加入智悟本企微群", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 Text(
                     when (applicationStatus) {
                         "pending" -> "申请审核中"
@@ -788,6 +812,11 @@ private fun PrivateChannelPanel(
                 )
             }
         }
+        Text(
+            "交流记录经验、反馈产品建议。点击名片可放大，保存到相册后可在微信中识别。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
         Surface(
             onClick = onPreviewManagerCard,
             enabled = managerCardBitmap != null,
@@ -806,19 +835,19 @@ private fun PrivateChannelPanel(
                         bitmap = managerCardBitmap,
                         contentDescription = "群主企业微信名片，点击放大",
                         modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop
+                        contentScale = ContentScale.Fit
                     )
                 } else {
                     Image(
                         bitmap = managerCardBitmap,
                         contentDescription = "群主企业微信名片，点击放大",
                         modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.FillBounds
+                        contentScale = ContentScale.Fit
                     )
                 }
             } else {
                 Box(contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+                    Text("名片暂未加载，请点击刷新重试", modifier = Modifier.padding(16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
@@ -847,7 +876,7 @@ private fun PrivateChannelPanel(
         if (applicationStatus != "approved") {
             Button(
                 onClick = onApply,
-                enabled = canApply && applicationStatus != "pending",
+                enabled = applicationStatus != "pending",
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(8.dp)
             ) {
@@ -855,7 +884,8 @@ private fun PrivateChannelPanel(
                     when {
                         !canApply -> "登录后申请入群"
                         applicationStatus == "rejected" -> "补充信息并重新申请"
-                        else -> "填写申请，联系群主"
+                        applicationStatus == "pending" -> "问卷已提交，等待审核"
+                        else -> "填写简短问卷，申请入群"
                     }
                 )
             }
@@ -873,7 +903,7 @@ private fun PrivateChannelPanel(
                     Surface(
                         onClick = onPreviewQr,
                         enabled = qrBitmap != null,
-                        modifier = Modifier.size(if (compactCardHeight != null) 64.dp else 86.dp),
+                        modifier = Modifier.size(132.dp),
                         shape = RoundedCornerShape(6.dp),
                         color = Color.White
                     ) {
@@ -885,7 +915,7 @@ private fun PrivateChannelPanel(
                             )
                         } else {
                             Box(contentAlignment = Alignment.Center) {
-                                CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                                Text("二维码暂未加载，请刷新", modifier = Modifier.padding(8.dp), color = Color.DarkGray, style = MaterialTheme.typography.bodySmall)
                             }
                         }
                     }
@@ -992,47 +1022,84 @@ private fun QrPreviewDialog(
 private fun ChannelApplicationSheet(
     isSubmitting: Boolean,
     onDismiss: () -> Unit,
+    initialAnswers: Map<String, String>,
+    errorMessage: String?,
     onSubmit: (Map<String, String>) -> Unit
 ) {
-    var name by remember { mutableStateOf("") }
-    var city by remember { mutableStateOf("") }
-    var purpose by remember { mutableStateOf("") }
-    var contact by remember { mutableStateOf("") }
+    var name by rememberSaveable { mutableStateOf(initialAnswers["name"].orEmpty()) }
+    var city by rememberSaveable { mutableStateOf(initialAnswers["city"].orEmpty()) }
+    var scene by rememberSaveable { mutableStateOf(initialAnswers["usage_scene"].orEmpty()) }
+    var frequency by rememberSaveable { mutableStateOf(initialAnswers["usage_frequency"].orEmpty()) }
+    var method by rememberSaveable { mutableStateOf(initialAnswers["current_method"].orEmpty()) }
+    var painSelection by rememberSaveable { mutableStateOf(initialAnswers["pain_points"].orEmpty()) }
+    var payment by rememberSaveable { mutableStateOf(initialAnswers["payment_preference"].orEmpty()) }
+    var suggestion by rememberSaveable { mutableStateOf(initialAnswers["suggestion"].orEmpty()) }
+    var contact by rememberSaveable { mutableStateOf(initialAnswers["contact"].orEmpty()) }
+    val pains = painSelection.split("；").filter { it in ChannelQuestionnaire.painPoints }
+    val answers = ChannelQuestionnaire.answers(name, city, scene, frequency, method, pains, payment, suggestion, contact)
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .imePadding()
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Text("申请加入智悟本福利7群", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Text("让智悟本更懂你的记录", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             Text(
-                "请先添加群主并充分交流，提交信息后由管理员审核。审核通过后，福利页会显示群二维码。",
+                "约 1–2 分钟，以点选为主。问卷用于入群审核与产品改进，审核通过后开放群二维码。请先添加上方企微群主。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            OutlinedTextField(name, { name = it }, modifier = Modifier.fillMaxWidth(), label = { Text("怎么称呼你") }, singleLine = true)
-            OutlinedTextField(city, { city = it }, modifier = Modifier.fillMaxWidth(), label = { Text("所在地区") }, placeholder = { Text("例如：杭州") }, singleLine = true)
-            OutlinedTextField(purpose, { purpose = it }, modifier = Modifier.fillMaxWidth(), label = { Text("想加入福利群做什么") }, minLines = 2, maxLines = 4)
-            OutlinedTextField(contact, { contact = it }, modifier = Modifier.fillMaxWidth(), label = { Text("方便群主联系你的方式（选填）") }, singleLine = true)
+            Text("带 * 的问题为必填，其余可跳过", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            OutlinedTextField(name, { name = it.take(50) }, modifier = Modifier.fillMaxWidth(), label = { Text("怎么称呼你 *（昵称即可）") }, singleLine = true, enabled = !isSubmitting)
+            OutlinedTextField(city, { city = it.take(50) }, modifier = Modifier.fillMaxWidth(), label = { Text("所在地区 *") }, placeholder = { Text("省或城市即可") }, singleLine = true, enabled = !isSubmitting)
+            QuestionnaireChoices("最常用在哪种场景？*", ChannelQuestionnaire.scenes, listOf(scene), enabled = !isSubmitting) { scene = it }
+            QuestionnaireChoices("多频繁需要整理记录？*", ChannelQuestionnaire.frequencies, listOf(frequency), enabled = !isSubmitting) { frequency = it }
+            QuestionnaireChoices("现在主要怎么整理？（选填）", ChannelQuestionnaire.methods, listOf(method), enabled = !isSubmitting) { method = if (method == it) "" else it }
+            QuestionnaireChoices("最希望解决什么？*（选 1–3 项）", ChannelQuestionnaire.painPoints, pains, maxSelections = 3, enabled = !isSubmitting) { choice ->
+                painSelection = (if (choice in pains) pains - choice else (pains + choice).take(3)).joinToString("；")
+            }
+            QuestionnaireChoices("效果满意后，哪种付费方式更适合？（选填）", ChannelQuestionnaire.paymentPreferences, listOf(payment), enabled = !isSubmitting) { payment = if (payment == it) "" else it }
+            OutlinedTextField(suggestion, { suggestion = it.take(300) }, modifier = Modifier.fillMaxWidth(), label = { Text("还有什么想对我们说？（选填）") }, placeholder = { Text("例如：我最希望纪要能……，或想在群里交流……") }, minLines = 2, maxLines = 4, enabled = !isSubmitting)
+            OutlinedTextField(contact, { contact = it.take(100) }, modifier = Modifier.fillMaxWidth(), label = { Text("联系方式（选填）") }, singleLine = true, enabled = !isSubmitting)
+            if (errorMessage != null) {
+                Text(errorMessage, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            }
             Button(
-                onClick = {
-                    onSubmit(
-                        mapOf(
-                            "name" to name.trim(),
-                            "city" to city.trim(),
-                            "purpose" to purpose.trim(),
-                            "contact" to contact.trim()
-                        )
-                    )
-                },
-                enabled = !isSubmitting && name.isNotBlank() && city.isNotBlank() && purpose.isNotBlank(),
+                onClick = { answers?.let(onSubmit) },
+                enabled = !isSubmitting && answers != null,
                 modifier = Modifier.fillMaxWidth().padding(bottom = 22.dp),
                 shape = RoundedCornerShape(8.dp)
             ) {
                 if (isSubmitting) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                else Text("提交申请")
+                else Text("提交问卷并申请入群")
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun QuestionnaireChoices(
+    title: String,
+    options: List<String>,
+    selected: List<String>,
+    maxSelections: Int = 1,
+    enabled: Boolean,
+    onSelect: (String) -> Unit
+) {
+    Column {
+        Text(title, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            options.forEach { option ->
+                FilterChip(
+                    selected = option in selected,
+                    onClick = { onSelect(option) },
+                    enabled = enabled && (maxSelections == 1 || option in selected || selected.size < maxSelections),
+                    label = { Text(option) }
+                )
             }
         }
     }

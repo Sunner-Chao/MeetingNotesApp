@@ -103,6 +103,7 @@ fun ReportScreen(
     var showTemplatePicker by remember { mutableStateOf(false) }
     var reportPreviewFile by remember { mutableStateOf<File?>(null) }
     var isPreparingReportPreview by remember { mutableStateOf(false) }
+    var templatePreview by remember { mutableStateOf<PresetReportTemplate?>(null) }
     val documentTitle = uiState.report?.documentTitle() ?: "会议纪要"
     val snackbarHostState = remember { SnackbarHostState() }
     var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
@@ -183,7 +184,27 @@ fun ReportScreen(
         }
     }
 
-    reportPreviewFile?.let { previewFile ->
+    LaunchedEffect(uiState.canUseReport) {
+        if (!uiState.canUseReport) {
+            reportPreviewFile = null
+            showChatPanel = false
+        }
+    }
+    if (showTemplatePicker) {
+        TemplatePickerDialog(
+            templates = presentationUiState.presetTemplates,
+            selectedTemplateName = uiState.reportTemplate.selectedName,
+            onSelect = { template ->
+                showTemplatePicker = false
+                viewModel.selectReportTemplate(meetingId, template)
+            },
+            onPreview = { templatePreview = it },
+            onDismiss = { showTemplatePicker = false }
+        )
+    }
+    templatePreview?.let { TemplatePreviewDialog(it, onDismiss = { templatePreview = null }) }
+
+    reportPreviewFile?.takeIf { uiState.canUseReport }?.let { previewFile ->
         ReportPdfPreviewDialog(
             file = previewFile,
             onDismiss = { reportPreviewFile = null }
@@ -245,7 +266,7 @@ fun ReportScreen(
                         DropdownMenuItem(
                             text = { Text(if (showChatPanel) "收起智能优化" else "智能优化") },
                             leadingIcon = { Icon(Icons.Default.AutoAwesome, contentDescription = null) },
-                            enabled = uiState.report != null,
+                            enabled = uiState.canUseReport,
                             onClick = {
                                 showExportMenu = false
                                 showChatPanel = !showChatPanel
@@ -254,7 +275,7 @@ fun ReportScreen(
                         DropdownMenuItem(
                             text = { Text("重新生成纪要") },
                             leadingIcon = { Icon(Icons.Default.Refresh, contentDescription = null) },
-                            enabled = uiState.report != null,
+                            enabled = !uiState.isGenerating && uiState.transcriptText.isNotBlank(),
                             onClick = {
                                 showExportMenu = false
                                 viewModel.regenerateWithTemplate(meetingId)
@@ -263,6 +284,7 @@ fun ReportScreen(
                         HorizontalDivider()
                         listOf(ExportFormat.DOCX, ExportFormat.PDF).forEach { format ->
                             DropdownMenuItem(
+                                enabled = uiState.canUseReport,
                                 text = {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Icon(
@@ -294,7 +316,8 @@ fun ReportScreen(
                                                 uiState.meetingTitle,
                                                 attachments,
                                                 uiState.forumParticipants,
-                                                format
+                                                format,
+                                                isCurrent = { viewModel.isCurrentReport(report) }
                                             )
                                         }
                                     }
@@ -344,7 +367,7 @@ fun ReportScreen(
                 .padding(paddingValues)
         ) {
             when {
-                uiState.isLoading -> {
+                uiState.isLoading || uiState.isGenerating -> {
                     Column(
                         modifier = Modifier.align(Alignment.Center),
                         horizontalAlignment = Alignment.CenterHorizontally,
@@ -352,7 +375,7 @@ fun ReportScreen(
                     ) {
                         if (uiState.isGenerating) {
                             ProcessingStatusRow(
-                                title = "生成会议纪要",
+                                title = "正在生成${uiState.reportTemplate.selectedName.ifBlank { "会议纪要" }}",
                                 stage = uiState.generationProgressStage.ifBlank { "会议纪要处理中" },
                                 actionLabel = "终止",
                                 onAction = { viewModel.cancelGeneration(meetingId) },
@@ -405,7 +428,7 @@ fun ReportScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Button(
-                            onClick = { viewModel.loadReport(meetingId) },
+                            onClick = { viewModel.regenerateWithTemplate(meetingId) },
                             shape = RoundedCornerShape(8.dp)
                         ) {
                             Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -414,7 +437,7 @@ fun ReportScreen(
                         }
                     }
                 }
-                uiState.report != null -> {
+                uiState.canUseReport -> {
                     Column(modifier = Modifier.fillMaxSize()) {
                         ReportReferenceContent(
                             uiState = presentationUiState,
@@ -422,7 +445,7 @@ fun ReportScreen(
                             onExportTranscript = {
                                 exportTranscript(context, uiState.transcriptText, documentTitle)
                             },
-                            onSelectTemplate = { template -> viewModel.selectReportTemplate(template) },
+                            onSelectTemplate = { template -> viewModel.selectReportTemplate(meetingId, template) },
                             onDeleteAttachment = viewModel::deleteAttachment,
                             onAddImages = { galleryLauncher.launch("image/*") },
                             onCaptureImage = ::launchCamera,
@@ -435,10 +458,11 @@ fun ReportScreen(
                             onRestoreWorkspaceLayout = viewModel::restoreWorkspaceLayout,
                             onPreviewFullReport = {
                                 val report = uiState.report
-                                if (report != null && !isPreparingReportPreview) {
+                                if (uiState.canUseReport && report != null && !isPreparingReportPreview) {
                                     isPreparingReportPreview = true
                                     exportScope.launch {
                                         val result = runCatching {
+                                            check(viewModel.isCurrentReport(report)) { "纪要已更新，请等待新稿完成" }
                                             val attachments = viewModel.attachmentsForExport(meetingId)
                                             withContext(Dispatchers.IO) {
                                                 ReportExporter.exportToPdf(
@@ -452,7 +476,11 @@ fun ReportScreen(
                                         }
                                         isPreparingReportPreview = false
                                         result.onSuccess { file ->
-                                            reportPreviewFile = file
+                                            if (viewModel.isCurrentReport(report)) {
+                                                reportPreviewFile = file
+                                            } else {
+                                                withContext(Dispatchers.IO) { file.delete() }
+                                            }
                                         }.onFailure { error ->
                                             snackbarHostState.showSnackbar(
                                                 error.message ?: "无法生成纪要预览"
@@ -461,7 +489,7 @@ fun ReportScreen(
                                     }
                                 }
                             },
-                            showTemplatePicker = showTemplatePicker,
+                            showTemplatePicker = false,
                             onShowTemplatePicker = { showTemplatePicker = it },
                             modifier = Modifier
                                 .weight(1f)
@@ -517,7 +545,7 @@ fun ReportScreen(
                             style = MaterialTheme.typography.titleMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        if (uiState.generationCancelled) {
+                        if (uiState.transcriptText.isNotBlank()) {
                             Button(onClick = { viewModel.regenerateReport(meetingId) }) {
                                 Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
@@ -1648,9 +1676,11 @@ private suspend fun exportReport(
     meetingTitle: String,
     attachments: List<MeetingAttachment>,
     forumParticipants: List<com.oa.automation.domain.model.ForumParticipant>,
-    format: ExportFormat
+    format: ExportFormat,
+    isCurrent: suspend () -> Boolean
 ) {
     try {
+        check(isCurrent()) { "纪要已更新，请等待新稿完成" }
         val exportFile = withContext(Dispatchers.IO) {
             when (format) {
                 ExportFormat.MARKDOWN, ExportFormat.TXT -> {
@@ -1688,6 +1718,10 @@ private suspend fun exportReport(
             }
         }
 
+        if (!isCurrent()) {
+            withContext(Dispatchers.IO) { exportFile.delete() }
+            error("纪要已更新，旧稿未分享，请等待新稿完成")
+        }
         val uri = FileProvider.getUriForFile(
             context,
             "${context.packageName}.fileprovider",
@@ -1702,6 +1736,7 @@ private suspend fun exportReport(
         }
         context.startActivity(Intent.createChooser(shareIntent, "分享${report.documentTitle()}"))
     } catch (e: Exception) {
+        if (e is kotlinx.coroutines.CancellationException) throw e
         Toast.makeText(context, "导出失败: ${e.message}", Toast.LENGTH_SHORT).show()
     }
 }

@@ -8,7 +8,7 @@ import org.junit.Test
 class MeetingAttachmentStoreTest {
     @Test
     fun `large image selection is processed sequentially with exact progress`() = runBlocking {
-        val sources = (1..250).toList()
+        val sources = (1..999).toList()
         val processed = mutableListOf<Int>()
         val progress = mutableListOf<Pair<Int, Int>>()
 
@@ -22,11 +22,11 @@ class MeetingAttachmentStoreTest {
         )
 
         assertEquals(sources, processed)
-        assertEquals(250, results.size)
+        assertEquals(999, results.size)
         assertTrue(results.all { it.isSuccess })
-        assertEquals(1 to 250, progress.first())
-        assertEquals(250 to 250, progress.last())
-        assertEquals((1..250).toList(), progress.map { it.first })
+        assertEquals(1 to 999, progress.first())
+        assertEquals(999 to 999, progress.last())
+        assertEquals((1..999).toList(), progress.map { it.first })
     }
 
     @Test

@@ -320,7 +320,8 @@ android {
         getByName("androidTest") {
             assets.srcDirs(
                 "../../docs/test-materials/report-fixtures",
-                "../../docs/test-materials/images/curated"
+                "../../docs/test-materials/images/curated",
+                "../../docs/test-materials/images"
             )
         }
     }

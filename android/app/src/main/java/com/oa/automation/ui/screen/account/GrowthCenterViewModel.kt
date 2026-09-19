@@ -37,7 +37,8 @@ data class GrowthCenterUiState(
     val isSubmittingApplication: Boolean = false,
     val seenCampaignIds: Set<String> = emptySet(),
     val systemMessages: List<GrowthSystemMessage> = emptyList(),
-    val message: String? = null
+    val message: String? = null,
+    val benefitsPopupSuppressed: Boolean = false
 )
 
 class GrowthCenterViewModel(
@@ -54,6 +55,11 @@ class GrowthCenterViewModel(
         viewModelScope.launch {
             configDataStore.seenGrowthCampaignIdsFlow.collectLatest { seenCampaignIds ->
                 _uiState.update { it.copy(seenCampaignIds = seenCampaignIds) }
+            }
+        }
+        viewModelScope.launch {
+            configDataStore.benefitsPopupSuppressedFlow.collectLatest { suppressed ->
+                _uiState.update { it.copy(benefitsPopupSuppressed = suppressed) }
             }
         }
         viewModelScope.launch {
@@ -91,8 +97,15 @@ class GrowthCenterViewModel(
     }
 
     fun refresh() {
-        if (session == null) return
-        viewModelScope.launch { loadOverview() }
+        if (_uiState.value.isLoading) return
+        viewModelScope.launch {
+            if (session == null) {
+                _uiState.update { it.copy(isLoading = true, errorMessage = null) }
+                loadPublicChannel()
+            } else {
+                loadOverview()
+            }
+        }
     }
 
     fun updateRedeemCode(value: String) {
@@ -262,6 +275,11 @@ class GrowthCenterViewModel(
 
     fun clearError() {
         _uiState.update { it.copy(errorMessage = null) }
+    }
+
+    fun suppressBenefitsPopup() {
+        _uiState.update { it.copy(benefitsPopupSuppressed = true) }
+        viewModelScope.launch { configDataStore.setBenefitsPopupSuppressed(true) }
     }
 
     fun markCampaignsRead(campaignIds: Collection<String>) {

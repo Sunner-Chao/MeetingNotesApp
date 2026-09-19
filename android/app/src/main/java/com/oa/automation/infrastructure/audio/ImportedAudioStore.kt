@@ -1,6 +1,7 @@
 package com.oa.automation.infrastructure.audio
 
 import android.content.Context
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.provider.OpenableColumns
 import java.io.File
@@ -9,7 +10,11 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-data class ImportedAudio(val file: File, val displayName: String)
+data class ImportedAudio(
+    val file: File,
+    val displayName: String,
+    val durationMs: Long = 0L
+)
 
 /** Copies document-provider audio into private storage before WorkManager receives it. */
 class ImportedAudioStore(private val context: Context) {
@@ -34,13 +39,34 @@ class ImportedAudioStore(private val context: Context) {
                 target.outputStream().use(input::copyTo)
             } ?: error("无法读取导入的音频")
             require(target.length() > 0L) { "导入的音频文件为空" }
-            Result.success(ImportedAudio(target, displayName))
+            Result.success(
+                ImportedAudio(
+                    file = target,
+                    displayName = displayName,
+                    durationMs = readDurationMs(target)
+                )
+            )
         } catch (error: CancellationException) {
             destination?.delete()
             throw error
         } catch (error: Throwable) {
             destination?.delete()
             Result.failure(error)
+        }
+    }
+
+    suspend fun readDurationMs(file: File): Long = withContext(Dispatchers.IO) {
+        val retriever = MediaMetadataRetriever()
+        try {
+            retriever.setDataSource(file.absolutePath)
+            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                ?.toLongOrNull()
+                ?.coerceAtLeast(0L)
+                ?: 0L
+        } catch (_: RuntimeException) {
+            0L
+        } finally {
+            retriever.release()
         }
     }
 

@@ -3,6 +3,7 @@ package com.oa.automation.application.usecase
 import com.oa.automation.data.local.ConfigDataStore
 import com.oa.automation.domain.model.Transcript
 import com.oa.automation.domain.model.ProcessingProgress
+import com.oa.automation.domain.model.forMeetingEngine
 import com.oa.automation.domain.repository.MeetingRepository
 import com.oa.automation.infrastructure.account.AccountSessionSynchronizer
 import com.oa.automation.infrastructure.account.isAuthenticationFailure
@@ -58,9 +59,10 @@ class StopRecordingUseCase(
             if (hasAccountSession) {
                 withTimeoutOrNull(3_000L) { accountSessionSynchronizer.refreshIfNeeded() }
             }
-            var sttConfig = configDataStore.appConfigFlow.first().sttConfig
-            var sttEngine = SpeechToTextEngine.fromConfig(sttConfig)
             val meeting = meetingRepository.findById(meetingId).getOrNull()
+            var sttConfig = configDataStore.appConfigFlow.first().sttConfig
+                .forMeetingEngine(meeting?.selectedSttEngineName)
+            var sttEngine = SpeechToTextEngine.fromConfig(sttConfig)
             val contextHint = buildSttContextHint(
                 meetingTitle = meeting?.title,
                 templateName = meeting?.selectedTemplateName
@@ -89,6 +91,7 @@ class StopRecordingUseCase(
                 val refreshed = withTimeoutOrNull(5_000L) { accountSessionSynchronizer.refresh() }
                 if (refreshed?.isSuccess == true) {
                     sttConfig = configDataStore.appConfigFlow.first().sttConfig
+                        .forMeetingEngine(meeting?.selectedSttEngineName)
                     sttEngine = SpeechToTextEngine.fromConfig(sttConfig)
                     transcriptionResult = transcribeWithCurrentEngine()
                 }

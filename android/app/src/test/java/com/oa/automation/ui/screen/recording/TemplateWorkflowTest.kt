@@ -8,7 +8,7 @@ import org.junit.Test
 class TemplateWorkflowTest {
     @Test
     fun knownTemplatesExposeFourStructuredSteps() {
-        listOf("宣贯·落实会", "推演·进度会", "启迪·共创会", "博弈·洽谈会", "复盘·分析会", "敏捷·站会", "论坛·共识会", "自定义会议")
+        listOf("宣贯·落实会", "推演·进度会", "启迪·共创会", "博弈·洽谈会", "复盘·分析会", "自定义会议")
             .forEach { name ->
                 val workflow = templateWorkflowFor(name)
                 assertEquals(name, workflow.templateName)

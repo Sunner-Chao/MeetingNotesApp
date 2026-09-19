@@ -93,6 +93,20 @@ fun STTConfig.serviceEndpointFor(engineType: STTEngineType = this.engineType): S
         else -> localEndpoint.trim()
     }
 
+/** Background work must retain its meeting's route when another page changes the app preference. */
+fun STTConfig.forMeetingEngine(
+    savedEngineName: String?,
+    supportsLocalStt: Boolean = ProductEdition.current.supportsLocalStt
+): STTConfig {
+    val selected = if (supportsLocalStt) {
+        savedEngineName?.let { runCatching { STTEngineType.valueOf(it) }.getOrNull() } ?: engineType
+    } else STTEngineType.TENCENT_HYBRID
+    return copy(
+        engineType = selected,
+        cloudModel = if (selected == STTEngineType.TENCENT_HYBRID) tencentAsrTier.cloudModel else cloudModel
+    )
+}
+
 fun String.isDevelopmentOnlySttEndpoint(): Boolean {
     val normalized = trim().trimEnd('/').lowercase()
     return normalized == STTConfig.LEGACY_LOCAL_ENDPOINT ||

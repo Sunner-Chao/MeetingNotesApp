@@ -934,7 +934,6 @@ class StreamingSttClient internal constructor(
         val language: String? = null,
         val message: String? = null,
         val segments: List<StreamSegment>? = null,
-        val finalText: String? = null,
         val diarization: StreamDiarization? = null
     )
 

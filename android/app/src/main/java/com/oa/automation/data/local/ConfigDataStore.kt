@@ -166,6 +166,7 @@ class ConfigDataStore(private val context: Context) {
         private val STT_USE_ACCOUNT_TOKEN = stringPreferencesKey("stt_use_account_token")
         private val SEEN_NOTIFICATION_EVENTS = stringSetPreferencesKey("seen_notification_events")
         private val SEEN_GROWTH_CAMPAIGNS = stringSetPreferencesKey("seen_growth_campaigns")
+        private val BENEFITS_POPUP_SUPPRESSED = booleanPreferencesKey("benefits_popup_suppressed")
         private val APP_THEME_MODE = stringPreferencesKey("app_theme_mode")
         private val FLOATING_BALL_ENABLED = booleanPreferencesKey("floating_ball_enabled")
         private val IGNORED_APP_UPDATE_VERSION = stringPreferencesKey("ignored_app_update_version")
@@ -207,19 +208,9 @@ class ConfigDataStore(private val context: Context) {
                 "时间线、根因与预防措施"
             ),
             ReportTemplateAsset(
-                "敏捷·站会",
-                "敏捷站会.md",
-                "昨日、今日与阻塞项"
-            ),
-            ReportTemplateAsset(
                 "论坛会议",
                 "论坛会议.md",
                 "主持串场、主题演讲与问答脉络"
-            ),
-            ReportTemplateAsset(
-                "论坛·共识会",
-                "论坛会议.md",
-                "议程脉络、发言归属与共识提炼"
             ),
             ReportTemplateAsset(
                 "自定义会议",
@@ -1093,6 +1084,16 @@ class ConfigDataStore(private val context: Context) {
             preferences.remove(LLM_AGENT_ACCESS_TOKEN)
             preferences.remove(ACCOUNT_STT_ACCESS_TOKEN)
             preferences.remove(STT_USE_ACCOUNT_TOKEN)
+        }
+    }
+
+    val benefitsPopupSuppressedFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
+        preferences[BENEFITS_POPUP_SUPPRESSED] ?: false
+    }
+
+    suspend fun setBenefitsPopupSuppressed(suppressed: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[BENEFITS_POPUP_SUPPRESSED] = suppressed
         }
     }
 

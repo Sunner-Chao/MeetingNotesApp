@@ -1,6 +1,7 @@
 package com.oa.automation.ui.screen.home
 
 import com.oa.automation.domain.model.MeetingOrigin
+import com.oa.automation.domain.model.displayTitle
 
 /** Record kind shown in the 最近记录 type filter. */
 internal enum class RecentRecordType(val label: String) {
@@ -18,7 +19,7 @@ internal enum class RecentRecordStatus(val label: String) {
 
 /** Ordering offered by the 最近记录 time control. */
 internal enum class RecentRecordSort(val label: String) {
-    NEWEST("最近更新"),
+    NEWEST("最新优先"),
     OLDEST("最早优先"),
     LONGEST("时长最长")
 }
@@ -68,12 +69,15 @@ internal fun recentRecordCounts(items: List<MeetingWithReport>): RecentRecordCou
 internal fun applyRecentRecordFilter(
     items: List<MeetingWithReport>,
     filter: RecentRecordFilter,
-    activeRecordingMeetingId: String? = null
+    activeRecordingMeetingId: String? = null,
+    query: String = ""
 ): List<MeetingWithReport> {
+    val terms = query.trim().split(Regex("\\s+")).filter(String::isNotEmpty)
     val matching = items.filter { item ->
         val isActive = activeRecordingMeetingId != null &&
             item.meeting.id == activeRecordingMeetingId
-        isActive || (matchesType(item, filter.type) && matchesStatus(item, filter.status))
+        isActive || (matchesType(item, filter.type) && matchesStatus(item, filter.status) &&
+            terms.all { item.meeting.displayTitle().contains(it, ignoreCase = true) })
     }
     val ordered = when (filter.sort) {
         RecentRecordSort.NEWEST -> matching.sortedByDescending { it.meeting.createdAt }

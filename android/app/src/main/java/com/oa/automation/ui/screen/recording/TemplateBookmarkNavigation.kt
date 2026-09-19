@@ -37,8 +37,6 @@ import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
-import androidx.compose.ui.layout.layout
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onClick
@@ -49,7 +47,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.lerp
 import androidx.compose.ui.unit.sp
@@ -199,11 +196,6 @@ private fun BookmarkTab(
     val openStroke = if (selected) mood.accent else skin.ink.copy(alpha = 0.32f)
     val stroke = lerp(mood.ink, openStroke, progress)
     val bookmarkFill = remember(mood.accent) { bookmarkSurfaceColor(mood.accent) }
-    val collapsedFontSize = minOf(
-        11f,
-        (tabHeight.value - 4f) / mood.displayName.length.coerceAtLeast(1) /
-            LocalDensity.current.fontScale
-    ).sp
 
     // Read the latest interaction state from inside the long lived gesture loop.
     val currentPinned by rememberUpdatedState(pinned)
@@ -407,41 +399,35 @@ private fun BookmarkTab(
                 }
             }
             if (labelAlpha <= 0.01f) {
-                Text(
-                    text = mood.displayName,
-                    color = Color.White,
-                    fontWeight = FontWeight.SemiBold,
-                    style = androidx.compose.material3.MaterialTheme.typography.labelSmall.copy(
-                        fontSize = collapsedFontSize,
-                        lineHeight = collapsedFontSize * 1.2f,
-                        shadow = Shadow(
-                            color = Color.Black.copy(alpha = 0.88f),
-                            blurRadius = 2.5f
-                        )
-                    ),
-                    textAlign = TextAlign.Center,
-                    maxLines = 1,
-                    softWrap = false,
+                Column(
                     modifier = Modifier
                         .align(Alignment.Center)
-                        // Measure the text on its rotated axes, then report the
-                        // rotated bounds so the parent can center it correctly.
-                        .layout { measurable, constraints ->
-                            val label = measurable.measure(
-                                Constraints(
-                                    maxWidth = constraints.maxHeight,
-                                    maxHeight = constraints.maxWidth
+                        .fillMaxHeight()
+                        .padding(vertical = 4.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    mood.collapsedName.forEach { character ->
+                        Text(
+                            text = character.toString(),
+                            color = Color.White,
+                            fontSize = 11.sp,
+                            lineHeight = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            style = androidx.compose.material3.MaterialTheme.typography.labelSmall.copy(
+                                fontSize = 11.sp,
+                                lineHeight = 12.sp,
+                                shadow = Shadow(
+                                    color = Color.Black.copy(alpha = 0.88f),
+                                    blurRadius = 2.5f
                                 )
-                            )
-                            layout(label.height, label.width) {
-                                label.placeRelative(
-                                    (label.height - label.width) / 2,
-                                    (label.width - label.height) / 2
-                                )
-                            }
-                        }
-                        .graphicsLayer { rotationZ = -90f }
-                )
+                            ),
+                            textAlign = TextAlign.Center,
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    }
+                }
             }
         }
     }

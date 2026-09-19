@@ -175,7 +175,7 @@ fun OAAutomationNavHost(
                         navController.navigate(Settings)
                     },
                     onNavigateToNotifications = {
-                        navController.navigate(Notifications())
+                        initialTab -> navController.navigate(Notifications(initialTab))
                     },
                     onNavigateToAccountProfile = {
                         navController.navigate(AccountProfile)
@@ -232,6 +232,7 @@ fun OAAutomationNavHost(
                 val route: Notifications = backStackEntry.toRoute()
                 NotificationCenterScreen(
                     onNavigateBack = { navController.popBackStack() },
+                    onLogin = { navController.navigate(AuthGraph) { launchSingleTop = true } },
                     initialTab = route.initialTab,
                     productEdition = ProductEdition.current,
                     onOpenMeeting = { meetingId, hasReport ->
@@ -246,7 +247,13 @@ fun OAAutomationNavHost(
 
             composable<AccountProfile> {
                 AccountProfileScreen(
-                    onNavigateBack = { navController.popBackStack() }
+                    onNavigateBack = { navController.popBackStack() },
+                    onAccountDeleted = {
+                        navController.navigate(AuthGraph) {
+                            popUpTo<MainGraph> { inclusive = true }
+                            launchSingleTop = true
+                        }
+                    }
                 )
             }
 
@@ -279,6 +286,7 @@ fun OAAutomationNavHost(
             composable<AccountInvitation> {
                 GrowthCenterScreen(
                     onNavigateBack = { navController.popBackStack() },
+                    onLogin = { navController.navigate(AuthGraph) { launchSingleTop = true } },
                     section = GrowthCenterSection.BENEFITS
                 )
             }

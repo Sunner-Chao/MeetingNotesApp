@@ -33,6 +33,7 @@ import com.oa.automation.infrastructure.audio.PreparedMeetingAudioShare
 import com.oa.automation.infrastructure.background.BackgroundTaskScheduler
 import com.oa.automation.infrastructure.background.BackgroundTaskState
 import com.oa.automation.locale.SimplifiedChineseText
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -40,6 +41,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import java.io.File
 import java.time.Instant
 
@@ -89,7 +92,11 @@ data class ReportUiState(
     val preparingAudioShareId: String? = null,
     val deletingAudioId: String? = null,
     val pendingAudioShare: PreparedMeetingAudioShare? = null
-)
+) {
+    val canUseReport: Boolean get() = report != null && !isLoading && !isGenerating &&
+        error == null && !generationCancelled &&
+        (reportTemplate.selectedName.isBlank() || report.templateName == reportTemplate.selectedName)
+}
 
 internal fun journeyStageTranscriptMap(transcripts: List<Transcript>): Map<String, String> =
     transcripts
@@ -120,9 +127,16 @@ class ReportViewModel(
     private var reportCollectionJob: Job? = null
     private var reportTaskCollectionJob: Job? = null
     private var forumSpeakerNames: List<String> = emptyList()
+    private var loadJob: Job? = null
+    private var generationLaunchJob: Job? = null
+    private var currentMeetingId: String? = null
 
     fun loadReport(meetingId: String) {
-        observeReportTask(meetingId)
+        currentMeetingId = meetingId
+        loadJob?.cancel()
+        reportCollectionJob?.cancel()
+        reportTaskCollectionJob?.cancel()
+        _uiState.update { it.copy(report = null, isLoading = true, error = null) }
         refreshArchivedAudio(meetingId)
         attachmentCollectionJob?.cancel()
         attachmentCollectionJob = viewModelScope.launch {
@@ -130,25 +144,7 @@ class ReportViewModel(
                 _uiState.update { it.copy(attachments = attachments) }
             }
         }
-        reportCollectionJob?.cancel()
-        reportCollectionJob = viewModelScope.launch {
-            reportRepository.getAllReportsFlow().collect { reports ->
-                reports.firstOrNull { it.meetingId == meetingId }?.let { report ->
-                    val title = resolveAndPersistReportTitle(meetingId, report)
-                    _uiState.update {
-                        it.copy(
-                            report = report,
-                            meetingTitle = title,
-                            forumParticipants = resolveForumParticipants(report),
-                            isLoading = false,
-                            isGenerating = false,
-                            error = null
-                        )
-                    }
-                }
-            }
-        }
-        viewModelScope.launch {
+        loadJob = viewModelScope.launch {
             _uiState.value = _uiState.value.copy(
                 isLoading = true,
                 error = null,
@@ -178,9 +174,18 @@ class ReportViewModel(
             // 加载模板配置
             val templates = configDataStore.loadPresetTemplates()
             val appConfig = configDataStore.appConfigFlow.first()
+            val existingReport = reportRepository.findByMeetingId(meetingId).getOrThrow()
+            val selectedName = meeting?.selectedTemplateName?.takeIf(String::isNotBlank)
+                ?: existingReport?.templateName?.takeIf(String::isNotBlank)
+                ?: appConfig.reportTemplateConfig.selectedName
+            val meetingTemplate = templates.firstOrNull { it.name == selectedName }
             _uiState.value = _uiState.value.copy(
                 presetTemplates = templates,
-                reportTemplate = appConfig.reportTemplateConfig
+                reportTemplate = if (meetingTemplate != null &&
+                    meetingTemplate.name != appConfig.reportTemplateConfig.selectedName
+                ) {
+                    ReportTemplateConfig(selectedName = meetingTemplate.name, content = meetingTemplate.content)
+                } else appConfig.reportTemplateConfig.copy(selectedName = selectedName)
             )
 
             // 加载转写文本
@@ -195,79 +200,78 @@ class ReportViewModel(
                 forumParticipants = resolveForumParticipants(null)
             )
 
-            // 先尝试从数据库加载已保存的报告
-            val existingReport = reportRepository.findByMeetingId(meetingId).getOrNull()
-
-            if (existingReport != null) {
-                val title = resolveAndPersistReportTitle(meetingId, existingReport)
-                // 已有保存的报告，直接显示
-                _uiState.value = _uiState.value.copy(
-                    report = existingReport,
-                    meetingTitle = title,
-                    forumParticipants = resolveForumParticipants(existingReport),
-                    isLoading = false
-                )
-            } else {
-                taskScheduler.enqueueReport(meetingId)
-                _uiState.update {
-                    it.copy(
-                        isLoading = true,
-                        isGenerating = true,
-                        generationProgressStage = "会议纪要正在排队",
-                        generationProgressIndeterminate = true,
-                        generationCancelled = false
-                    )
+            val generation = reportRepository.findGeneration(meetingId)
+            if (generation != null) {
+                if (generation.cancelled) {
+                    _uiState.update { it.copy(report = null, isLoading = false, isGenerating = false, generationCancelled = true) }
+                } else if (generation.completed && existingReport != null) {
+                    // WorkManager may prune completed jobs; the committed result remains valid.
+                    showCompletedReport(meetingId, existingReport)
+                } else {
+                    observeReportTask(meetingId, java.util.UUID.fromString(generation.requestId))
                 }
+            } else if (existingReport != null &&
+                (selectedName.isBlank() || existingReport.templateName == selectedName)) {
+                showCompletedReport(meetingId, existingReport)
+            } else {
+                regenerateWithTemplate(meetingId)
+            }
+            observeSavedReport(meetingId)
+        }
+    }
+
+    fun regenerateReport(meetingId: String) = regenerateWithTemplate(meetingId)
+
+    fun selectReportTemplate(meetingId: String, template: PresetReportTemplate) {
+        if (generationLaunchJob?.isActive == true) return
+        if (template.name == _uiState.value.reportTemplate.selectedName) return
+        val config = ReportTemplateConfig(selectedName = template.name, content = template.content, isCustom = false)
+        _uiState.update { it.copy(reportTemplate = config) }
+        regenerateWithTemplate(meetingId)
+    }
+
+    fun regenerateWithTemplate(meetingId: String) {
+        if (generationLaunchJob?.isActive == true) return
+        val selectedName = _uiState.value.reportTemplate.selectedName
+        reportTaskCollectionJob?.cancel()
+        _uiState.update {
+            it.copy(
+                report = null,
+                forumParticipants = emptyList(),
+                isLoading = true,
+                isGenerating = true,
+                chatMessages = emptyList(),
+                chatInput = "",
+                generationProgressPercent = null,
+                generationProgressStage = "会议纪要正在排队",
+                generationProgressIndeterminate = true,
+                generationCancelled = false,
+                error = null,
+                message = null
+            )
+        }
+        generationLaunchJob = viewModelScope.launch {
+            runCatching {
+                taskScheduler.enqueueReport(meetingId, replaceRunning = true, templateName = selectedName)
+            }.onSuccess { requestId ->
+                observeReportTask(meetingId, requestId)
+            }.onFailure { error ->
+                if (error is CancellationException) throw error
+                _uiState.update { it.copy(report = null, isLoading = false, isGenerating = false, error = error.message ?: "纪要生成未能启动") }
             }
         }
     }
 
-    fun regenerateReport(meetingId: String) {
-        taskScheduler.enqueueReport(meetingId)
-        _uiState.update {
-            it.copy(
-                isGenerating = true,
-                generationProgressPercent = null,
-                generationProgressStage = "会议纪要正在排队",
-                generationProgressIndeterminate = true,
-                generationCancelled = false,
-                error = null,
-                message = "已加入后台生成队列"
-            )
-        }
-    }
-
-    fun selectReportTemplate(template: PresetReportTemplate) {
-        val config = ReportTemplateConfig(
-            selectedName = template.name,
-            content = template.content,
-            isCustom = false
-        )
-        viewModelScope.launch {
-            configDataStore.updateReportTemplate(config)
-            _uiState.update { it.copy(reportTemplate = config) }
-        }
-    }
-
-    fun regenerateWithTemplate(meetingId: String) {
-        taskScheduler.enqueueReport(meetingId)
-        _uiState.update {
-            it.copy(
-                isGenerating = true,
-                generationProgressPercent = null,
-                generationProgressStage = "会议纪要正在排队",
-                generationProgressIndeterminate = true,
-                generationCancelled = false,
-                error = null,
-                message = "已使用所选模板后台生成"
-            )
-        }
-    }
-
     fun cancelGeneration(meetingId: String) {
-        taskScheduler.cancelReport(meetingId)
+        reportTaskCollectionJob?.cancel()
+        generationLaunchJob?.cancel()
+        viewModelScope.launch {
+            reportRepository.cancelGeneration(meetingId)
+            taskScheduler.cancelReport(meetingId)
+        }
         _uiState.update {
             it.copy(
+                report = null,
                 isLoading = false,
                 isGenerating = false,
                 generationProgressPercent = null,
@@ -280,15 +284,20 @@ class ReportViewModel(
         }
     }
 
-    private fun observeReportTask(meetingId: String) {
+    private fun observeReportTask(meetingId: String, requestId: java.util.UUID? = null) {
         reportTaskCollectionJob?.cancel()
         reportTaskCollectionJob = viewModelScope.launch {
-            taskScheduler.observeReport(meetingId).collect { task ->
+            val tasks = if (requestId != null) taskScheduler.observeReportRequest(requestId)
+                else taskScheduler.observeReport(meetingId)
+            tasks.collect { task ->
+                if (currentMeetingId != meetingId) return@collect
                 when (task.state) {
                     BackgroundTaskState.QUEUED, BackgroundTaskState.RUNNING -> _uiState.update {
                         it.copy(
+                            report = null,
+                            forumParticipants = emptyList(),
                             isGenerating = true,
-                            isLoading = it.report == null,
+                            isLoading = true,
                             generationProgressPercent = task.progressPercent,
                             generationProgressStage = task.progressStage.ifBlank {
                                 if (task.state == BackgroundTaskState.QUEUED) {
@@ -306,27 +315,20 @@ class ReportViewModel(
 
                     BackgroundTaskState.SUCCEEDED -> {
                         val report = reportRepository.findByMeetingId(meetingId).getOrNull()
-                        val title = report?.let { resolveAndPersistReportTitle(meetingId, it) }
-                        _uiState.update {
-                            it.copy(
-                                report = report ?: it.report,
-                                meetingTitle = title ?: it.meetingTitle,
-                                forumParticipants = report?.let(::resolveForumParticipants)
-                                    ?: it.forumParticipants,
-                                isLoading = false,
-                                isGenerating = false,
-                                generationProgressPercent = null,
-                                generationProgressStage = "",
-                                generationProgressIndeterminate = false,
-                                generationCancelled = false,
-                                error = if (report == null) "纪要任务已完成，但未找到报告数据" else null,
-                                message = if (report != null) "会议纪要已生成" else it.message
-                            )
+                        val generation = reportRepository.findGeneration(meetingId)
+                        val valid = report != null && report.templateName == _uiState.value.reportTemplate.selectedName &&
+                            (generation == null || (generation.completed && !generation.cancelled && generation.requestId == task.id.toString()))
+                        if (valid) {
+                            showCompletedReport(meetingId, checkNotNull(report))
+                        } else {
+                            _uiState.update { it.copy(report = null, isLoading = false, isGenerating = false,
+                                error = "当前模板尚无可用纪要，请重新生成") }
                         }
                     }
 
                     BackgroundTaskState.FAILED -> _uiState.update {
                         it.copy(
+                            report = null,
                             isLoading = false,
                             isGenerating = false,
                             generationProgressPercent = null,
@@ -339,6 +341,7 @@ class ReportViewModel(
 
                     BackgroundTaskState.CANCELLED -> _uiState.update {
                         it.copy(
+                            report = null,
                             isLoading = false,
                             isGenerating = false,
                             generationProgressPercent = null,
@@ -350,7 +353,10 @@ class ReportViewModel(
                         )
                     }
 
-                    BackgroundTaskState.NONE -> Unit
+                    BackgroundTaskState.NONE -> if (requestId != null) {
+                        _uiState.update { it.copy(report = null, isLoading = false, isGenerating = false,
+                            error = "纪要任务未完成，请重新生成") }
+                    }
                 }
             }
         }
@@ -674,9 +680,52 @@ class ReportViewModel(
         }
     }
 
+    private suspend fun showCompletedReport(meetingId: String, report: Report) {
+        val title = resolveAndPersistReportTitle(meetingId, report)
+        val saved = reportRepository.findByMeetingId(meetingId).getOrNull()
+        currentCoroutineContext().ensureActive()
+        if (currentMeetingId != meetingId || saved != report ||
+            report.templateName != _uiState.value.reportTemplate.selectedName) return
+        _uiState.update { it.copy(report = report, meetingTitle = title,
+            forumParticipants = resolveForumParticipants(report), isLoading = false, isGenerating = false,
+            generationProgressPercent = null, generationProgressStage = "", generationProgressIndeterminate = false,
+            generationCancelled = false, error = null) }
+    }
+
+    private fun observeSavedReport(meetingId: String) {
+        reportCollectionJob?.cancel()
+        reportCollectionJob = viewModelScope.launch {
+            reportRepository.getAllReportsFlow().collect {
+                val current = _uiState.value
+                if (!current.canUseReport) return@collect
+                val saved = reportRepository.findByMeetingId(meetingId).getOrNull()
+                if (currentMeetingId != meetingId || _uiState.value.report != current.report) return@collect
+                if (saved == null) {
+                    _uiState.update { it.copy(report = null) }
+                } else if (saved.id == current.report?.id && saved.generatedAt == current.report.generatedAt &&
+                    saved.templateName == current.reportTemplate.selectedName) {
+                    // Layout edits may refresh a completed report, never a running task.
+                    _uiState.update { it.copy(report = saved) }
+                }
+            }
+        }
+    }
+
+    suspend fun isCurrentReport(report: Report): Boolean {
+        val state = _uiState.value
+        if (!state.canUseReport || state.report != report) return false
+        val saved = reportRepository.findByMeetingId(report.meetingId).getOrNull()
+        return currentMeetingId == report.meetingId && saved == report &&
+            _uiState.value.canUseReport && _uiState.value.report == report
+    }
+
     // 删除报告
     fun deleteReport(meetingId: String) {
+        reportTaskCollectionJob?.cancel()
+        generationLaunchJob?.cancel()
+        _uiState.update { it.copy(report = null, isLoading = false, isGenerating = false) }
         viewModelScope.launch {
+            taskScheduler.cancelReport(meetingId)
             reportRepository.deleteByMeetingId(meetingId)
                 .onSuccess {
                     _uiState.value = _uiState.value.copy(
@@ -709,6 +758,8 @@ class ReportViewModel(
     }
 
     override fun onCleared() {
+        loadJob?.cancel()
+        generationLaunchJob?.cancel()
         attachmentCollectionJob?.cancel()
         reportCollectionJob?.cancel()
         reportTaskCollectionJob?.cancel()

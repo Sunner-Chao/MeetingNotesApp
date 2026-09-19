@@ -18,6 +18,8 @@ import com.oa.automation.domain.model.MeetingAttachment
 import com.oa.automation.domain.model.Report
 import com.oa.automation.domain.model.MeetingMode
 import com.oa.automation.domain.model.isForumMeetingTemplate
+import com.oa.automation.domain.model.extractForumParticipants
+import com.oa.automation.domain.model.ReportTitleResolver
 import java.io.File
 import java.io.FileOutputStream
 
@@ -187,7 +189,10 @@ object ReportExporter {
         forumParticipants: List<ForumParticipant> = emptyList()
     ): File {
         val isStudyReport = report.templateName.usesStudyReportStyle()
-        val participantsForLayout = forumParticipants.ifEmpty { report.participants }
+        val participantsForLayout = forumParticipants.ifEmpty { report.participants }.ifEmpty {
+            if (report.templateName.isForumMeetingTemplate()) extractForumParticipants(report.rawContent)
+            else emptyList()
+        }
         val images = attachments.map { attachment ->
             MeetingImagePreparer.prepare(attachment)
                 ?: error("无法写入会议图片：${attachment.displayName}")
@@ -521,9 +526,13 @@ object ReportExporter {
                     width = (contentWidth - imageHorizontalInset * 2).toInt()
                 )
                 val blockPadding = if (isStudyReport) 10f else 0f
-                val fullPageImageHeight = contentBottom - margin - captionLayout.height - 38f
+                // Keep the generated footer on the same image page. Without a
+                // reserved band, a full-height photo pushes a footer-only blank
+                // page after the image section.
+                val footerReserve = 34f
+                val fullPageImageHeight = contentBottom - margin - captionLayout.height - 38f - footerReserve
                 val currentPageImageHeight = contentBottom - yPosition - captionLayout.height -
-                    24f - blockPadding * 2
+                    24f - blockPadding * 2 - footerReserve
                 val maxImageHeight = if (isStudyReport && currentPageImageHeight >= 160f) {
                     minOf(fullPageImageHeight, currentPageImageHeight)
                 } else {
@@ -580,16 +589,16 @@ object ReportExporter {
             }.getOrNull()
 
         fun drawForumParticipantWall() {
-            val visible = participantsForLayout.filter { it.name.isNotBlank() }.take(24)
+            val visible = participantsForLayout.filter { it.name.isNotBlank() }
             if (!report.templateName.isForumMeetingTemplate() || visible.isEmpty()) return
-            yPosition = drawText("论坛参会名录", headingPaint, minimumFollowingSpace = 18f)
+            yPosition = drawText("论坛通讯录 · 参会人员", headingPaint, minimumFollowingSpace = 18f)
             yPosition = drawText(
-                "照片墙名单 · ${visible.size} 人 · 未采集头像以姓名首字显示",
+                "照片墙 · ${visible.size} 人 · 未提供头像时以姓名标识",
                 footerPaint
             )
-            val columns = 4
+            val columns = 3
             val cellWidth = contentWidth / columns
-            val cellHeight = 88f
+            val cellHeight = 116f
             visible.chunked(columns).forEach { row ->
                 if (yPosition + cellHeight > contentBottom) startNewPage()
                 row.forEachIndexed { column, participant ->
@@ -634,7 +643,11 @@ object ReportExporter {
                     }
                     val nameLayout = createTextLayout(
                         participant.name,
-                        footerPaint,
+                        TextPaint(footerPaint).apply {
+                            color = headingColor
+                            textSize = 11f
+                            typeface = Typeface.DEFAULT_BOLD
+                        },
                         Layout.Alignment.ALIGN_CENTER,
                         width = (cellWidth - 8f).toInt()
                     )
@@ -643,15 +656,15 @@ object ReportExporter {
                     nameLayout.draw(canvas)
                     canvas.restore()
                     val meta = listOf(participant.role, participant.organization)
-                        .filter(String::isNotBlank)
-                        .joinToString(" · ")
+                        .filter { it.isNotBlank() && it != "未提及" }
+                        .joinToString("\n")
                     if (meta.isNotBlank()) {
                         val metaLayout = createTextLayout(
                             meta,
-                            TextPaint(footerPaint).apply { textSize = 7.5f },
+                            TextPaint(footerPaint).apply { textSize = 8f; color = bodyColor },
                             Layout.Alignment.ALIGN_CENTER,
                             width = (cellWidth - 8f).toInt(),
-                            maxLines = 1
+                            maxLines = 3
                         )
                         canvas.save()
                         canvas.translate(left + 4f, yPosition + 61f)
@@ -665,13 +678,7 @@ object ReportExporter {
         }
 
         // Title
-        val title = report.rawContent.lineSequence()
-            .map(String::trim)
-            .firstOrNull { it.startsWith("# ") }
-            ?.removePrefix("# ")
-            ?.trim()
-            ?.takeIf(String::isNotBlank)
-            ?: if (isStudyReport) "研学考察游记" else "会议纪要"
+        val title = ReportTitleResolver.resolve(report, meetingTitle)
         yPosition = drawText(title, titlePaint)
         canvas.drawLine(margin, yPosition, pageWidth - margin, yPosition, linePaint)
         yPosition += 16f
@@ -680,12 +687,51 @@ object ReportExporter {
         if (report.rawContent.isNotBlank()) {
             // Parse raw markdown content
             val sourceContent = if (report.templateName.usesProjectManagementReportStyle()) {
-                ReportDocumentFormatter.normalizeProjectManagementSections(report.rawContent)
+                ReportDocumentFormatter.normalizeProjectManagementSections(
+                    ReportDocumentFormatter.stripTemplateGuidance(report.rawContent)
+                )
             } else {
-                report.rawContent
+                ReportDocumentFormatter.stripTemplateGuidance(report.rawContent)
             }
             val lines = ReportDocumentFormatter.normalizeLists(sourceContent).lines()
+            fun followingBlockHeight(index: Int): Float {
+                var next = index + 1
+                var blankSpace = 0f
+                while (next < lines.size && lines[next].isBlank()) {
+                    blankSpace += 8f
+                    next++
+                }
+                if (next >= lines.size) return blankSpace
+                if (lines[next].trim().startsWith("|") &&
+                    next + 1 < lines.size && isPdfTableSeparator(lines[next + 1])) {
+                    val header = parsePdfTableRow(lines[next])
+                    val firstRow = lines.getOrNull(next + 2)
+                        ?.takeIf { it.trim().startsWith("|") }?.let(::parsePdfTableRow)
+                    val columns = maxOf(header.size, firstRow?.size ?: 0).coerceAtLeast(1)
+                    val cellWidth = (contentWidth / columns - 8f).toInt()
+                    val size = when { columns >= 8 -> 6.5f; columns >= 5 -> 8f; else -> 10f }
+                    fun rowHeight(row: List<String>, bold: Boolean): Float {
+                        val paint = TextPaint(bodyPaint).apply {
+                            textSize = size
+                            typeface = if (bold) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+                        }
+                        return (row.maxOfOrNull {
+                            createTextLayout(cleanPdfMarkdown(it), paint, width = cellWidth).height
+                        } ?: 0) + 8f
+                    }
+                    return blankSpace + rowHeight(header, true) +
+                        (firstRow?.let { rowHeight(it, false) } ?: 0f) + 12f
+                }
+                val nextText = cleanPdfMarkdown(lines[next])
+                return blankSpace + minOf(
+                    createTextLayout(nextText, bodyPaint).height.toFloat(), bodyPaint.textSize * 2.2f
+                ) + 8f
+            }
+            fun keepHeadingWithContent(index: Int, heading: String, paint: TextPaint, spacing: Float) {
+                ensureSpace(spacing + createTextLayout(heading, paint).height + 8f + followingBlockHeight(index))
+            }
             var lineIndex = 0
+            var skippedDocumentTitle = false
             while (lineIndex < lines.size) {
                 val line = lines[lineIndex]
                 val trimmed = line.trim()
@@ -732,7 +778,7 @@ object ReportExporter {
                     }
                     trimmed.startsWith("# ") -> {
                         val heading = trimmed.removePrefix("# ").trim()
-                        if (heading != title) {
+                        if (skippedDocumentTitle && heading != title) {
                             addVerticalSpace(8f)
                             yPosition = drawText(
                                 heading,
@@ -740,15 +786,17 @@ object ReportExporter {
                                 minimumFollowingSpace = 30f
                             )
                         }
+                        skippedDocumentTitle = true
                         lineIndex++
                     }
                     trimmed.startsWith("## ") -> {
+                        val heading = trimmed.removePrefix("## ").trim()
+                        keepHeadingWithContent(lineIndex, heading, headingPaint, 6f)
                         addVerticalSpace(6f)
                         val followedByTable = lines.drop(lineIndex + 1)
                             .firstOrNull { it.isNotBlank() }
                             ?.trim()
                             ?.startsWith("|") == true
-                        val heading = trimmed.removePrefix("## ").trim()
                         if (isStudyReport) {
                             drawStudyHeading(heading, primary = true)
                         } else {
@@ -761,9 +809,10 @@ object ReportExporter {
                         lineIndex++
                     }
                     trimmed.startsWith("### ") -> {
-                        addVerticalSpace(4f)
                         val subHeadingPaint = TextPaint(headingPaint).apply { textSize = 14f }
                         val heading = trimmed.removePrefix("### ").trim()
+                        keepHeadingWithContent(lineIndex, heading, subHeadingPaint, 4f)
+                        addVerticalSpace(4f)
                         if (isStudyReport) {
                             drawStudyHeading(heading, primary = false)
                         } else {
@@ -776,8 +825,9 @@ object ReportExporter {
                         lineIndex++
                     }
                     trimmed.matches(Regex("^#{4,6}\\s+.+$")) -> {
-                        addVerticalSpace(3f)
                         val subHeadingPaint = TextPaint(headingPaint).apply { textSize = 12.5f }
+                        keepHeadingWithContent(lineIndex, cleanPdfMarkdown(trimmed), subHeadingPaint, 3f)
+                        addVerticalSpace(3f)
                         yPosition = drawText(
                             cleanPdfMarkdown(trimmed),
                             subHeadingPaint,

@@ -368,7 +368,7 @@ internal fun resolveRestoredSttEngineType(
     if (isGlobalRecording) return appEngineType
     return meeting?.selectedSttEngineName
         ?.let { saved -> runCatching { STTEngineType.valueOf(saved) }.getOrNull() }
-        ?: appEngineType
+        ?: STTEngineType.FASTER_WHISPER
 }
 
 private fun STTConfig.withEngineType(engineType: STTEngineType): STTConfig {
@@ -686,7 +686,7 @@ class RecordingViewModel(
                 val actualEngine = effectiveSttEngineType(
                     preferred = preferredEngineForMeeting(),
                     route = session.realtimeSttRoute,
-                    isRecording = session.isRecording || session.isStarting,
+                    isRecording = session.meetingId == currentMeetingId && (session.isRecording || session.isStarting),
                     supportsLocalStt = ProductEdition.current.supportsLocalStt
                 )
                 _uiState.update {
@@ -923,7 +923,15 @@ class RecordingViewModel(
         observeJourney(meetingId)
 
         viewModelScope.launch {
-            val meeting = meetingRepository.findById(meetingId).getOrNull()
+            var meeting = meetingRepository.findById(meetingId).getOrNull()
+            if (meeting?.origin == MeetingOrigin.FILE_IMPORT && meeting.durationMs <= 0L) {
+                val audioFile = meeting.audioFilePath?.let(::File)?.takeIf { it.isFile }
+                val durationMs = audioFile?.let { importedAudioStore.readDurationMs(it) } ?: 0L
+                if (durationMs > 0L) {
+                    meeting = meeting.copy(durationMs = durationMs)
+                    meetingRepository.save(meeting).getOrThrow()
+                }
+            }
             val transcripts = meetingRepository.findTranscriptsByMeetingId(meetingId).getOrNull().orEmpty()
             val recordingMarkers = meetingRepository.findRecordingMarkersByMeetingId(meetingId)
                 .getOrNull()
@@ -954,11 +962,9 @@ class RecordingViewModel(
                 isGlobalRecording = isGlobalRecording,
                 supportsLocalStt = ProductEdition.current.supportsLocalStt
             )
-            // Carry a previously resolved engine (including one reached by an
-            // automatic fallback) into this meeting; a meeting that never chose
-            // one keeps following the app-wide preference.
-            meetingSttEngineOverride = meeting?.selectedSttEngineName
-                ?.let { saved -> runCatching { STTEngineType.valueOf(saved) }.getOrNull() }
+            // New records start locally; saved choices and active sessions keep
+            // their route independently from another meeting's app preference.
+            meetingSttEngineOverride = restoredSttEngineType
             val restoredSttConfig = sttConfig.withEngineType(restoredSttEngineType)
             val presetTemplates = configDataStore.loadPresetTemplates()
             val hasPriorWork = meeting != null && (
@@ -1016,6 +1022,9 @@ class RecordingViewModel(
             if (!isGlobalRecording && restoredSttEngineType != sttConfig.engineType) {
                 configDataStore.updateSTTConfig(restoredSttConfig)
             }
+            if (meeting != null && meeting.selectedSttEngineName == null) {
+                persistMeetingSttEngine(meetingId, restoredSttEngineType)
+            }
             if (meeting != null && isCurrentMeeting(meetingId)) {
                 persistedDurationSeconds = maxOf(
                     meeting.durationMs.div(1_000L).coerceAtLeast(0L),
@@ -1065,6 +1074,9 @@ class RecordingViewModel(
                         } else {
                             InputMode.VOICE
                         },
+                        textImportStatus = if (meeting.origin == MeetingOrigin.FILE_IMPORT && transcriptText.isNotBlank()) {
+                            "已保存转写 · ${transcriptText.length} 字"
+                        } else it.textImportStatus,
                         sttEngineLabel = restoredSttEngineType.displayName,
                         sttEngineType = restoredSttEngineType,
                         sttLanguage = restoredSttConfig.language,
@@ -1306,7 +1318,7 @@ class RecordingViewModel(
             supportsLocalStt = ProductEdition.current.supportsLocalStt
         )
         if (currentState.isSwitchingSttEngine || currentState.isRecordingActionPending ||
-            currentState.isFinalizingRecording || currentState.isTranscribing || currentState.isGeneratingReport ||
+            currentState.isFinalizingRecording || currentState.isImportingAudio || currentState.isTranscribing || currentState.isGeneratingReport ||
             (engineType == actualEngine && currentState.realtimeSttRoute != RealtimeSttRouteState.UNAVAILABLE)) {
             return
         }
@@ -3483,7 +3495,8 @@ class RecordingViewModel(
             return
         }
         val journeyStageId = state.currentJourneyStage?.id
-        if (state.isImportingAudio || state.isRecording || state.isTranscribing) return
+        if (state.isImportingAudio || state.isRecording || state.isTranscribing ||
+            state.isSwitchingSttEngine || state.isGeneratingReport) return
         val importToken = java.util.UUID.randomUUID().toString()
         audioImportToken = importToken
         audioImportJob = viewModelScope.launch {
@@ -3507,7 +3520,11 @@ class RecordingViewModel(
                         runCatching {
                             val meeting = meetingRepository.findById(meetingId).getOrNull()
                                 ?: error("会议不存在")
-                            meetingRepository.save(meeting.copy(audioFilePath = imported.file.absolutePath))
+                            meetingRepository.save(meeting.copy(
+                                audioFilePath = imported.file.absolutePath,
+                                durationMs = maxOf(meeting.durationMs, imported.durationMs),
+                                selectedSttEngineName = state.sttEngineType.name
+                            ))
                                 .getOrThrow()
                             taskScheduler.enqueueTranscription(
                                 meetingId = meetingId,
@@ -3813,7 +3830,7 @@ class RecordingViewModel(
         null -> null
     }
 
-    private fun enqueueReportGeneration(meetingId: String) {
+    private suspend fun enqueueReportGeneration(meetingId: String) {
         val taskId = taskScheduler.enqueueReport(meetingId)
         if (isCurrentMeeting(meetingId)) {
             trackedReportTaskId = taskId
@@ -3959,6 +3976,7 @@ class RecordingViewModel(
                         )
                         val currentLiveTranscript = _uiState.value.liveTranscript
                         existingTranscriptText = finalText
+                        savedTimelineRows = transcripts.canonicalMeetingTranscripts().toTimelineRows()
                         preservedStreamingText = ""
                         currentStreamingSessionId = ""
                         _uiState.update {
@@ -3977,8 +3995,11 @@ class RecordingViewModel(
                                     finalText
                                 },
                                 transcriptPreviewMode = "最终稿",
+                                transcriptTimeline = if (isActiveRecording) it.transcriptTimeline else savedTimelineRows,
                                 textImportStatus = if (it.importedAudioDisplayName.isNotBlank()) {
                                     "${it.importedAudioDisplayName} · 转写完成 ${finalText.length} 字"
+                                } else if (it.inputMode == InputMode.IMPORT) {
+                                    "音频转写完成 · ${finalText.length} 字"
                                 } else {
                                     it.textImportStatus
                                 },

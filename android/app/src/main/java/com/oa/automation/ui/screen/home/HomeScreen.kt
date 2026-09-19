@@ -3,10 +3,12 @@ package com.oa.automation.ui.screen.home
 import android.app.DatePickerDialog
 import android.app.TimePickerDialog
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -17,6 +19,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -24,16 +28,15 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -48,12 +51,15 @@ import androidx.compose.material.icons.filled.Event
 import androidx.compose.material.icons.filled.EventAvailable
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.FolderOpen
-import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.NotificationsNone
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -68,6 +74,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -82,7 +89,9 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -94,6 +103,8 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -112,17 +123,18 @@ import com.oa.automation.domain.model.displayTitle
 import com.oa.automation.domain.model.ProductEdition
 import com.oa.automation.ui.component.AppLauncherIcon
 import com.oa.automation.ui.component.FirebaseUiTokens
-import com.oa.automation.ui.component.MeetingCard
 import com.oa.automation.ui.component.ZhiWuScreenBackground
 import com.oa.automation.ui.screen.account.GrowthCenterViewModel
 import com.oa.automation.ui.navigation.ProductEntryPolicy
 import com.oa.automation.ui.theme.BrandBlue
 import com.oa.automation.ui.theme.LocalAppIsDarkTheme
+import com.oa.automation.ui.formatBeijingTime
 import com.oa.automation.infrastructure.notification.requestNotificationPermissionIfNeeded
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import android.graphics.BitmapFactory
 import org.koin.androidx.compose.koinViewModel
 
 internal data class HomeColors(
@@ -201,13 +213,13 @@ internal fun homeLayoutSpec(maxWidth: Dp, maxHeight: Dp): HomeLayoutSpec {
     return if (compact) {
         HomeLayoutSpec(
             compact = true,
-            sectionSpacing = 8.dp,
+            sectionSpacing = 12.dp,
             tileHeight = 124.dp,
             tileTitleSize = 18,
             artworkWidth = 62.dp,
             artworkHeight = 78.dp,
-            heroCardHeight = 116.dp,
-            heroTitleSize = 18,
+            heroCardHeight = 132.dp,
+            heroTitleSize = 24,
             brandIconSize = 34.dp,
             brandTitleSize = 25,
             greetingSize = 24,
@@ -218,13 +230,13 @@ internal fun homeLayoutSpec(maxWidth: Dp, maxHeight: Dp): HomeLayoutSpec {
     } else {
         HomeLayoutSpec(
             compact = false,
-            sectionSpacing = 12.dp,
+            sectionSpacing = 16.dp,
             tileHeight = 140.dp,
             tileTitleSize = 19,
             artworkWidth = 68.dp,
             artworkHeight = 86.dp,
-            heroCardHeight = 124.dp,
-            heroTitleSize = 19,
+            heroCardHeight = 140.dp,
+            heroTitleSize = 26,
             brandIconSize = 38.dp,
             brandTitleSize = 27,
             greetingSize = 26,
@@ -239,7 +251,7 @@ internal fun homeLayoutSpec(maxWidth: Dp, maxHeight: Dp): HomeLayoutSpec {
 fun HomeScreen(
     onNavigateToRecording: (String, HomeLaunchAction) -> Unit,
     onNavigateToReport: (String) -> Unit = {},
-    onNavigateToNotifications: () -> Unit,
+    onNavigateToNotifications: (String) -> Unit,
     viewModel: HomeViewModel = koinViewModel(),
     growthViewModel: GrowthCenterViewModel = koinViewModel(),
     productEdition: ProductEdition = ProductEdition.current
@@ -249,23 +261,29 @@ fun HomeScreen(
     val growthState by growthViewModel.uiState.collectAsStateWithLifecycle()
     val lifecycleOwner = LocalLifecycleOwner.current
     val snackbarHostState = remember { SnackbarHostState() }
-    var showAllMeetings by remember { mutableStateOf(false) }
+    var showAllMeetings by rememberSaveable { mutableStateOf(false) }
+    var showBenefitsPopup by rememberSaveable { mutableStateOf(false) }
+    var benefitsPromptedForLogin by rememberSaveable { mutableStateOf(false) }
     var showClearMeetingsDialog by remember { mutableStateOf(false) }
-    var recordFilter by remember { mutableStateOf(RecentRecordFilter()) }
-    var filterExpanded by remember { mutableStateOf(false) }
-    val recordCounts = remember(uiState.meetings) { recentRecordCounts(uiState.meetings) }
-    val orderedMeetings = remember(uiState.meetings, recordFilter, uiState.activeRecording?.meetingId) {
+    val recentMeetings = remember(uiState.meetings, uiState.activeRecording?.meetingId) {
         applyRecentRecordFilter(
-            items = uiState.meetings,
-            filter = recordFilter,
-            activeRecordingMeetingId = uiState.activeRecording?.meetingId
-        )
+            uiState.meetings, RecentRecordFilter(), uiState.activeRecording?.meetingId
+        ).take(3)
     }
 
     LaunchedEffect(uiState.message) {
         uiState.message?.let {
             snackbarHostState.showSnackbar(it)
             viewModel.clearMessage()
+        }
+    }
+    LaunchedEffect(growthState.isAuthenticated, growthState.overview?.privateChannel, growthState.benefitsPopupSuppressed) {
+        if (!growthState.isAuthenticated) {
+            benefitsPromptedForLogin = false
+            showBenefitsPopup = false
+        } else if (!benefitsPromptedForLogin && !growthState.benefitsPopupSuppressed && growthState.overview?.privateChannel?.enabled == true) {
+            benefitsPromptedForLogin = true
+            showBenefitsPopup = true
         }
     }
     LaunchedEffect(uiState.pendingNavigation) {
@@ -308,6 +326,28 @@ fun HomeScreen(
             )
         }
 
+    if (showAllMeetings) {
+        AllMeetingsSheet(
+            meetings = uiState.meetings,
+            activeRecording = uiState.activeRecording,
+            regeneratingMeetingId = uiState.regeneratingMeetingId,
+            onDismiss = { showAllMeetings = false },
+            onOpen = { item ->
+                showAllMeetings = false
+                if (item.hasReport) onNavigateToReport(item.meeting.id)
+                else onNavigateToRecording(item.meeting.id, item.meeting.resumeLaunchAction())
+            },
+            onContinueRecording = { meetingId ->
+                showAllMeetings = false
+                val meeting = uiState.meetings.firstOrNull { it.meeting.id == meetingId }?.meeting
+                onNavigateToRecording(meetingId, meeting?.resumeLaunchAction() ?: HomeLaunchAction.STANDARD)
+            },
+            onRegenerateReport = viewModel::regenerateReport,
+            onDelete = viewModel::deleteMeeting,
+            onEdit = viewModel::startEditTitle,
+            onClearAll = { showClearMeetingsDialog = true }
+        )
+    }
     if (showClearMeetingsDialog) {
         AlertDialog(
             onDismissRequest = { showClearMeetingsDialog = false },
@@ -331,24 +371,20 @@ fun HomeScreen(
             onTitleChange = viewModel::onTitleEditChange
         )
     }
-    if (showAllMeetings) {
-        AllMeetingsSheet(
-            meetings = uiState.meetings,
-            regeneratingMeetingId = uiState.regeneratingMeetingId,
-            onDismiss = { showAllMeetings = false },
-            onOpen = { item ->
-                showAllMeetings = false
-                if (item.hasReport) onNavigateToReport(item.meeting.id)
-                else onNavigateToRecording(item.meeting.id, item.meeting.resumeLaunchAction())
+    if (showBenefitsPopup) {
+        BenefitsLoginDialog(
+            channel = growthState.overview?.privateChannel,
+            qrImageBytes = growthState.qrImageBytes,
+            managerCardImageBytes = growthState.managerCardImageBytes,
+            onDismiss = { showBenefitsPopup = false },
+            onNeverRemind = {
+                showBenefitsPopup = false
+                growthViewModel.suppressBenefitsPopup()
             },
-            onReportClick = { onNavigateToReport(it) },
-            onContinueRecording = { meetingId ->
-                val meeting = uiState.meetings.firstOrNull { it.meeting.id == meetingId }?.meeting
-                onNavigateToRecording(meetingId, meeting?.resumeLaunchAction() ?: HomeLaunchAction.STANDARD)
-            },
-            onRegenerateReport = viewModel::regenerateReport,
-            onDelete = viewModel::deleteMeeting,
-            onEdit = viewModel::startEditTitle
+            onOpenNotifications = {
+                showBenefitsPopup = false
+                onNavigateToNotifications("benefits")
+            }
         )
     }
 
@@ -373,15 +409,13 @@ fun HomeScreen(
                         .padding(innerPadding)
                 ) {
                     val layout = homeLayoutSpec(maxWidth, maxHeight)
-                    // One gutter for the whole page: quick tiles and record cards
-                    // sit on the same two-column grid.
-                    val gridGutter = layout.recordSpacing + 3.dp
                     Column(
                         modifier = Modifier
                             .align(Alignment.TopCenter)
                             .fillMaxHeight()
-                            .fillMaxWidth()
                             .widthIn(max = 560.dp)
+                            .fillMaxWidth()
+                            .verticalScroll(rememberScrollState())
                             .padding(
                                 start = FirebaseUiTokens.ScreenPadding,
                                 end = FirebaseUiTokens.ScreenPadding,
@@ -400,7 +434,7 @@ fun HomeScreen(
                             } else {
                                 uiState.hasUnreadNotifications
                             },
-                            onNavigateToNotifications = onNavigateToNotifications,
+                            onNavigateToNotifications = { onNavigateToNotifications("messages") },
                             layout = layout
                         )
                         Spacer(Modifier.height(layout.sectionSpacing))
@@ -408,7 +442,7 @@ fun HomeScreen(
                         Spacer(Modifier.height(layout.sectionSpacing))
                         QuickActionGrid(
                             layout = layout,
-                            gutter = gridGutter,
+                            gutter = layout.sectionSpacing,
                             onQuickRecording = {
                                 viewModel.startNewMeeting(
                                     viewModel.suggestMeetingTitle("即刻倾听"),
@@ -424,66 +458,38 @@ fun HomeScreen(
                         )
                         Spacer(Modifier.height(layout.sectionSpacing))
                         RecentRecordsHeader(
-                            hasMeetings = uiState.meetings.isNotEmpty(),
-                            showAllAction = uiState.meetings.size > 3,
+                            count = uiState.meetings.size,
                             onShowAll = { showAllMeetings = true },
-                            onClearAll = { showClearMeetingsDialog = true },
                             layout = layout
                         )
-                        if (uiState.meetings.isEmpty()) {
-                            Spacer(Modifier.height(if (layout.compact) 4.dp else 6.dp))
+                        if (recentMeetings.isEmpty()) {
                             EmptyHistory {
-                                viewModel.startNewMeeting(
-                                    viewModel.suggestMeetingTitle("即刻倾听"),
-                                    HomeLaunchAction.STANDARD
-                                )
+                                viewModel.startNewMeeting(viewModel.suggestMeetingTitle("即刻倾听"))
                             }
                         } else {
-                            Spacer(Modifier.height(8.dp))
-                            RecentRecordsFilterBar(
-                                filter = recordFilter,
-                                counts = recordCounts,
-                                expanded = filterExpanded,
-                                onExpandedChange = { filterExpanded = it },
-                                onFilterChange = { recordFilter = it }
-                            )
-                            Spacer(Modifier.height(8.dp))
-                            if (orderedMeetings.isEmpty()) {
-                                RecentRecordsFilteredEmpty(
-                                    onReset = { recordFilter = RecentRecordFilter() }
-                                )
-                            } else {
-                                LazyVerticalGrid(
-                                    columns = GridCells.Fixed(2),
-                                    modifier = Modifier.fillMaxWidth().weight(1f),
-                                    verticalArrangement = Arrangement.spacedBy(gridGutter),
-                                    horizontalArrangement = Arrangement.spacedBy(gridGutter),
-                                    contentPadding = PaddingValues(bottom = 12.dp)
-                                ) {
-                                    items(
-                                        items = orderedMeetings,
-                                        key = { item -> item.meeting.id }
-                                    ) { item ->
-                                        RecentRecordCard(
-                                            item = item,
-                                            layout = layout,
-                                            activeRecording = uiState.activeRecording
-                                                ?.takeIf { it.meetingId == item.meeting.id },
-                                            onClick = {
-                                                if (item.hasReport) onNavigateToReport(item.meeting.id)
-                                                else onNavigateToRecording(
-                                                    item.meeting.id,
-                                                    item.meeting.resumeLaunchAction()
+                            Surface(shape = RoundedCornerShape(14.dp), color = homeColors().meetingSurface) {
+                                Column {
+                                    recentMeetings.forEachIndexed { index, item ->
+                                        key(item.meeting.id) {
+                                            HomeRecentRecordRow(
+                                                item = item,
+                                                activeRecording = uiState.activeRecording?.takeIf { it.meetingId == item.meeting.id },
+                                                isRegenerating = uiState.regeneratingMeetingId == item.meeting.id,
+                                                onClick = {
+                                                    if (item.hasReport) onNavigateToReport(item.meeting.id)
+                                                    else onNavigateToRecording(item.meeting.id, item.meeting.resumeLaunchAction())
+                                                },
+                                            )
+                                            if (index < recentMeetings.lastIndex) {
+                                                Spacer(
+                                                    Modifier
+                                                        .fillMaxWidth()
+                                                        .padding(start = 62.dp, end = 14.dp)
+                                                        .height(1.dp)
+                                                        .background(homeColors().mutedInk.copy(alpha = 0.10f))
                                                 )
-                                            },
-                                            onEdit = {
-                                                viewModel.startEditTitle(
-                                                    item.meeting.id,
-                                                    item.meeting.displayTitle()
-                                                )
-                                            },
-                                            onDelete = { viewModel.deleteMeeting(item.meeting.id) }
-                                        )
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -603,34 +609,166 @@ private fun QuickActionGrid(
     onQuickRecording: () -> Unit,
     onImportFile: () -> Unit
 ) {
-    // Same two-column grid and gutter as 最近记录 below, so the page reads as one
-    // rhythm instead of two full-width banners followed by a sudden pair of cards.
-    Row(
+    // Keep the reference's two banners at a natural height on every viewport.
+    Column(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(gutter)
+        verticalArrangement = Arrangement.spacedBy(gutter)
     ) {
         HomeQuickTile(
             title = "即刻倾听",
-            subtitle = "录音实时转写",
+            subtitle = "选择模板，开始实时转写",
             actionLabel = "开始记录",
             kind = HomeHeroArt.MICROPHONE,
             layout = layout,
             onClick = onQuickRecording,
-            modifier = Modifier.weight(1f)
+            modifier = Modifier.fillMaxWidth()
         )
         HomeQuickTile(
             title = "顷刻成稿",
-            subtitle = "导入音频或文档",
+            subtitle = "导入音频或文档，整理成稿",
             actionLabel = "导入文件",
             kind = HomeHeroArt.FILE_IMPORT,
             layout = layout,
             onClick = onImportFile,
-            modifier = Modifier.weight(1f)
+            modifier = Modifier.fillMaxWidth()
         )
     }
 }
 
 private enum class HomeHeroArt { MICROPHONE, FILE_IMPORT }
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun HomeRecentRecordRow(
+    item: MeetingWithReport,
+    activeRecording: ActiveRecordingSummary?,
+    onClick: () -> Unit,
+    onEdit: (() -> Unit)? = null,
+    onDelete: (() -> Unit)? = null,
+    onContinue: (() -> Unit)? = null,
+    onRegenerate: (() -> Unit)? = null,
+    isRegenerating: Boolean = false
+) {
+    val colors = homeColors()
+    val type = item.meeting.origin.toRecentRecordType()
+    val active = activeRecording != null
+    val accent = when {
+        active || isRegenerating -> BrandBlue
+        item.hasReport -> colors.completedContent
+        else -> colors.pendingContent
+    }
+    var menuOpen by remember { mutableStateOf(false) }
+    var confirmDelete by remember { mutableStateOf(false) }
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("删除会议") },
+            text = { Text("“${item.meeting.displayTitle()}”及其录音、转写和纪要将被删除。") },
+            confirmButton = {
+                TextButton(onClick = { confirmDelete = false; onDelete?.invoke() }) {
+                    Text("删除", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("取消") } }
+        )
+    }
+    Surface(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth().heightIn(min = 64.dp),
+        color = Color.Transparent
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier.size(28.dp).clip(CircleShape).background(BrandBlue.copy(alpha = 0.08f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = if (type == RecentRecordType.IMPORT) Icons.Default.Description else Icons.Default.GraphicEq,
+                    contentDescription = null,
+                    tint = BrandBlue,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+            Spacer(Modifier.width(11.dp))
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    item.meeting.displayTitle(),
+                    color = colors.ink,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    "${formatBeijingTime(item.meeting.createdAt, "MM-dd HH:mm")} · ${meetingDurationLabel(item.meeting)}",
+                    color = colors.mutedInk,
+                    fontSize = 11.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Spacer(Modifier.width(6.dp))
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = accent.copy(alpha = 0.12f)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(3.dp)
+                ) {
+                    Text(
+                        when {
+                            active && activeRecording?.isPaused == true -> "已暂停"
+                            active -> "录音中"
+                            isRegenerating -> "生成中"
+                            item.hasReport -> "已完成"
+                            else -> "待完善"
+                        },
+                        color = accent,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1
+                    )
+                }
+            }
+            Spacer(Modifier.width(5.dp))
+            if (onEdit == null) {
+                Icon(
+                    Icons.AutoMirrored.Filled.KeyboardArrowRight, null,
+                    tint = colors.mutedInk.copy(alpha = 0.70f), modifier = Modifier.size(18.dp)
+                )
+            } else {
+                Box {
+                    IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(40.dp, 48.dp)) {
+                        Icon(Icons.Default.MoreHoriz, "会议操作", tint = colors.mutedInk)
+                    }
+                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        if (onContinue != null) {
+                            DropdownMenuItem(text = { Text("继续编辑") }, onClick = { menuOpen = false; onContinue() })
+                        }
+                        if (onRegenerate != null && item.hasReport) {
+                            DropdownMenuItem(
+                                text = { Text("重新生成纪要") }, enabled = !isRegenerating && !active,
+                                onClick = { menuOpen = false; onRegenerate() }
+                            )
+                        }
+                        DropdownMenuItem(text = { Text("修改名称") }, onClick = { menuOpen = false; onEdit() })
+                        if (onDelete != null) {
+                            DropdownMenuItem(
+                                text = { Text("删除", color = MaterialTheme.colorScheme.error) },
+                                onClick = { menuOpen = false; confirmDelete = true }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
 @Composable
 private fun HomeQuickTile(
@@ -642,99 +780,83 @@ private fun HomeQuickTile(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Surface(
+    Card(
         onClick = onClick,
-        modifier = modifier.height(layout.heroCardHeight),
-        // Matches the record cards below so every block on the page shares a radius.
-        shape = RoundedCornerShape(16.dp),
-        // The gradient is painted over this, but an opaque base keeps the drop
-        // shadow from bleeding through the tile.
-        color = Color(0xFF1C92F7),
-        shadowElevation = surfaceLift(3.dp)
+        modifier = modifier,
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF4885E8)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
-        Box(modifier = Modifier.fillMaxSize()) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val artWidth = (maxWidth * 0.33f).coerceIn(88.dp, 136.dp)
+            Canvas(Modifier.matchParentSize()) {
                 drawRect(
-                    brush = Brush.linearGradient(
-                        colors = listOf(Color(0xFF0968F4), Color(0xFF1C92F7), Color(0xFF59D7E5)),
+                    Brush.linearGradient(
+                        listOf(Color(0xFF427BE5), Color(0xFF54A5E9), Color(0xFF80D2DC)),
                         start = Offset.Zero,
-                        end = Offset(size.width, size.height * 1.15f)
+                        end = Offset(size.width, size.height * 0.35f)
                     )
                 )
-                drawCircle(
-                    color = Color(0xFF8CDCF7).copy(alpha = 0.22f),
-                    radius = size.width * 0.62f,
-                    center = Offset(size.width * 0.14f, -size.height * 0.34f)
+                drawOval(
+                    color = Color.White.copy(alpha = 0.09f),
+                    topLeft = Offset(-size.width * 0.16f, -size.height * 1.10f),
+                    size = Size(size.width * 0.86f, size.height * 2.10f)
                 )
-                drawCircle(
-                    color = Color.White.copy(alpha = 0.15f),
-                    radius = size.width * 0.52f,
-                    center = Offset(size.width * 1.05f, size.height * 1.20f)
-                )
-            }
-            // The artwork sits in the trailing corner, clear of the text column.
-            when (kind) {
-                HomeHeroArt.MICROPHONE -> MicrophoneHeroArtwork(
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(end = 8.dp, bottom = 6.dp)
-                        .size(if (layout.compact) 54.dp else 58.dp)
-                )
-                HomeHeroArt.FILE_IMPORT -> FileImportHeroArtwork(
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(end = 8.dp, bottom = 6.dp)
-                        .size(if (layout.compact) 54.dp else 58.dp)
+                drawOval(
+                    color = Color.White.copy(alpha = 0.10f),
+                    topLeft = Offset(size.width * 0.62f, size.height * 0.20f),
+                    size = Size(size.width * 0.72f, size.height * 1.9f)
                 )
             }
-            Column(modifier = Modifier.fillMaxSize().padding(14.dp)) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleLarge.copy(
-                        fontSize = layout.heroTitleSize.sp,
-                        lineHeight = (layout.heroTitleSize + 5).sp
-                    ),
-                    fontWeight = FontWeight.Bold,
-                    color = Color.White,
-                    maxLines = 1
-                )
-                Spacer(Modifier.height(3.dp))
-                Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
-                    color = Color.White.copy(alpha = 0.88f),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Spacer(Modifier.weight(1f))
-                // The whole tile is the button, so the call to action is a label, not a
-                // second nested button.
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = if (kind == HomeHeroArt.MICROPHONE) {
-                            Icons.Default.Mic
-                        } else {
-                            Icons.Default.FileUpload
-                        },
-                        contentDescription = null,
-                        tint = Color.White,
-                        modifier = Modifier.size(14.dp)
-                    )
-                    Spacer(Modifier.width(4.dp))
+            // Reserve separate text/art columns. A larger font can grow the card,
+            // while the illustrations always keep their original aspect ratio.
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = layout.heroCardHeight)
+                    .padding(start = 22.dp, end = 10.dp, top = 12.dp, bottom = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     Text(
-                        text = actionLabel,
-                        style = MaterialTheme.typography.labelMedium.copy(fontSize = 11.sp),
-                        fontWeight = FontWeight.SemiBold,
+                        title,
                         color = Color.White,
-                        maxLines = 1
+                        fontSize = layout.heroTitleSize.sp,
+                        lineHeight = (layout.heroTitleSize + 6).sp,
+                        fontWeight = FontWeight.Bold
                     )
-                    Spacer(Modifier.width(2.dp))
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                        contentDescription = null,
-                        tint = Color.White.copy(alpha = 0.9f),
-                        modifier = Modifier.size(12.dp)
+                    Text(
+                        subtitle,
+                        color = Color.White.copy(alpha = 0.94f),
+                        fontSize = 12.sp,
+                        lineHeight = 18.sp
                     )
+                    // The whole card is one accessible action; the pill is its label.
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .background(Color.White.copy(alpha = 0.20f))
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            if (kind == HomeHeroArt.MICROPHONE) Icons.Default.Mic else Icons.Default.FileUpload,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Text(actionLabel, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+                Spacer(Modifier.width(6.dp))
+                val artModifier = Modifier.size(artWidth, artWidth * 1.12f)
+                when (kind) {
+                    HomeHeroArt.MICROPHONE -> MicrophoneHeroArtwork(artModifier)
+                    HomeHeroArt.FILE_IMPORT -> FileImportHeroArtwork(artModifier)
                 }
             }
         }
@@ -1281,46 +1403,144 @@ private fun EmptyHistory(onStart: () -> Unit) {
     }
 }
 
+
+@Composable
+private fun BenefitsLoginDialog(
+    channel: com.oa.automation.domain.model.GrowthPrivateChannel?,
+    qrImageBytes: ByteArray?,
+    managerCardImageBytes: ByteArray?,
+    onDismiss: () -> Unit,
+    onNeverRemind: () -> Unit,
+    onOpenNotifications: () -> Unit
+) {
+    val bitmap = remember(qrImageBytes, managerCardImageBytes) {
+        val bytes = qrImageBytes ?: managerCardImageBytes
+        bytes?.let { BitmapFactory.decodeByteArray(it, 0, it.size)?.asImageBitmap() }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Text("🎁", fontSize = 28.sp) },
+        title = { Text("福利群有新消息") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(channel?.name?.ifBlank { "智悟本07福利群" } ?: "智悟本07福利群", fontWeight = FontWeight.Bold)
+                Text(channel?.slogan?.ifBlank { "进群领福利，有问题一起聊" } ?: "进群领福利，有问题一起聊", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (bitmap != null) {
+                    Image(bitmap = bitmap, contentDescription = "福利群二维码", modifier = Modifier.fillMaxWidth().height(180.dp), contentScale = ContentScale.Fit)
+                }
+                Text("活动、问卷和入群入口都在通知中心，别错过群里的小惊喜。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        },
+        confirmButton = { TextButton(onClick = onOpenNotifications) { Text("去通知中心") } },
+        dismissButton = { TextButton(onClick = onNeverRemind) { Text("不再提醒") } }
+    )
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AllMeetingsSheet(
     meetings: List<MeetingWithReport>,
+    activeRecording: ActiveRecordingSummary?,
     regeneratingMeetingId: String?,
     onDismiss: () -> Unit,
     onOpen: (MeetingWithReport) -> Unit,
-    onReportClick: (String) -> Unit,
     onContinueRecording: (String) -> Unit,
     onRegenerateReport: (String) -> Unit,
     onDelete: (String) -> Unit,
-    onEdit: (String, String) -> Unit
+    onEdit: (String, String) -> Unit,
+    onClearAll: () -> Unit
 ) {
-    ModalBottomSheet(onDismissRequest = onDismiss) {
-        Text(
-            text = "全部会议",
-            style = MaterialTheme.typography.titleLarge,
-            modifier = Modifier.padding(horizontal = FirebaseUiTokens.ScreenPadding)
-        )
-        Spacer(Modifier.height(12.dp))
-        LazyColumn(
-            contentPadding = PaddingValues(
-                start = FirebaseUiTokens.ScreenPadding,
-                end = FirebaseUiTokens.ScreenPadding,
-                bottom = 28.dp
-            ),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            items(meetings, key = { it.meeting.id }) { item ->
-                MeetingCard(
-                    meeting = item.meeting.copy(title = item.meeting.displayTitle()),
-                    hasReport = item.hasReport,
-                    isRegenerating = regeneratingMeetingId == item.meeting.id,
-                    onClick = { onOpen(item) },
-                    onReportClick = { onReportClick(item.meeting.id) },
-                    onContinueRecording = { onContinueRecording(item.meeting.id) },
-                    onRegenerateReport = { onRegenerateReport(item.meeting.id) },
-                    onDelete = { onDelete(item.meeting.id) },
-                    onEdit = { onEdit(item.meeting.id, item.meeting.displayTitle()) }
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val listState = rememberLazyListState()
+    var query by rememberSaveable { mutableStateOf("") }
+    var type by rememberSaveable { mutableStateOf(RecentRecordType.ALL) }
+    var status by rememberSaveable { mutableStateOf(RecentRecordStatus.ALL) }
+    var sort by rememberSaveable { mutableStateOf(RecentRecordSort.NEWEST) }
+    var filtersOpen by remember { mutableStateOf(false) }
+    val filter = RecentRecordFilter(type, status, sort)
+    val counts = remember(meetings) { recentRecordCounts(meetings) }
+    val filtered = remember(meetings, filter, query, activeRecording?.meetingId) {
+        applyRecentRecordFilter(meetings, filter, activeRecording?.meetingId, query)
+    }
+    LaunchedEffect(query, filter) { listState.scrollToItem(0) }
+    val colors = homeColors()
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+        Column(Modifier.fillMaxWidth().fillMaxHeight(0.90f)) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = FirebaseUiTokens.ScreenPadding),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("全部记录", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                if (meetings.isNotEmpty()) {
+                    TextButton(onClick = onClearAll) { Text("清空", color = colors.mutedInk) }
+                }
+                IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, "关闭全部记录") }
+            }
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                modifier = Modifier.fillMaxWidth().padding(horizontal = FirebaseUiTokens.ScreenPadding),
+                placeholder = { Text("搜索会议名称") },
+                leadingIcon = { Icon(Icons.Default.Search, null) },
+                trailingIcon = {
+                    if (query.isNotEmpty()) {
+                        IconButton(onClick = { query = "" }) { Icon(Icons.Default.Close, "清空搜索") }
+                    }
+                },
+                singleLine = true,
+                shape = RoundedCornerShape(12.dp)
+            )
+            Box(Modifier.padding(horizontal = FirebaseUiTokens.ScreenPadding)) {
+                RecentRecordsFilterBar(
+                    filter = filter,
+                    counts = counts,
+                    expanded = filtersOpen,
+                    onExpandedChange = { filtersOpen = it },
+                    onFilterChange = { type = it.type; status = it.status; sort = it.sort }
                 )
+            }
+            if (query.isNotBlank() || !filter.isDefault) {
+                Text(
+                    "显示 ${filtered.size} 条" + if (activeRecording != null) " · 当前录音始终置顶" else "",
+                    modifier = Modifier.padding(horizontal = FirebaseUiTokens.ScreenPadding, vertical = 4.dp),
+                    color = colors.mutedInk, fontSize = 12.sp
+                )
+            }
+            if (filtered.isEmpty()) {
+                Column(
+                    Modifier.weight(1f).fillMaxWidth().padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Text(if (meetings.isEmpty()) "还没有会议记录" else "没有找到符合条件的会议", color = colors.mutedInk)
+                    if (query.isNotBlank() || !filter.isDefault) {
+                        TextButton(onClick = {
+                            query = ""
+                            type = RecentRecordType.ALL
+                            status = RecentRecordStatus.ALL
+                            sort = RecentRecordSort.NEWEST
+                        }) { Text("清除搜索与筛选") }
+                    }
+                }
+            } else {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    contentPadding = PaddingValues(horizontal = FirebaseUiTokens.ScreenPadding, vertical = 8.dp)
+                ) {
+                    items(filtered, key = { it.meeting.id }) { item ->
+                        HomeRecentRecordRow(
+                            item = item,
+                            activeRecording = activeRecording?.takeIf { it.meetingId == item.meeting.id },
+                            isRegenerating = regeneratingMeetingId == item.meeting.id,
+                            onClick = { onOpen(item) },
+                            onContinue = { onContinueRecording(item.meeting.id) },
+                            onRegenerate = { onRegenerateReport(item.meeting.id) },
+                            onDelete = { onDelete(item.meeting.id) },
+                            onEdit = { onEdit(item.meeting.id, item.meeting.displayTitle()) }
+                        )
+                    }
+                }
             }
         }
     }
@@ -1580,7 +1800,7 @@ private fun EditTitleDialog(currentTitle: String, onDismiss: () -> Unit, onSave:
     )
 }
 
-private fun formattedToday(): String = SimpleDateFormat("yyyy年M月d日  EEEE", Locale.SIMPLIFIED_CHINESE).format(Date())
+private fun formattedToday(): String = formatBeijingTime(System.currentTimeMillis(), "yyyy年M月d日  EEEE")
 
 private fun scheduledMeetingMeta(meeting: ScheduledMeeting): String {
     val date = SimpleDateFormat("M月d日  HH:mm", Locale.SIMPLIFIED_CHINESE)

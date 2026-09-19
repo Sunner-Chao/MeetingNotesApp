@@ -27,6 +27,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
@@ -40,6 +42,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -101,6 +104,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
@@ -120,6 +124,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextStyle
@@ -526,7 +531,10 @@ internal fun RecordingReferenceScaffold(
                 ImportRecordingContent(
                     uiState = displayedUiState,
                     layout = layout,
+                    onSttEngineSelected = onSttEngineSelected,
+                    onTestLocalStt = onTestLocalStt,
                     onSelectTemplate = onSelectTemplate,
+                    templateWorkflowReducedMotion = templateWorkflowReducedMotion,
                     templateWorkflowSeen = templateWorkflowSeen,
                     onTemplateWorkflowSeen = onTemplateWorkflowSeen,
                     onCustomTemplateLayoutChange = onCustomTemplateLayoutChange,
@@ -1087,10 +1095,14 @@ private fun VoiceRecordingContent(
 }
 
 @Composable
+@OptIn(ExperimentalLayoutApi::class)
 private fun ImportRecordingContent(
     uiState: RecordingUiState,
     layout: RecordingLayoutSpec,
+    onSttEngineSelected: (STTEngineType) -> Unit,
+    onTestLocalStt: () -> Unit,
     onSelectTemplate: (PresetReportTemplate) -> Unit,
+    templateWorkflowReducedMotion: Boolean,
     templateWorkflowSeen: Set<String>,
     onTemplateWorkflowSeen: (String) -> Unit,
     onCustomTemplateLayoutChange: (CustomTemplateLayout) -> Unit,
@@ -1108,9 +1120,10 @@ private fun ImportRecordingContent(
     onCancelReport: () -> Unit,
     onDismissError: () -> Unit
 ) {
-    val isDark = LocalAppIsDarkTheme.current
+    val litePaper = ProductEdition.current == ProductEdition.LIGHT_ENJOY
+    val isDark = !litePaper && LocalAppIsDarkTheme.current
     val doodleSkin = rememberDoodleSkin(isDark)
-    val palette = if (isDark) siriDarkPalette() else siriLightPalette()
+    val palette = if (litePaper) LiteRecorderPalette else if (isDark) siriDarkPalette() else siriLightPalette()
     val isTranscribingAudio = uiState.isImportingAudio || uiState.isTranscribing
     val isBusy = isTranscribingAudio || uiState.isGeneratingReport
     val hasContent = uiState.manualTextInput.isNotBlank() || uiState.liveTranscript.isNotBlank()
@@ -1118,137 +1131,269 @@ private fun ImportRecordingContent(
     val templateChosen = templateName.isNotBlank()
     // Typing by hand is the one path that needs the editor before any content
     // exists, so it is an explicit opt-out from the workflow canvas.
-    var manualEntry by remember { mutableStateOf(false) }
+    var manualEntry by rememberSaveable { mutableStateOf(false) }
     // Mirror 即刻倾听: the workflow canvas owns the page until there is real
     // content, then the editable panel takes over. Transcription keeps the
     // canvas up so the status chip can carry live progress.
     val showWorkflowCanvas = !hasContent && !uiState.isGeneratingReport && !manualEntry
     val chipState = importChipState(uiState, isTranscribingAudio, hasContent, templateName)
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 10.dp)
-        ) {
-            ImportDoodleTopBar(
-                title = uiState.meetingTitle.ifBlank { "会议记录" },
-                generateEnabled = hasContent && !isBusy,
-                isGeneratingReport = uiState.isGeneratingReport,
-                hasReport = uiState.hasReport && !uiState.isGeneratingReport,
-                menuExpanded = menuExpanded,
-                onMenuExpandedChange = onMenuExpandedChange,
-                onNavigateBack = onNavigateBack,
-                onEditTitle = onEditTitle,
-                onGenerateFromImport = onGenerateFromImport,
-                onOpenSttSettings = onOpenSttSettings,
-                onManageImages = onManageImages,
-                onOpenReport = onOpenReport
-            )
+    if (litePaper) LiteRecorderSystemBars()
+    CompositionLocalProvider(LocalRecordingColors provides if (litePaper) LightRecordingColors.copy(
+        surfaceRaised = Color.Transparent,
+        ink = LiteRecorderPalette.text,
+        muted = LiteRecorderPalette.muted,
+        primary = LiteRecorderPalette.cyan
+    ) else LocalRecordingColors.current) {
+        Box(modifier = Modifier.fillMaxSize().background(Brush.verticalGradient(palette.background))) {
             Column(
                 modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .padding(start = 14.dp, end = 10.dp, top = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(if (layout.compact) 8.dp else 11.dp)
+                    .fillMaxSize()
+                    .padding(start = if (litePaper) 4.dp else 12.dp, end = 12.dp, top = 4.dp, bottom = 10.dp)
             ) {
-                AnimatedVisibility(visible = uiState.error != null) {
-                    uiState.error?.let { CompactErrorBanner(error = it, onDismiss = onDismissError) }
-                }
-                if (showWorkflowCanvas) {
-                    // Picking a bookmark swaps the canvas to that meeting type's
-                    // own sketch, exactly as 即刻倾听 does. The generic import
-                    // pipeline stays as the explainer until one is chosen.
-                    if (templateChosen) {
-                        TemplateWorkflowDoodlePanel(
-                            templateName = templateName,
-                            hasBeenSeen = templateName in templateWorkflowSeen,
-                            onViewed = onTemplateWorkflowSeen,
-                            isDark = isDark,
-                            customTemplateLayout = uiState.customTemplateLayout,
-                            onCustomTemplateLayoutChange = onCustomTemplateLayoutChange,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .weight(1f)
-                        )
-                    } else {
-                        ImportWorkflowDoodle(
-                            isDark = isDark,
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                    ImportStatusChip(
-                        state = chipState,
-                        skin = doodleSkin,
-                        modifier = Modifier.align(Alignment.CenterHorizontally)
-                    )
-                    if (!isTranscribingAudio) {
-                        ImportSourceBar(
-                            skin = doodleSkin,
-                            onPickExternalFile = onPickExternalFile,
-                            onManualEntry = { manualEntry = true }
-                        )
-                    }
-                } else {
-                    ReferenceTextInputPanel(
-                        text = uiState.manualTextInput,
-                        audioTranscript = uiState.liveTranscript,
-                        importStatus = uiState.textImportStatus,
-                        importedAudioDisplayName = uiState.importedAudioDisplayName,
-                        isAudioBusy = isTranscribingAudio,
-                        onTextChange = onTextChange,
-                        onPickExternalFile = onPickExternalFile,
-                        modifier = Modifier.weight(1f)
-                    )
-                    if (manualEntry && !hasContent && !isBusy) {
-                        TextButton(
-                            onClick = { manualEntry = false },
-                            modifier = Modifier.align(Alignment.CenterHorizontally)
+                ImportDoodleTopBar(
+                    title = uiState.meetingTitle.ifBlank { "会议记录" },
+                    generateEnabled = hasContent && !isBusy,
+                    isGeneratingReport = uiState.isGeneratingReport,
+                    hasReport = uiState.hasReport && !uiState.isGeneratingReport,
+                    menuExpanded = menuExpanded,
+                    onMenuExpandedChange = onMenuExpandedChange,
+                    onNavigateBack = onNavigateBack,
+                    onEditTitle = onEditTitle,
+                    onGenerateFromImport = onGenerateFromImport,
+                    onOpenSttSettings = onOpenSttSettings,
+                    onManageImages = onManageImages,
+                    onOpenReport = onOpenReport
+                )
+                ImportContentSurface(
+                    templates = uiState.presetTemplates,
+                    selectedName = templateName,
+                    onSelect = onSelectTemplate,
+                    reducedMotion = templateWorkflowReducedMotion,
+                    skin = doodleSkin,
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .padding(top = if (litePaper) 10.dp else 8.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.fillMaxSize().padding(
+                            start = if (litePaper) 16.dp else 14.dp,
+                            end = if (litePaper) 16.dp else 10.dp,
+                            top = if (litePaper) 14.dp else 0.dp,
+                            bottom = if (litePaper) 14.dp else 0.dp
+                        ),
+                        verticalArrangement = Arrangement.spacedBy(if (layout.compact) 8.dp else 11.dp)
+                    ) {
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Text(text = "返回流程图", color = RecordingMuted, fontSize = 12.sp)
+                            Text(
+                                "音频转写",
+                                modifier = Modifier.heightIn(min = 34.dp).padding(top = 6.dp),
+                                color = palette.text,
+                                style = MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp),
+                                fontWeight = FontWeight.Medium
+                            )
+                            LocalCloudSttSegmentedControl(
+                                sttEngineType = uiState.sttEngineType,
+                                palette = SttSelectorPalette(palette.text, palette.muted, palette.cyan),
+                                enabled = !isBusy && !uiState.isSwitchingSttEngine,
+                                onSttEngineSelected = onSttEngineSelected
+                            )
+                        }
+                        if (ProductEdition.current.supportsLocalStt) {
+                            LocalSttReadinessRow(
+                                engineType = uiState.sttEngineType,
+                                isTesting = uiState.isTestingLocalStt,
+                                isSwitching = uiState.isSwitchingSttEngine,
+                                available = uiState.localSttAvailable,
+                                status = uiState.sttSwitchStatus,
+                                enabled = !isBusy,
+                                palette = SttSelectorPalette(palette.text, palette.muted, palette.cyan),
+                                onTest = onTestLocalStt
+                            )
+                        }
+                        AnimatedVisibility(visible = uiState.error != null) {
+                            uiState.error?.let { CompactErrorBanner(error = it, onDismiss = onDismissError) }
+                        }
+                        if (showWorkflowCanvas) {
+                            // Picking a bookmark swaps the canvas to that meeting type's
+                            // own sketch, exactly as 即刻倾听 does. The generic import
+                            // pipeline stays as the explainer until one is chosen.
+                            if (litePaper) {
+                                if (templateChosen) {
+                                    LiteTemplateWorkflow(
+                                        templateName = templateName,
+                                        workflowSeen = templateWorkflowSeen,
+                                        onViewed = onTemplateWorkflowSeen,
+                                        customTemplateLayout = uiState.customTemplateLayout,
+                                        onCustomTemplateLayoutChange = onCustomTemplateLayoutChange,
+                                        modifier = Modifier.fillMaxWidth().weight(1f)
+                                    )
+                                } else {
+                                    Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+                                        Text("从左侧选择会议类型", color = palette.muted, style = MaterialTheme.typography.bodyMedium)
+                                    }
+                                }
+                            } else if (templateChosen) {
+                                TemplateWorkflowDoodlePanel(
+                                    templateName = templateName,
+                                    hasBeenSeen = templateName in templateWorkflowSeen,
+                                    onViewed = onTemplateWorkflowSeen,
+                                    isDark = isDark,
+                                    customTemplateLayout = uiState.customTemplateLayout,
+                                    onCustomTemplateLayoutChange = onCustomTemplateLayoutChange,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .weight(1f)
+                                )
+                            } else {
+                                ImportWorkflowDoodle(
+                                    isDark = isDark,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                            ImportStatusChip(
+                                state = chipState,
+                                skin = doodleSkin,
+                                modifier = Modifier.align(Alignment.CenterHorizontally)
+                            )
+                            if (!isTranscribingAudio) {
+                                ImportSourceBar(
+                                    skin = doodleSkin,
+                                    onPickExternalFile = { if (!uiState.isSwitchingSttEngine) onPickExternalFile() },
+                                    onManualEntry = { manualEntry = true }
+                                )
+                            }
+                        } else {
+                            ReferenceTextInputPanel(
+                                text = uiState.manualTextInput,
+                                audioTranscript = uiState.liveTranscript,
+                                importStatus = uiState.textImportStatus,
+                                importedAudioDisplayName = uiState.importedAudioDisplayName,
+                                isAudioBusy = isTranscribingAudio,
+                                onTextChange = onTextChange,
+                                onPickExternalFile = onPickExternalFile,
+                                embeddedInPaper = litePaper,
+                                modifier = Modifier.weight(1f)
+                            )
+                            if (manualEntry && !hasContent && !isBusy) {
+                                TextButton(
+                                    onClick = { manualEntry = false },
+                                    modifier = Modifier.align(Alignment.CenterHorizontally)
+                                ) {
+                                    Text(text = "返回流程图", color = RecordingMuted, fontSize = 12.sp)
+                                }
+                            }
+                            if (hasContent && !isBusy) {
+                                ImportStatusChip(
+                                    state = chipState,
+                                    skin = doodleSkin,
+                                    modifier = Modifier.align(Alignment.CenterHorizontally)
+                                )
+                                ImportGenerateButton(onGenerateFromImport = onGenerateFromImport, skin = doodleSkin)
+                            }
+                        }
+                        if (isTranscribingAudio) {
+                            ProcessingStatusRow(
+                                title = "导入音频转写",
+                                stage = uiState.transcriptionProgressStage.ifBlank { "正在处理会议音频" },
+                                actionLabel = "终止",
+                                onAction = onCancelTranscription
+                            )
+                        }
+                        if (uiState.isGeneratingReport) {
+                            ProcessingStatusRow(
+                                title = "生成会议纪要",
+                                stage = uiState.reportProgressStage.ifBlank { "会议纪要处理中" },
+                                actionLabel = "终止",
+                                onAction = onCancelReport
+                            )
                         }
                     }
-                    if (hasContent && !isBusy) {
-                        ImportStatusChip(
-                            state = chipState,
-                            skin = doodleSkin,
-                            modifier = Modifier.align(Alignment.CenterHorizontally)
-                        )
-                        ImportGenerateButton(onGenerateFromImport = onGenerateFromImport, skin = doodleSkin)
-                    }
-                }
-                if (isTranscribingAudio) {
-                    ProcessingStatusRow(
-                        title = "导入音频转写",
-                        stage = uiState.transcriptionProgressStage.ifBlank { "正在处理会议音频" },
-                        actionLabel = "终止",
-                        onAction = onCancelTranscription
-                    )
-                }
-                if (uiState.isGeneratingReport) {
-                    ProcessingStatusRow(
-                        title = "生成会议纪要",
-                        stage = uiState.reportProgressStage.ifBlank { "会议纪要处理中" },
-                        actionLabel = "终止",
-                        onAction = onCancelReport
-                    )
                 }
             }
+            if (!litePaper) TemplateBookmarkRail(
+                templates = uiState.presetTemplates,
+                selectedTemplateName = templateName,
+                palette = palette,
+                skin = doodleSkin,
+                isDark = isDark,
+                onSelectTemplate = onSelectTemplate,
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .fillMaxHeight()
+                    .padding(top = 54.dp, bottom = 16.dp)
+            )
         }
-        // Exactly the 即刻倾听 rail: hidden colour slivers, peek on touch,
-        // slide to browse, long press to pin, tap to commit.
-        TemplateBookmarkRail(
-            templates = uiState.presetTemplates,
-            selectedTemplateName = templateName,
-            palette = palette,
-            skin = doodleSkin,
-            isDark = isDark,
-            onSelectTemplate = onSelectTemplate,
-            modifier = Modifier
-                .align(Alignment.CenterStart)
-                .fillMaxHeight()
-                .padding(top = 54.dp, bottom = 16.dp)
+    }
+}
+
+@Composable
+private fun ImportContentSurface(
+    templates: List<PresetReportTemplate>,
+    selectedName: String,
+    onSelect: (PresetReportTemplate) -> Unit,
+    reducedMotion: Boolean,
+    skin: DoodleSkin,
+    modifier: Modifier,
+    content: @Composable () -> Unit
+) {
+    if (ProductEdition.current == ProductEdition.LIGHT_ENJOY) {
+        RecorderNotebookSurface(skin, templates, selectedName, onSelect, reducedMotion, modifier, content)
+    } else {
+        Box(modifier) { content() }
+    }
+}
+
+@Composable
+private fun LocalSttReadinessRow(
+    engineType: STTEngineType,
+    isTesting: Boolean,
+    isSwitching: Boolean,
+    available: Boolean?,
+    status: String,
+    enabled: Boolean,
+    palette: SttSelectorPalette,
+    onTest: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        if (isTesting || isSwitching) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(12.dp),
+                strokeWidth = 1.5.dp,
+                color = palette.muted
+            )
+        }
+        Text(
+            text = status.ifBlank {
+                when {
+                    isTesting -> "正在检测本地模型"
+                    engineType == STTEngineType.TENCENT_HYBRID -> "云端识别已选择"
+                    available == true -> "本地模型已就绪 · 失败自动转云端"
+                    available == false -> "本地暂不可用 · 可切换云端"
+                    else -> "本地优先 · 云端可选"
+                }
+            },
+            color = if (available == false && !isTesting && !isSwitching) Color(0xFFB3261E) else palette.muted,
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 2,
+            modifier = Modifier.weight(1f)
         )
+        TextButton(
+            onClick = onTest,
+            enabled = enabled && !isTesting && !isSwitching,
+            modifier = Modifier.height(32.dp)
+        ) {
+            Text("检测", color = palette.muted, style = MaterialTheme.typography.labelSmall)
+        }
     }
 }
 
@@ -1275,7 +1420,8 @@ private fun importChipState(
     }
 
     hasContent -> ImportChipState(
-        text = if (uiState.importedAudioDisplayName.isNotBlank()) {
+        text = if (uiState.importedAudioDisplayName.isNotBlank() ||
+            (uiState.manualTextInput.isBlank() && uiState.liveTranscript.isNotBlank())) {
             "转写完成 · 可生成纪要"
         } else {
             "文字已就绪 · 可生成纪要"
@@ -1314,13 +1460,16 @@ private fun ImportDoodleTopBar(
     onManageImages: () -> Unit,
     onOpenReport: () -> Unit
 ) {
-    val skin = rememberDoodleSkin(LocalAppIsDarkTheme.current)
+    val litePaper = ProductEdition.current == ProductEdition.LIGHT_ENJOY
+    val skin = rememberDoodleSkin(litePaper || LocalAppIsDarkTheme.current)
     Row(
-        modifier = Modifier.fillMaxWidth().height(40.dp),
+        modifier = Modifier.fillMaxWidth().height(if (litePaper) 48.dp else 40.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        DoodleIconButton(
+        if (litePaper) IconButton(onClick = onNavigateBack) {
+            Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回", tint = Color(0xFFF0EEE8))
+        } else DoodleIconButton(
             icon = Icons.AutoMirrored.Filled.ArrowBack,
             contentDescription = "返回",
             onClick = onNavigateBack,
@@ -1338,7 +1487,7 @@ private fun ImportDoodleTopBar(
                 ),
             contentAlignment = Alignment.Center
         ) {
-            Canvas(modifier = Modifier.matchParentSize()) {
+            if (!litePaper) Canvas(modifier = Modifier.matchParentSize()) {
                 doodleRoundRect(
                     topLeft = Offset.Zero,
                     size = this.size,
@@ -1379,7 +1528,9 @@ private fun ImportDoodleTopBar(
                 )
             }
         } else {
-            DoodleIconButton(
+            if (litePaper) IconButton(onClick = onGenerateFromImport, enabled = generateEnabled) {
+                Icon(Icons.Default.Summarize, "生成会议纪要", tint = skin.ink.copy(alpha = if (generateEnabled) 1f else 0.4f))
+            } else DoodleIconButton(
                 icon = Icons.Default.Summarize,
                 contentDescription = "生成会议纪要",
                 onClick = onGenerateFromImport,
@@ -1389,7 +1540,9 @@ private fun ImportDoodleTopBar(
             )
         }
         Box {
-            DoodleIconButton(
+            if (litePaper) IconButton(onClick = { onMenuExpandedChange(true) }) {
+                Icon(Icons.Default.MoreHoriz, "更多功能", tint = Color(0xFFF0EEE8))
+            } else DoodleIconButton(
                 icon = Icons.Default.MoreHoriz,
                 contentDescription = "更多功能",
                 onClick = { onMenuExpandedChange(true) },
@@ -1433,18 +1586,21 @@ private fun ImportDoodleTopBar(
 
 /** Import affordances under the workflow canvas: pick a file, or type by hand. */
 @Composable
+@OptIn(ExperimentalLayoutApi::class)
 private fun ImportSourceBar(
     skin: DoodleSkin,
     onPickExternalFile: () -> Unit,
     onManualEntry: () -> Unit
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth().height(52.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically
+    val fontScale = LocalDensity.current.fontScale.coerceAtLeast(1f)
+    val actionHeight = maxOf(52f, 27f * fontScale + 16f).dp
+    FlowRow(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
         DoodleSourceAction(
-            modifier = Modifier.weight(1f).fillMaxHeight(),
+            modifier = Modifier.weight(1f).widthIn(min = (90f + 104f * fontScale).dp).height(actionHeight),
             skin = skin,
             accent = skin.accentCyan,
             onClick = onPickExternalFile
@@ -1458,7 +1614,7 @@ private fun ImportSourceBar(
             Spacer(Modifier.width(8.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "选择音频或文档",
+                    text = "导入音频或文档",
                     color = skin.ink,
                     fontSize = 13.sp,
                     lineHeight = 15.sp,
@@ -1481,7 +1637,7 @@ private fun ImportSourceBar(
             )
         }
         DoodleSourceAction(
-            modifier = Modifier.width(100.dp).fillMaxHeight(),
+            modifier = Modifier.width((52f + 48f * fontScale).dp).height(actionHeight),
             skin = skin,
             accent = skin.ink,
             onClick = onManualEntry
@@ -2439,14 +2595,12 @@ private fun ReferenceTextInputPanel(
     isAudioBusy: Boolean,
     onTextChange: (String) -> Unit,
     onPickExternalFile: () -> Unit,
+    embeddedInPaper: Boolean = false,
     modifier: Modifier = Modifier
 ) {
-    val isDark = LocalAppIsDarkTheme.current
-    // Same hand-drawn frame as the recording page's transcript card, so the
-    // editor reads as part of the doodle chrome rather than a Material card.
-    DoodleCard(skin = rememberDoodleSkin(isDark), modifier = modifier.fillMaxWidth()) {
+    ImportEditorFrame(embeddedInPaper, modifier.fillMaxWidth()) {
         Column(
-            modifier = Modifier.padding(12.dp),
+            modifier = Modifier.fillMaxSize().padding(if (embeddedInPaper) 0.dp else 12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -2462,7 +2616,7 @@ private fun ReferenceTextInputPanel(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(10.dp),
                     color = RecordingSurfaceRaised,
-                    border = BorderStroke(1.dp, RecordingBorder)
+                    border = if (embeddedInPaper) null else BorderStroke(1.dp, RecordingBorder)
                 ) {
                     Row(
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
@@ -2497,7 +2651,6 @@ private fun ReferenceTextInputPanel(
                 }
             }
             val showAudioTranscript = text.isBlank() &&
-                importedAudioDisplayName.isNotBlank() &&
                 audioTranscript.isNotBlank()
             if (showAudioTranscript) {
                 Surface(
@@ -2506,7 +2659,7 @@ private fun ReferenceTextInputPanel(
                         .weight(1f),
                     shape = RoundedCornerShape(11.dp),
                     color = RecordingSurfaceRaised,
-                    border = BorderStroke(1.dp, RecordingBorder)
+                    border = if (embeddedInPaper) null else BorderStroke(1.dp, RecordingBorder)
                 ) {
                     SelectionContainer {
                         Text(
@@ -2514,7 +2667,7 @@ private fun ReferenceTextInputPanel(
                             modifier = Modifier
                                 .fillMaxSize()
                                 .verticalScroll(rememberScrollState())
-                                .padding(12.dp),
+                                .padding(if (embeddedInPaper) 0.dp else 12.dp),
                             color = RecordingInk,
                             style = MaterialTheme.typography.bodyMedium
                         )
@@ -2542,12 +2695,21 @@ private fun ReferenceTextInputPanel(
                     fontSize = 10.sp
                 )
                 Text(
-                    text = if (importedAudioDisplayName.isNotBlank()) "音频转写" else "文字导入",
+                    text = if (importedAudioDisplayName.isNotBlank() || showAudioTranscript) "音频转写" else "文字导入",
                     color = RecordingMuted,
                     fontSize = 10.sp
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun ImportEditorFrame(embeddedInPaper: Boolean, modifier: Modifier, content: @Composable () -> Unit) {
+    if (embeddedInPaper) {
+        Box(modifier) { content() }
+    } else {
+        DoodleCard(skin = rememberDoodleSkin(LocalAppIsDarkTheme.current), modifier = modifier, content = content)
     }
 }
 

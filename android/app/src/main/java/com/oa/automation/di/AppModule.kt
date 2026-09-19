@@ -104,6 +104,7 @@ val appModule = module {
             .addMigrations(AppDatabase.MIGRATION_22_23)
             .addMigrations(AppDatabase.MIGRATION_23_24)
             .addMigrations(AppDatabase.MIGRATION_24_25)
+            .addMigrations(AppDatabase.MIGRATION_25_26)
             .build()
     }
     single { get<AppDatabase>().meetingDao() }
@@ -141,7 +142,7 @@ val appModule = module {
     single { ImportedAudioStore(androidContext()) }
     single { AppUpdateService(androidContext()) }
     single { StreamingSttClient() }
-    single { BackgroundTaskScheduler(androidContext()) }
+    single { BackgroundTaskScheduler(androidContext(), get()) }
     single { ScheduledMeetingNotificationScheduler(androidContext()) }
     single { RecordingSessionController(get(), get(), get(), get()) }
     single { SharedTextImportCoordinator(androidContext()) }

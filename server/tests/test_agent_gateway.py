@@ -349,6 +349,25 @@ class AgentGatewayTest(unittest.TestCase):
                 [IncomingAttachment("payload.txt", "text/plain", io.BytesIO(b"bad"))],
             )
 
+    def test_oversized_image_degrades_to_transcript_only_generation(self):
+        principal = self.gateway.authenticate("Bearer bootstrap-secret")
+        response = self.gateway.execute(
+            principal,
+            {
+                "provider": "codex-cli",
+                "operation": "generate_report",
+                "transcript": "正文内容",
+                "templateName": "通用会议",
+            },
+            [IncomingAttachment("oversized.jpg", "image/jpeg", io.BytesIO(b"x" * 2048))],
+        )
+
+        self.assertEqual(response["status"], "succeeded")
+        self.assertEqual(self.calls[-1][2], [])
+        self.assertIn("正文内容", self.calls[-1][1])
+        self.assertIn("本次没有图片附件", self.calls[-1][1])
+        self.assertNotIn("客户端图片附件清单", self.calls[-1][1])
+
     def test_provider_status_accepts_relay_credential_environment(self):
         self.gateway.codex_path = sys.executable
         self.gateway.codex_auth_env = "TEST_RELAY_API_KEY"

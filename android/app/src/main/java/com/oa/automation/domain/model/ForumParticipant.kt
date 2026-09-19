@@ -29,8 +29,10 @@ internal fun extractForumParticipants(
     speakerNames: List<String> = emptyList()
 ): List<ForumParticipant> {
     val entries = linkedMapOf<String, ForumParticipant>()
+    var hasStructuredRoster = false
 
     fun add(rawName: String, role: String = "", organization: String = "") {
+        if (Regex("仅被提及|被提及|计划邀请|被代为|未到场|介绍对象").containsMatchIn(role)) return
         val name = rawName
             .replace(Regex("^[-*（(【\\[]+|[）)】\\]]+$"), "")
             .replace(Regex("^第[^：:]+[：:]"), "")
@@ -40,7 +42,7 @@ internal fun extractForumParticipants(
         val genericSpeaker = name.matches(Regex("(?i)(speaker|spk|speaker_|spk_)[-_ ]?\\d+")) ||
             name.matches(Regex("(说话人|发言人|未知人员)[-_ ]?\\d*"))
         if (
-            name.isBlank() || genericSpeaker ||
+            name.isBlank() || genericSpeaker || name.startsWith("待确认") || name.startsWith("未提及") ||
             name in setOf("未提及", "待确认", "现场听众", "线上线下行业听众")
         ) return
         val key = name.lowercase()
@@ -85,6 +87,10 @@ internal fun extractForumParticipants(
             it.contains("姓名") || it.contains("称谓") || it == "人员"
         }
         if (nameColumn >= 0) {
+            if (!hasStructuredRoster) {
+                entries.clear()
+                hasStructuredRoster = true
+            }
             val roleColumn = header.indexOfFirst { it.contains("角色") || it.contains("身份") }
             val organizationColumn = header.indexOfFirst { it.contains("单位") || it.contains("机构") }
             rows.forEach { row ->
@@ -94,7 +100,7 @@ internal fun extractForumParticipants(
                     organization = row.getOrNull(organizationColumn).orEmpty()
                 )
             }
-        } else {
+        } else if (!hasStructuredRoster) {
             rows.forEach { cells ->
                 val label = cells.firstOrNull().orEmpty()
                 val role = when {
@@ -108,7 +114,7 @@ internal fun extractForumParticipants(
         }
     }
 
-    lines.forEach { line ->
+    (if (hasStructuredRoster) emptyList() else lines).forEach { line ->
         val match = Regex("(?:主持人|嘉宾|主讲人|发言人)[：:](.+)").find(line.trim())
         if (match != null) {
             val role = when {

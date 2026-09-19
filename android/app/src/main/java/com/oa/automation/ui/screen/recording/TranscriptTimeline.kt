@@ -18,7 +18,11 @@ internal fun List<Transcript>.toTimelineRows(): List<TranscriptTimelineRow> =
         TranscriptTimelineRow(
             key = "saved:${row.id}:$index",
             startTimeMs = row.startTimeMs.takeIf { row.endTimeMs > row.startTimeMs },
-            text = row.renderedContent(),
+            text = row.renderedContent().let { rendered ->
+                row.speakerName?.takeIf { it.isNotBlank() }?.let { speaker ->
+                    rendered.replaceFirst(Regex("^" + Regex.escape(speaker) + "\\s*[：:]\\s*"), "")
+                } ?: rendered
+            },
             speaker = row.speakerName
         )
     }
@@ -28,7 +32,7 @@ internal fun streamingTimelineRows(
     offsetMs: Long
 ): List<TranscriptTimelineRow> = segments.mapIndexed { index, segment ->
     TranscriptTimelineRow(
-        key = "live:${segment.startSeconds}:$index",
+        key = "live:$offsetMs:${segment.startSeconds}:$index",
         startTimeMs = offsetMs + (segment.startSeconds * 1_000).toLong(),
         text = segment.text,
         speaker = segment.speaker?.let { "说话人 ${it + 1}" },

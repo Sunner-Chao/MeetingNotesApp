@@ -49,6 +49,9 @@ class FasterWhisperEngine(
 
     private val client = OkHttpClient.Builder()
         .dns(STT_LOCAL_DNS)
+        // Long file inference is silent for minutes. Keep HTTP/2 NAT mappings
+        // alive and detect a dead transport without waiting the full ASR timeout.
+        .pingInterval(20, TimeUnit.SECONDS)
         .connectTimeout(BuildConfig.STT_CLOUD_CONNECT_TIMEOUT_SECONDS.toLong(), TimeUnit.SECONDS)
         .readTimeout(BuildConfig.STT_CLOUD_READ_TIMEOUT_SECONDS.toLong(), TimeUnit.SECONDS)
         .writeTimeout(BuildConfig.STT_CLOUD_WRITE_TIMEOUT_SECONDS.toLong(), TimeUnit.SECONDS)
@@ -89,6 +92,7 @@ class FasterWhisperEngine(
             .setType(MultipartBody.FORM)
             .addFormDataPart("language", config.language.requestValue)
             .addFormDataPart("speaker_diarization", config.speakerDiarizationEnabled.toString())
+            .addFormDataPart("audio_enhancement", config.audioEnhancementEnabled.toString())
             .apply {
                 contextHint?.takeIf { it.isNotBlank() }?.let {
                     addFormDataPart("context_hint", it)

@@ -156,13 +156,13 @@ fun AccountScreen(
     onLogout: () -> Unit,
     onLogin: () -> Unit,
     showSocialActions: Boolean = true,
+    showPrivateChannelAction: Boolean = showSocialActions,
     showProjectWorkspace: Boolean = false,
     viewModel: AccountViewModel = koinViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     var showLogoutDialog by remember { mutableStateOf(false) }
-    var showDeleteAccountDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(uiState.isLoggedOut) {
         if (uiState.isLoggedOut) onLogout()
@@ -197,40 +197,6 @@ fun AccountScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showLogoutDialog = false }) { Text("取消") }
-            },
-            shape = MaterialTheme.shapes.large
-        )
-    }
-    if (showDeleteAccountDialog) {
-        AlertDialog(
-            onDismissRequest = {
-                if (!uiState.isDeletingAccount) showDeleteAccountDialog = false
-            },
-            title = { Text("删除账户与数据") },
-            text = {
-                Text("将永久删除账户、会议、录音、图片和云端资料，删除后无法恢复。确定继续吗？")
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        showDeleteAccountDialog = false
-                        viewModel.deleteMyAccount()
-                    },
-                    enabled = !uiState.isDeletingAccount,
-                    shape = MaterialTheme.shapes.medium
-                ) {
-                    if (uiState.isDeletingAccount) {
-                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                        Spacer(modifier = Modifier.width(8.dp))
-                    }
-                    Text("永久删除")
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = { showDeleteAccountDialog = false },
-                    enabled = !uiState.isDeletingAccount
-                ) { Text("取消") }
             },
             shape = MaterialTheme.shapes.large
         )
@@ -291,9 +257,9 @@ fun AccountScreen(
                             onManageUsers = onNavigateToUserManagement,
                             onModerateCommunity = onNavigateToCommunityModeration,
                             showSocialActions = showSocialActions,
+                            showPrivateChannelAction = showPrivateChannelAction,
                             showProjectWorkspace = showProjectWorkspace,
                             onOpenProjects = onNavigateToProjects,
-                            onDeleteAccount = { showDeleteAccountDialog = true }
                         )
                         Spacer(modifier = Modifier.height(12.dp))
                     }
@@ -766,9 +732,9 @@ private fun AccountActionGroup(
     onManageUsers: () -> Unit,
     onModerateCommunity: () -> Unit,
     showSocialActions: Boolean,
+    showPrivateChannelAction: Boolean,
     showProjectWorkspace: Boolean,
-    onOpenProjects: () -> Unit,
-    onDeleteAccount: () -> Unit
+    onOpenProjects: () -> Unit
 ) {
     Surface(
         modifier = Modifier
@@ -790,10 +756,10 @@ private fun AccountActionGroup(
                     color = MaterialTheme.colorScheme.outlineVariant
                 )
             }
-            if (showSocialActions) {
+            if (showPrivateChannelAction) {
                 AccountActionRow(
                     icon = Icons.Default.Groups,
-                    title = "福利群",
+                    title = "企微群与问卷",
                     rowHeight = layout.actionRowHeight,
                     onClick = onOpenInvitation
                 )
@@ -851,19 +817,6 @@ private fun AccountActionGroup(
                         onClick = onModerateCommunity
                     )
                 }
-            }
-            if (!isAdmin) {
-                HorizontalDivider(
-                    modifier = Modifier.padding(horizontal = 18.dp),
-                    color = MaterialTheme.colorScheme.outlineVariant
-                )
-                AccountActionRow(
-                    icon = Icons.Default.DeleteForever,
-                    title = "删除账户与数据",
-                    rowHeight = layout.actionRowHeight,
-                    onClick = onDeleteAccount,
-                    tint = MaterialTheme.colorScheme.error
-                )
             }
         }
     }

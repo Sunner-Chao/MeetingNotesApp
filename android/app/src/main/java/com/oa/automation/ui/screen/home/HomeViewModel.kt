@@ -333,9 +333,13 @@ class HomeViewModel(
     }
 
     fun regenerateReport(meetingId: String) {
-        taskScheduler.enqueueReport(meetingId)
-        _uiState.update {
-            it.copy(regeneratingMeetingId = null, message = "会议纪要已加入后台生成队列")
+        viewModelScope.launch {
+            runCatching { taskScheduler.enqueueReport(meetingId) }
+                .onSuccess {
+                    _uiState.update { it.copy(regeneratingMeetingId = null, message = "会议纪要已加入后台生成队列") }
+                }.onFailure { error ->
+                    _uiState.update { it.copy(regeneratingMeetingId = null, message = error.message ?: "纪要生成未能启动") }
+                }
         }
     }
 

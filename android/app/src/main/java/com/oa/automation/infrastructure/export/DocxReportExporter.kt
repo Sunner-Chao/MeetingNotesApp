@@ -312,7 +312,9 @@ internal class DocxPackageWriter(
         if (report.rawContent.isBlank()) return structuredBlocks()
 
         val isStudyReport = report.templateName.usesStudyReportStyle()
-        val lines = ReportDocumentFormatter.normalizeLists(report.rawContent).lines()
+        val lines = ReportDocumentFormatter.normalizeLists(
+            ReportDocumentFormatter.stripTemplateGuidance(report.rawContent)
+        ).lines()
         val blocks = mutableListOf<DocxBlock>()
         var index = 0
         var hasTitle = false

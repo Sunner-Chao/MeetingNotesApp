@@ -6,6 +6,23 @@ import org.junit.Test
 
 class ForumParticipantTest {
     @Test
+    fun structuredRosterExcludesMentionedPeopleAndOverridesAmbiguousSummary() {
+        val content = """
+            | 项目 | 内容 |
+            | --- | --- |
+            | 主持人 | 待确认（主要为说话人1） |
+            | 嘉宾 | 林老师、周老师等；出场顺序待核实 |
+            ## 参会人员名录
+            | 姓名/称谓 | 单位 | 角色 |
+            | --- | --- | --- |
+            | 林老师 | 设计院 | 发言人 |
+            | 周老师 | 大学 | 计划邀请对象 |
+            | 李工 | 公司 | 被提及人员 |
+        """.trimIndent()
+        assertEquals(listOf("林老师"), extractForumParticipants(content).map { it.name })
+    }
+
+    @Test
     fun extractsStructuredRosterWithRoleAndOrganization() {
         val content = """
             # 论坛纪要

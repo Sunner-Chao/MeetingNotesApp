@@ -7,12 +7,13 @@ import org.junit.Test
 
 class ProductEditionEntryPolicyTest {
     @Test
-    fun lightEnjoyExposesOnlyTheNewEightTemplateCatalog() {
+    fun lightEnjoyExposesOnlyTheFiveTemplateCatalogAndCustomBuilder() {
         val policy = ProductEntryPolicy.forEdition(ProductEdition.LIGHT_ENJOY)
 
         assertFalse(policy.showCommunityTab)
         assertFalse(policy.showSocialAccountActions)
-        assertFalse(policy.showGrowthNotifications)
+        assertFalse(policy.showPrivateChannelAction)
+        assertTrue(policy.showGrowthNotifications)
         assertFalse(policy.showStudyJourneyTemplate)
         assertTrue(policy.showProjectWorkspace)
         assertFalse(policy.shouldShowMeetingTemplate("研学考察"))
@@ -23,11 +24,11 @@ class ProductEditionEntryPolicyTest {
             "启迪·共创会",
             "博弈·洽谈会",
             "复盘·分析会",
-            "敏捷·站会",
-            "论坛·共识会",
             "自定义会议"
         )
         expected.forEach { assertTrue(policy.shouldShowMeetingTemplate(it)) }
+        assertFalse(policy.shouldShowMeetingTemplate("敏捷·站会"))
+        assertFalse(policy.shouldShowMeetingTemplate("论坛·共识会"))
         assertFalse(policy.shouldShowMeetingTemplate("通用会议"))
         assertFalse(policy.shouldShowMeetingTemplate("项目管理"))
         assertFalse(policy.shouldShowMeetingTemplate("论坛会议"))

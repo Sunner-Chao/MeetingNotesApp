@@ -46,4 +46,27 @@ class ReportDocumentFormatterTest {
         assertTrue(formatted.contains("验证同步"))
         assertFalse(formatted.contains("后续沉淀事项"))
     }
+
+    @Test
+    fun removesTemplateGuidanceWithoutRemovingEvidenceNotes() {
+        val formatted = ReportDocumentFormatter.stripTemplateGuidance(
+            """
+                # 会议主题
+
+                > 适用场景：内部模板说明
+                >
+                > 写作定位：内部模板说明
+
+                ## 事实记录
+
+                > 记录说明：现场发生了设备报警。
+                > 只记录原始音频或转写中可核对的现象，不写心理判断。
+            """.trimIndent()
+        )
+
+        assertFalse(formatted.contains("适用场景："))
+        assertFalse(formatted.contains("写作定位："))
+        assertFalse(formatted.contains("只记录原始音频"))
+        assertTrue(formatted.contains("记录说明：现场发生了设备报警。"))
+    }
 }

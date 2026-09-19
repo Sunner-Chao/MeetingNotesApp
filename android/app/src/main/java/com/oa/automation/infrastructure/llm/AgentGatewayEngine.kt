@@ -33,6 +33,7 @@ class AgentGatewayEngine(
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(10, TimeUnit.MINUTES)
         .writeTimeout(2, TimeUnit.MINUTES)
+        .pingInterval(20, TimeUnit.SECONDS)
         .build()
     private val gson = Gson()
 
@@ -51,8 +52,7 @@ class AgentGatewayEngine(
             templateName = template.selectedName,
             templateContent = template.content,
             meetingId = usageContext?.meetingId,
-            usageKey = usageContext?.usageKey,
-            attachmentManifest = buildAttachmentManifest(attachments)
+            usageKey = usageContext?.usageKey
         )
         execute(payload, attachments).map { response ->
             response.report?.copy(templateName = response.report.templateName.ifBlank { template.selectedName })
@@ -69,8 +69,7 @@ class AgentGatewayEngine(
             operation = "chat",
             codexReasoningEffort = config.codexReasoningEffort.requestValue,
             claudeEffort = config.claudeReasoningEffort.requestValue,
-            messages = messages,
-            attachmentManifest = buildAttachmentManifest(attachments)
+            messages = messages
         )
         execute(payload, attachments).map { it.text }
     }
@@ -96,35 +95,29 @@ class AgentGatewayEngine(
             val token = credential().orEmpty()
             require(token.isNotBlank()) { "请先登录账户" }
 
-            val body = MultipartBody.Builder()
-                .setType(MultipartBody.FORM)
-                .addFormDataPart(
-                    "request",
-                    null,
-                    gson.toJson(payload).toRequestBody("application/json".toMediaType())
-                )
-            attachments.filter { it.file.isFile }.forEach { attachment ->
-                body.addFormDataPart(
-                    "attachments",
-                    attachment.displayName,
-                    attachment.file.asRequestBody(attachment.mimeType.toMediaType())
-                )
+            val prepared = try {
+                prepareAgentUploadImages(attachments)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                // Images are optional evidence. A broken/oversized image must
+                // not prevent a useful transcript-only report.
+                return executeTextOnly(payload, endpoint, token)
             }
-
-            val request = Request.Builder()
-                .url(endpoint)
-                .addHeader("Authorization", "Bearer $token")
-                .post(body.build())
-                .build()
-
-            val parsed = client.newCall(request).awaitResponse().use { response ->
-                val responseBody = response.body?.string().orEmpty()
-                if (!response.isSuccessful) {
-                    throw IOException(response.toAgentError(responseBody))
+            prepared.use { uploadImages ->
+                val uploadPayload = payload.copy(
+                    attachmentManifest = buildAttachmentManifest(uploadImages.attachments)
+                )
+                try {
+                    Result.success(
+                        executeMultipart(uploadPayload, uploadImages.attachments, endpoint, token)
+                    )
+                } catch (error: AttachmentRequestException) {
+                    // Retry only image-input failures (400/413). Auth, network,
+                    // queue and provider failures must remain visible to the UI.
+                    executeTextOnly(payload, endpoint, token)
                 }
-                parseResponse(responseBody)
             }
-            Result.success(parsed)
         } catch (error: CancellationException) {
             throw error
         } catch (error: Exception) {
@@ -132,10 +125,78 @@ class AgentGatewayEngine(
         }
     }
 
+    private suspend fun executeMultipart(
+        payload: AgentTaskRequest,
+        attachments: List<AgentAttachment>,
+        endpoint: String,
+        token: String
+    ): AgentTaskResponse {
+        val body = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            .addFormDataPart(
+                "request",
+                null,
+                gson.toJson(payload).toRequestBody("application/json".toMediaType())
+            )
+        attachments.forEach { attachment ->
+            body.addFormDataPart(
+                "attachments",
+                attachment.displayName,
+                attachment.file.asRequestBody(attachment.mimeType.toMediaType())
+            )
+        }
+        val request = Request.Builder()
+            .url(endpoint)
+            .addHeader("Authorization", "Bearer $token")
+            .post(body.build())
+            .build()
+        return client.newCall(request).awaitResponse().use { response ->
+            val responseBody = response.body?.string().orEmpty()
+            if (!response.isSuccessful) {
+                val message = response.toAgentError(responseBody)
+                if (attachments.isNotEmpty() && response.code in setOf(400, 413)) {
+                    throw AttachmentRequestException(message)
+                }
+                throw IOException(message)
+            }
+            parseResponse(responseBody)
+        }
+    }
+
+    private suspend fun executeTextOnly(
+        payload: AgentTaskRequest,
+        endpoint: String,
+        token: String
+    ): Result<AgentTaskResponse> = try {
+        Result.success(
+            executeMultipart(
+                payload = payload.withoutAttachmentEvidence(),
+                attachments = emptyList(),
+                endpoint = endpoint,
+                token = token
+            )
+        )
+    } catch (error: CancellationException) {
+        throw error
+    } catch (error: Exception) {
+        Result.failure(error)
+    }
+
+    private fun AgentTaskRequest.withoutAttachmentEvidence(): AgentTaskRequest {
+        val markerHeading = "照片定位标记（仅用于确定照片在正文中的插入位置，不是新的事实材料）："
+        fun strip(value: String): String = value.substringBefore(markerHeading).trimEnd()
+        return copy(
+            transcript = transcript?.let(::strip),
+            messages = messages?.map { message -> message.copy(content = strip(message.content)) },
+            attachmentManifest = emptyList()
+        )
+    }
+
+    private class AttachmentRequestException(message: String) : IOException(message)
+
     private fun buildAttachmentManifest(
         attachments: List<AgentAttachment>
     ): List<AgentAttachmentManifestEntry> = attachments
-        .filter { it.file.isFile }
         .mapIndexed { index, attachment ->
             AgentAttachmentManifestEntry(
                 index = index + 1,

@@ -34,7 +34,9 @@ class GenerateReportWorker(
         } catch (error: Exception) {
             Log.w(TAG, "Could not promote report work; continuing as scheduled work", error)
         }
-        val result = generateReportUseCase(meetingId, ::publishProgress)
+        // WorkManager retains this id across retries; the server can return the
+        // completed result without running or charging the same request again.
+        val result = generateReportUseCase(meetingId, ::publishProgress, requestId = id.toString())
         if (result.isSuccess) return Result.success()
 
         val message = result.exceptionOrNull()?.message ?: "Agent 服务请求失败"

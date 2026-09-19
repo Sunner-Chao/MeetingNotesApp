@@ -75,4 +75,25 @@ class ReportTitleResolverTest {
             ReportTitleResolver.resolve(report, "年度预算评审会")
         )
     }
+
+    @Test
+    fun usesTopicTableWhenTemplateHeadingIsOnlyMeetingType() {
+        val report = Report(
+            meetingId = "meeting-topic-table",
+            templateName = "博弈·洽谈会",
+            rawContent = """
+                # 博弈·洽谈会
+
+                ## 1. 洽谈信息
+                | 项目 | 内容 |
+                | --- | --- |
+                | 洽谈主题 | 嘉兴市土木建筑学会工作交流 |
+            """.trimIndent()
+        )
+
+        assertEquals(
+            "嘉兴市土木建筑学会工作交流",
+            ReportTitleResolver.resolve(report)
+        )
+    }
 }

@@ -19,6 +19,8 @@ import com.oa.automation.locale.SimplifiedChineseText
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import java.util.UUID
 
 class GenerateReportUseCase(
@@ -30,9 +32,20 @@ class GenerateReportUseCase(
 ) {
     suspend operator fun invoke(
         meetingId: String,
-        onProgress: (ProcessingProgress) -> Unit = {}
+        onProgress: (ProcessingProgress) -> Unit = {},
+        requestId: String = UUID.randomUUID().toString()
     ): Result<Report> {
         return try {
+            val generation = reportRepository.findGeneration(meetingId)
+                ?: return Result.failure(Exception("纪要任务已失效，请重新生成"))
+            if (generation.requestId != requestId || generation.cancelled) {
+                return Result.failure(Exception("纪要任务已更新，旧任务不再生成"))
+            }
+            if (generation.completed) {
+                return reportRepository.findByMeetingId(meetingId).mapCatching {
+                    checkNotNull(it) { "当前模板尚无可用纪要，请重新生成" }
+                }
+            }
             onProgress(ProcessingProgress(8, "读取最终转录"))
             val transcriptsResult = meetingRepository.findTranscriptsByMeetingId(meetingId)
             val transcripts = transcriptsResult.getOrElse {
@@ -47,18 +60,19 @@ class GenerateReportUseCase(
                 transcripts.canonicalMeetingTranscripts().joinToString("\n") { it.renderedContent() }
             )
             onProgress(ProcessingProgress(20, "准备模板和会议图片"))
+            val meetingTemplateName = generation.templateName
             val attachments = attachmentStore.toAgentAttachments(
                 meetingRepository.observeAttachments(meetingId).first()
             )
             onProgress(ProcessingProgress(35, "Agent 正在分析会议内容", isIndeterminate = true))
             val reportTranscript = buildMarkerAwareTranscript(transcriptContent, attachments)
-            val usageKey = "report:$meetingId:${UUID.randomUUID()}"
-            var reportResult = runReportRequest(reportTranscript, attachments, meetingId, usageKey)
+            val usageKey = "report:$meetingId:$requestId"
+            var reportResult = runReportRequest(reportTranscript, attachments, meetingId, usageKey, meetingTemplateName)
             if (reportResult.exceptionOrNull()?.isAuthenticationFailure() == true) {
                 onProgress(ProcessingProgress(38, "服务会话正在更新，请稍候", isIndeterminate = true))
                 val refreshed = withTimeoutOrNull(5_000L) { accountSessionSynchronizer.refresh() }
                 if (refreshed?.isSuccess == true) {
-                    reportResult = runReportRequest(reportTranscript, attachments, meetingId, usageKey)
+                    reportResult = runReportRequest(reportTranscript, attachments, meetingId, usageKey, meetingTemplateName)
                 }
             }
             val reportData = reportResult.getOrElse { return Result.failure(it) }
@@ -73,11 +87,8 @@ class GenerateReportUseCase(
                 )
             }
 
-            val existingReportId = reportRepository.findByMeetingId(meetingId)
-                .getOrNull()
-                ?.id
             val report = Report(
-                id = existingReportId ?: UUID.randomUUID().toString(),
+                id = generation.reportId,
                 meetingId = meetingId,
                 summary = reportData.summary.ifBlank {
                     extractReportSummary(reportData.rawContent)
@@ -101,7 +112,10 @@ class GenerateReportUseCase(
             )
 
             onProgress(ProcessingProgress(96, "保存会议纪要"))
-            reportRepository.save(report).getOrThrow()
+            currentCoroutineContext().ensureActive()
+            check(reportRepository.completeGeneration(report, requestId)) {
+                "纪要任务或模板已更新，旧内容未保存"
+            }
             onProgress(ProcessingProgress(100, "会议纪要已完成"))
             Result.success(report)
         } catch (e: CancellationException) {
@@ -115,9 +129,10 @@ class GenerateReportUseCase(
         transcript: String,
         attachments: List<AgentAttachment>,
         meetingId: String,
-        usageKey: String
+        usageKey: String,
+        meetingTemplateName: String?
     ): Result<ReportData> = try {
-        Result.success(llmEngine.generateReport(transcript, attachments, meetingId, usageKey))
+        Result.success(llmEngine.generateReport(transcript, attachments, meetingId, usageKey, meetingTemplateName))
     } catch (error: CancellationException) {
         throw error
     } catch (error: Exception) {

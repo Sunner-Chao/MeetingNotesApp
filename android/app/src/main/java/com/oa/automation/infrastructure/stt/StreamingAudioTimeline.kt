@@ -16,6 +16,8 @@ internal class StreamingAudioTimeline {
             completed.clear()
             prefix = ""
             startSeconds = 0f
+            currentText = ""
+            endSeconds = 0f
         }
         val previousText = prefix + currentText
         if (currentText.isNotBlank() && text.startsWith(previousText) && text.length > previousText.length &&

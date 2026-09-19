@@ -376,6 +376,38 @@ class AccountServiceTests(unittest.TestCase):
         self.assertEqual(self.service.usage_summary(account)["ai_credits_used"], 2)
         self.assertEqual(self.service.usage_summary(account)["points_used"], 60)
 
+    def test_report_retry_returns_completed_result_without_rerunning_or_charging(self) -> None:
+        session = self.service.register("report_retry_user", "strong-password")
+        account = self.service.authenticate(f"Bearer {session['access_token']}")
+        calls = []
+
+        def runner(*args):
+            calls.append(args)
+            return "completed report"
+
+        gateway = AgentGateway(
+            db_path=self.db_path,
+            work_root=Path(self.temp_dir.name) / "retry-tasks",
+            runner=runner,
+        )
+        gateway.initialize()
+        principal = gateway.authenticate(f"Bearer {session['agent_access_token']}")
+        payload = {
+            "provider": "codex-cli",
+            "operation": "generate_report",
+            "transcript": "meeting input",
+            "meeting_id": "meeting-retry",
+            "usage_key": "report:meeting-retry:stable-work-id",
+        }
+        original = gateway.execute(principal, payload, [])
+        # The first response was lost after the server finished; WorkManager
+        # retries the same work id instead of creating a new logical request.
+        recovered = gateway.execute(principal, payload, [])
+        self.assertEqual(original["task_id"], recovered["task_id"])
+        self.assertEqual(recovered["text"], "completed report")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(self.service.usage_summary(account)["points_used"], 30)
+
     def test_agent_is_limited_by_points_not_legacy_ai_credits(self) -> None:
         session = self.service.register("points_only_user", "strong-password")
         account = self.service.authenticate(f"Bearer {session['access_token']}")
@@ -710,6 +742,28 @@ class AccountServiceTests(unittest.TestCase):
         after = self.service.growth_overview(user)["private_channel"]
         self.assertEqual(after["application"]["status"], "approved")
         self.assertNotEqual(after["qr_image_url"], "")
+
+    def test_private_channel_survey_answers_survive_submission_and_admin_review(self) -> None:
+        session = self.service.register("survey_applicant", "strong-password")
+        user = self.service.authenticate(f"Bearer {session['access_token']}")
+        admin_session = self.service.login("admin", "admin-test-password")
+        admin = self.service.authenticate(f"Bearer {admin_session['access_token']}")
+        answers = {
+            "name": "小智", "city": "杭州", "purpose": "希望提高会议整理效率",
+            "survey_version": "lite-20260914", "usage_scene": "工作例会 / 项目推进",
+            "usage_frequency": "每周几次", "current_method": "录音后回听整理",
+            "pain_points": "来不及记，容易漏重点；结论和待办难跟进",
+            "payment_preference": "先体验效果再决定", "suggestion": "希望导出时带上照片",
+        }
+        submitted = self.service.submit_private_channel_application(user, "default-welfare-group", answers)
+        self.assertEqual(submitted["application"]["answers"], answers)
+        self.assertEqual(submitted["channel"]["qr_image_url"], "")
+        pending = self.service.admin_list_private_channel_applications(admin, "pending")
+        self.assertEqual(pending[0]["answers"], answers)
+        self.service.admin_decide_private_channel_application(admin, submitted["application"]["id"], "approved")
+        result = self.service.private_channel_application(user)
+        self.assertEqual(result["application"]["answers"], answers)
+        self.assertTrue(result["channel"]["qr_image_url"])
 
     def test_campaign_admin_lifecycle_hides_drafts_and_notifies_winners(self) -> None:
         admin = self.service.authenticate(

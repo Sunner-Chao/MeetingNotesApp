@@ -183,7 +183,7 @@ internal fun ReportReferenceFrame(content: @Composable () -> Unit) {
     val isDark = LocalAppIsDarkTheme.current
     val skin = remember(isDark) {
         if (ProductEdition.current == ProductEdition.LIGHT_ENJOY) {
-            reportDoodleSkin(isDark)
+            reportLiteGlassSkin()
         } else {
             reportGlassSkin()
         }
@@ -273,7 +273,10 @@ private fun ReferenceBackdrop(modifier: Modifier = Modifier) {
         }
         drawRect(
             brush = Brush.linearGradient(
-                colors = listOf(
+                colors = if (ProductEdition.current == ProductEdition.LIGHT_ENJOY) listOf(
+                    Color(0xFF29495F), Color(0xFF527C91), Color(0xFF57699A),
+                    Color(0xFF706297), Color(0xFF302B5E)
+                ) else listOf(
                     Color(0xFF0A243A),
                     Color(0xFF123B5D),
                     Color(0xFF0F4C75),
@@ -286,21 +289,21 @@ private fun ReferenceBackdrop(modifier: Modifier = Modifier) {
         )
         drawRect(
             brush = Brush.radialGradient(
-                colors = listOf(Color(0xFF60CDFF).copy(alpha = .32f), Color.Transparent),
+                colors = listOf((if (ProductEdition.current == ProductEdition.LIGHT_ENJOY) skin.sky else Color(0xFF60CDFF)).copy(alpha = .32f), Color.Transparent),
                 center = Offset(size.width * .47f, size.height * .22f),
                 radius = size.width * .58f
             )
         )
         drawRect(
             brush = Brush.radialGradient(
-                colors = listOf(Color(0xFF3A96DD).copy(alpha = .24f), Color.Transparent),
+                colors = listOf(skin.pink.copy(alpha = if (ProductEdition.current == ProductEdition.LIGHT_ENJOY) .30f else .24f), Color.Transparent),
                 center = Offset(size.width * 1.02f, size.height * .60f),
                 radius = size.width * .72f
             )
         )
         drawRect(
             brush = Brush.radialGradient(
-                colors = listOf(Color(0xFF8CC8FF).copy(alpha = .22f), Color.Transparent),
+                colors = listOf(skin.lavender.copy(alpha = .22f), Color.Transparent),
                 center = Offset(size.width * .09f, size.height * .79f),
                 radius = size.width * .68f
             )

@@ -6,6 +6,7 @@ import com.oa.automation.domain.model.ProductEdition
 data class ProductEntryPolicy(
     val showCommunityTab: Boolean,
     val showSocialAccountActions: Boolean,
+    val showPrivateChannelAction: Boolean,
     val showGrowthNotifications: Boolean,
     val showStudyJourneyTemplate: Boolean,
     val showProjectWorkspace: Boolean,
@@ -23,6 +24,7 @@ data class ProductEntryPolicy(
             ProductEdition.SOCIAL -> ProductEntryPolicy(
                 showCommunityTab = true,
                 showSocialAccountActions = true,
+                showPrivateChannelAction = true,
                 showGrowthNotifications = true,
                 showStudyJourneyTemplate = true,
                 showProjectWorkspace = false,
@@ -31,7 +33,11 @@ data class ProductEntryPolicy(
             ProductEdition.LIGHT_ENJOY -> ProductEntryPolicy(
                 showCommunityTab = false,
                 showSocialAccountActions = false,
-                showGrowthNotifications = false,
+                showPrivateChannelAction = false,
+                // Keep the welfare group in the notification center. It is no
+                // longer promoted on Home or exposed from 我的, but remains a
+                // first-class notification-center destination for Lite users.
+                showGrowthNotifications = true,
                 showStudyJourneyTemplate = false,
                 showProjectWorkspace = true,
                 visibleMeetingTemplateNames = LIGHT_ENJOY_MEETING_TEMPLATE_NAMES
@@ -53,8 +59,6 @@ data class ProductEntryPolicy(
             "启迪·共创会",
             "博弈·洽谈会",
             "复盘·分析会",
-            "敏捷·站会",
-            "论坛·共识会",
             "自定义会议"
         )
     }

@@ -85,6 +85,16 @@ class RecordingUiStateTest {
     }
 
     @Test
+    fun `new voice and import meetings default to local even after a cloud meeting`() {
+        for (meeting in listOf(null, Meeting(title = "即刻倾听"), Meeting(title = "顷刻成稿"))) {
+            assertEquals(
+                STTEngineType.FASTER_WHISPER,
+                resolveRestoredSttEngineType(meeting, STTEngineType.TENCENT_HYBRID, false)
+            )
+        }
+    }
+
+    @Test
     fun `resumed meeting restores its saved speech engine without changing active session`() {
         assertEquals(
             STTEngineType.TENCENT_HYBRID,

@@ -1,6 +1,7 @@
 package com.oa.automation.ui.screen.account
 
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.BackHandler
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
@@ -49,6 +50,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -77,10 +79,23 @@ private val DetailGreen = Color(0xFF0078D4)
 @Composable
 fun AccountProfileScreen(
     onNavigateBack: () -> Unit,
+    onAccountDeleted: () -> Unit,
     viewModel: AccountViewModel = koinViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
+    var showDeleteAccountDialog by rememberSaveable { mutableStateOf(false) }
+    BackHandler(enabled = uiState.isDeletingAccount) { }
+    LaunchedEffect(uiState.isLoggedOut) {
+        if (uiState.isLoggedOut) onAccountDeleted()
+    }
+    LaunchedEffect(uiState.accountDeletionError) {
+        uiState.accountDeletionError?.let {
+            showDeleteAccountDialog = false
+            snackbarHostState.showSnackbar(it)
+            viewModel.clearAccountDeletionError()
+        }
+    }
     val avatarPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.GetContent()
     ) { uri -> uri?.let(viewModel::selectProfileAvatar) }
@@ -111,7 +126,7 @@ fun AccountProfileScreen(
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         snackbarHost = { SnackbarHost(snackbarHostState) },
-        topBar = { AccountDetailTopBar("个人资料", onNavigateBack) }
+        topBar = { AccountDetailTopBar("个人资料", { if (!uiState.isDeletingAccount) onNavigateBack() }) }
     ) { paddingValues ->
         Column(
             modifier = Modifier
@@ -127,7 +142,35 @@ fun AccountProfileScreen(
                 onEdit = viewModel::startProfileEdit
             )
             ProfileInformationCard(uiState.profile, uiState.username)
+            if (uiState.profile != null && uiState.profile?.isAdmin == false) {
+                androidx.compose.material3.OutlinedButton(
+                    onClick = { showDeleteAccountDialog = true },
+                    enabled = !uiState.isDeletingAccount,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = androidx.compose.material3.ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                ) { Text("删除账户与数据") }
+            }
         }
+    }
+    if (showDeleteAccountDialog) {
+        AlertDialog(
+            onDismissRequest = { if (!uiState.isDeletingAccount) showDeleteAccountDialog = false },
+            title = { Text("删除账户与数据") },
+            text = { Text("将永久删除账户、会议、录音、图片和云端资料，删除后无法恢复。确定继续吗？") },
+            confirmButton = {
+                Button(onClick = viewModel::deleteMyAccount, enabled = !uiState.isDeletingAccount) {
+                    if (uiState.isDeletingAccount) {
+                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    Text(if (uiState.isDeletingAccount) "正在删除" else "永久删除")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteAccountDialog = false }, enabled = !uiState.isDeletingAccount) { Text("取消") }
+            }
+        )
     }
 }
 

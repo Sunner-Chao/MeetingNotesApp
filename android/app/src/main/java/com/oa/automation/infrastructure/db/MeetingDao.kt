@@ -33,6 +33,9 @@ interface MeetingDao {
     @Query("DELETE FROM reports WHERE meetingId = :meetingId")
     suspend fun deleteReportsForMeeting(meetingId: String)
 
+    @Query("DELETE FROM report_generations WHERE meetingId = :meetingId")
+    suspend fun deleteReportGenerationForMeeting(meetingId: String)
+
     @Query("DELETE FROM transcripts WHERE meetingId = :meetingId")
     suspend fun deleteTranscriptsForMeeting(meetingId: String)
 
@@ -49,6 +52,7 @@ interface MeetingDao {
     suspend fun deleteMeeting(id: String, ownerId: String?) {
         if (findMeetingById(id, ownerId) == null) return
         deleteReportsForMeeting(id)
+        deleteReportGenerationForMeeting(id)
         deleteTranscriptsForMeeting(id)
         deleteAttachmentsForMeeting(id)
         deleteRecordingMarkersForMeeting(id)
