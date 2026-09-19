@@ -31,6 +31,8 @@ import com.oa.automation.locale.withSimplifiedChineseLocale
 import com.oa.automation.infrastructure.textimport.SharedTextImportCoordinator
 import com.oa.automation.infrastructure.service.FloatingStatusService
 import com.oa.automation.infrastructure.service.RecordingSessionController
+import com.oa.automation.infrastructure.service.RoomCallController
+import com.oa.automation.ui.screen.recording.RoomCallDialog
 import com.oa.automation.infrastructure.audio.OrphanedMeetingAudioRecovery
 import com.oa.automation.infrastructure.attachment.LegacyMeetingAttachmentRecovery
 import com.oa.automation.infrastructure.account.AccountApiService
@@ -52,6 +54,7 @@ class MainActivity : ComponentActivity() {
     private val sharedTextImportCoordinator: SharedTextImportCoordinator by inject()
     private val configDataStore: ConfigDataStore by inject()
     private val recordingController: RecordingSessionController by inject()
+    private val roomCallController: RoomCallController by inject()
     private val orphanedMeetingAudioRecovery: OrphanedMeetingAudioRecovery by inject()
     private val legacyMeetingAttachmentRecovery: LegacyMeetingAttachmentRecovery by inject()
     private val appUpdateService: AppUpdateService by inject()
@@ -64,6 +67,7 @@ class MainActivity : ComponentActivity() {
     private var appUpdateMessage by mutableStateOf<String?>(null)
     private var updateCheckQueued = false
     private var pendingRecordingNavigationMeetingId by mutableStateOf<String?>(null)
+    private var pendingRoomCallNavigation by mutableStateOf(false)
     private var socialAuthLoginVersion by mutableIntStateOf(0)
     private var socialAuthExchangeInProgress = false
 
@@ -119,6 +123,9 @@ class MainActivity : ComponentActivity() {
                             onLater = { pendingAppUpdate = null },
                             onIgnore = ::ignoreCurrentAppUpdate
                         )
+                        if (pendingRoomCallNavigation) RoomCallDialog(roomCallController) {
+                            pendingRoomCallNavigation = false
+                        }
                     }
                 }
             }
@@ -156,6 +163,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun acceptRecordingNavigation(intent: Intent) {
+        if (intent.getBooleanExtra(EXTRA_OPEN_ROOM_CALL, false)) {
+            pendingRoomCallNavigation = true
+            intent.removeExtra(EXTRA_OPEN_ROOM_CALL)
+        }
         intent.getStringExtra(EXTRA_OPEN_RECORDING_MEETING_ID)
             ?.takeIf { it.isNotBlank() }
             ?.let { pendingRecordingNavigationMeetingId = it }
@@ -318,6 +329,7 @@ class MainActivity : ComponentActivity() {
     }
 
     companion object {
+        const val EXTRA_OPEN_ROOM_CALL = "open_room_call"
         const val EXTRA_OPEN_RECORDING_MEETING_ID = "open_recording_meeting_id"
     }
 }

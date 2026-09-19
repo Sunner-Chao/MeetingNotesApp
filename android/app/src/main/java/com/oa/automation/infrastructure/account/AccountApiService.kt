@@ -45,6 +45,7 @@ import com.oa.automation.domain.model.MyCommunityPost
 import com.oa.automation.domain.model.PublicCommunityPost
 import com.oa.automation.domain.model.MeetingRoom
 import com.oa.automation.domain.model.MeetingRoomList
+import com.oa.automation.domain.model.RoomMediaSession
 import com.oa.automation.infrastructure.stt.STT_IPV4_RELAY_DNS
 import java.io.IOException
 import java.net.URLEncoder
@@ -1056,6 +1057,11 @@ class AccountApiService(
         method = "GET",
         timeoutMillis = 5_000
     ) { body -> gson.fromJson(body, MeetingRoom::class.java) }
+
+    suspend fun meetingRoomMediaSession(endpoint: String, token: String, roomId: String): Result<RoomMediaSession> = request(
+        endpoint = endpoint, path = "account/rooms/${encodeQueryValue(roomId)}/media-session",
+        token = token, method = "POST", jsonBody = "{}", timeoutMillis = 10_000
+    ) { body -> gson.fromJson(body, RoomMediaSession::class.java) }
 
     suspend fun consentMeetingRoomRecording(
         endpoint: String,

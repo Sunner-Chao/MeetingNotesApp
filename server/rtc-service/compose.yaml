@@ -1,0 +1,10 @@
+services:
+  livekit:
+    image: livekit/livekit-server:v1.13.7
+    restart: unless-stopped
+    network_mode: host
+    command: ["--config", "/etc/livekit.yaml"]
+    environment:
+      LIVEKIT_KEYS: ${LIVEKIT_KEYS:?Set the private LiveKit key mapping}
+    volumes:
+      - ${LIVEKIT_CONFIG_PATH:-./livekit.yaml}:/etc/livekit.yaml:ro

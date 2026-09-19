@@ -120,7 +120,8 @@ class RecordingSessionController(
     private val streamingSttClient: StreamingSttClient,
     private val configDataStore: ConfigDataStore,
     private val accountSessionSynchronizer: AccountSessionSynchronizer,
-    private val roomRecordingAccess: MeetingRoomRecordingAccess
+    private val roomRecordingAccess: MeetingRoomRecordingAccess,
+    private val audioGate: com.oa.automation.infrastructure.audio.AudioSessionGate
 ) {
     private val operationMutex = Mutex()
     private val fallbackScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -174,6 +175,7 @@ class RecordingSessionController(
             }
             if (audioRecorder.isRecording() && _state.value.meetingId == meetingId) return@runCatching
             if (audioRecorder.isRecording()) error("已有其他会议正在录音")
+            check(audioGate.acquire("recording:$meetingId")) { "通话进行中，请先离开通话再开始录音" }
 
             roomMonitor?.cancel()
             roomBinding = null
@@ -461,6 +463,7 @@ class RecordingSessionController(
             }
             monitorRoomConsent()
         }.onFailure { error ->
+            if (!audioRecorder.isRecording()) audioGate.release("recording:$meetingId")
             _state.update {
                 if (error is CancellationException) {
                     it.copy(
@@ -489,8 +492,11 @@ class RecordingSessionController(
             roomMonitor = null
             _state.update { it.copy(isStopping = true, status = "正在整理录音") }
             val captureRoute = audioRecorder.currentCaptureRoute()
-            val audioFile = audioRecorder.stop()
-                ?: error("录音文件不可用")
+            val audioFile = try {
+                audioRecorder.stop() ?: error("录音文件不可用")
+            } finally {
+                if (!audioRecorder.isRecording()) audioGate.release("recording:$meetingId")
+            }
             audioRecorder.setOnPcmDataListener(null)
             val streamSessionId = if (streamingPreviewActive) streamingSttClient.stop() else null
             streamingPreviewActive = false
@@ -588,7 +594,11 @@ class RecordingSessionController(
                 roomMonitor?.cancel()
                 roomMonitor = null
                 val captureRoute = audioRecorder.currentCaptureRoute()
-                val audioFile = audioRecorder.stop() ?: error("录音文件不可用")
+                val audioFile = try {
+                    audioRecorder.stop() ?: error("录音文件不可用")
+                } finally {
+                    if (!audioRecorder.isRecording()) audioGate.release("recording:$meetingId")
+                }
                 audioRecorder.setOnPcmDataListener(null)
                 val streamSessionId = if (streamingPreviewActive) streamingSttClient.stop() else null
                 streamingPreviewActive = false
@@ -628,8 +638,8 @@ class RecordingSessionController(
                 _state.update {
                     it.copy(
                         isStarting = false,
-                        isRecording = true,
-                        isPaused = true,
+                        isRecording = audioRecorder.isRecording(),
+                        isPaused = audioRecorder.isRecording(),
                         isStopping = false,
                         error = "暂存录音失败: ${error.message}"
                     )
@@ -869,6 +879,7 @@ class RecordingSessionController(
         automaticCloudFallbackAttempted = false
         smoothedAudioLevel = 0f
         audioRecorder.cancel(deleteFile = deleteFile)
+        audioGate.release("recording:${_state.value.meetingId}")
         pendingStopMeetingId = null
         _state.update {
             val completedDuration = it.durationSecondsAt(SystemClock.elapsedRealtime())

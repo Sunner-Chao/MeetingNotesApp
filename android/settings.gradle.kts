@@ -31,6 +31,9 @@ dependencyResolutionManagement {
             ?.let { maven(url = it) }
         google()
         mavenCentral()
+        maven("https://jitpack.io") {
+            content { includeGroup("com.github.davidliu") }
+        }
     }
 }
 

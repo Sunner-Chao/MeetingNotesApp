@@ -1,0 +1,14 @@
+# Single-node baseline for LiveKit v1.13.7. Provide LIVEKIT_KEYS privately at runtime.
+# Put a trusted TLS reverse proxy in front of 7880. Never expose the admin API alone.
+port: 7880
+bind_addresses: ["0.0.0.0"]
+rtc:
+  tcp_port: 7881
+  udp_port: 7882
+  use_external_ip: true
+room:
+  auto_create: false
+logging:
+  level: warn
+# Production cellular/enterprise-network acceptance also requires TURN/TLS.
+# Set turn.enabled/domain/cert_file/key_file/tls_port in a private deployment config.

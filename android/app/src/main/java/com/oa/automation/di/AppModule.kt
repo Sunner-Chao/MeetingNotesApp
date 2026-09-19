@@ -147,7 +147,11 @@ val appModule = module {
     single { BackgroundTaskScheduler(androidContext(), get()) }
     single { ScheduledMeetingNotificationScheduler(androidContext()) }
     single { com.oa.automation.infrastructure.service.MeetingRoomRecordingAccess(get(), get(), get()) }
-    single { RecordingSessionController(get(), get(), get(), get(), get()) }
+    single { com.oa.automation.infrastructure.audio.AudioSessionGate() }
+    single { RecordingSessionController(get(), get(), get(), get(), get(), get()) }
+    single { com.oa.automation.infrastructure.service.RoomCallController(get(), get(), get()) {
+        com.oa.automation.infrastructure.audio.LiveKitRoomCallTransport(androidContext())
+    } }
     single { SharedTextImportCoordinator(androidContext()) }
     single { ExternalTextSourceLauncher(androidContext()) }
     single { LLMEngine(get()) }

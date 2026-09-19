@@ -11,11 +11,14 @@ from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from fastapi.responses import JSONResponse
+from room_media import RoomMediaService
 
 
 class RoomService:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, media: RoomMediaService | None = None):
         self.path = path
+        self.media = media or RoomMediaService()
 
     @contextmanager
     def connect(self, *, write: bool = True):
@@ -51,10 +54,21 @@ class RoomService:
                     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
                 );
                 CREATE INDEX IF NOT EXISTS meeting_room_members_user ON meeting_room_members(user_id);
+                CREATE TABLE IF NOT EXISTS room_media_cleanup (
+                    room_id TEXT NOT NULL, user_id TEXT NOT NULL, event_id TEXT NOT NULL,
+                    PRIMARY KEY(room_id, user_id)
+                );
+                CREATE TRIGGER IF NOT EXISTS room_media_on_room_deleted BEFORE DELETE ON meeting_rooms
+                BEGIN
+                    INSERT OR REPLACE INTO room_media_cleanup VALUES(OLD.id, '', lower(hex(randomblob(16))));
+                END;
+                CREATE TRIGGER IF NOT EXISTS room_media_on_member_deleted BEFORE DELETE ON meeting_room_members
+                BEGIN
+                    INSERT OR REPLACE INTO room_media_cleanup VALUES(OLD.room_id, OLD.user_id, lower(hex(randomblob(16))));
+                END;
             """)
 
-    @staticmethod
-    def snapshot(db, room_id: str, user_id: str):
+    def snapshot(self, db, room_id: str, user_id: str):
         room = db.execute("SELECT * FROM meeting_rooms WHERE id=?", (room_id,)).fetchone()
         member = db.execute("SELECT * FROM meeting_room_members WHERE room_id=? AND user_id=?", (room_id, user_id)).fetchone()
         if room is None or member is None or member["left_at"] is not None:
@@ -66,7 +80,65 @@ class RoomService:
         active = [m for m in members if m["left_at"] is None]
         return {**dict(room), "members": members,
                 "all_recording_consented": bool(active) and all(m["recording_consent"] for m in active),
-                "media_ready": False}
+                "media_ready": self.media.configured}
+
+    def _queue_cleanup(self, db, room_id: str, user_id: str = ""):
+        if self.media.configured:
+            db.execute("INSERT OR REPLACE INTO room_media_cleanup VALUES(?,?,?)",
+                       (room_id, user_id, uuid.uuid4().hex))
+
+    def flush_media_cleanup(self, room_id: str | None = None):
+        if not self.media.configured:
+            return
+        with self.connect(write=False) as db:
+            pending = db.execute("SELECT * FROM room_media_cleanup WHERE (? IS NULL OR room_id=?) LIMIT 50",
+                                 (room_id, room_id)).fetchall()
+        for item in pending:
+            try:
+                # Serialize cleanup across backend workers and new join requests.
+                # Without rechecking under the write lock, a late cleanup could
+                # remove a member who has already rejoined with a fresh ticket.
+                with self.connect() as db:
+                    if not db.execute("SELECT 1 FROM room_media_cleanup WHERE event_id=?", (item["event_id"],)).fetchone():
+                        continue
+                    if item["user_id"]:
+                        self.media.remove(item["room_id"], item["user_id"])
+                    else:
+                        self.media.end(item["room_id"])
+                    db.execute("DELETE FROM room_media_cleanup WHERE event_id=?", (item["event_id"],))
+            except HTTPException:
+                continue  # Durable retry by the application lifespan worker.
+
+    def media_session(self, user_id: str, room_id: str):
+        room = self.get(user_id, room_id)
+        if room["state"] != "open":
+            raise HTTPException(409, "房间已结束")
+        self.flush_media_cleanup(room_id)
+        with self.connect(write=False) as db:
+            if db.execute("SELECT 1 FROM room_media_cleanup WHERE room_id=?", (room_id,)).fetchone():
+                raise HTTPException(503, "上一段通话正在退出，请稍后再加入")
+        member = next(m for m in room["members"] if m["user_id"] == user_id)
+        result = self.media.connect(room, user_id, member["display_name"])
+        # Never issue a token after a concurrent leave/end while CreateRoom was in flight.
+        try:
+            if self.get(user_id, room_id)["state"] != "open":
+                raise HTTPException(409, "房间已结束")
+        except HTTPException:
+            with self.connect() as db:
+                self._queue_cleanup(db, room_id, user_id)
+                current = db.execute("SELECT state FROM meeting_rooms WHERE id=?", (room_id,)).fetchone()
+                if current is None or current["state"] != "open":
+                    self._queue_cleanup(db, room_id)
+            self.flush_media_cleanup(room_id)
+            raise
+        return result
+
+    def media_leave(self, user_id: str, room_id: str):
+        self.get(user_id, room_id)
+        with self.connect() as db:
+            self._queue_cleanup(db, room_id, user_id)
+        self.flush_media_cleanup(room_id)
+        return {"left": True}
 
     def create(self, principal: Any, title: str, consent: bool):
         now = int(time.time())
@@ -114,16 +186,19 @@ class RoomService:
                 if room["host_id"] != user_id:
                     raise HTTPException(403, "只有主持人可以结束会议")
                 db.execute("UPDATE meeting_rooms SET state='ended', ended_at=COALESCE(ended_at,?) WHERE id=?", (int(time.time()), room_id))
+                self._queue_cleanup(db, room_id)
             elif action == "leave":
                 if room["host_id"] == user_id and room["state"] == "open":
                     raise HTTPException(409, "主持人请先结束会议")
                 db.execute("UPDATE meeting_room_members SET left_at=? WHERE room_id=? AND user_id=?", (int(time.time()), room_id, user_id))
-                return {"left": True}
+                self._queue_cleanup(db, room_id, user_id)
             elif action == "consent":
                 if room["state"] != "open":
                     raise HTTPException(409, "会议已结束")
                 db.execute("UPDATE meeting_room_members SET recording_consent=? WHERE room_id=? AND user_id=?", (int(consent), room_id, user_id))
-            return self.snapshot(db, room_id, user_id)
+            result = {"left": True} if action == "leave" else self.snapshot(db, room_id, user_id)
+        self.flush_media_cleanup(room_id)
+        return result
 
 
 class RoomCreate(BaseModel):
@@ -148,7 +223,8 @@ def build_room_router(path_provider: Callable[[], Path], principal_dependency: C
 
     @router.get("")
     def list_rooms(principal=Depends(principal_dependency)):
-        return {"rooms": service().list(principal.user_id), "media_ready": False}
+        rooms = service()
+        return {"rooms": rooms.list(principal.user_id), "media_ready": rooms.media.configured}
 
     @router.post("", status_code=201)
     def create_room(payload: RoomCreate, principal=Depends(principal_dependency)):
@@ -161,6 +237,15 @@ def build_room_router(path_provider: Callable[[], Path], principal_dependency: C
     @router.get("/{room_id}")
     def get_room(room_id: str, principal=Depends(principal_dependency)):
         return service().get(principal.user_id, room_id)
+
+    @router.post("/{room_id}/media-session")
+    def media_session(room_id: str, principal=Depends(principal_dependency)):
+        return JSONResponse(service().media_session(principal.user_id, room_id),
+                            headers={"Cache-Control": "no-store"})
+
+    @router.post("/{room_id}/media-leave")
+    def media_leave(room_id: str, principal=Depends(principal_dependency)):
+        return service().media_leave(principal.user_id, room_id)
 
     @router.post("/{room_id}/consent")
     def consent(room_id: str, payload: RoomConsent, principal=Depends(principal_dependency)):

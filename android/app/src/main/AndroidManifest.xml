@@ -56,6 +56,11 @@
             android:exported="false" />
 
         <service
+            android:name=".infrastructure.service.RoomCallService"
+            android:foregroundServiceType="microphone"
+            android:exported="false" />
+
+        <service
             android:name=".infrastructure.service.FloatingStatusService"
             android:foregroundServiceType="dataSync"
             android:exported="false" />

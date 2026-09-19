@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import asyncio
 import binascii
 import contextlib
 import hashlib
@@ -1083,7 +1084,22 @@ async def app_lifespan(_app: FastAPI):
             source_media_root=Path(DB_PATH).resolve().parent / "community-media",
             target_media_root=community_db_path.parent / "community-media",
         )
-    yield
+    async def retry_room_media_cleanup():
+        while True:
+            try:
+                await asyncio.to_thread(RoomService(Path(account_db_path)).flush_media_cleanup)
+            except Exception:
+                logging.getLogger("meetingnotes.rooms").warning("Room media cleanup will retry")
+            await asyncio.sleep(5)
+
+    cleanup_task = asyncio.create_task(retry_room_media_cleanup()) if ACCOUNT_SERVICE is not None else None
+    try:
+        yield
+    finally:
+        if cleanup_task is not None:
+            cleanup_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await cleanup_task
 
 
 app = FastAPI(title="Meeting Notes Web Backend", lifespan=app_lifespan)

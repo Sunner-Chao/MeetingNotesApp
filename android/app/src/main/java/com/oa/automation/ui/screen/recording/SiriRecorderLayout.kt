@@ -81,6 +81,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -236,7 +237,9 @@ internal fun SiriRecorderContent(
     var savedAudioDialogVisible by remember { mutableStateOf(false) }
     var journeyDialogVisible by remember { mutableStateOf(false) }
     var meetingRoomsVisible by rememberSaveable { mutableStateOf(false) }
-    val showMeetingRooms = uiState.meetingRoomId != null || MeetingMode.fromTemplateName(uiState.selectedRecordingTemplateName.orEmpty()) == MeetingMode.LISTENING_PLANNING
+    val callController: com.oa.automation.infrastructure.service.RoomCallController = org.koin.compose.koinInject()
+    val call by callController.state.collectAsStateWithLifecycle()
+    val showMeetingRooms = call.active || uiState.meetingRoomId != null || MeetingMode.fromTemplateName(uiState.selectedRecordingTemplateName.orEmpty()) == MeetingMode.LISTENING_PLANNING
     val canGenerate = canGenerateReportFromRecording(uiState)
     val savedAudio = uiState.archivedAudio.firstOrNull()
     val displayedSttEngine = effectiveSttEngineType(
@@ -349,13 +352,13 @@ internal fun SiriRecorderContent(
             SiriTranscriptCard(
                 sessionSource = {
                     MeetingSessionSourceRow(uiState, palette.muted, onOpenSessionSource)
-                    if (uiState.meetingRoomId != null) TextButton(
+                    if (uiState.meetingRoomId != null || call.active) TextButton(
                         onClick = { meetingRoomsVisible = true },
                         modifier = Modifier.heightIn(min = 40.dp)
                     ) {
                         Icon(Icons.Default.Groups, contentDescription = null, modifier = Modifier.size(16.dp), tint = palette.muted)
                         Spacer(Modifier.width(6.dp))
-                        Text("已关联会议房间 · 查看成员", color = palette.muted, style = MaterialTheme.typography.labelSmall)
+                        Text(if (call.active) "会议通话进行中 · 查看" else "已关联会议房间 · 查看成员", color = palette.muted, style = MaterialTheme.typography.labelSmall)
                     }
                 },
                 templates = uiState.presetTemplates,

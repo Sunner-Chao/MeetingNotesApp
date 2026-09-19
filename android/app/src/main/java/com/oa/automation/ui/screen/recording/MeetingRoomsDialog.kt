@@ -38,6 +38,8 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.awaitCancellation
 import org.koin.androidx.compose.koinViewModel
+import org.koin.compose.koinInject
+import com.oa.automation.infrastructure.service.RoomCallController
 
 @Composable
 internal fun MeetingRoomsDialog(
@@ -50,6 +52,8 @@ internal fun MeetingRoomsDialog(
     viewModel: MeetingRoomsViewModel = koinViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val callController: RoomCallController = koinInject()
+    val call by callController.state.collectAsStateWithLifecycle()
     var joining by rememberSaveable(state.userId) { mutableStateOf(false) }
     var title by rememberSaveable(state.userId) { mutableStateOf("") }
     var code by rememberSaveable(state.userId) { mutableStateOf("") }
@@ -73,7 +77,7 @@ internal fun MeetingRoomsDialog(
                 Modifier.fillMaxWidth().heightIn(max = 440.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Text("当前可管理会前成员与录音意愿，多人在线通话尚未开放。", style = MaterialTheme.typography.bodySmall)
+                RoomCallPanel(room, call, callController)
                 if (state.busy || bindingBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
                 state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 bindingError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
@@ -124,7 +128,7 @@ internal fun MeetingRoomsDialog(
                         Text("会议号 ${room.code}", modifier = Modifier.weight(1f))
                         TextButton(onClick = { clipboard.setText(AnnotatedString(room.code)) }) { Text("复制") }
                     }
-                    Text(if (room.state == "ended") "会议已结束" else "会前准备 · ${room.members.count { it.leftAt == null }} 人", style = MaterialTheme.typography.labelLarge)
+                    Text(if (room.state == "ended") "会议已结束" else "房间成员 · ${room.members.count { it.leftAt == null }} 人", style = MaterialTheme.typography.labelLarge)
                     room.members.forEach { member ->
                         val role = if (member.userId == room.hostId) "主持人" else "成员"
                         val status = if (member.leftAt != null) "已离开" else if (member.recordingConsent) "同意录音" else "未同意录音"
@@ -158,7 +162,7 @@ internal fun MeetingRoomsDialog(
     if (confirmingEnd && room != null) AlertDialog(
         onDismissRequest = { confirmingEnd = false },
         title = { Text("结束这个房间？") },
-        text = { Text("结束后将停止接收新成员，已有房间信息仍可查看。") },
+        text = { Text("结束后所有成员将离开通话，已有房间信息仍可查看。") },
         confirmButton = { TextButton(onClick = { confirmingEnd = false; viewModel.end() }, enabled = !state.busy) { Text("结束") } },
         dismissButton = { TextButton(onClick = { confirmingEnd = false }) { Text("返回") } },
         shape = RoundedCornerShape(12.dp)
