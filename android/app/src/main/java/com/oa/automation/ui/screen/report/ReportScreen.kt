@@ -1105,7 +1105,7 @@ private fun MarkdownReportCard(content: String) {
 }
 
 @Composable
-private fun MarkdownLine(line: String) {
+internal fun MarkdownLine(line: String) {
     val trimmed = line.trim()
     val heading = Regex("^(#{1,6})\\s+(.+)$").matchEntire(trimmed)
     when {

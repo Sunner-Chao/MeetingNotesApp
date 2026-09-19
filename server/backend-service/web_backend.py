@@ -67,6 +67,8 @@ from social_auth import (
 )
 from community_api import build_community_router, build_public_community_router
 from meeting_rooms import RoomService, build_room_router
+from room_workspace import build_workspace_router
+from room_transcription_worker import RoomTranscriptionSupervisor
 from community_service import CommunityService
 
 
@@ -1093,9 +1095,28 @@ async def app_lifespan(_app: FastAPI):
             await asyncio.sleep(5)
 
     cleanup_task = asyncio.create_task(retry_room_media_cleanup()) if ACCOUNT_SERVICE is not None else None
+    def generate_room_report(job, provider, template):
+        if ACCOUNT_SERVICE is None or not AGENT_GATEWAY.enabled:
+            raise RuntimeError("Report service unavailable")
+        with RoomService(Path(account_db_path)).connect(write=False) as db:
+            user = db.execute("SELECT username,role FROM users WHERE id=? AND enabled=1", (job["requested_by"],)).fetchone()
+        if user is None:
+            raise RuntimeError("Account unavailable")
+        principal = AGENT_GATEWAY.authenticate_account_principal(user_id=job["requested_by"], username=user["username"], role=user["role"])
+        result = AGENT_GATEWAY.execute(principal, {"provider": provider, "operation": "generate_report",
+            "transcript": job["snapshot"], "templateName": "聆听·策划会", "templateContent": template,
+            "meeting_id": job["room_id"], "usage_key": "room-report:" + job["request_id"]}, [])
+        return result["text"]
+
+    transcription = RoomTranscriptionSupervisor(Path(account_db_path), report_generator=generate_room_report)
+    transcription_task = asyncio.create_task(transcription.run()) if ACCOUNT_SERVICE is not None else None
     try:
         yield
     finally:
+        if transcription_task is not None:
+            transcription_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await transcription_task
         if cleanup_task is not None:
             cleanup_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -1503,6 +1524,15 @@ def configured_community_db_path() -> Path:
 
 app.include_router(build_community_router(configured_community_db_path, require_account_principal))
 app.include_router(build_room_router(lambda: configured_account_service().db_path, require_account_principal))
+def require_room_workspace_principal(authorization: Annotated[str | None, Header()] = None):
+    principal = require_account_principal(authorization)
+    try:
+        configured_account_service().ensure_agent_access(principal)
+    except AccountError as exc:
+        raise account_http_error(exc) from exc
+    return principal
+
+app.include_router(build_workspace_router(lambda: configured_account_service().db_path, require_account_principal, require_room_workspace_principal))
 app.include_router(build_public_community_router(configured_community_db_path))
 
 

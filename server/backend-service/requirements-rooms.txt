@@ -1,0 +1,3 @@
+# Optional server-side room audio subscriber. Install alongside requirements.txt.
+livekit==1.1.19
+websockets==16.0

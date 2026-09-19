@@ -46,6 +46,9 @@ import com.oa.automation.domain.model.PublicCommunityPost
 import com.oa.automation.domain.model.MeetingRoom
 import com.oa.automation.domain.model.MeetingRoomList
 import com.oa.automation.domain.model.RoomMediaSession
+import com.oa.automation.domain.model.RoomWorkspacePage
+import com.oa.automation.domain.model.RoomTranscriptionState
+import com.oa.automation.domain.model.RoomSharedReport
 import com.oa.automation.infrastructure.stt.STT_IPV4_RELAY_DNS
 import java.io.IOException
 import java.net.URLEncoder
@@ -1063,6 +1066,21 @@ class AccountApiService(
         token = token, method = "POST", jsonBody = "{}", timeoutMillis = 10_000
     ) { body -> gson.fromJson(body, RoomMediaSession::class.java) }
 
+    suspend fun roomWorkspace(endpoint: String, token: String, roomId: String, after: Long): Result<RoomWorkspacePage> = request(
+        endpoint = endpoint, path = "account/rooms/${encodeQueryValue(roomId)}/transcripts?after=$after",
+        token = token, method = "GET", timeoutMillis = 5_000
+    ) { body -> gson.fromJson(body, RoomWorkspacePage::class.java) }
+
+    suspend fun roomTranscription(endpoint: String, token: String, roomId: String, start: Boolean): Result<RoomTranscriptionState> = request(
+        endpoint = endpoint, path = "account/rooms/${encodeQueryValue(roomId)}/transcription/${if (start) "start" else "pause"}",
+        token = token, method = "POST", jsonBody = "{}", timeoutMillis = 5_000
+    ) { body -> gson.fromJson(body, RoomTranscriptionState::class.java) }
+
+    suspend fun requestRoomReport(endpoint: String, token: String, roomId: String): Result<RoomSharedReport> = request(
+        endpoint = endpoint, path = "account/rooms/${encodeQueryValue(roomId)}/report",
+        token = token, method = "POST", jsonBody = "{}", timeoutMillis = 5_000
+    ) { body -> gson.fromJson(body, RoomSharedReport::class.java) }
+
     suspend fun consentMeetingRoomRecording(
         endpoint: String,
         token: String,
@@ -1400,7 +1418,7 @@ class AccountApiService(
             timeoutMillis?.let { call.timeout().timeout(it, TimeUnit.MILLISECONDS) }
             call.execute().use { response ->
                 val body = response.body?.string().orEmpty()
-                if (!response.isSuccessful) throw IOException(response.toAccountError(body))
+                if (!response.isSuccessful) throw AccountHttpException(response.code, response.toAccountError(body))
                 parser(body)
             }
         }
@@ -1431,6 +1449,8 @@ class AccountApiService(
         }
     }
 }
+
+class AccountHttpException(val statusCode: Int, message: String) : IOException(message)
 
 private fun ByteArray.sha256(): String = MessageDigest.getInstance("SHA-256")
     .digest(this)

@@ -45,7 +45,7 @@ async def until(predicate, timeout=15):
             await asyncio.sleep(0.02)
 
 
-async def verify(server_binary: Path):
+async def verify(server_binary: Path, workspace_check=None):
     port, tcp, udp = free_port(), free_port(), free_port(socket.SOCK_DGRAM)
     key, secret = secrets.token_hex(12), secrets.token_hex(32)
     settings = MediaSettings(f"ws://127.0.0.1:{port}", f"http://127.0.0.1:{port}", key, secret)
@@ -143,6 +143,7 @@ async def verify(server_binary: Path):
             assert received[1]["nonzero"] <= before + 2, "Muted track still carried nonzero audio"
             tracks[0].unmute()
             await until(lambda: not muted[1] and received[1]["nonzero"] >= before + 20)
+            workspace_result = await workspace_check(rooms, room, clients, tracks) if workspace_check else None
             await asyncio.to_thread(rooms.update, "host", room["id"], "end")
             await until(lambda: all(not client.isconnected() for client in clients))
             stale = rtc.Room()
@@ -156,7 +157,8 @@ async def verify(server_binary: Path):
             return {"passed": True, "transport": "LiveKit/WebRTC/Opus loopback",
                     "received": received, "startup_and_bidirectional_audio_seconds": first_audio_seconds,
                     "mute_and_unmute": True, "host_end_disconnects_both": True,
-                    "ended_room_rejects_old_ticket": True, "microphone_or_device_used": False}
+                    "ended_room_rejects_old_ticket": True, "microphone_or_device_used": False,
+                    **({"workspace": workspace_result} if workspace_result else {})}
         finally:
             for task in producers + consumers:
                 task.cancel()

@@ -59,6 +59,7 @@ internal fun MeetingRoomsDialog(
     var code by rememberSaveable(state.userId) { mutableStateOf("") }
     var consent by rememberSaveable(state.userId) { mutableStateOf(false) }
     var confirmingEnd by rememberSaveable(state.userId, state.selected?.id) { mutableStateOf(false) }
+    var workspaceVisible by rememberSaveable(state.userId, state.selected?.id) { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val latestBoundRoomId by rememberUpdatedState(boundRoomId)
@@ -124,6 +125,9 @@ internal fun MeetingRoomsDialog(
                         }
                     }
                 } else {
+                    OutlinedButton(onClick = { workspaceVisible = true }, shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        Text(if (room.transcription.active) "转写进行中 · 查看文字" else "转录与共享纪要")
+                    }
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("会议号 ${room.code}", modifier = Modifier.weight(1f))
                         TextButton(onClick = { clipboard.setText(AnnotatedString(room.code)) }) { Text("复制") }
@@ -136,7 +140,7 @@ internal fun MeetingRoomsDialog(
                     }
                     if (room.state == "open") {
                         RoomConsentRow(room.members.firstOrNull { it.userId == state.userId }?.recordingConsent == true, !state.busy, viewModel::consent)
-                        Text("关联记录后，所有在场成员同意才可开始或继续录音。成员撤回同意后，录音会在下次同步时暂停。", style = MaterialTheme.typography.bodySmall)
+                        Text("房间成员全部同意后，主持人可开启通话转写。关联本机记录时，也会校验录音意愿。", style = MaterialTheme.typography.bodySmall)
                     }
                     if (room.state == "open") FilledTonalButton(
                         onClick = { onRoomSelected(room.id) },
@@ -159,6 +163,7 @@ internal fun MeetingRoomsDialog(
         dismissButton = { if (room != null) TextButton(onClick = viewModel::showList, enabled = !state.busy) { Text("房间列表") } },
         shape = RoundedCornerShape(12.dp)
     )
+    if (workspaceVisible && room != null) RoomWorkspaceDialog(room, state.userId, onDismiss = { workspaceVisible = false })
     if (confirmingEnd && room != null) AlertDialog(
         onDismissRequest = { confirmingEnd = false },
         title = { Text("结束这个房间？") },

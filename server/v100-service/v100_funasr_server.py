@@ -664,7 +664,10 @@ async def stream(websocket: WebSocket) -> None:
             if len(frame) % 2:
                 raise ValueError("PCM16 payload must contain an even number of bytes")
             audio_bytes += len(frame)
-            stream_audio.extend(frame)
+            # Room tracks already carry member identity and disable diarization.
+            # Do not retain hours of raw PCM for a final pass that will never run.
+            if diarization["enabled"] and DIARIZATION_ENABLED:
+                stream_audio.extend(frame)
             segment_has_audio = True
             buffer.extend(frame)
             while len(buffer) >= CHUNK_SAMPLES * 2:

@@ -180,6 +180,7 @@ val appModule = module {
     viewModel { HomeViewModel(get(), get(), get(), get(), get(), get(), get(), get(), androidContext()) }
     viewModel { AccountViewModel(get(), get(), get(), get(), get()) }
     viewModel { com.oa.automation.ui.screen.recording.MeetingRoomsViewModel(get(), get()) }
+    viewModel { com.oa.automation.ui.screen.recording.RoomWorkspaceViewModel(get(), get()) }
     viewModel { GrowthCenterViewModel(get(), get()) }
     viewModel { PointsPlansViewModel(get(), get()) }
     viewModel { CommunityModerationViewModel(get(), get()) }

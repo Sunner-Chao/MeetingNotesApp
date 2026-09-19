@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from fastapi.responses import JSONResponse
 from room_media import RoomMediaService
+from room_workspace import SCHEMA as WORKSPACE_SCHEMA, transcription_state, reconcile_capture, now_ms
 
 
 class RoomService:
@@ -67,6 +68,7 @@ class RoomService:
                     INSERT OR REPLACE INTO room_media_cleanup VALUES(OLD.room_id, OLD.user_id, lower(hex(randomblob(16))));
                 END;
             """)
+            db.executescript(WORKSPACE_SCHEMA)
 
     def snapshot(self, db, room_id: str, user_id: str):
         room = db.execute("SELECT * FROM meeting_rooms WHERE id=?", (room_id,)).fetchone()
@@ -80,7 +82,7 @@ class RoomService:
         active = [m for m in members if m["left_at"] is None]
         return {**dict(room), "members": members,
                 "all_recording_consented": bool(active) and all(m["recording_consent"] for m in active),
-                "media_ready": self.media.configured}
+                "media_ready": self.media.configured, "transcription": transcription_state(db, room_id)}
 
     def _queue_cleanup(self, db, room_id: str, user_id: str = ""):
         if self.media.configured:
@@ -101,6 +103,8 @@ class RoomService:
                 with self.connect() as db:
                     if not db.execute("SELECT 1 FROM room_media_cleanup WHERE event_id=?", (item["event_id"],)).fetchone():
                         continue
+                    if not item["user_id"] and db.execute("SELECT 1 FROM room_transcription WHERE room_id=? AND state='stopping' AND updated_ms>?", (item["room_id"], now_ms() - 10_000)).fetchone():
+                        continue  # Allow the subscriber to flush the pre-stop decoder tail.
                     if item["user_id"]:
                         self.media.remove(item["room_id"], item["user_id"])
                     else:
@@ -167,6 +171,7 @@ class RoomService:
                 joined_at=CASE WHEN left_at IS NOT NULL THEN excluded.joined_at ELSE joined_at END,
                 left_at=NULL, recording_consent=excluded.recording_consent""",
                 (room["id"], principal.user_id, principal.username, int(time.time()), int(consent)))
+            reconcile_capture(db, room["id"])
             return self.snapshot(db, room["id"], principal.user_id)
 
     def get(self, user_id: str, room_id: str):
@@ -196,6 +201,7 @@ class RoomService:
                 if room["state"] != "open":
                     raise HTTPException(409, "会议已结束")
                 db.execute("UPDATE meeting_room_members SET recording_consent=? WHERE room_id=? AND user_id=?", (int(consent), room_id, user_id))
+            reconcile_capture(db, room_id)
             result = {"left": True} if action == "leave" else self.snapshot(db, room_id, user_id)
         self.flush_media_cleanup(room_id)
         return result

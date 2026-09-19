@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "id": "meeting-minutes.listening-room",
+  "version": "1.0.0",
+  "locale": "zh-CN",
+  "name": "聆听·策划会共享纪要",
+  "file": "prompt.md",
+  "input": "member-labelled-transcript-snapshot",
+  "rag": { "index_binary": false, "index_manifest": true }
+}

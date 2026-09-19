@@ -93,7 +93,8 @@ internal fun RoomCallPanel(room: MeetingRoom?, call: RoomCallState, controller: 
                     Text("离开通话")
                 }
             }
-            Text("通话尚不录制或转写，离开通话后可使用本机录音。", style = MaterialTheme.typography.bodySmall)
+            Text(if (room?.transcription?.active == true) "主持人已开启共享转写，可在房间内查看文字。"
+                else "通话不自动转写，由主持人在房间内开启。", style = MaterialTheme.typography.bodySmall)
         } else if (room?.state == "open") {
             if (room.mediaReady) FilledTonalButton(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), onClick = {
                 permissionError = null

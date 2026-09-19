@@ -14,7 +14,8 @@ data class MeetingRoom(
     val members: List<MeetingRoomMember> = emptyList(),
     @SerializedName("all_recording_consented") val allRecordingConsented: Boolean = false,
     /** False until a WebRTC/RTC media plane is deliberately enabled. */
-    @SerializedName("media_ready") val mediaReady: Boolean = false
+    @SerializedName("media_ready") val mediaReady: Boolean = false,
+    val transcription: RoomTranscriptionState = RoomTranscriptionState()
 )
 
 data class MeetingRoomMember(
