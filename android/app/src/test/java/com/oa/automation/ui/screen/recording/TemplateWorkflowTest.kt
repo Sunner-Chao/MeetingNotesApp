@@ -8,7 +8,7 @@ import org.junit.Test
 class TemplateWorkflowTest {
     @Test
     fun knownTemplatesExposeFourStructuredSteps() {
-        listOf("宣贯·落实会", "推演·进度会", "启迪·共创会", "博弈·洽谈会", "复盘·分析会", "自定义会议")
+        listOf("宣贯·落实会", "推演·进度会", "启迪·共创会", "博弈·洽谈会", "复盘·分析会", "自定义会议", "聆听·策划会")
             .forEach { name ->
                 val workflow = templateWorkflowFor(name)
                 assertEquals(name, workflow.templateName)
@@ -30,6 +30,19 @@ class TemplateWorkflowTest {
         assertTrue(workflow.steps[1].detail.contains("拖动"))
         assertTrue(workflow.output.contains("你编排的模块顺序"))
         assertTrue(workflow.confirmation.contains("即时保存"))
+    }
+
+    @Test
+    fun listeningPlanningWorkflowIsSeparateFromCustomBuilder() {
+        val workflow = templateWorkflowFor("聆听·策划会")
+
+        assertEquals(
+            listOf("接入声音", "分段聆听", "核对互动", "形成策划纪要"),
+            workflow.steps.map { it.title }
+        )
+        assertTrue(workflow.aiFocus.contains("匿名发言"))
+        assertTrue(workflow.output.contains("共识"))
+        assertFalse(workflow.goal.contains("拖拽"))
     }
 
     @Test

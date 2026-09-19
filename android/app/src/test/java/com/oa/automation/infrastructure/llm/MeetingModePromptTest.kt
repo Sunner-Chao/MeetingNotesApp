@@ -66,6 +66,18 @@ class MeetingModePromptTest {
     }
 
     @Test
+    fun listeningPlanningPromptKeepsSourcesAndEmotionClaimsGrounded() {
+        val prompt = ReportPromptTemplates.buildUserPrompt(
+            transcript = "说话人 1 提出先验证用户需求。",
+            template = ReportTemplateConfig(selectedName = "聆听·策划会", content = "聆听模板")
+        )
+
+        assertTrue(prompt.contains("匿名发言人"))
+        assertTrue(prompt.contains("不虚构微信、腾讯会议、电话或蓝牙设备已经完成平台级接入"))
+        assertTrue(prompt.contains("不得把这些现象解释为情绪、意图或人格事实"))
+    }
+
+    @Test
     fun promptRequiresAuditableInteractionSignalSection() {
         assertTrue(ReportPromptTemplates.SYSTEM_PROMPT.contains("## 可观察互动信号"))
         assertTrue(ReportPromptTemplates.SYSTEM_PROMPT.contains("证据或时间轴"))

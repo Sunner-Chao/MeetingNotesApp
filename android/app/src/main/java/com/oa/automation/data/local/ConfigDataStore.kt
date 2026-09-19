@@ -218,6 +218,11 @@ class ConfigDataStore(private val context: Context) {
                 "拖拽编排模块，组合专属模板"
             ),
             ReportTemplateAsset(
+                "聆听·策划会",
+                "聆听策划会.md",
+                "多人会话、发言时间线与互动观察"
+            ),
+            ReportTemplateAsset(
                 "研学考察",
                 "参观考察游记.md",
                 "分段旅程、图文游记与阶段续写"

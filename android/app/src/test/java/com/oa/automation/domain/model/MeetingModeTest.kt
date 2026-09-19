@@ -13,6 +13,8 @@ class MeetingModeTest {
         assertEquals(MeetingMode.FORUM, MeetingMode.fromTemplateName("论坛·共识会"))
         assertEquals(MeetingMode.FORUM, MeetingMode.fromTemplateName("聚智·论道会"))
         assertEquals(MeetingMode.CUSTOM, MeetingMode.fromTemplateName("自定义会议"))
+        assertEquals(MeetingMode.LISTENING_PLANNING, MeetingMode.fromTemplateName("聆听·策划会"))
+        assertEquals(MeetingMode.LISTENING_PLANNING, MeetingMode.fromTemplateName("聆听策划会"))
         assertEquals(MeetingMode.STUDY, MeetingMode.fromTemplateName("参观考察（游记）"))
     }
 

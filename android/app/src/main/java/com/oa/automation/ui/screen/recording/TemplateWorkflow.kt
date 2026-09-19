@@ -114,6 +114,19 @@ internal fun templateWorkflowFor(templateName: String): TemplateWorkflow {
             output = "议程时间线 · 发言要点 · 问答脉络",
             confirmation = "会后核对人员称谓和待确认信息"
         )
+        normalized.contains("聆听") || normalized.contains("策划会") -> TemplateWorkflow(
+            templateName = normalized,
+            goal = "把多人讨论的声音整理成可复核的策划判断",
+            aiFocus = "识别议题、匿名发言时间线、共识分歧与可观察互动信号",
+            steps = listOf(
+                TemplateWorkflowStep("接入声音", "记录本机、文件或会议会话的实际来源", "listen"),
+                TemplateWorkflowStep("分段聆听", "按时间轴和匿名发言人整理讨论脉络", "timeline"),
+                TemplateWorkflowStep("核对互动", "保留打断、停顿和重复强调等可观察证据", "signal"),
+                TemplateWorkflowStep("形成策划纪要", "输出共识、分歧、假设与下一步动作", "output")
+            ),
+            output = "讨论时间线 · 共识分歧 · 策划动作",
+            confirmation = "会后核对人员、关键判断和对外口径"
+        )
         normalized == "自定义会议" -> TemplateWorkflow(
             templateName = normalized,
             goal = "按需组合模块，形成贴合本次会议的纪要",

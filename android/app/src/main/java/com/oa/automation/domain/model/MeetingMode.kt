@@ -19,6 +19,8 @@ enum class MeetingMode(
     /** Persisted as the legacy key “论坛会议” so existing forum reports retain their behavior. */
     FORUM("论坛会议", "论坛·共识会"),
     CUSTOM("自定义会议", "自定义会议"),
+    /** Dedicated listening/planning workflow; distinct from the user-composed custom template. */
+    LISTENING_PLANNING("聆听·策划会", "聆听·策划会"),
     STUDY("研学考察", "研学考察");
 
     companion object {
@@ -37,6 +39,9 @@ enum class MeetingMode(
                     normalized == "聚智·论道会" ||
                     normalized == "聚智论道会" -> FORUM
                 normalized == CUSTOM.templateName -> CUSTOM
+                normalized == LISTENING_PLANNING.templateName ||
+                    normalized == "聆听策划会" ||
+                    normalized == "听策划会" -> LISTENING_PLANNING
                 normalized == STUDY.templateName ||
                     normalized.contains("参观考察") ||
                     normalized.contains("游记") -> STUDY

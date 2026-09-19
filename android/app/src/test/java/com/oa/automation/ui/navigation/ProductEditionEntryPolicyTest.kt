@@ -7,7 +7,7 @@ import org.junit.Test
 
 class ProductEditionEntryPolicyTest {
     @Test
-    fun lightEnjoyExposesOnlyTheFiveTemplateCatalogAndCustomBuilder() {
+    fun lightEnjoyExposesTheFiveTemplateCatalogCustomBuilderAndListeningPlanning() {
         val policy = ProductEntryPolicy.forEdition(ProductEdition.LIGHT_ENJOY)
 
         assertFalse(policy.showCommunityTab)
@@ -24,7 +24,8 @@ class ProductEditionEntryPolicyTest {
             "启迪·共创会",
             "博弈·洽谈会",
             "复盘·分析会",
-            "自定义会议"
+            "自定义会议",
+            "聆听·策划会"
         )
         expected.forEach { assertTrue(policy.shouldShowMeetingTemplate(it)) }
         assertFalse(policy.shouldShowMeetingTemplate("敏捷·站会"))

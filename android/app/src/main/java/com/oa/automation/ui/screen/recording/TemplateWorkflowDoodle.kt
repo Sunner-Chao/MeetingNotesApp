@@ -186,6 +186,18 @@ private fun doodleCopyFor(family: TemplateMoodFamily): DoodleCopy = when (family
         aiItems = listOf("议程切分", "发言归属", "共识提炼"),
         summary = "已归档 6 位发言"
     )
+    TemplateMoodFamily.LISTENING_PLANNING -> DoodleCopy(
+        badge = "多人聆听 已就绪",
+        widgetTitle = "聆听工作台",
+        widgetRows = listOf(
+            listOf("来源", "本机 / 文件 / 会话"),
+            listOf("发言", "按时间轴匿名分段"),
+            listOf("证据", "停顿 · 打断 · 重复")
+        ),
+        notes = listOf("多人讨论\n保留原声脉络", "情绪不下结论\n只留可核对证据"),
+        aiItems = listOf("议题切分", "互动信号", "策划提炼"),
+        summary = "等待真实声音输入"
+    )
     TemplateMoodFamily.CUSTOM -> DoodleCopy(
         badge = "拖拽编排 已开放",
         widgetTitle = "模块库 · 可拖拽",

@@ -19,6 +19,7 @@ class ReportTemplateAssetContractTest {
             "孔爵团队版表格会议纪要.md",
             "论坛会议.md",
             "自定义会议.md",
+            "聆听策划会.md",
             "参观考察游记.md"
         )))
         val generalTemplate = markdownFiles.getValue("通用会议.md").readText()
@@ -44,6 +45,11 @@ class ReportTemplateAssetContractTest {
         assertFalse(customTemplate.contains("拖拽编排稍后开放"))
         assertTrue(customTemplate.contains("拖拽编排顺序与启停"))
         assertTrue(customTemplate.contains("保留转写内容能够支撑的模块"))
+        val listeningTemplate = markdownFiles.getValue("聆听策划会.md").readText()
+        assertTrue(listeningTemplate.contains("多人发言脉络"))
+        assertTrue(listeningTemplate.contains("可观察互动信号"))
+        assertTrue(listeningTemplate.contains("说话人 1"))
+        assertTrue(listeningTemplate.contains("不声称应用已经直接接入"))
         // Every module the editor can enable must exist in the fallback asset.
         CustomTemplateModule.entries.forEach { module ->
             assertTrue(

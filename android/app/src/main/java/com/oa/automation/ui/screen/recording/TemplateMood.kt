@@ -6,6 +6,7 @@ import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Handshake
+import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.TrackChanges
@@ -30,6 +31,7 @@ internal enum class TemplateMoodFamily {
     STANDUP,
     FORUM,
     CUSTOM,
+    LISTENING_PLANNING,
     GENERAL
 }
 
@@ -140,6 +142,17 @@ private val CustomMood = TemplateMood(
     illustrationRes = null
 )
 
+private val ListeningPlanningMood = TemplateMood(
+    family = TemplateMoodFamily.LISTENING_PLANNING,
+    displayName = "聆听·策划类",
+    collapsedName = "策划会",
+    moodWord = "共听",
+    accent = Color(0xFF3B7890),
+    ink = Color(0xFF2F667B),
+    icon = Icons.Default.Headphones,
+    illustrationRes = null
+)
+
 private val GeneralMood = TemplateMood(
     family = TemplateMoodFamily.GENERAL,
     displayName = "通用类",
@@ -163,6 +176,7 @@ internal fun templateMoodFor(templateName: String): TemplateMood {
         normalized.contains("敏捷") || normalized.contains("站会") -> StandupMood
         normalized.contains("论坛") || normalized.contains("共识") || normalized.contains("聚智") -> ForumMood
         normalized.contains("自定义") -> CustomMood
+        normalized.contains("聆听") || normalized.contains("策划会") -> ListeningPlanningMood
         normalized.contains("研学") || normalized.contains("考察") ->
             GeneralMood.copy(displayName = "研学考察类", collapsedName = "研学会")
         normalized.contains("通用") -> GeneralMood

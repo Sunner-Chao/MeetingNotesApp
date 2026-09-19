@@ -74,7 +74,8 @@ internal val LiteRecordingTabs = listOf(
     LiteRecordingTab("启迪·共创会", "共创", "头脑风暴", Color(0xFF9D7C29)),
     LiteRecordingTab("博弈·洽谈会", "洽谈", "博弈会", Color(0xFF78618E)),
     LiteRecordingTab("复盘·分析会", "复盘", "分析会", Color(0xFF9B663D)),
-    LiteRecordingTab("自定义会议", "自定义", "自定义", Color(0xFF76746C))
+    LiteRecordingTab("自定义会议", "自定义", "自定义", Color(0xFF76746C)),
+    LiteRecordingTab("聆听·策划会", "聆听", "策划会", Color(0xFF3B7890))
 )
 
 internal val LiteRecorderPalette = siriDarkPalette().copy(

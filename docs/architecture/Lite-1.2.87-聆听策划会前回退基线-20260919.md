@@ -2,7 +2,7 @@
 
 ## 基线
 
-- Git commit：`c2a8931a`
+- Git commit：`2cda38c8`
 - Git tag：`lite-baseline-1.2.87-20260919`
 - 当前分支：`codex/light-enjoy`
 - Lite 版本：`1.2.87` / `versionCode 10287`
